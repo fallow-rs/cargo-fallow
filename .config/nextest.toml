@@ -17,7 +17,7 @@ failure-output = "immediate-final"
 [profile.ci.junit]
 path = "junit.xml"
 
-# Each `mutation` test runs mutated test binaries with up to two test processes,
+# Each `mutants` test runs mutated test binaries with up to two test processes,
 # so these tests run one at a time.
 [test-groups.mutation]
 max-threads = 1

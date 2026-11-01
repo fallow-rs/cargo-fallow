@@ -19,7 +19,7 @@ pub enum ErrorCode {
     MetadataFailed,
     /// The report could not be written.
     OutputFailed,
-    /// The `mutation` command cannot run: the package does not build, the tests
+    /// The `mutants` command cannot run: the package does not build, the tests
     /// fail with no mutant, or a file operation or a process failed.
     MutationFailed,
 }

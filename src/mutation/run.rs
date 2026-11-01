@@ -1,4 +1,4 @@
-//! The `mutation` command: one package, one report.
+//! The `mutants` command: one package, one report.
 
 use std::io;
 use std::path::{Path, PathBuf};

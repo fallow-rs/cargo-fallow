@@ -25,7 +25,7 @@ cargo metadata -> workspace model -> gates -> report -> render
 - `src/render/` writes the human, JSON and SARIF output.
 - `src/error.rs` holds the CLI errors and their codes.
 - `src/parse.rs` holds the bounded parse. Each parse goes through this module.
-- `src/mutation/` holds the `mutation` command. `src/mutation/mod.rs` lists its
+- `src/mutation/` holds the `mutants` command. `src/mutation/mod.rs` lists its
   parts. A mutated binary runs only through `process::run_to_files`, under a time
   limit and the memory guard.
 

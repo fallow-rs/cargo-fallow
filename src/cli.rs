@@ -44,8 +44,8 @@ pub struct Options {
 pub enum Parsed {
     /// Run `check` with these options.
     Run(Options),
-    /// Run the `mutation` command with these options.
-    Mutation(Box<crate::mutation::run::Options>),
+    /// Run the `mutants` command with these options.
+    Mutants(Box<crate::mutation::run::Options>),
     /// Run the hidden watchdog of the memory guard.
     Watchdog(PathBuf),
     /// Stop with this exit code. The parser already wrote its output.
@@ -72,7 +72,7 @@ enum Command {
     /// Analyze the workspace. This is the default command.
     Check(CheckArgs),
     /// Run the tests against small changes in the source of one package.
-    Mutation(MutationArgs),
+    Mutants(MutantsArgs),
     /// Kill the test processes when the parent process dies. The memory guard
     /// starts this command.
     #[command(hide = true, name = "mutation-watchdog")]
@@ -93,7 +93,7 @@ enum TierArg {
 }
 
 #[derive(Debug, Args)]
-struct MutationArgs {
+struct MutantsArgs {
     /// Path to the Cargo.toml of the workspace.
     #[arg(long, value_name = "PATH")]
     manifest_path: Option<PathBuf>,
@@ -117,8 +117,8 @@ struct MutationArgs {
     /// the cores, with a maximum of 2, because a mutant can allocate without limit.
     #[arg(long, short = 'j', value_name = "N", value_parser = clap::value_parser!(u32).range(1..))]
     jobs: Option<u32>,
-    /// Kill a test process above this footprint.
-    #[arg(long, value_name = "MIB", default_value_t = DEFAULT_LIMIT_MIB, value_parser = clap::value_parser!(u64).range(1..))]
+    /// Kill a test process above this footprint, in MiB.
+    #[arg(long = "memory-limit", value_name = "MIB", default_value_t = DEFAULT_LIMIT_MIB, value_parser = clap::value_parser!(u64).range(1..))]
     memory_limit_mib: u64,
     /// Kill the largest process tree when the free memory is under this percentage.
     #[arg(long, value_name = "PERCENT", default_value_t = DEFAULT_LOW_PERCENT, value_parser = clap::value_parser!(u32).range(0..=100))]
@@ -162,8 +162,8 @@ struct MutationArgs {
     keep_work_dir: bool,
 }
 
-impl From<MutationArgs> for crate::mutation::run::Options {
-    fn from(args: MutationArgs) -> Self {
+impl From<MutantsArgs> for crate::mutation::run::Options {
+    fn from(args: MutantsArgs) -> Self {
         let cores = std::thread::available_parallelism().map_or(1, usize::from);
         Self {
             manifest_path: args.manifest_path,
@@ -236,7 +236,7 @@ pub fn strip_cargo_subcommand(mut args: Vec<OsString>) -> Vec<OsString> {
 pub fn parse(args: &[OsString]) -> Parsed {
     match Cli::try_parse_from(args) {
         Ok(cli) => match cli.command {
-            Some(Command::Mutation(args)) => Parsed::Mutation(Box::new(args.into())),
+            Some(Command::Mutants(args)) => Parsed::Mutants(Box::new(args.into())),
             Some(Command::MutationWatchdog { roots }) => Parsed::Watchdog(roots),
             Some(Command::Check(check)) => Parsed::Run(check.into()),
             None => Parsed::Run(cli.check.into()),

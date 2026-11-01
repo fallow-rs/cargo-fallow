@@ -1,4 +1,4 @@
-//! The report of the `mutation` command.
+//! The report of the `mutants` command.
 
 use std::fmt::Write;
 

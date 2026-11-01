@@ -7,7 +7,7 @@ with `ra_ap_syntax`, the parser of rust-analyzer. It runs on stable Rust and nee
 ## Status
 
 Pre-release. The `check` command reads the workspace and reports two gates. The
-`mutation` command runs mutation tests on one package. The JSON shapes can change
+`mutants` command runs mutation tests on one package. The JSON shapes can change
 before the first release.
 
 ## Install
@@ -47,15 +47,15 @@ dependencies, it does not use the network and it does not write `Cargo.lock`.
 
 ## Mutation testing
 
-`cargo fallow mutation` makes small changes (mutants) in the source of one
+`cargo fallow mutants` makes small changes (mutants) in the source of one
 package, runs the tests against each mutant, and reports the mutants that no test
 detects. It needs `cargo-nextest`. It never changes the checkout: it works in a
 copy. A survivor does not fail the run.
 
 ```bash
-cargo fallow mutation --package my-crate
-cargo fallow mutation --tier schema --format json --quiet
-cargo fallow mutation --max-mutants 200 --time-budget 3600
+cargo fallow mutants --package my-crate
+cargo fallow mutants --tier schema --format json --quiet
+cargo fallow mutants --max-mutants 200 --time-budget 3600
 ```
 
 ### Tiers
@@ -86,7 +86,7 @@ A mutant can allocate without limit, and a test timeout does not protect the
 machine. The memory guard is on by default:
 
 - It kills the test processes of a mutant when one process passes
-  `--memory-limit-mib` (default 4096). The mutant gets `runtime_error` with a
+  `--memory-limit` (default 4096). The mutant gets `runtime_error` with a
   reason.
 - It kills the largest process tree when the free memory drops under
   `--low-memory-percent` (default 25).

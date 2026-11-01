@@ -64,7 +64,7 @@ fn stage(files: &[(&str, &str)]) -> Stage {
 /// The command up to the baseline, for the schema tier. The memory guard has no
 /// probe on Windows, and `--no-run` runs no mutant.
 const ARGS: [&str; 8] = [
-    "mutation",
+    "mutants",
     "--no-run",
     "--tier",
     "schema",

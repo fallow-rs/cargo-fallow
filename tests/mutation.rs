@@ -1,4 +1,4 @@
-//! Black-box tests of the `mutation` command: real cargo, rustc and nextest.
+//! Black-box tests of the `mutants` command: real cargo, rustc and nextest.
 //!
 //! Each test runs mutated binaries under the memory guard and a time limit. No
 //! fixture can grow without limit in a way that a broken guard cannot stop: a
@@ -75,7 +75,7 @@ fn run(files: &[(&str, &str)], flags: &[&str]) -> Run {
         .expect("the binary exists")
         .env("MBX_DISABLE", "1")
         .args([
-            "mutation",
+            "mutants",
             "--format",
             "json",
             "--jobs",
@@ -328,7 +328,7 @@ fn the_guard_kills_a_mutant_that_allocates_without_limit() {
         &[
             "--tier",
             "schema",
-            "--memory-limit-mib",
+            "--memory-limit",
             "64",
             "--timeout",
             "60",
@@ -372,7 +372,7 @@ fn grow_works() {
 ";
     let run = run(
         &[("src/lib.rs", lib)],
-        &["--tier", "schema", "--memory-limit-mib", "256"],
+        &["--tier", "schema", "--memory-limit", "256"],
     );
     let report = &run.report;
     assert_eq!(run.code, Some(0), "{report}");
@@ -411,13 +411,13 @@ fn large() {
 ";
     let run = run(
         &[("src/lib.rs", lib)],
-        &["--tier", "schema", "--memory-limit-mib", "64"],
+        &["--tier", "schema", "--memory-limit", "64"],
     );
     assert_eq!(run.code, Some(2), "{}", run.report);
     let message = run.report["message"].as_str().expect("a message");
     assert!(message.contains("over the limit of 64 MiB"), "{message}");
     let help = run.report["help"].as_str().expect("a hint");
-    assert!(help.contains("--memory-limit-mib"), "{help}");
+    assert!(help.contains("--memory-limit"), "{help}");
 }
 
 #[test]
@@ -802,7 +802,7 @@ fn human_output_lists_the_survivors() {
         .expect("the binary exists")
         .env("MBX_DISABLE", "1")
         .args([
-            "mutation",
+            "mutants",
             "--tier",
             "schema",
             "--quiet",
@@ -852,7 +852,7 @@ fn a_package_name_with_a_dash_gets_its_tests_selected() {
 fn sarif_is_not_a_mutation_format() {
     let output = Command::cargo_bin("cargo-fallow")
         .expect("the binary exists")
-        .args(["mutation", "--format", "sarif"])
+        .args(["mutants", "--format", "sarif"])
         .output()
         .expect("the binary runs");
     assert_eq!(output.status.code(), Some(2));
@@ -888,7 +888,7 @@ mod tests {
     let binary = assert_cmd::cargo::cargo_bin("cargo-fallow");
     let mut parent = Process::new(binary)
         .args([
-            "mutation",
+            "mutants",
             "--tier",
             "schema",
             "--quiet",
@@ -945,7 +945,7 @@ fn run_in(source: &Path, flags: &[&str], rustc: Option<&Path>) -> (Value, String
     }
     let output = command
         .env("MBX_DISABLE", "1")
-        .args(["mutation", "--format", "json", "--jobs", "2"])
+        .args(["mutants", "--format", "json", "--jobs", "2"])
         .arg("--manifest-path")
         .arg(source.join("Cargo.toml"))
         .arg("--work-dir")

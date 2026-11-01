@@ -92,7 +92,7 @@ fn baseline_failure(action: &str, err: &io::Error) -> CliError {
     let error = failure(action, err);
     if err.to_string().contains("memory guard") {
         return error.with_help(
-            "Raise `--memory-limit-mib` when the tests of this package need more memory.",
+            "Raise `--memory-limit` when the tests of this package need more memory.",
         );
     }
     error

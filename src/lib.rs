@@ -35,7 +35,7 @@ pub fn run(args: Vec<OsString>) -> ExitCode {
     let args = cli::strip_cargo_subcommand(args);
     let code = match cli::parse(&args) {
         Parsed::Run(options) => run_check(&options),
-        Parsed::Mutation(options) => run_mutation(&options),
+        Parsed::Mutants(options) => run_mutants(&options),
         Parsed::Watchdog(roots) => {
             mutation::guard::run_watchdog(&roots);
             EXIT_OK
@@ -56,9 +56,9 @@ fn run_check(options: &Options) -> u8 {
     }
 }
 
-/// Runs the `mutation` command and returns the process exit code. Survivors do
+/// Runs the `mutants` command and returns the process exit code. Survivors do
 /// not fail a run.
-fn run_mutation(options: &mutation::run::Options) -> u8 {
+fn run_mutants(options: &mutation::run::Options) -> u8 {
     let result = mutation_report(options);
     match result {
         Ok(()) => EXIT_OK,
@@ -73,7 +73,7 @@ fn mutation_report(options: &mutation::run::Options) -> Result<(), CliError> {
     if options.format == cli::Format::Sarif {
         return Err(CliError::new(
             error::ErrorCode::InvalidArgument,
-            "the `mutation` command has no SARIF output",
+            "the `mutants` command has no SARIF output",
         )
         .with_help("Use `--format human` or `--format json`."));
     }

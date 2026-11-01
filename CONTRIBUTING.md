@@ -81,7 +81,8 @@ These fallow gates do not apply now:
   surface.
 - CodeQL and OpenSSF Scorecard: both need the public GitHub repository.
 - Benchmarks: the crate has no hot path to measure yet.
-- Mutation testing: M1 adds it, and uses it on this crate first.
+- Mutation testing on this crate: `cargo fallow mutation` exists, and M1 adds the
+  gate.
 
 ## Developer Certificate of Origin
 

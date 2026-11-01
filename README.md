@@ -6,8 +6,9 @@ with `ra_ap_syntax`, the parser of rust-analyzer. It runs on stable Rust and nee
 
 ## Status
 
-Pre-release, M0. The tool reads the workspace and reports two gates. It does
-not report findings yet. The JSON shape can change before the first release.
+Pre-release. The `check` command reads the workspace and reports two gates. The
+`mutation` command runs mutation tests on one package. The JSON shapes can change
+before the first release.
 
 ## Install
 
@@ -42,6 +43,77 @@ You can also run the binary directly: `cargo-fallow check`.
 
 `cargo fallow` runs `cargo metadata --no-deps`. It does not resolve
 dependencies, it does not use the network and it does not write `Cargo.lock`.
+
+
+## Mutation testing
+
+`cargo fallow mutation` makes small changes (mutants) in the source of one
+package, runs the tests against each mutant, and reports the mutants that no test
+detects. It needs `cargo-nextest`. It never changes the checkout: it works in a
+copy. A survivor does not fail the run.
+
+```bash
+cargo fallow mutation --package my-crate
+cargo fallow mutation --tier schema --format json --quiet
+cargo fallow mutation --max-mutants 200 --time-budget 3600
+```
+
+### Tiers
+
+| Tier | Operators | How it runs |
+| --- | --- | --- |
+| `schema` | `relational-operator`, `logical-operator`, `negate-condition` | All mutants go into one build. A runtime switch selects one mutant in each test process, so a mutant costs no compile. The removal loop removes a mutant that breaks the build, and that mutant then runs in a rebuild. |
+| `rebuild` | `arithmetic-operator`, `unary-operator`, `return-value`, `deleted-match-arm` | Each mutant gets its own rebuild of one reused scratch copy, because these operators are not type-safe by construction. |
+
+### Status
+
+| Status | Meaning |
+| --- | --- |
+| `killed` | A test failed with the mutant. `killed_by` names the first one. |
+| `survived` | Each test passed, also in the retry. |
+| `timeout` | The tests did not end within the limit. A limit at most 10 times the baseline gets a retry with twice the limit, because host load can explain it. |
+| `flaky` | Two runs of the mutant disagree. |
+| `no_coverage` | No build reads the mutant (for example a `cfg` that is off), or the package has no test that passes. |
+| `compile_error` | The mutant does not compile. |
+| `runtime_error` | The run has no test result. `reason` says why, for example a kill by the memory guard. |
+| `pending` | The run stopped first: `--time-budget`, `--max-mutants`, `--no-run` or low memory. |
+
+The score is `killed + timeout` over `killed + timeout + survived`.
+
+### Safety
+
+A mutant can allocate without limit, and a test timeout does not protect the
+machine. The memory guard is on by default:
+
+- It kills the test processes of a mutant when one process passes
+  `--memory-limit-mib` (default 4096). The mutant gets `runtime_error` with a
+  reason.
+- It kills the largest process tree when the free memory drops under
+  `--low-memory-percent` (default 25).
+- It kills the process trees when it cannot read the memory data.
+- A watchdog process kills the process trees when `cargo fallow` dies.
+
+macOS reads the footprint from `top`, because RSS does not count compressed
+pages. Linux reads RSS plus swap from `/proc`, and the free memory from the
+cgroup limit or `/proc/meminfo`. Other systems have no probe, so the command
+stops unless you pass `--no-memory-guard`.
+
+`--jobs` defaults to a quarter of the cores, with a maximum of 2. Each mutant run
+has a time limit of 5 times the baseline of its build, with a minimum of 20
+seconds. `--timeout` sets another value.
+
+### Limits
+
+The `gaps` part of the report counts the code that a run does not cover:
+
+- Only the default features compile. A mutant under another feature set gets
+  `no_coverage`.
+- Macro bodies and macro arguments have no mutants. The report counts their
+  operator tokens.
+- A file behind a macro-declared module has no mutants. The report counts it.
+- Proc-macro targets have no mutants.
+- `.git` is not in the copy, so a test that reads it fails in the baseline and
+  decides nothing.
 
 ## Output formats
 

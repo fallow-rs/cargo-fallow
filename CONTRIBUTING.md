@@ -24,8 +24,28 @@ cargo deny check
 `Cargo.toml` enables the Clippy `pedantic`, `nursery` and `cargo` groups and a
 set of restriction lints. Do not use `#[allow]` without a `reason`. Use
 `writeln!` on a locked stdout or stderr, not `println!`. Do not call
-`std::process::exit`. Only the workspace loader in `src/workspace.rs` can
-spawn a process. `.clippy.toml` holds that rule.
+`std::process::exit`. Only the workspace loader in `src/workspace.rs` and
+`src/mutation/process.rs` can spawn a process. `.clippy.toml` holds that rule.
+
+## Mutants command
+
+These rules keep the `mutants` command safe and its output stable:
+
+- A mutated binary runs only through `process::run_to_files`, under a time limit and
+  the memory guard. A test does not pass `--no-memory-guard`, except for a check of
+  that flag.
+- `tests/mutation.rs` and `tests/mutation_schema.rs` test the engine. `tests/mutants_cli.rs`
+  tests the product surface: each exit code and each format, on a fixture with a known
+  killed mutant and a known surviving mutant.
+- These tests use `git`, `cargo-nextest` and the `llvm-tools` component. They run one at
+  a time: `.config/nextest.toml` puts them in one test group, and a lock in each test file
+  does the same under `cargo test`.
+- A new member of the report goes into `src/mutation/report.rs`. A change that removes a
+  member or changes its type increments `SCHEMA_VERSION`. The human and SARIF forms are
+  in `src/render/mutants.rs`.
+- The order of `mutants` must not depend on the order of the workers. The engine writes
+  each row at a fixed index and sorts the rows at the end.
+- An action is a read-only command. The tool does not propose a code change.
 
 ## Quality gates
 
@@ -82,7 +102,7 @@ These fallow gates do not apply now:
 - CodeQL and OpenSSF Scorecard: both need the public GitHub repository.
 - Benchmarks: the crate has no hot path to measure yet.
 - Mutation testing on this crate: `cargo fallow mutants` exists, and M1 adds the
-  gate.
+  CI job. `--fail-on-survivors` is the gate of that job.
 
 ## Developer Certificate of Origin
 

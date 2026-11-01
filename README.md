@@ -50,13 +50,156 @@ dependencies, it does not use the network and it does not write `Cargo.lock`.
 `cargo fallow mutants` makes small changes (mutants) in the source of one
 package, runs the tests against each mutant, and reports the mutants that no test
 detects. It needs `cargo-nextest`. It never changes the checkout: it works in a
-copy. A survivor does not fail the run.
+copy. A survivor fails the run only with `--fail-on-survivors`.
 
 ```bash
 cargo fallow mutants --package my-crate
+cargo fallow mutants --in-diff main --fail-on-survivors --format sarif --quiet
 cargo fallow mutants --tier schema --format json --quiet
 cargo fallow mutants --max-mutants 200 --time-budget 3600
+cargo fallow mutants --inspect 04658712a47ab204
 ```
+
+| Flag | Meaning |
+| --- | --- |
+| `--manifest-path <PATH>` | The `Cargo.toml` of the workspace or the package. |
+| `--package <NAME>` | The package to mutate. A workspace with one package needs no value. |
+| `--in-diff <REF>` | Run only the mutants on changed lines. See [Changed code](#changed-code). |
+| `--format human\|json\|sarif` | The output format. The default is `human`. `--inspect` has no SARIF form. |
+| `--quiet` | Hide the progress lines on stderr. |
+| `--jobs <N>` | The test processes that run at the same time. |
+| `--max-mutants <N>` | Run at most this many mutants. The other mutants stay `pending`. |
+| `--timeout <SECONDS>` | The time limit of each mutant run. |
+| `--memory-limit <MIB>` | Kill a test process above this footprint. The default is 4096. |
+| `--fail-on-survivors` | Exit 1 when a mutant survives. See [Gate](#gate). |
+| `--inspect <ID>` | Show one mutant and its tests. See [Inspect](#inspect). |
+
+`cargo fallow mutants --help` lists the other flags.
+
+### Output
+
+The human form starts with a short summary. The survivors, the flaky mutants and
+the runtime errors follow, grouped by file. The output has no colors.
+
+```text
+cargo fallow mutants: my-crate 0.1.0
+6 mutants, score 50.0%: 2 killed, 2 survived, 2 no coverage
+test selection: 1 tests in the map, 0 with no data, 6 test runs, 0 doctest runs
+
+Survived (2)
+  src/a.rs
+    :8:5 relational-operator `a == 2` -> `!=` [3f6c1d2a9b804e57]
+  src/b.rs
+    :8:5 relational-operator `a == 2` -> `!=` [a17e40c2d95b3f68]
+
+Gates:
+  surviving-mutants: fail (2 files), not enforced
+
+Inspect a mutant: cargo fallow mutants --inspect <id>
+```
+
+The JSON report has `schema_version`, `version` (the tool), `kind` (`mutants`),
+`language` (`rust`), `package`, `package_version`, `total_issues` (the survivors),
+`summary`, `gate_outcomes`, `in_diff` (with the flag only), `mutants`, and the
+parts of the run: `baseline`, `schema`, `rebuild`, `gaps`, `selection` and `guard`.
+`mutants` has one object for each mutant, in a fixed order: tier, file, line, column.
+These members describe the mutant:
+
+| Member | Meaning |
+| --- | --- |
+| `id` | The stable id: 16 hexadecimal digits. An edit of other code does not change it. |
+| `file`, `line`, `column` | The position. The path is relative to the workspace root. The line and the column start at 1, and the column counts bytes. |
+| `operator` | The operator name. |
+| `original`, `replacement` | The start of the original text, and the replacement. |
+| `tier` | `schema` or `rebuild`. |
+| `status` | See [Status](#status). |
+| `tests_run`, `doctests_run` | The tests that gave a result, over all runs. |
+| `duration_ms` | The wall time of the runs. |
+| `actions` | The next steps. |
+
+The tool never writes a test and never changes code. So each action is a read-only
+command, and `auto_fixable` is always `false`. A `survived`, `no_coverage` or `flaky`
+mutant has one `inspect-mutant` action. The other mutants have an empty array.
+
+The SARIF log has one result for each survivor, at its line. The `mutantId` partial
+fingerprint holds the id. The log gives no column, because the report counts bytes and
+a SARIF column counts UTF-16 units.
+
+### Gate
+
+`gate_outcomes` always has `surviving-mutants`. `observed` is the number of survivors,
+and `files` names each file with its count.
+
+| `status` | Meaning |
+| --- | --- |
+| `fail` | A mutant survived. With `--fail-on-survivors` the exit code is 1. |
+| `pass` | No mutant survived, and each mutant has a result. |
+| `warn` | No mutant survived, but a mutant is `pending` or has `runtime_error`. |
+| `skipped` | `--no-run` ran no mutant. |
+
+The gate counts only `survived`. A mutant that no test executes gets `no_coverage`, and
+that status does not fail the gate. Read `summary.no_coverage` to see this code.
+
+A `--time-budget` or a `--max-mutants` that leaves mutants `pending` gives `warn` and
+exit 0, because you chose that limit. A stop for low memory with `--fail-on-survivors`
+and no survivor gives exit 2: the machine chose the limit, so the gate has no verdict.
+The journal keeps the results for the next run.
+
+### Changed code
+
+`--in-diff <REF>` runs only the mutants with a changed line:
+
+- The base is the fork point of the ref and `HEAD`. A later commit on the ref does not
+  count.
+- The diff compares the base with the working tree, so an uncommitted edit counts. An
+  untracked file that git does not ignore counts on each line.
+- A mutant counts when a line of its text changed. A mutant that replaces a function
+  body counts when a line of that body changed.
+- A deleted line changes no line of the new text, so it selects no mutant.
+- The `in_diff` member has `ref`, `base`, `changed_files` and `mutants_outside`.
+- With no mutant on a changed line, the command builds nothing and exits 0.
+- A ref that git cannot resolve exits 2, also outside a repository or in a shallow clone
+  with no fork point. The command never falls back to another scope.
+
+The score of such a run describes only the changed code.
+
+### Inspect
+
+`--inspect <ID>` shows one mutant and the tests that execute it. It runs no mutant. A
+workspace with more packages needs no `--package`, because the id finds the package.
+
+```text
+mutant 3f6c1d2a9b804e57
+  src/a.rs:8:5
+  operator: relational-operator
+  tier: schema
+
+Change
+  -     a == 2
+  +     a != 2
+
+Tests (coverage map read from the cache)
+  my-crate::my_crate$tests::check_works
+
+Doctests have no coverage data. A run has them when no other test fails.
+```
+
+The command reads the coverage map of the last run. When the source changed or the
+cache has no map, it builds the map first: it compiles a copy with coverage and runs
+the plain tests under the memory guard. The next run reuses this map. The command needs
+the LLVM tools for that build. The JSON form has `kind` `mutants-inspect`, `mutant` and
+`coverage`. `coverage.state` is one of these values:
+
+| `state` | Meaning |
+| --- | --- |
+| `covered` | `tests` lists the tests that execute a line of the mutant. |
+| `not_covered` | The map has data on the lines, and no test executes them. |
+| `no_line_data` | The map has no data on the lines, so a run has each test. |
+| `constant_context` | The compiler can evaluate this code, so a run has each test. |
+
+`coverage.tests_without_data` lists the tests with no usable coverage data. A run has
+these tests for each mutant. The report has no status: the command does not read an old
+result. An unknown id exits 2. An id changes when the text of its code changes.
 
 ### Tiers
 
@@ -190,6 +333,8 @@ The `gaps` part of the report counts the code that a run does not cover:
 
 ## Output formats
 
+This section describes `check`. [Output](#output) describes `mutants`.
+
 - `human`: a short summary on stdout. Progress lines go to stderr.
 - `json`: the report on stdout. The report has `schema_version`, `version`,
   `kind`, `language`, `workspace`, `total_issues`, `findings` and
@@ -198,7 +343,7 @@ The `gaps` part of the report counts the code that a run does not cover:
   result, and each failed gate is a tool execution notification. The level
   is `error` for an enforced failure and `warning` for other failures.
 
-The gates are `error-severity-findings` and `parse-error`. They use the same
+The gates of `check` are `error-severity-findings` and `parse-error`. They use the same
 names as the gates of the JavaScript CLI. A gate fails the run when its
 `status` is `fail` and `enforced` is `true`.
 
@@ -220,8 +365,10 @@ other formats, the error goes to stderr.
 | Code | Meaning |
 | --- | --- |
 | `0` | No enforced gate failed. |
-| `1` | An enforced gate failed. |
+| `1` | An enforced gate failed. For `mutants`, a survivor with `--fail-on-survivors`. |
 | `2` | The input was not valid, or the run could not complete. |
+
+Each command uses these codes and the same error document.
 
 ## License
 

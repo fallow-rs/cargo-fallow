@@ -22,7 +22,7 @@ cargo metadata -> workspace model -> gates -> report -> render
 - `src/workspace.rs` reads `cargo metadata --no-deps` and builds the model.
 - `src/gates.rs` computes the gate outcomes.
 - `src/report.rs` holds the report shape.
-- `src/render/` writes the human, JSON and SARIF output.
+- `src/render/` writes the human, JSON and SARIF output, also for `mutants`.
 - `src/error.rs` holds the CLI errors and their codes.
 - `src/parse.rs` holds the bounded parse. Each parse goes through this module.
 - `src/mutation/` holds the `mutants` command. `src/mutation/mod.rs` lists its

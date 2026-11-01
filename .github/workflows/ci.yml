@@ -73,6 +73,9 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-rust
+        with:
+          # The `mutation` tests build a coverage map with these tools.
+          components: llvm-tools
       - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           tool: cargo-nextest

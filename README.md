@@ -136,6 +136,10 @@ check a result. The selection changes a status in only two ways:
 
 Another difference is a bug.
 
+The score leaves out `no_coverage`, so the first change can raise the score: a
+mutant that no test reaches no longer counts as a survivor. Read the score together
+with the `no_coverage` count.
+
 #### Doctests
 
 Doctests have no coverage data on stable Rust, because each doctest is a separate

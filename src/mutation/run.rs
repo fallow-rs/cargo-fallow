@@ -71,6 +71,10 @@ pub struct Options {
     pub doctests: bool,
     /// True when the schema operators run through rebuilds, with no schema build.
     pub no_schema: bool,
+    /// False when each mutant runs each test, with no coverage build.
+    pub selection: bool,
+    /// False when the run does not read or write its cache folder.
+    pub cache: bool,
     /// True when the command compiles and runs the baselines, and runs no mutant.
     pub no_run: bool,
     /// True when the temporary work folder stays after the run.
@@ -111,7 +115,8 @@ fn run_in(
     start: Instant,
 ) -> Result<Report, CliError> {
     let guard = start_guard(options, dirs)?;
-    prepare_copies(workspace.root.as_std_path(), dirs, &guard)
+    let target_dir = workspace.target_dir.as_std_path();
+    prepare_copies(workspace.root.as_std_path(), target_dir, dirs, &guard)
         .map_err(|err| failure("copy the source tree", &err))?;
     let collected = collect(&dirs.scratch, &target_roots(member));
     let engine = Engine {
@@ -121,6 +126,8 @@ fn run_in(
         package_dir: package_folder(member),
         files: &collected.files,
         start,
+        target_dir: target_dir.to_path_buf(),
+        package: member.name.clone(),
     };
     let (rows, stages) = engine.run()?;
     let summary = Summary::of(&rows);
@@ -135,6 +142,7 @@ fn run_in(
         schema: stages.schema,
         rebuild: stages.rebuild,
         gaps: gaps_of(&collected, stages.doctests),
+        selection: stages.selection,
         guard: GuardInfo {
             enabled: options.memory_guard,
             memory_limit_mib: options.memory_limit_mib,

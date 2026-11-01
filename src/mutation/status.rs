@@ -3,10 +3,10 @@
 //! The set is the same as in the `fallow mutation` command of the JavaScript
 //! tool, and the retry rules follow its design.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// The status of one mutant.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Status {
     /// A test failed with the mutant.
@@ -45,7 +45,7 @@ impl Status {
 }
 
 /// How the engine runs a mutant.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Tier {
     /// In one build with all other schema mutants, selected by a runtime switch.

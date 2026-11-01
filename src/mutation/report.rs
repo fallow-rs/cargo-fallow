@@ -43,6 +43,14 @@ pub struct MutantRow {
     pub under_cfg: bool,
     /// The wall time of the runs, in milliseconds.
     pub duration_ms: u64,
+    /// The nextest tests that gave a result with this mutant, over all runs.
+    pub tests_run: u64,
+    /// The doctests that gave a result with this mutant, over all runs.
+    pub doctests_run: u64,
+    /// True when the coverage map has no data on the lines of this mutant, so the
+    /// mutant ran each test.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub no_line_data: bool,
 }
 
 /// The count of each status.
@@ -245,6 +253,42 @@ pub struct Gaps {
     pub doctests: bool,
 }
 
+/// Where the coverage map of a run comes from.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MapSource {
+    /// The run has no map, so each mutant runs each test.
+    #[default]
+    None,
+    /// The run built the map.
+    Built,
+    /// The run read the map from the cache.
+    Cached,
+}
+
+/// The test selection part of the report.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct SelectionInfo {
+    /// True when a coverage map selects the tests of each mutant.
+    pub enabled: bool,
+    /// Where the map comes from.
+    pub map: MapSource,
+    /// The time to build the map, in milliseconds. A cached map has 0.
+    pub map_ms: u64,
+    /// The tests with data in the map.
+    pub tests_mapped: usize,
+    /// The tests with no usable data. Each mutant runs these tests.
+    pub tests_unmapped: Vec<String>,
+    /// The mutants with no coverage data on their lines, so they ran each test.
+    pub mutants_without_line_data: usize,
+    /// The mutants that the journal gave. These mutants did not run again.
+    pub resumed: usize,
+    /// The sum of `tests_run` over the mutants.
+    pub tests_run: u64,
+    /// The sum of `doctests_run` over the mutants.
+    pub doctests_run: u64,
+}
+
 /// The guard part of the report.
 #[derive(Debug, Clone, Copy, Serialize)]
 pub struct GuardInfo {
@@ -293,6 +337,8 @@ pub struct Report {
     pub rebuild: RebuildInfo,
     /// What the run does not cover.
     pub gaps: Gaps,
+    /// The test selection.
+    pub selection: SelectionInfo,
     /// The memory guard.
     pub guard: GuardInfo,
     /// Each mutant, by tier, file and offset.
@@ -332,6 +378,24 @@ pub fn human(report: &Report) -> String {
         let _ = writeln!(out, "the run stopped early: {text}");
     }
     let _ = writeln!(out, "memory guard kills: {}", report.guard.kills);
+    let selection = &report.selection;
+    if selection.enabled {
+        let _ = writeln!(
+            out,
+            "test selection: {} tests in the map, {} with no data, {} test runs, {} doctest runs",
+            selection.tests_mapped,
+            selection.tests_unmapped.len(),
+            selection.tests_run,
+            selection.doctests_run
+        );
+    }
+    if selection.resumed > 0 {
+        let _ = writeln!(
+            out,
+            "resumed: {} mutants came from the journal",
+            selection.resumed
+        );
+    }
     for (status, title) in [
         (Status::Survived, "survived"),
         (Status::Flaky, "flaky"),

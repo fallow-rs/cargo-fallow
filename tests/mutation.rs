@@ -185,8 +185,23 @@ fn the_source_tree_stays_untouched_after_a_run() {
         fs::read_to_string(source.join("src/lib.rs")).expect("read"),
         CHECK
     );
-    assert!(!source.join("target").exists());
+    // Only the cache folder of the run is in the target folder.
+    let entries: Vec<_> = fs::read_dir(source.join("target"))
+        .expect("the target folder")
+        .map(|entry| entry.expect("an entry").file_name())
+        .collect();
+    assert_eq!(entries, ["fallow-mutation"]);
     assert!(!source.join("Cargo.lock").exists());
+}
+
+#[test]
+fn no_cache_writes_nothing_next_to_the_source() {
+    let run = run(
+        &[("src/lib.rs", CHECK)],
+        &["--tier", "schema", "--no-cache"],
+    );
+    assert_eq!(run.code, Some(0), "{}", run.stderr);
+    assert!(!run.source.path().join("target").exists());
 }
 
 const ARITHMETIC: &str = r#"
@@ -215,6 +230,7 @@ mod tests {
     fn add_works() {
         assert_eq!(super::add(2, 1), 3);
         assert_eq!(super::label(1), 10);
+        let _ = super::join(String::new());
     }
 }
 "#;
@@ -241,7 +257,7 @@ fn rebuild_mutants_run_in_their_own_tier() {
     let arms = run.with_operator("deleted-match-arm");
     assert_eq!(arms.len(), 2, "{report}");
     assert_eq!(arms[0]["status"], "killed", "{report}");
-    assert_eq!(arms[1]["status"], "survived", "{report}");
+    assert_eq!(arms[1]["status"], "no_coverage", "{report}");
     let returns = run.with_operator("return-value");
     assert!(!returns.is_empty(), "{report}");
     assert!(returns.iter().any(|m| m["status"] == "killed"), "{report}");
@@ -651,6 +667,14 @@ fn a_doctest_can_kill_a_mutant() {
     );
 }
 
+/// A run with no selection and no doctests, where each test runs for each mutant.
+fn run_plain_order(lib: &str) -> Run {
+    run(
+        &[("src/lib.rs", lib)],
+        &["--tier", "schema", "--no-doctests", "--no-selection"],
+    )
+}
+
 #[test]
 fn doctests_can_stay_out() {
     let lib = "/// Doc.\n///\n/// ```\n/// assert!(fixture::f(1));\n/// assert!(!fixture::f(2));\n/// ```\npub fn f(x: u8) -> bool {\n    x == 1\n}\n\n#[test]\nfn other() {}\n";
@@ -658,6 +682,10 @@ fn doctests_can_stay_out() {
         &[("src/lib.rs", lib)],
         &["--tier", "schema", "--no-doctests"],
     );
+    let mutant = run.find("!=");
+    assert_eq!(mutant["status"], "no_coverage", "{}", run.report);
+    assert_eq!(mutant["doctests_run"], 0, "{mutant}");
+    let run = run_plain_order(lib);
     assert_eq!(run.find("!=")["status"], "survived", "{}", run.report);
 }
 
@@ -791,7 +819,33 @@ fn human_output_lists_the_survivors() {
     assert!(stdout.contains("1 killed"), "{stdout}");
     assert!(stdout.contains("1 survived"), "{stdout}");
     assert!(stdout.contains("score 50.0%"), "{stdout}");
+    assert!(
+        stdout.contains("test selection: 1 tests in the map"),
+        "{stdout}"
+    );
     assert!(stdout.contains("src/lib.rs:9"), "{stdout}");
+}
+
+#[test]
+fn a_package_name_with_a_dash_gets_its_tests_selected() {
+    let source = tempfile::tempdir().expect("create a temporary directory");
+    let manifest = MANIFEST.replace("fixture", "my-crate");
+    fs::create_dir(source.path().join("src")).expect("create a folder");
+    fs::write(source.path().join("Cargo.toml"), manifest).expect("write the manifest");
+    fs::write(source.path().join("src/lib.rs"), TWO_FUNCTIONS).expect("write a file");
+    let (report, stderr, code) = run_in(
+        source.path(),
+        &["--tier", "schema", "--no-retry", "--no-cache"],
+        None,
+    );
+    assert_eq!(code, Some(0), "{stderr}");
+    assert_eq!(report["selection"]["tests_mapped"], 2, "{report}");
+    for mutant in report["mutants"].as_array().expect("the mutants") {
+        if mutant["operator"] == "relational-operator" {
+            assert_eq!(mutant["status"], "survived", "{report}");
+            assert_eq!(mutant["tests_run"], 1, "{mutant}");
+        }
+    }
 }
 
 #[test]
@@ -878,4 +932,323 @@ mod tests {
         );
         thread::sleep(Duration::from_millis(100));
     }
+}
+
+/// Runs the command in a source folder that the caller keeps, so that a second
+/// run can read the cache of the first one.
+fn run_in(source: &Path, flags: &[&str], rustc: Option<&Path>) -> (Value, String, Option<i32>) {
+    let _one_run = ONE_RUN.lock().unwrap_or_else(PoisonError::into_inner);
+    let work = tempfile::tempdir().expect("create a temporary directory");
+    let mut command = Command::cargo_bin("cargo-fallow").expect("the binary exists");
+    if let Some(rustc) = rustc {
+        command.env("RUSTC", rustc);
+    }
+    let output = command
+        .env("MBX_DISABLE", "1")
+        .args(["mutation", "--format", "json", "--jobs", "2"])
+        .arg("--manifest-path")
+        .arg(source.join("Cargo.toml"))
+        .arg("--work-dir")
+        .arg(work.path().join("run"))
+        .args(flags)
+        .timeout(Duration::from_secs(280))
+        .output()
+        .expect("the binary runs");
+    (
+        serde_json::from_slice(&output.stdout).unwrap_or(Value::Null),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+        output.status.code(),
+    )
+}
+
+const TWO_FUNCTIONS: &str = r"
+pub fn first(a: u8) -> bool {
+    a == 1
+}
+
+pub fn second(a: u8) -> bool {
+    a == 2
+}
+
+#[test]
+fn first_runs() {
+    let _ = first(1);
+}
+
+#[test]
+fn second_runs() {
+    let _ = second(1);
+}
+";
+
+#[test]
+fn a_mutant_runs_only_the_tests_that_execute_its_line() {
+    let flags = ["--tier", "schema", "--no-retry"];
+    let selected = run(&[("src/lib.rs", TWO_FUNCTIONS)], &flags);
+    assert_eq!(selected.code, Some(0), "{}", selected.stderr);
+    assert_eq!(selected.report["selection"]["enabled"], true);
+    assert_eq!(selected.report["selection"]["map"], "built");
+    assert_eq!(selected.report["selection"]["tests_mapped"], 2);
+    for mutant in selected.with_operator("relational-operator") {
+        assert_eq!(mutant["status"], "survived", "{}", selected.report);
+        assert_eq!(mutant["tests_run"], 1, "{mutant}");
+    }
+    assert_eq!(selected.report["summary"]["no_coverage"], 0);
+
+    let all = run(
+        &[("src/lib.rs", TWO_FUNCTIONS)],
+        &["--tier", "schema", "--no-retry", "--no-selection"],
+    );
+    assert_eq!(all.report["selection"]["enabled"], false);
+    assert_eq!(all.report["selection"]["map"], "none");
+    for mutant in all.with_operator("relational-operator") {
+        assert_eq!(mutant["status"], "survived", "{}", all.report);
+        assert_eq!(mutant["tests_run"], 2, "{mutant}");
+    }
+}
+
+#[test]
+fn a_mutant_that_no_test_executes_has_no_coverage_and_does_not_run() {
+    let lib = "pub fn tested(a: u8) -> bool {\n    a == 1\n}\n\npub fn untested(a: u8) -> bool {\n    a == 2\n}\n\n#[test]\nfn tested_works() {\n    assert!(tested(1));\n}\n";
+    let run = run(&[("src/lib.rs", lib)], &["--tier", "schema", "--no-retry"]);
+    assert_eq!(run.code, Some(0), "{}", run.stderr);
+    let mutant = run
+        .mutants()
+        .iter()
+        .find(|mutant| mutant["line"] == 6 && mutant["replacement"] == "!=")
+        .expect("the mutant of `untested`");
+    assert_eq!(mutant["status"], "no_coverage", "{}", run.report);
+    assert_eq!(mutant["tests_run"], 0, "{mutant}");
+    assert_eq!(mutant["doctests_run"], 0, "{mutant}");
+    assert_eq!(run.find("!=")["status"], "killed", "{}", run.report);
+}
+
+/// A build costs time, so a mutant that no test executes must not reach a build.
+/// A `compile_error` here shows that the mutant reached a build.
+#[test]
+fn a_rebuild_mutant_that_no_test_executes_does_not_build() {
+    let lib = "pub fn untested(a: u32) -> String {\n    let _ = a;\n    String::new()\n}\n\n#[test]\nfn other() {}\n";
+    let run = run(&[("src/lib.rs", lib)], &["--tier", "rebuild", "--no-retry"]);
+    assert_eq!(run.code, Some(0), "{}", run.stderr);
+    assert!(!run.mutants().is_empty(), "{}", run.report);
+    for mutant in run.mutants() {
+        assert_eq!(mutant["status"], "no_coverage", "{mutant}");
+        assert_eq!(mutant["tests_run"], 0, "{mutant}");
+    }
+}
+
+#[test]
+fn the_fastest_test_runs_first() {
+    let lib = "pub fn check(a: u8) -> bool {\n    a == 1\n}\n\n#[test]\nfn a_slow() {\n    std::thread::sleep(std::time::Duration::from_millis(400));\n    assert!(check(1));\n}\n\n#[test]\nfn z_fast() {\n    assert!(check(1));\n}\n";
+    let flags = ["--tier", "schema", "--no-retry"];
+    let selected = run(&[("src/lib.rs", lib)], &flags);
+    let mutant = selected.find("!=");
+    assert_eq!(mutant["status"], "killed", "{}", selected.report);
+    assert_eq!(mutant["killed_by"], "fixture::fixture z_fast", "{mutant}");
+    assert_eq!(mutant["tests_run"], 1, "{mutant}");
+
+    // The plain order of nextest starts with the slow test, so the check above
+    // shows the effect of the order.
+    let plain = run(
+        &[("src/lib.rs", lib)],
+        &["--tier", "schema", "--no-retry", "--no-selection"],
+    );
+    let mutant = plain.find("!=");
+    assert_eq!(mutant["killed_by"], "fixture::fixture a_slow", "{mutant}");
+}
+
+/// With the mutant, the slow test fails and the fast test never ends. The order
+/// decides which one the run sees first. Both results count as detected, so the
+/// score is the same. The README documents this one difference.
+#[test]
+fn the_order_decides_between_a_kill_and_a_timeout() {
+    let lib = "pub fn check(a: u8) -> bool {\n    a == 1\n}\n\n#[test]\nfn a_fails() {\n    std::thread::sleep(std::time::Duration::from_millis(300));\n    assert!(check(1));\n}\n\n#[test]\nfn z_hangs() {\n    while !check(1) {\n        std::thread::sleep(std::time::Duration::from_millis(50));\n    }\n}\n";
+    let flags = ["--tier", "schema", "--no-retry", "--timeout", "3"];
+    let selected = run(&[("src/lib.rs", lib)], &flags);
+    assert_eq!(
+        selected.find("!=")["status"],
+        "timeout",
+        "{}",
+        selected.report
+    );
+    let plain = run(
+        &[("src/lib.rs", lib)],
+        &[
+            "--tier",
+            "schema",
+            "--no-retry",
+            "--timeout",
+            "3",
+            "--no-selection",
+        ],
+    );
+    assert_eq!(plain.find("!=")["status"], "killed", "{}", plain.report);
+    assert_eq!(
+        selected.report["summary"]["score"],
+        plain.report["summary"]["score"]
+    );
+}
+
+/// The compiler evaluates the constant, so no test process executes the body of
+/// the `const fn`, and the line has a count of 0. A test can still see the change.
+#[test]
+fn a_mutant_in_a_const_fn_runs_each_test() {
+    let lib = "const fn double(a: u8) -> u8 {\n    a * 2\n}\n\nconst FOUR: u8 = double(2);\n\npub fn four() -> u8 {\n    FOUR\n}\n\n#[test]\nfn four_works() {\n    assert_eq!(four(), 4);\n}\n";
+    let run = run(&[("src/lib.rs", lib)], &["--tier", "rebuild", "--no-retry"]);
+    assert_eq!(run.code, Some(0), "{}", run.stderr);
+    let mutant = run.find("/");
+    assert_eq!(mutant["status"], "killed", "{}", run.report);
+    assert_eq!(mutant["no_line_data"], true, "{mutant}");
+}
+
+#[test]
+fn a_mutant_in_a_binary_gets_the_coverage_of_its_child_process() {
+    let main = "fn main() {\n    let args = std::env::args().count();\n    if args == 1 {\n        print!(\"one\");\n    }\n}\n";
+    let test = "#[test]\nfn prints() {\n    let out = std::process::Command::new(env!(\"CARGO_BIN_EXE_fixture\")).output().unwrap();\n    assert_eq!(out.stdout, b\"one\");\n}\n";
+    let run = run(
+        &[("src/main.rs", main), ("tests/cli.rs", test)],
+        &["--tier", "schema", "--no-retry"],
+    );
+    assert_eq!(run.code, Some(0), "{}", run.stderr);
+    assert_eq!(run.find("!=")["status"], "killed", "{}", run.report);
+}
+
+/// The process ends through `_exit`, so it writes no profile. The test still
+/// passes, so a map that reads this as "reaches nothing" loses a kill.
+#[test]
+fn a_test_that_writes_no_profile_runs_for_each_mutant() {
+    let lib = "pub fn check(a: u8) -> bool {\n    a == 1\n}\n\nextern \"C\" {\n    fn _exit(code: i32) -> !;\n}\n\n#[test]\nfn no_profile() {\n    assert!(check(1));\n    unsafe { _exit(0) }\n}\n";
+    let run = run(&[("src/lib.rs", lib)], &["--tier", "schema", "--no-retry"]);
+    assert_eq!(run.code, Some(0), "{}", run.stderr);
+    assert_eq!(run.find("!=")["status"], "killed", "{}", run.report);
+    assert_eq!(run.report["selection"]["tests_mapped"], 0, "{}", run.report);
+    assert_eq!(
+        run.report["selection"]["tests_unmapped"],
+        serde_json::json!(["fixture::fixture$no_profile"]),
+        "{}",
+        run.report
+    );
+}
+
+#[test]
+fn a_doctest_still_decides_a_mutant_with_no_test_coverage() {
+    let lib = "/// Doc.\n///\n/// ```\n/// assert!(fixture::f(1));\n/// assert!(!fixture::f(2));\n/// ```\npub fn f(x: u8) -> bool {\n    x == 1\n}\n\n/// Doc.\n///\n/// ```\n/// let _ = fixture::g(1);\n/// ```\npub fn g(x: u8) -> bool {\n    x == 3\n}\n\n#[test]\nfn other() {}\n";
+    let run = run(&[("src/lib.rs", lib)], &["--tier", "schema"]);
+    assert_eq!(run.code, Some(0), "{}", run.stderr);
+    let killed = run
+        .mutants()
+        .iter()
+        .find(|mutant| mutant["line"] == 8 && mutant["replacement"] == "!=")
+        .expect("the mutant of `f`");
+    assert_eq!(killed["status"], "killed", "{}", run.report);
+    assert_eq!(killed["tests_run"], 0, "{killed}");
+    assert!(killed["doctests_run"].as_u64() > Some(0), "{killed}");
+    let unseen = run
+        .mutants()
+        .iter()
+        .find(|mutant| mutant["line"] == 17 && mutant["replacement"] == "!=")
+        .expect("the mutant of `g`");
+    assert_eq!(unseen["status"], "no_coverage", "{}", run.report);
+    assert!(
+        unseen["reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("doctests")),
+        "{unseen}"
+    );
+    assert!(unseen["doctests_run"].as_u64() > Some(0), "{unseen}");
+}
+
+#[test]
+fn a_second_run_reads_the_map_until_a_source_changes() {
+    let source = tempfile::tempdir().expect("create a temporary directory");
+    write_crate(source.path(), &[("src/lib.rs", TWO_FUNCTIONS)]);
+    let flags = ["--tier", "schema", "--no-retry"];
+    let (first, _, _) = run_in(source.path(), &flags, None);
+    assert_eq!(first["selection"]["map"], "built", "{first}");
+    let (second, _, _) = run_in(source.path(), &flags, None);
+    assert_eq!(second["selection"]["map"], "cached", "{second}");
+    assert_eq!(second["summary"], first["summary"]);
+    let changed =
+        format!("{TWO_FUNCTIONS}\n#[test]\nfn third_runs() {{\n    let _ = first(2);\n}}\n");
+    fs::write(source.path().join("src/lib.rs"), changed).expect("write the file");
+    let (third, _, _) = run_in(source.path(), &flags, None);
+    assert_eq!(third["selection"]["map"], "built", "{third}");
+    assert_eq!(third["selection"]["tests_mapped"], 3, "{third}");
+    let (uncached, _, _) = run_in(
+        source.path(),
+        &["--tier", "schema", "--no-retry", "--no-cache"],
+        None,
+    );
+    assert_eq!(uncached["selection"]["map"], "built", "{uncached}");
+}
+
+#[test]
+fn a_stopped_run_resumes_from_its_journal() {
+    let source = tempfile::tempdir().expect("create a temporary directory");
+    write_crate(source.path(), &[("src/lib.rs", TWO_FUNCTIONS)]);
+    let flags = ["--tier", "schema", "--no-retry"];
+    let (first, _, _) = run_in(
+        source.path(),
+        &["--tier", "schema", "--no-retry", "--max-mutants", "1"],
+        None,
+    );
+    assert_eq!(
+        first["summary"]["pending"].as_u64(),
+        first["summary"]["total"].as_u64().map(|n| n - 1),
+        "{first}"
+    );
+    assert_eq!(first["selection"]["resumed"], 0, "{first}");
+    let (second, _, _) = run_in(source.path(), &flags, None);
+    assert_eq!(second["summary"]["pending"], 0, "{second}");
+    assert_eq!(second["selection"]["resumed"], 1, "{second}");
+    // Each mutant has a result now, so the journal is gone.
+    let (third, _, _) = run_in(source.path(), &flags, None);
+    assert_eq!(third["selection"]["resumed"], 0, "{third}");
+}
+
+#[test]
+fn another_option_does_not_resume_a_journal() {
+    let source = tempfile::tempdir().expect("create a temporary directory");
+    write_crate(source.path(), &[("src/lib.rs", TWO_FUNCTIONS)]);
+    let _ = run_in(
+        source.path(),
+        &["--tier", "schema", "--no-retry", "--max-mutants", "1"],
+        None,
+    );
+    let (other, _, _) = run_in(source.path(), &["--tier", "schema"], None);
+    assert_eq!(other["selection"]["resumed"], 0, "{other}");
+    assert_eq!(other["summary"]["pending"], 0, "{other}");
+}
+
+#[test]
+fn missing_llvm_tools_stop_the_run_with_a_clear_error() {
+    let source = tempfile::tempdir().expect("create a temporary directory");
+    write_crate(source.path(), &[("src/lib.rs", TWO_FUNCTIONS)]);
+    let empty = source.path().join("empty-sysroot");
+    fs::create_dir(&empty).expect("create a folder");
+    let rustc = source.path().join("fake-rustc");
+    let script = format!(
+        "#!/bin/sh\nif [ \"$1\" = --print ] && [ \"$2\" = sysroot ]; then\n  echo {}\n  exit 0\nfi\nexec rustc \"$@\"\n",
+        empty.display()
+    );
+    fs::write(&rustc, script).expect("write the script");
+    let chmod = Process::new("chmod")
+        .arg("+x")
+        .arg(&rustc)
+        .status()
+        .expect("chmod runs");
+    assert!(chmod.success());
+    let (report, stderr, code) = run_in(source.path(), &["--tier", "schema"], Some(&rustc));
+    assert_eq!(code, Some(2), "{report} {stderr}");
+    let message = report["message"].as_str().unwrap_or_default();
+    assert!(message.contains("llvm-profdata"), "{report}");
+    let help = report["help"].as_str().unwrap_or_default();
+    assert!(help.contains("rustup component add llvm-tools"), "{report}");
+    assert!(help.contains("--no-selection"), "{report}");
+    let (report, _, code) = run_in(
+        source.path(),
+        &["--tier", "schema", "--no-selection"],
+        Some(&rustc),
+    );
+    assert_eq!(code, Some(0), "{report}");
 }

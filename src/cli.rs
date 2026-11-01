@@ -147,6 +147,13 @@ struct MutationArgs {
     /// slow, and it checks that the switch behaves as a plain edit of the source.
     #[arg(long)]
     no_schema: bool,
+    /// Run each test for each mutant, with no coverage build. This is slow, and it
+    /// checks that the selection does not change a verdict.
+    #[arg(long)]
+    no_selection: bool,
+    /// Do not read or write the coverage map and the journal of the run.
+    #[arg(long)]
+    no_cache: bool,
     /// Compile and run the baselines, and run no mutant.
     #[arg(long)]
     no_run: bool,
@@ -179,6 +186,8 @@ impl From<MutationArgs> for crate::mutation::run::Options {
             retry: !args.no_retry,
             doctests: !args.no_doctests,
             no_schema: args.no_schema,
+            selection: !args.no_selection,
+            cache: !args.no_cache,
             no_run: args.no_run,
             keep_work_dir: args.keep_work_dir,
             format: args.format,

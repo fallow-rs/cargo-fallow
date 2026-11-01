@@ -15,7 +15,7 @@ use ra_ap_syntax::{AstNode, SourceFile, SyntaxKind, SyntaxNode, SyntaxToken};
 
 use crate::mutation::id::{IdInput, mutant_id};
 use crate::mutation::schema::PROBE_PREFIX;
-use crate::mutation::sites::{OffsetMap, attr_context, range_of};
+use crate::mutation::sites::{OffsetMap, attr_context, in_constant_context, range_of};
 use crate::parse::{Edition, ParseOutcome, with_parsed};
 
 /// Where a probe build puts its undefined name.
@@ -40,6 +40,8 @@ pub struct Rewrite {
     pub replacement: String,
     /// True when a `cfg` attribute other than `cfg(test)` is on an enclosing item.
     pub under_cfg: bool,
+    /// True when the mutant is in a constant context.
+    pub constant: bool,
     /// The place of the probe.
     pub probe: ProbeSpot,
 }
@@ -66,6 +68,7 @@ pub fn find_rewrites(
             text,
             file_key,
             occurrences: BTreeMap::new(),
+            constant: false,
             found: FileRewrites::default(),
         };
         walk.file(file);
@@ -79,6 +82,7 @@ struct Walk<'a> {
     text: &'a str,
     file_key: &'a str,
     occurrences: BTreeMap<(String, &'static str), u32>,
+    constant: bool,
     found: FileRewrites,
 }
 
@@ -98,6 +102,7 @@ impl Walk<'_> {
             let Some(under_cfg) = allowed(&node) else {
                 continue;
             };
+            self.constant = in_constant_context(&node);
             if let Some(binary) = ast::BinExpr::cast(node.clone()) {
                 self.binary(&binary, under_cfg);
             } else if let Some(prefix) = ast::PrefixExpr::cast(node.clone()) {
@@ -256,6 +261,7 @@ impl Walk<'_> {
             range: map(part.range),
             replacement: part.replacement,
             under_cfg: part.under_cfg,
+            constant: self.constant,
             probe,
         });
     }
@@ -603,6 +609,24 @@ mod tests {
                 only_operator(source, "arithmetic-operator").is_empty(),
                 "{source}"
             );
+        }
+    }
+
+    #[test]
+    fn a_constant_context_is_marked() {
+        let source = "const fn f(a: u8) -> u8 { a + 1 }\nfn g(a: u8) -> u8 { a + 1 }\nconst X: u8 = 1 + 2;\n";
+        let flags: Vec<(usize, bool)> = found(source)
+            .rewrites
+            .iter()
+            .filter(|rewrite| rewrite.operator == "arithmetic-operator")
+            .map(|rewrite| (rewrite.range.start, rewrite.constant))
+            .collect();
+        assert_eq!(flags.len(), 3, "{flags:?}");
+        let line_two = source.find('\n').unwrap_or(0);
+        let line_three = source.rfind("const").unwrap_or(0);
+        for (start, constant) in flags {
+            let in_g = start > line_two && start < line_three;
+            assert_eq!(constant, !in_g, "{start}");
         }
     }
 

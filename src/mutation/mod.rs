@@ -20,14 +20,20 @@
 //! - [`testrun`] runs nextest and the doctests and reads the results.
 //! - [`guard`], [`probe`] and [`process`] keep the machine safe: a mutant runs
 //!   only under a time limit and a memory limit.
+//! - [`coverage`] builds the map from each test to its lines, [`selection`] picks
+//!   the tests of one mutant, and [`cache`] and [`journal`] keep the map and the
+//!   results for the next run.
 //! - [`status`] holds the status set and the retry rules.
 //! - [`plan`] lists the mutants, [`engine`] runs the stages, [`workdir`] holds the
 //!   copies, [`run`] is the entry point, and [`report`] holds the output.
 
+mod cache;
+mod coverage;
 mod engine;
 mod files;
 pub mod guard;
 mod id;
+mod journal;
 mod plan;
 mod probe;
 mod process;
@@ -36,6 +42,7 @@ pub mod report;
 mod rewrites;
 pub mod run;
 mod schema;
+mod selection;
 mod sites;
 mod status;
 mod testrun;

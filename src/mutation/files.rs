@@ -216,26 +216,30 @@ fn list_rust_files(workspace: &Path, folder: &Path, into: &mut BTreeSet<String>)
     }
 }
 
-/// Copies a source tree. The copy leaves out each `.git` folder and the `target`
-/// folder at the root, and it copies a symbolic link as a link.
-pub fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
+/// Copies a source tree. The copy leaves out each `.git` folder, the `target`
+/// folder at the root and the folder `skip`, and it copies a symbolic link as a
+/// link. `skip` is the real target folder, which can have another name.
+pub fn copy_tree(from: &Path, to: &Path, skip: Option<&Path>) -> io::Result<()> {
     fs::create_dir_all(to)?;
-    copy_entries(from, to, true)
+    copy_entries(from, to, true, skip)
 }
 
-fn copy_entries(from: &Path, to: &Path, at_root: bool) -> io::Result<()> {
+fn copy_entries(from: &Path, to: &Path, at_root: bool, skip: Option<&Path>) -> io::Result<()> {
     for entry in fs::read_dir(from)? {
         let entry = entry?;
         let name = entry.file_name();
         let kind = entry.file_type()?;
-        let skip = kind.is_dir() && (name == ".git" || (at_root && name == "target"));
-        if skip {
+        let (source, destination) = (entry.path(), to.join(&name));
+        let left_out = kind.is_dir()
+            && (name == ".git"
+                || (at_root && name == "target")
+                || skip.is_some_and(|skip| skip == source));
+        if left_out {
             continue;
         }
-        let (source, destination) = (entry.path(), to.join(&name));
         if kind.is_dir() {
             fs::create_dir(&destination)?;
-            copy_entries(&source, &destination, false)?;
+            copy_entries(&source, &destination, false, skip)?;
         } else if kind.is_symlink() {
             copy_link(&source, &destination)?;
         } else {
@@ -296,7 +300,7 @@ mod tests {
             panic!("write a file");
         };
         let to = dir.path().join("to");
-        let Ok(()) = copy_tree(&from, &to) else {
+        let Ok(()) = copy_tree(&from, &to, None) else {
             panic!("the copy works");
         };
         assert!(to.join("src/target/keep.rs").is_file());

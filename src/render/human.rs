@@ -78,6 +78,7 @@ mod tests {
         );
         let workspace = Workspace {
             root: "/w".into(),
+            target_dir: "/w/target".into(),
             members: Vec::new(),
         };
         let text = render(&CheckReport::new(workspace, outcomes));

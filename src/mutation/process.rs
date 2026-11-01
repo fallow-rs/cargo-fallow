@@ -5,6 +5,7 @@
 //! a place under the [`Guard`]. nextest puts each test in its own process group,
 //! so a stop walks the process tree and does not signal one group.
 
+use std::ffi::OsStr;
 use std::fs::File;
 use std::io;
 use std::path::Path;
@@ -39,6 +40,13 @@ pub enum Exit {
 /// starts a lint, for example an unused variable. In a crate with
 /// `deny(warnings)` that says nothing about the mutant, so lints stay warnings.
 pub fn cargo(dir: &Path, target_dir: &Path, jobs: usize) -> Command {
+    cargo_with_flags(dir, target_dir, jobs, "")
+}
+
+/// The same command with more compiler flags for each crate of the build.
+pub fn cargo_with_flags(dir: &Path, target_dir: &Path, jobs: usize, extra: &str) -> Command {
+    let flags = format!("{CAP_LINTS} {extra}");
+    let flags = flags.trim_end();
     let mut command = new_command("cargo");
     command
         .current_dir(dir)
@@ -49,14 +57,14 @@ pub fn cargo(dir: &Path, target_dir: &Path, jobs: usize) -> Command {
     // RUSTFLAGS replaces the flags of the Cargo config, so it gets an addition.
     // Without it, the config variable joins the flags of the Cargo config.
     match std::env::var("RUSTFLAGS") {
-        Ok(flags) => command.env("RUSTFLAGS", format!("{flags} {CAP_LINTS}")),
-        Err(_) => command.env("CARGO_BUILD_RUSTFLAGS", CAP_LINTS),
+        Ok(own) => command.env("RUSTFLAGS", format!("{own} {flags}")),
+        Err(_) => command.env("CARGO_BUILD_RUSTFLAGS", flags),
     };
     command
 }
 
 /// The one place in the mutation module that creates a process.
-pub fn new_command(program: &str) -> Command {
+pub fn new_command(program: impl AsRef<OsStr>) -> Command {
     #[expect(
         clippy::disallowed_methods,
         reason = "the mutation runner spawns cargo, reads memory data and stops process trees"

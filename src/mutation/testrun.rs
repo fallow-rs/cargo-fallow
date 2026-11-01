@@ -5,15 +5,18 @@
 //! because nextest does not run them.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::OsString;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
+use crate::mutation::coverage::Objects;
 use crate::mutation::guard::{Guard, Scope};
-use crate::mutation::process::{Exit, cargo, run_to_files};
+use crate::mutation::process::{Exit, cargo_with_flags, run_to_files};
 use crate::mutation::status::{Status, Verdict};
 
 /// The exit code of nextest when tests ran and one failed.
@@ -52,6 +55,9 @@ pub struct Suite {
     /// The failed tests, in the order of their results.
     #[serde(skip)]
     pub failed: Vec<String>,
+    /// The time of each passed test in milliseconds, when the runner reports it.
+    #[serde(skip)]
+    pub times: BTreeMap<String, u64>,
 }
 
 impl Suite {
@@ -64,6 +70,7 @@ impl Suite {
             elapsed_ms: 0,
             passes: BTreeMap::new(),
             failed: Vec::new(),
+            times: BTreeMap::new(),
         }
     }
 
@@ -114,6 +121,21 @@ pub struct TestTree<'a> {
     pub build_jobs: usize,
     /// The memory guard.
     pub guard: &'a Guard,
+    /// More compiler flags for each crate of the build.
+    pub rustflags: &'a str,
+}
+
+impl TestTree<'_> {
+    /// A cargo command for this tree. An instrumented build script writes a
+    /// profile, so the command sends each profile to the log folder.
+    fn cargo(&self) -> Command {
+        let mut command =
+            cargo_with_flags(self.dir, self.target_dir, self.build_jobs, self.rustflags);
+        if !self.rustflags.is_empty() {
+            command.env("LLVM_PROFILE_FILE", self.logs.join("build-%p-%m.profraw"));
+        }
+        command
+    }
 }
 
 /// What one test run does.
@@ -131,6 +153,33 @@ pub struct RunSpec {
     pub jobs: usize,
     /// The tests that stay out of the run.
     pub exclude: BTreeSet<String>,
+    /// The filter of the tests to run. With a value, `exclude` has no effect.
+    pub only: Option<String>,
+    /// The value of `LLVM_PROFILE_FILE` for the tests.
+    pub profile_file: Option<PathBuf>,
+    /// A nextest tool config with the order of the tests.
+    pub order: Option<PathBuf>,
+    /// True when the run removes its output files.
+    pub remove_logs: bool,
+}
+
+impl RunSpec {
+    /// A run of each test with `jobs` processes, with no mutant and with the time
+    /// limit of one hour.
+    pub fn new(jobs: usize) -> Self {
+        Self {
+            label: String::new(),
+            mutant: None,
+            limit: Duration::from_hours(1),
+            fail_fast: false,
+            jobs,
+            exclude: BTreeSet::new(),
+            only: None,
+            profile_file: None,
+            order: None,
+            remove_logs: false,
+        }
+    }
 }
 
 /// The files that let nextest run without a call of cargo.
@@ -140,12 +189,73 @@ pub struct BuildMeta {
     cargo: PathBuf,
 }
 
+/// The JSON of `nextest list --list-type binaries-only`.
+#[derive(Deserialize)]
+struct BinaryList {
+    #[serde(rename = "rust-build-meta")]
+    meta: BinaryListMeta,
+    #[serde(rename = "rust-binaries")]
+    binaries: BTreeMap<String, BinaryListEntry>,
+}
+
+#[derive(Deserialize)]
+struct BinaryListMeta {
+    #[serde(rename = "target-directory")]
+    target_directory: PathBuf,
+    #[serde(rename = "non-test-binaries", default)]
+    non_test_binaries: BTreeMap<String, Vec<NonTestBinary>>,
+}
+
+#[derive(Deserialize)]
+struct NonTestBinary {
+    path: PathBuf,
+}
+
+#[derive(Deserialize)]
+struct BinaryListEntry {
+    #[serde(rename = "binary-id")]
+    id: String,
+    #[serde(rename = "binary-name")]
+    name: String,
+    #[serde(rename = "binary-path")]
+    path: PathBuf,
+}
+
+impl BuildMeta {
+    /// Reads the binaries of this build. A path in the list is relative to the
+    /// target folder when it is not absolute.
+    pub fn read_objects(&self) -> io::Result<Objects> {
+        let text = fs::read_to_string(&self.binaries)?;
+        let list: BinaryList = serde_json::from_str(&text)?;
+        let root = &list.meta.target_directory;
+        let mut tests: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
+        for entry in list.binaries.into_values() {
+            let package = entry
+                .id
+                .split_once("::")
+                .map_or(entry.id.as_str(), |(package, _)| package);
+            let suite = format!("{package}::{}", entry.name);
+            tests.entry(suite).or_default().push(root.join(entry.path));
+        }
+        Ok(Objects {
+            tests,
+            non_test: list
+                .meta
+                .non_test_binaries
+                .into_values()
+                .flatten()
+                .map(|binary| root.join(binary.path))
+                .collect(),
+        })
+    }
+}
+
 /// Builds the tests and lists the binaries. Returns the stderr text of a build
 /// that failed.
 pub fn prepare(tree: TestTree<'_>, label: &str) -> io::Result<Result<BuildMeta, String>> {
     let binaries = tree.logs.join(format!("{label}-binaries.json"));
     let err = tree.logs.join(format!("{label}-binaries.err"));
-    let mut command = cargo(tree.dir, tree.target_dir, tree.build_jobs);
+    let mut command = tree.cargo();
     command.args([
         "nextest",
         "list",
@@ -167,7 +277,7 @@ pub fn prepare(tree: TestTree<'_>, label: &str) -> io::Result<Result<BuildMeta, 
     }
     let meta = tree.logs.join(format!("{label}-metadata.json"));
     let err = tree.logs.join(format!("{label}-metadata.err"));
-    let mut command = cargo(tree.dir, tree.target_dir, tree.build_jobs);
+    let mut command = tree.cargo();
     command.args([
         "metadata",
         "--format-version=1",
@@ -190,7 +300,7 @@ pub fn run_nextest(
     meta: &BuildMeta,
     spec: &RunSpec,
 ) -> io::Result<(Exit, Suite)> {
-    let mut command = cargo(tree.dir, tree.target_dir, tree.build_jobs);
+    let mut command = tree.cargo();
     command
         .env("NEXTEST_EXPERIMENTAL_LIBTEST_JSON", "1")
         .args(["nextest", "run", "--no-tests=pass", "--retries=0"])
@@ -209,8 +319,14 @@ pub fn run_nextest(
             "--message-format",
             "libtest-json",
         ]);
-    if let Some(filter) = exclude_filter(&spec.exclude) {
+    if let Some(filter) = spec.only.clone().or_else(|| exclude_filter(&spec.exclude)) {
         command.args(["-E", &filter]);
+    }
+    if let Some(order) = &spec.order {
+        command.arg("--tool-config-file").arg(tool_config(order));
+    }
+    if let Some(profile) = &spec.profile_file {
+        command.env("LLVM_PROFILE_FILE", profile);
     }
     if let Some(mutant) = spec.mutant {
         command.env("FALLOW_MUTANT", format!("{mutant:x}"));
@@ -226,7 +342,7 @@ pub fn run_nextest(
     };
     let mut suite = parse_nextest(&fs::read_to_string(&out)?, status);
     suite.elapsed_ms = elapsed_ms(start);
-    if spec.mutant.is_some() {
+    if spec.remove_logs {
         remove_logs(&[out, err]);
     }
     Ok((exit, suite))
@@ -250,7 +366,64 @@ fn exclude_filter(exclude: &BTreeSet<String>) -> Option<String> {
     Some(format!("not ({})", terms.join(" | ")))
 }
 
-fn escape_filter(text: &str) -> String {
+/// The argument of `--tool-config-file`.
+fn tool_config(path: &Path) -> OsString {
+    let mut value = OsString::from("cargo-fallow:");
+    value.push(path);
+    value
+}
+
+/// A test name of the JSON of nextest: `package::binary$test`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TestName<'a> {
+    /// The package.
+    pub package: &'a str,
+    /// The name of the test binary.
+    pub binary: &'a str,
+    /// The name of the test.
+    pub test: &'a str,
+}
+
+impl<'a> TestName<'a> {
+    /// Reads a name. A package name and a binary name have no `$` and no `:`. A
+    /// custom test harness can use any text as a name. Such a name gets `None`,
+    /// because a filter that nextest refuses stops each run that has the filter.
+    pub fn parse(name: &'a str) -> Option<Self> {
+        let (suite, test) = name.split_once('$')?;
+        let (package, binary) = suite.split_once("::")?;
+        let plain = |c: char| c.is_alphanumeric() || matches!(c, '_' | '-' | ':' | '.');
+        if !name.replacen('$', "", 1).chars().all(plain) {
+            return None;
+        }
+        Some(Self {
+            package,
+            binary,
+            test,
+        })
+    }
+
+    /// The filter of the binary of this test.
+    pub fn binary_filter(&self) -> String {
+        format!(
+            "package(={}) & binary(={})",
+            escape_filter(self.package),
+            escape_filter(self.binary)
+        )
+    }
+
+    /// The filter of this test. A bin target and a test target with one name share
+    /// this filter, and that only runs one more test.
+    pub fn filter(&self) -> String {
+        format!(
+            "{} & test(={})",
+            self.binary_filter(),
+            escape_filter(self.test)
+        )
+    }
+}
+
+/// Escapes a text for a filter of nextest.
+pub fn escape_filter(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {
         if matches!(c, '(' | ')' | ',' | '\\' | '/' | '|' | '&' | ' ') {
@@ -279,6 +452,7 @@ struct NextestLine {
     kind: String,
     event: String,
     name: Option<String>,
+    exec_time: Option<f64>,
 }
 
 fn parse_nextest(stdout: &str, status: SuiteStatus) -> Suite {
@@ -297,13 +471,25 @@ fn parse_nextest(stdout: &str, status: SuiteStatus) -> Suite {
             _ => continue,
         };
         suite.record(&name, outcome);
+        if outcome == Outcome::Pass
+            && let Some(seconds) = parsed.exec_time
+        {
+            suite.times.insert(name, seconds_to_ms(seconds));
+        }
     }
     suite
 }
 
+/// A time from the JSON of nextest. A value that is not a time counts as 0.
+fn seconds_to_ms(seconds: f64) -> u64 {
+    Duration::try_from_secs_f64(seconds).map_or(0, |time| {
+        u64::try_from(time.as_millis()).unwrap_or(u64::MAX)
+    })
+}
+
 /// Runs the doctests of the tree.
 pub fn run_doctests(tree: TestTree<'_>, spec: &RunSpec) -> io::Result<(Exit, Suite)> {
-    let mut command = cargo(tree.dir, tree.target_dir, tree.build_jobs);
+    let mut command = tree.cargo();
     command.args([
         "test",
         "--doc",
@@ -329,7 +515,7 @@ pub fn run_doctests(tree: TestTree<'_>, spec: &RunSpec) -> io::Result<(Exit, Sui
         Exit::Code(_) if suite.pass + suite.fail > 0 => SuiteStatus::Completed,
         Exit::Code(_) => SuiteStatus::DidNotRun,
     };
-    if spec.mutant.is_some() {
+    if spec.remove_logs {
         remove_logs(&[out, err]);
     }
     Ok((
@@ -496,6 +682,49 @@ mod tests {
         assert_eq!((parsed.pass, parsed.fail, parsed.ignored), (1, 1, 1));
         assert_eq!(parsed.passes.get("p::p$a"), Some(&1));
         assert_eq!(parsed.passes.get("p::p$b"), Some(&0));
+        assert_eq!(parsed.times.get("p::p$a"), Some(&100));
+        assert_eq!(parsed.times.get("p::p$b"), None);
+    }
+
+    #[test]
+    fn a_test_name_has_three_parts() {
+        let name = TestName::parse("my-p::my_p$t::a").filter(|name| name.test == "t::a");
+        assert_eq!(
+            name.map(|name| name.filter()).as_deref(),
+            Some("package(=my-p) & binary(=my_p) & test(=t::a)")
+        );
+        assert_eq!(TestName::parse("no-dollar::x"), None);
+        assert_eq!(TestName::parse("no-suite$t"), None);
+        assert_eq!(TestName::parse("p::b$a test (with) text"), None);
+    }
+
+    #[test]
+    fn a_time_that_is_not_a_time_counts_as_zero() {
+        assert_eq!(seconds_to_ms(-1.0), 0);
+        assert_eq!(seconds_to_ms(f64::NAN), 0);
+        assert_eq!(seconds_to_ms(1.5), 1500);
+    }
+
+    #[test]
+    fn the_binary_list_gives_the_objects() {
+        let Ok(dir) = tempfile::tempdir() else {
+            panic!("a temporary directory");
+        };
+        let binaries = dir.path().join("list.json");
+        let text = r#"{"rust-build-meta":{"target-directory":"/t","non-test-binaries":{"p":[{"name":"m","path":"debug/m"}]}},"rust-binaries":{"x":{"binary-id":"p::bin/x","binary-name":"x","binary-path":"/t/debug/deps/x"},"l":{"binary-id":"my-p","binary-name":"my_p","binary-path":"/t/debug/deps/l"}}}"#;
+        let Ok(()) = fs::write(&binaries, text) else {
+            panic!("write the list");
+        };
+        let meta = BuildMeta {
+            binaries,
+            cargo: PathBuf::new(),
+        };
+        let Ok(objects) = meta.read_objects() else {
+            panic!("the list is valid");
+        };
+        assert_eq!(objects.tests["p::x"], [Path::new("/t/debug/deps/x")]);
+        assert_eq!(objects.tests["my-p::my_p"], [Path::new("/t/debug/deps/l")]);
+        assert_eq!(objects.non_test, [Path::new("/t/debug/m")]);
     }
 
     #[test]

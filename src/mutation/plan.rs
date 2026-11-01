@@ -2,6 +2,7 @@
 
 use std::ops::Range;
 
+use crate::mutation::coverage::LineRange;
 use crate::mutation::files::CrateFile;
 use crate::mutation::id::id_text;
 use crate::mutation::report::MutantRow;
@@ -23,6 +24,9 @@ pub struct Planned {
     pub range: Range<usize>,
     /// The new text of the range in a rebuild.
     pub text: String,
+    /// True when the mutant is in a constant context. A coverage map says nothing
+    /// about such code, because the compiler can evaluate it.
+    pub constant: bool,
     /// The row of the report.
     pub row: MutantRow,
 }
@@ -38,6 +42,7 @@ pub fn schema_mutants(files: &[CrateFile]) -> Vec<Planned> {
                     file: index,
                     range: site.range.clone(),
                     text: mutated_text(&file.original, site, mutant),
+                    constant: false,
                     row: row(
                         file,
                         &RowInput {
@@ -73,6 +78,7 @@ fn rebuild_mutant(file: &CrateFile, index: usize, rewrite: &Rewrite) -> Planned 
         file: index,
         range: rewrite.range.clone(),
         text: rewrite.replacement.clone(),
+        constant: rewrite.constant,
         row: row(
             file,
             &RowInput {
@@ -114,6 +120,9 @@ fn row(file: &CrateFile, input: &RowInput<'_>) -> MutantRow {
         removed_from_schema: false,
         under_cfg: file.under_cfg || input.under_cfg,
         duration_ms: 0,
+        tests_run: 0,
+        doctests_run: 0,
+        no_line_data: false,
     }
 }
 
@@ -124,6 +133,14 @@ fn line_and_column(text: &str, offset: usize) -> (usize, usize) {
     let line = before.matches('\n').count() + 1;
     let column = offset - before.rfind('\n').map_or(0, |at| at + 1) + 1;
     (line, column)
+}
+
+/// The first and the last line of a range of the original text.
+pub fn lines_of(text: &str, range: &Range<usize>) -> LineRange {
+    let (first, _) = line_and_column(text, range.start);
+    let (last, _) = line_and_column(text, range.end.saturating_sub(1).max(range.start));
+    let line = |value: usize| u32::try_from(value).unwrap_or(u32::MAX);
+    (line(first), line(last))
 }
 
 /// One line of at most [`ORIGINAL_LIMIT`] bytes.
@@ -146,6 +163,17 @@ mod tests {
         assert_eq!(line_and_column("ab\ncd", 1), (1, 2));
         assert_eq!(line_and_column("ab\ncd", 3), (2, 1));
         assert_eq!(line_and_column("ab\ncd", 4), (2, 2));
+    }
+
+    #[test]
+    fn a_range_gives_its_first_and_last_line() {
+        let text = "a\nb c\nd\n";
+        assert_eq!(lines_of(text, &(0..1)), (1, 1));
+        assert_eq!(lines_of(text, &(2..5)), (2, 2));
+        assert_eq!(lines_of(text, &(2..7)), (2, 3));
+        // The newline at the end of a range is still on the line of the range.
+        assert_eq!(lines_of(text, &(2..6)), (2, 2));
+        assert_eq!(lines_of(text, &(2..2)), (2, 2));
     }
 
     #[test]

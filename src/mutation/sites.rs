@@ -450,6 +450,20 @@ pub fn attr_context(node: &SyntaxNode) -> Option<bool> {
     Some(under_cfg)
 }
 
+/// True when `node` or an enclosing node is a constant context. The compiler can
+/// evaluate the code there, so a test can see a change that no test process
+/// executes.
+pub fn in_constant_context(node: &SyntaxNode) -> bool {
+    let mut child: Option<SyntaxNode> = None;
+    for ancestor in node.ancestors() {
+        if is_constant_node(&ancestor, child.as_ref()) {
+            return true;
+        }
+        child = Some(ancestor);
+    }
+    false
+}
+
 fn is_constant_node(node: &SyntaxNode, child: Option<&SyntaxNode>) -> bool {
     let kind = node.kind();
     if ast::Pat::can_cast(kind) {

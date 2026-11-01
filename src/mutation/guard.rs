@@ -299,7 +299,7 @@ impl Guard {
     /// file for the list of roots.
     pub fn start_watchdog(&mut self, exe: &Path, roots: PathBuf) -> io::Result<()> {
         fs::write(&roots, "")?;
-        let mut command = new_command(&exe.to_string_lossy());
+        let mut command = new_command(exe);
         command
             .arg("mutation-watchdog")
             .arg(&roots)

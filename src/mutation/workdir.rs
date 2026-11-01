@@ -28,6 +28,8 @@ pub struct WorkDirs {
     pub target_scratch: PathBuf,
     /// The target folder of the schema copy.
     pub target_schema: PathBuf,
+    /// The target folder of the coverage build of the scratch copy.
+    pub target_coverage: PathBuf,
     /// The folder for the output files.
     pub logs: PathBuf,
     /// True when the run created a temporary folder.
@@ -59,6 +61,7 @@ impl WorkDirs {
             schema: root.join("schema"),
             target_scratch: root.join("target-scratch"),
             target_schema: root.join("target-schema"),
+            target_coverage: root.join("target-coverage"),
             logs: root.join("logs"),
             root,
             temporary,
@@ -78,8 +81,13 @@ impl WorkDirs {
 
 /// Writes the scratch copy with a lock file, then the schema copy from it, so
 /// both builds use the same dependency versions.
-pub fn prepare_copies(root: &Path, dirs: &WorkDirs, guard: &Guard) -> io::Result<()> {
-    copy_tree(root, &dirs.scratch)?;
+pub fn prepare_copies(
+    root: &Path,
+    target_dir: &Path,
+    dirs: &WorkDirs,
+    guard: &Guard,
+) -> io::Result<()> {
+    copy_tree(root, &dirs.scratch, Some(target_dir))?;
     if !dirs.scratch.join("Cargo.lock").exists() {
         let mut command = cargo(&dirs.scratch, &dirs.target_scratch, 1);
         command.arg("generate-lockfile");
@@ -87,5 +95,5 @@ pub fn prepare_copies(root: &Path, dirs: &WorkDirs, guard: &Guard) -> io::Result
         let err = dirs.logs.join("lockfile.err");
         run_to_files(command, &out, &err, LOCK_LIMIT, guard, Scope::Build)?;
     }
-    copy_tree(&dirs.scratch, &dirs.schema)
+    copy_tree(&dirs.scratch, &dirs.schema, None)
 }

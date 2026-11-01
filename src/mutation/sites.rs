@@ -120,13 +120,14 @@ pub fn find_sites(
 
 /// Maps an offset in the text with LF line endings to an offset in the
 /// original source.
-struct OffsetMap {
+pub struct OffsetMap {
     /// The normalized offset of the line feed of each CRLF.
     crlf: Vec<usize>,
 }
 
 impl OffsetMap {
-    fn new(original: &str) -> Self {
+    /// Reads the line endings of the original source.
+    pub fn new(original: &str) -> Self {
         let crlf = original
             .match_indices("\r\n")
             .enumerate()
@@ -135,7 +136,8 @@ impl OffsetMap {
         Self { crlf }
     }
 
-    fn original(&self, normalized: usize) -> usize {
+    /// The original offset of a normalized offset.
+    pub fn original(&self, normalized: usize) -> usize {
         normalized
             + self
                 .crlf
@@ -354,7 +356,8 @@ impl Walk<'_> {
     }
 }
 
-fn range_of(node: &SyntaxNode) -> Range<usize> {
+/// The text range of a node as a byte range.
+pub fn range_of(node: &SyntaxNode) -> Range<usize> {
     let range = node.text_range();
     usize::from(range.start())..usize::from(range.end())
 }
@@ -430,6 +433,21 @@ fn context_of(node: &SyntaxNode) -> Context {
     } else {
         Context::Mutable { under_cfg }
     }
+}
+
+/// Reads only the attributes of the enclosing nodes: `None` in test code, else
+/// the `under_cfg` flag. A rebuild can mutate a constant context, so this
+/// function does not look at those nodes.
+pub fn attr_context(node: &SyntaxNode) -> Option<bool> {
+    let mut under_cfg = false;
+    for ancestor in node.ancestors() {
+        match attributes_of(&ancestor) {
+            AttrClass::Test => return None,
+            AttrClass::Cfg => under_cfg = true,
+            AttrClass::Other => {}
+        }
+    }
+    Some(under_cfg)
 }
 
 fn is_constant_node(node: &SyntaxNode, child: Option<&SyntaxNode>) -> bool {

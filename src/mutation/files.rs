@@ -30,6 +30,8 @@ pub struct CrateFile {
     pub path: String,
     /// The original text.
     pub original: String,
+    /// The edition of the target.
+    pub edition: Edition,
     /// The sites and the other parse results.
     pub found: FileSites,
     /// The helper position, when the file is a target root.
@@ -131,6 +133,7 @@ fn load_file(workspace: &Path, next: &Pending) -> Result<CrateFile, String> {
     Ok(CrateFile {
         path: next.path.clone(),
         original,
+        edition: next.edition,
         found,
         root,
         under_cfg: next.under_cfg,

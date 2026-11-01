@@ -1,4 +1,4 @@
-//! The compile loop: compile, remove the mutants that break the build, repeat.
+//! The removal loop: compile, remove the mutants that break the build, repeat.
 //!
 //! A compiler error span selects a mutant through the regions of the generated
 //! file. When no error span selects a mutant, a bisection in the style of the
@@ -13,8 +13,8 @@ use serde::{Deserialize, Serialize};
 use crate::mutation::files::{CrateFile, normalize};
 use crate::mutation::schema::{Mode, Owner, PROBE_PREFIX, Rendered, render};
 
-/// The largest number of compile rounds. The value is the stop condition of
-/// the spike: a crate over this number counts as a crate that never compiles.
+/// The largest number of compile rounds. A crate over this number counts as a
+/// crate that never compiles, and its mutants go to the rebuild tier.
 pub const MAX_ROUNDS: u32 = 15;
 
 /// One compiler error.
@@ -437,6 +437,7 @@ mod tests {
         vec![CrateFile {
             path: PATH.to_owned(),
             original: source.to_owned(),
+            edition: Edition::Edition2021,
             found,
             root,
             under_cfg: false,

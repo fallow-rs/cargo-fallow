@@ -35,7 +35,11 @@ pub fn run(args: Vec<OsString>) -> ExitCode {
     let args = cli::strip_cargo_subcommand(args);
     let code = match cli::parse(&args) {
         Parsed::Run(options) => run_check(&options),
-        Parsed::Spike(options) => run_spike(&options),
+        Parsed::Mutation(options) => run_mutation(&options),
+        Parsed::Watchdog(roots) => {
+            mutation::guard::run_watchdog(&roots);
+            EXIT_OK
+        }
         Parsed::Exit(code) => code,
     };
     ExitCode::from(code)
@@ -52,22 +56,34 @@ fn run_check(options: &Options) -> u8 {
     }
 }
 
-/// Runs the hidden `schema-spike` command and returns the process exit code.
-/// The report goes to stdout as JSON. A measured failure of the crate is part of
-/// the report, not an error.
-fn run_spike(options: &mutation::spike::Options) -> u8 {
-    let result = mutation::spike::run(options).and_then(|report| {
-        let text = serde_json::to_string_pretty(&report)
-            .map_err(|err| CliError::output(&io::Error::other(err)))?;
-        render::write_stdout(&text).map_err(|err| CliError::output(&err))
-    });
+/// Runs the `mutation` command and returns the process exit code. Survivors do
+/// not fail a run.
+fn run_mutation(options: &mutation::run::Options) -> u8 {
+    let result = mutation_report(options);
     match result {
         Ok(()) => EXIT_OK,
         Err(err) => {
-            err.emit(cli::Format::Json);
+            err.emit(options.format);
             EXIT_INVALID_INPUT
         }
     }
+}
+
+fn mutation_report(options: &mutation::run::Options) -> Result<(), CliError> {
+    if options.format == cli::Format::Sarif {
+        return Err(CliError::new(
+            error::ErrorCode::InvalidArgument,
+            "the `mutation` command has no SARIF output",
+        )
+        .with_help("Use `--format human` or `--format json`."));
+    }
+    let report = mutation::run::run(options)?;
+    let text = match options.format {
+        cli::Format::Json => serde_json::to_string_pretty(&report)
+            .map_err(|err| CliError::output(&io::Error::other(err)))?,
+        _ => mutation::report::human(&report),
+    };
+    render::write_stdout(&text).map_err(|err| CliError::output(&err))
 }
 
 fn check(options: &Options) -> Result<u8, CliError> {

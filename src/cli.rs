@@ -9,6 +9,8 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use fallow_report_protocol::exit_code::{EXIT_INVALID_INPUT, EXIT_OK};
 
 use crate::error::{CliError, ErrorCode};
+use crate::mutation::guard::{DEFAULT_LIMIT_MIB, DEFAULT_LOW_PERCENT};
+use crate::mutation::run::{TierChoice, safe_jobs};
 
 /// The name that Cargo passes as the first argument to a subcommand binary.
 const CARGO_SUBCOMMAND: &str = "fallow";
@@ -42,8 +44,10 @@ pub struct Options {
 pub enum Parsed {
     /// Run `check` with these options.
     Run(Options),
-    /// Run the hidden `schema-spike` command with these options.
-    Spike(crate::mutation::spike::Options),
+    /// Run the `mutation` command with these options.
+    Mutation(Box<crate::mutation::run::Options>),
+    /// Run the hidden watchdog of the memory guard.
+    Watchdog(PathBuf),
     /// Stop with this exit code. The parser already wrote its output.
     Exit(u8),
 }
@@ -67,38 +71,118 @@ struct Cli {
 enum Command {
     /// Analyze the workspace. This is the default command.
     Check(CheckArgs),
-    /// Measure mutant schemata on one crate. The M1 spike uses this command.
-    #[command(hide = true)]
-    SchemaSpike(SpikeArgs),
+    /// Run the tests against small changes in the source of one package.
+    Mutation(MutationArgs),
+    /// Kill the test processes when the parent process dies. The memory guard
+    /// starts this command.
+    #[command(hide = true, name = "mutation-watchdog")]
+    MutationWatchdog {
+        /// The file that lists the root of each process tree.
+        roots: PathBuf,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum TierArg {
+    /// All mutants in one build, with a runtime switch.
+    Schema,
+    /// One rebuild for each mutant.
+    Rebuild,
+    /// Both tiers.
+    All,
 }
 
 #[derive(Debug, Args)]
-struct SpikeArgs {
+struct MutationArgs {
     /// Path to the Cargo.toml of the workspace.
     #[arg(long, value_name = "PATH")]
-    manifest_path: PathBuf,
-    /// The package to mutate.
-    #[arg(long)]
-    package: String,
-    /// A new folder for the copies, the build output and the logs.
+    manifest_path: Option<PathBuf>,
+    /// The package to mutate. A workspace with one package needs no value.
+    #[arg(long, short = 'p')]
+    package: Option<String>,
+    /// A new folder for the copies and the build output. The folder stays after
+    /// the run. Without this flag the run uses a temporary folder.
     #[arg(long, value_name = "PATH")]
-    work_dir: PathBuf,
-    /// Do not run the baseline tests.
+    work_dir: Option<PathBuf>,
+    /// The output format.
+    #[arg(long, value_enum, default_value_t = Format::Human)]
+    format: Format,
+    /// Hide the progress lines on stderr.
     #[arg(long)]
-    skip_tests: bool,
-    /// The time limit of each test suite, in seconds.
-    #[arg(long, value_name = "SECONDS", default_value_t = 900)]
-    test_timeout: u64,
+    quiet: bool,
+    /// The mutants to run.
+    #[arg(long, value_enum, default_value_t = TierArg::All)]
+    tier: TierArg,
+    /// The test processes that run at the same time. The default is a quarter of
+    /// the cores, with a maximum of 2, because a mutant can allocate without limit.
+    #[arg(long, short = 'j', value_name = "N", value_parser = clap::value_parser!(u32).range(1..))]
+    jobs: Option<u32>,
+    /// Kill a test process above this footprint.
+    #[arg(long, value_name = "MIB", default_value_t = DEFAULT_LIMIT_MIB, value_parser = clap::value_parser!(u64).range(1..))]
+    memory_limit_mib: u64,
+    /// Kill the largest process tree when the free memory is under this percentage.
+    #[arg(long, value_name = "PERCENT", default_value_t = DEFAULT_LOW_PERCENT, value_parser = clap::value_parser!(u32).range(0..=100))]
+    low_memory_percent: u32,
+    /// Run without the memory guard. Use this only when another limit protects
+    /// the machine: a mutant can fill the memory and stop the machine.
+    #[arg(long)]
+    no_memory_guard: bool,
+    /// The time limit of each mutant run. The default is 5 times the baseline,
+    /// with a minimum of 20 seconds.
+    #[arg(long, value_name = "SECONDS")]
+    timeout: Option<u64>,
+    /// Start no new mutant after this time. The other mutants stay `pending`.
+    #[arg(long, value_name = "SECONDS")]
+    time_budget: Option<u64>,
+    /// Run at most this many mutants. The other mutants stay `pending`.
+    #[arg(long, value_name = "N")]
+    max_mutants: Option<usize>,
+    /// Give a survivor and a timeout no second run.
+    #[arg(long)]
+    no_retry: bool,
+    /// Do not run the doctests for a survivor.
+    #[arg(long)]
+    no_doctests: bool,
+    /// Run the schema operators through rebuilds, with no schema build. This is
+    /// slow, and it checks that the switch behaves as a plain edit of the source.
+    #[arg(long)]
+    no_schema: bool,
+    /// Compile and run the baselines, and run no mutant.
+    #[arg(long)]
+    no_run: bool,
+    /// Keep the temporary work folder after the run.
+    #[arg(long)]
+    keep_work_dir: bool,
 }
 
-impl From<SpikeArgs> for crate::mutation::spike::Options {
-    fn from(args: SpikeArgs) -> Self {
+impl From<MutationArgs> for crate::mutation::run::Options {
+    fn from(args: MutationArgs) -> Self {
+        let cores = std::thread::available_parallelism().map_or(1, usize::from);
         Self {
             manifest_path: args.manifest_path,
             package: args.package,
             work_dir: args.work_dir,
-            skip_tests: args.skip_tests,
-            test_limit: Duration::from_secs(args.test_timeout),
+            tier: match args.tier {
+                TierArg::Schema => TierChoice::Schema,
+                TierArg::Rebuild => TierChoice::Rebuild,
+                TierArg::All => TierChoice::All,
+            },
+            jobs: args
+                .jobs
+                .map_or_else(|| safe_jobs(cores), |jobs| jobs as usize),
+            memory_limit_mib: args.memory_limit_mib,
+            low_memory_percent: args.low_memory_percent,
+            memory_guard: !args.no_memory_guard,
+            timeout: args.timeout.map(Duration::from_secs),
+            time_budget: args.time_budget.map(Duration::from_secs),
+            max_mutants: args.max_mutants,
+            retry: !args.no_retry,
+            doctests: !args.no_doctests,
+            no_schema: args.no_schema,
+            no_run: args.no_run,
+            keep_work_dir: args.keep_work_dir,
+            format: args.format,
+            quiet: args.quiet,
         }
     }
 }
@@ -143,7 +227,8 @@ pub fn strip_cargo_subcommand(mut args: Vec<OsString>) -> Vec<OsString> {
 pub fn parse(args: &[OsString]) -> Parsed {
     match Cli::try_parse_from(args) {
         Ok(cli) => match cli.command {
-            Some(Command::SchemaSpike(spike)) => Parsed::Spike(spike.into()),
+            Some(Command::Mutation(args)) => Parsed::Mutation(Box::new(args.into())),
+            Some(Command::MutationWatchdog { roots }) => Parsed::Watchdog(roots),
             Some(Command::Check(check)) => Parsed::Run(check.into()),
             None => Parsed::Run(cli.check.into()),
         },

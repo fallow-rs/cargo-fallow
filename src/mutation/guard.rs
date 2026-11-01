@@ -1,0 +1,795 @@
+//! The memory guard: a product feature, on by default.
+//!
+//! A mutant can allocate without limit, and a test timeout does not protect the
+//! machine: on 2026-10-28 two mutants grew to 116 GB and 70 GB within 180 s, and
+//! the Mac had a kernel panic. So a thread watches each process tree:
+//!
+//! - It kills a tree when a test process passes the per-process limit.
+//! - It kills the largest tree when the free memory drops under the floor.
+//! - It kills the trees when it cannot read the memory data, so a failure of the
+//!   guard does not leave a mutant without a limit.
+//!
+//! A watchdog process kills the trees when this process dies, because a test
+//! process has no other limit after that.
+
+use std::collections::BTreeMap;
+use std::fmt;
+use std::fs;
+use std::io::{self, Read};
+use std::path::{Path, PathBuf};
+use std::process::{Child, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
+
+use crate::mutation::probe::{Probe, Row, system_probe};
+use crate::mutation::process::{descendants, kill_tree, new_command};
+
+/// The default limit for one test process: 4 GiB.
+pub const DEFAULT_LIMIT_MIB: u64 = 4096;
+/// The default floor of the free memory.
+pub const DEFAULT_LOW_PERCENT: u32 = 25;
+/// The time between two checks.
+const TICK: Duration = Duration::from_millis(250);
+/// The longest time between two reads of the footprint of a test tree. A
+/// process with most of its pages compressed has a low RSS, so a candidate
+/// filter alone can miss it.
+const FOOTPRINT_EVERY: Duration = Duration::from_secs(5);
+/// Above the floor by this margin the footprint comes only from candidates.
+const PRESSURE_MARGIN: u32 = 15;
+/// The checks in a row without memory data before the guard stops the trees.
+const BLIND_LIMIT: u32 = 5;
+
+/// The settings of the guard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Limits {
+    /// The limit for one test process, in KiB.
+    pub process_kib: u64,
+    /// The floor of the free memory, in percent.
+    pub low_percent: u32,
+}
+
+impl Limits {
+    /// The settings from the values of the command line.
+    pub const fn new(limit_mib: u64, low_percent: u32) -> Self {
+        Self {
+            process_kib: limit_mib.saturating_mul(1024),
+            low_percent,
+        }
+    }
+
+    /// A process at this RSS is a candidate for a read of the footprint.
+    const fn candidate_kib(&self) -> u64 {
+        self.process_kib / 8
+    }
+}
+
+/// What the guard watches in a process tree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scope {
+    /// A build. The per-process limit does not apply, because a compiler is
+    /// trusted and can need more. The floor of the free memory applies.
+    Build,
+    /// Test processes. All limits apply.
+    Tests,
+}
+
+/// Why the guard killed a process tree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KillReason {
+    /// A process passed the per-process limit.
+    MemoryLimit {
+        /// The footprint in KiB.
+        footprint_kib: u64,
+        /// The limit in KiB.
+        limit_kib: u64,
+    },
+    /// The free memory dropped under the floor, and this tree was the largest.
+    LowMemory {
+        /// The free memory in percent.
+        free_percent: u32,
+        /// The floor in percent.
+        floor_percent: u32,
+        /// The footprint of the largest process, in KiB.
+        footprint_kib: u64,
+    },
+    /// The guard could not read the memory data.
+    Blind,
+}
+
+impl fmt::Display for KillReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MemoryLimit {
+                footprint_kib,
+                limit_kib,
+            } => write!(
+                f,
+                "memory guard: a test process reached {} MiB, over the limit of {} MiB",
+                footprint_kib / 1024,
+                limit_kib / 1024
+            ),
+            Self::LowMemory {
+                free_percent,
+                floor_percent,
+                footprint_kib,
+            } => write!(
+                f,
+                "memory guard: free memory is {free_percent}%, under the floor of \
+                 {floor_percent}%, and this process was the largest at {} MiB",
+                footprint_kib / 1024
+            ),
+            Self::Blind => write!(f, "memory guard: it cannot read the memory data"),
+        }
+    }
+}
+
+/// One watched tree in a check.
+#[derive(Debug, Clone)]
+struct Tree {
+    ticket: u64,
+    scope: Scope,
+    pids: Vec<u32>,
+}
+
+/// Selects the trees to kill. A tree can only have one reason.
+fn decide(
+    trees: &[Tree],
+    footprints: &BTreeMap<u32, u64>,
+    free_percent: Option<u32>,
+    limits: Limits,
+) -> Vec<(u64, KillReason)> {
+    let largest = |tree: &Tree| {
+        tree.pids
+            .iter()
+            .filter_map(|pid| footprints.get(pid).copied())
+            .max()
+            .unwrap_or(0)
+    };
+    let over: Vec<(u64, KillReason)> = trees
+        .iter()
+        .filter(|tree| tree.scope == Scope::Tests)
+        .filter(|tree| largest(tree) > limits.process_kib)
+        .map(|tree| {
+            let reason = KillReason::MemoryLimit {
+                footprint_kib: largest(tree),
+                limit_kib: limits.process_kib,
+            };
+            (tree.ticket, reason)
+        })
+        .collect();
+    if !over.is_empty() {
+        return over;
+    }
+    let Some(free) = free_percent.filter(|&free| free < limits.low_percent) else {
+        return Vec::new();
+    };
+    trees
+        .iter()
+        .max_by_key(|tree| largest(tree))
+        .map(|tree| {
+            let reason = KillReason::LowMemory {
+                free_percent: free,
+                floor_percent: limits.low_percent,
+                footprint_kib: largest(tree),
+            };
+            (tree.ticket, reason)
+        })
+        .into_iter()
+        .collect()
+}
+
+#[derive(Debug)]
+struct Entry {
+    root: u32,
+    scope: Scope,
+    reason: Option<KillReason>,
+}
+
+#[derive(Default)]
+struct Registry {
+    next: u64,
+    entries: BTreeMap<u64, Entry>,
+    kills: u32,
+    /// The file for the watchdog. It holds the root of each tree.
+    roots_file: Option<PathBuf>,
+}
+
+impl Registry {
+    /// Writes the roots through a rename, so that the watchdog never reads half
+    /// a file. A failed write leaves the last list, and the guard still runs.
+    fn write_roots(&self) {
+        let Some(path) = &self.roots_file else {
+            return;
+        };
+        let text: Vec<String> = self.entries.values().map(|e| e.root.to_string()).collect();
+        let temporary = path.with_extension("tmp");
+        if fs::write(&temporary, text.join("\n")).is_ok() {
+            let _ = fs::rename(&temporary, path);
+        }
+    }
+}
+
+struct Shared {
+    registry: Mutex<Registry>,
+    stop: AtomicBool,
+}
+
+impl Shared {
+    fn lock(&self) -> MutexGuard<'_, Registry> {
+        self.registry.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// The running guard.
+pub struct Guard {
+    shared: Arc<Shared>,
+    thread: Option<JoinHandle<()>>,
+    watchdog: Option<Child>,
+    probe: Option<Arc<dyn Probe>>,
+    limits: Limits,
+}
+
+impl Guard {
+    /// A guard that watches nothing. A time limit still applies to each child.
+    pub fn disabled() -> Self {
+        Self {
+            shared: Arc::new(Shared {
+                registry: Mutex::new(Registry::default()),
+                stop: AtomicBool::new(false),
+            }),
+            thread: None,
+            watchdog: None,
+            probe: None,
+            limits: Limits::new(DEFAULT_LIMIT_MIB, DEFAULT_LOW_PERCENT),
+        }
+    }
+
+    /// Starts the guard with the probe of this system.
+    ///
+    /// Returns an error when the system has no probe, or when the probe cannot
+    /// read this process: a run with no memory data must not start.
+    pub fn start(limits: Limits) -> io::Result<Self> {
+        let probe = system_probe().ok_or_else(|| {
+            io::Error::other("the memory guard has no probe for this operating system")
+        })?;
+        let me = std::process::id();
+        if !probe.footprints(&[me])?.contains_key(&me) {
+            return Err(io::Error::other("the memory guard cannot read a footprint"));
+        }
+        Ok(Self::with_probe(limits, Arc::from(probe)))
+    }
+
+    fn with_probe(limits: Limits, probe: Arc<dyn Probe>) -> Self {
+        let mut guard = Self::disabled();
+        guard.limits = limits;
+        guard.probe = Some(Arc::clone(&probe));
+        let shared = Arc::clone(&guard.shared);
+        guard.thread = Some(thread::spawn(move || watch_loop(&shared, &*probe, limits)));
+        guard
+    }
+
+    /// Starts the watchdog process. `exe` is this program, and `roots` is a new
+    /// file for the list of roots.
+    pub fn start_watchdog(&mut self, exe: &Path, roots: PathBuf) -> io::Result<()> {
+        fs::write(&roots, "")?;
+        let mut command = new_command(&exe.to_string_lossy());
+        command
+            .arg("mutation-watchdog")
+            .arg(&roots)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        // Ctrl-C goes to the foreground group. The watchdog must outlive it.
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+        }
+        self.watchdog = Some(command.spawn()?);
+        self.shared.lock().roots_file = Some(roots);
+        Ok(())
+    }
+
+    /// Adds a tree to the guard. The return value removes it again.
+    pub fn watch(&self, root: u32, scope: Scope) -> Watch<'_> {
+        let mut registry = self.shared.lock();
+        registry.next += 1;
+        let ticket = registry.next;
+        registry.entries.insert(
+            ticket,
+            Entry {
+                root,
+                scope,
+                reason: None,
+            },
+        );
+        registry.write_roots();
+        drop(registry);
+        Watch {
+            guard: self,
+            ticket,
+        }
+    }
+
+    /// The number of trees that the guard killed.
+    pub fn kills(&self) -> u32 {
+        self.shared.lock().kills
+    }
+
+    /// True when the free memory is above the floor, or when the guard is off.
+    pub fn memory_is_free(&self) -> bool {
+        self.probe.as_ref().is_none_or(|probe| {
+            probe
+                .free_percent()
+                .is_none_or(|free| free >= self.limits.low_percent)
+        })
+    }
+}
+
+impl Drop for Guard {
+    fn drop(&mut self) {
+        self.shared.stop.store(true, Ordering::SeqCst);
+        if let Some(thread) = self.thread.take() {
+            // A panic of the thread has no more effect here.
+            let _ = thread.join();
+        }
+        let roots_file = {
+            let mut registry = self.shared.lock();
+            registry.entries.clear();
+            registry.write_roots();
+            registry.roots_file.take()
+        };
+        if let Some(mut watchdog) = self.watchdog.take() {
+            // The closed pipe ends the watchdog, and the list is empty.
+            drop(watchdog.stdin.take());
+            let _ = watchdog.wait();
+        }
+        if let Some(path) = roots_file {
+            let _ = fs::remove_file(path);
+        }
+    }
+}
+
+/// A watched process tree.
+pub struct Watch<'a> {
+    guard: &'a Guard,
+    ticket: u64,
+}
+
+impl Watch<'_> {
+    /// Removes the tree, and returns the reason when the guard killed it.
+    pub fn finish(self) -> Option<KillReason> {
+        let mut registry = self.guard.shared.lock();
+        let entry = registry.entries.remove(&self.ticket);
+        registry.write_roots();
+        drop(registry);
+        entry.and_then(|entry| entry.reason)
+    }
+}
+
+fn watch_loop(shared: &Shared, probe: &dyn Probe, limits: Limits) {
+    let mut state = WatchState {
+        last_footprint: None,
+        blind: 0,
+    };
+    while !shared.stop.load(Ordering::SeqCst) {
+        state.tick(shared, probe, limits);
+        thread::sleep(TICK);
+    }
+}
+
+struct WatchState {
+    last_footprint: Option<Instant>,
+    blind: u32,
+}
+
+impl WatchState {
+    fn tick(&mut self, shared: &Shared, probe: &dyn Probe, limits: Limits) {
+        let roots: Vec<(u64, u32, Scope)> = shared
+            .lock()
+            .entries
+            .iter()
+            .filter(|(_, entry)| entry.reason.is_none())
+            .map(|(&ticket, entry)| (ticket, entry.root, entry.scope))
+            .collect();
+        if roots.is_empty() {
+            self.blind = 0;
+            return;
+        }
+        let Ok(rows) = probe.table() else {
+            return self.count_blind(shared, &roots);
+        };
+        let trees: Vec<Tree> = roots
+            .iter()
+            .map(|&(ticket, root, scope)| {
+                let mut pids = descendants(&rows, root);
+                pids.push(root);
+                Tree {
+                    ticket,
+                    scope,
+                    pids,
+                }
+            })
+            .collect();
+        let free = probe.free_percent();
+        if !self.needs_footprint(&trees, &rows, free, limits) {
+            return;
+        }
+        let pids: Vec<u32> = trees.iter().flat_map(|tree| tree.pids.clone()).collect();
+        let read = probe.footprints(&pids);
+        // `top` takes about 0.7 s, so a fast test run can end during the read.
+        // Only a tree that ran through the whole read must have a row.
+        let live = live_roots(shared, &roots);
+        let footprints = match read {
+            Ok(footprints) if !footprints.is_empty() => footprints,
+            Ok(_) if live.is_empty() => return,
+            _ => return self.count_blind(shared, &live),
+        };
+        self.blind = 0;
+        self.last_footprint = Some(Instant::now());
+        for (ticket, reason) in decide(&trees, &footprints, free, limits) {
+            kill(shared, ticket, reason);
+        }
+    }
+
+    fn needs_footprint(
+        &self,
+        trees: &[Tree],
+        rows: &[Row],
+        free: Option<u32>,
+        limits: Limits,
+    ) -> bool {
+        let pressure = free.is_some_and(|free| free < limits.low_percent + PRESSURE_MARGIN);
+        let tests: Vec<&Tree> = trees.iter().filter(|t| t.scope == Scope::Tests).collect();
+        let candidate = tests.iter().any(|tree| {
+            rows.iter()
+                .any(|row| row.rss_kib >= limits.candidate_kib() && tree.pids.contains(&row.pid))
+        });
+        let due = !tests.is_empty()
+            && self
+                .last_footprint
+                .is_none_or(|last| last.elapsed() >= FOOTPRINT_EVERY);
+        pressure || candidate || due
+    }
+
+    /// Stops all trees after too many checks in a row without memory data.
+    fn count_blind(&mut self, shared: &Shared, roots: &[(u64, u32, Scope)]) {
+        self.blind += 1;
+        if self.blind < BLIND_LIMIT {
+            return;
+        }
+        for &(ticket, _, _) in roots {
+            kill(shared, ticket, KillReason::Blind);
+        }
+    }
+}
+
+/// The roots of a snapshot that are still watched.
+fn live_roots(shared: &Shared, roots: &[(u64, u32, Scope)]) -> Vec<(u64, u32, Scope)> {
+    let registry = shared.lock();
+    roots
+        .iter()
+        .filter(|root| registry.entries.contains_key(&root.0))
+        .copied()
+        .collect()
+}
+
+/// Kills a tree that is still watched. The lock stays held during the kill, so
+/// the watch cannot end, and the process id cannot belong to another process.
+fn kill(shared: &Shared, ticket: u64, reason: KillReason) {
+    let mut registry = shared.lock();
+    let Some(entry) = registry.entries.get_mut(&ticket) else {
+        return;
+    };
+    entry.reason = Some(reason);
+    let root = entry.root;
+    registry.kills += 1;
+    kill_tree(root);
+    drop(registry);
+}
+
+/// The hidden `mutation-watchdog` command. It waits until the pipe on stdin
+/// closes: that is the end of the parent, in any way. Then it kills each tree
+/// that the file lists.
+pub fn run_watchdog(roots: &Path) {
+    let mut sink = Vec::new();
+    // Each result of the read means that the parent is gone or that the pipe is
+    // broken. Both end the wait.
+    let _ = io::stdin().read_to_end(&mut sink);
+    let Ok(text) = fs::read_to_string(roots) else {
+        return;
+    };
+    for root in text.lines().filter_map(|line| line.parse().ok()) {
+        kill_tree(root);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::AtomicU32;
+
+    use super::*;
+    #[cfg(unix)]
+    use crate::mutation::process::{Exit, run_to_files};
+
+    const LIMITS: Limits = Limits::new(100, 25);
+    const OVER: u64 = 101 * 1024;
+
+    fn tree(ticket: u64, scope: Scope, pids: &[u32]) -> Tree {
+        Tree {
+            ticket,
+            scope,
+            pids: pids.to_vec(),
+        }
+    }
+
+    #[test]
+    fn a_test_process_over_the_limit_is_killed_with_a_clear_reason() {
+        let trees = [
+            tree(1, Scope::Tests, &[10, 11]),
+            tree(2, Scope::Tests, &[20]),
+        ];
+        let footprints = BTreeMap::from([(10, 1), (11, OVER), (20, 5)]);
+        let kills = decide(&trees, &footprints, Some(80), LIMITS);
+        assert_eq!(kills.len(), 1);
+        assert_eq!(kills[0].0, 1);
+        assert_eq!(
+            kills[0].1.to_string(),
+            "memory guard: a test process reached 101 MiB, over the limit of 100 MiB"
+        );
+    }
+
+    #[test]
+    fn the_limit_itself_does_not_kill() {
+        let trees = [tree(1, Scope::Tests, &[10])];
+        let footprints = BTreeMap::from([(10, 100 * 1024)]);
+        assert!(decide(&trees, &footprints, Some(80), LIMITS).is_empty());
+    }
+
+    #[test]
+    fn a_build_over_the_limit_is_not_killed() {
+        let trees = [tree(1, Scope::Build, &[10])];
+        let footprints = BTreeMap::from([(10, OVER)]);
+        assert!(decide(&trees, &footprints, Some(80), LIMITS).is_empty());
+    }
+
+    #[test]
+    fn low_memory_kills_only_the_largest_tree_of_any_scope() {
+        let trees = [
+            tree(1, Scope::Tests, &[10]),
+            tree(2, Scope::Build, &[20]),
+            tree(3, Scope::Tests, &[30]),
+        ];
+        let footprints = BTreeMap::from([(10, 5), (20, 900), (30, 7)]);
+        let kills = decide(&trees, &footprints, Some(24), LIMITS);
+        assert_eq!(kills.len(), 1);
+        assert_eq!(kills[0].0, 2);
+        assert!(matches!(
+            kills[0].1,
+            KillReason::LowMemory {
+                free_percent: 24,
+                floor_percent: 25,
+                footprint_kib: 900
+            }
+        ));
+    }
+
+    #[test]
+    fn the_floor_itself_kills_nothing_and_a_missing_value_kills_nothing() {
+        let trees = [tree(1, Scope::Tests, &[10])];
+        let footprints = BTreeMap::from([(10, 5)]);
+        assert!(decide(&trees, &footprints, Some(25), LIMITS).is_empty());
+        assert!(decide(&trees, &footprints, None, LIMITS).is_empty());
+    }
+
+    /// A probe with fixed answers.
+    struct FakeProbe {
+        rss_kib: u64,
+        footprint: Result<u64, ()>,
+        free: u32,
+        footprint_reads: AtomicU32,
+        /// The time of one read of the footprint. `top` takes about 0.7 s.
+        delay: Duration,
+        /// True when a read lists no process.
+        empty: bool,
+    }
+
+    impl FakeProbe {
+        fn new(rss_kib: u64, footprint: Result<u64, ()>, free: u32) -> Arc<Self> {
+            Arc::new(Self {
+                rss_kib,
+                footprint,
+                free,
+                footprint_reads: AtomicU32::new(0),
+                delay: Duration::ZERO,
+                empty: false,
+            })
+        }
+    }
+
+    impl Probe for FakeProbe {
+        fn table(&self) -> io::Result<Vec<Row>> {
+            // The real table holds the root, so the fake reads it from `ps`.
+            let Some(real) = system_probe() else {
+                return Ok(Vec::new());
+            };
+            Ok(real
+                .table()?
+                .into_iter()
+                .map(|row| Row {
+                    rss_kib: self.rss_kib,
+                    ..row
+                })
+                .collect())
+        }
+
+        fn footprints(&self, pids: &[u32]) -> io::Result<BTreeMap<u32, u64>> {
+            self.footprint_reads.fetch_add(1, Ordering::SeqCst);
+            thread::sleep(self.delay);
+            if self.empty {
+                return Ok(BTreeMap::new());
+            }
+            let kib = self.footprint.map_err(|()| io::Error::other("fake"))?;
+            Ok(pids.iter().map(|&pid| (pid, kib)).collect())
+        }
+
+        fn free_percent(&self) -> Option<u32> {
+            Some(self.free)
+        }
+    }
+
+    #[cfg(unix)]
+    fn sleep_under(guard: &Guard, scope: Scope, limit: Duration) -> Exit {
+        let Ok(dir) = tempfile::tempdir() else {
+            panic!("a temporary directory");
+        };
+        let mut command = new_command("sh");
+        command.args(["-c", "sleep 30 & wait"]);
+        let Ok(exit) = run_to_files(
+            command,
+            &dir.path().join("out"),
+            &dir.path().join("err"),
+            limit,
+            guard,
+            scope,
+        ) else {
+            panic!("sh must start");
+        };
+        exit
+    }
+
+    #[cfg(unix)]
+    const LONG: Duration = Duration::from_secs(25);
+
+    #[cfg(unix)]
+    #[test]
+    fn the_thread_kills_a_tree_over_the_limit() {
+        let guard = Guard::with_probe(LIMITS, FakeProbe::new(OVER, Ok(OVER), 80));
+        let start = Instant::now();
+        let exit = sleep_under(&guard, Scope::Tests, LONG);
+        assert!(
+            matches!(exit, Exit::Killed(KillReason::MemoryLimit { .. })),
+            "{exit:?}"
+        );
+        assert!(start.elapsed() < Duration::from_secs(15));
+        assert_eq!(guard.kills(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_thread_fails_closed_when_it_cannot_read_a_footprint() {
+        let guard = Guard::with_probe(LIMITS, FakeProbe::new(OVER, Err(()), 80));
+        let exit = sleep_under(&guard, Scope::Tests, LONG);
+        assert_eq!(exit, Exit::Killed(KillReason::Blind));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_small_tree_stays_without_a_read_of_top_until_the_period_ends() {
+        let probe = FakeProbe::new(1, Ok(1), 80);
+        let reads = Arc::clone(&probe);
+        let guard = Guard::with_probe(LIMITS, probe);
+        let exit = sleep_under(&guard, Scope::Tests, Duration::from_millis(1500));
+        assert_eq!(exit, Exit::TimedOut);
+        // One read at the start, and the period is longer than this run.
+        assert_eq!(reads.footprint_reads.load(Ordering::SeqCst), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_build_with_free_memory_gets_no_read_of_top() {
+        let probe = FakeProbe::new(OVER, Ok(OVER), 80);
+        let reads = Arc::clone(&probe);
+        let guard = Guard::with_probe(LIMITS, probe);
+        let exit = sleep_under(&guard, Scope::Build, Duration::from_millis(600));
+        assert_eq!(exit, Exit::TimedOut);
+        assert_eq!(reads.footprint_reads.load(Ordering::SeqCst), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_tree_under_low_memory_is_killed() {
+        let guard = Guard::with_probe(LIMITS, FakeProbe::new(1, Ok(1), 10));
+        let exit = sleep_under(&guard, Scope::Build, LONG);
+        assert!(
+            matches!(exit, Exit::Killed(KillReason::LowMemory { .. })),
+            "{exit:?}"
+        );
+    }
+
+    /// `top` reports nothing for a process that is gone, and a fast test run
+    /// ends before `top` does. That says nothing about the guard, and a kill of
+    /// the old process id can hit another process.
+    #[cfg(unix)]
+    #[test]
+    fn a_tree_that_ends_during_a_read_is_no_reason_to_kill() {
+        let mut fake = FakeProbe::new(OVER, Ok(1), 80);
+        let Some(probe) = Arc::get_mut(&mut fake) else {
+            panic!("the fake has one owner");
+        };
+        probe.delay = Duration::from_millis(60);
+        probe.empty = true;
+        let guard = Guard::with_probe(LIMITS, fake);
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(3) {
+            let Ok(dir) = tempfile::tempdir() else {
+                panic!("a temporary directory");
+            };
+            let mut command = new_command("sh");
+            command.args(["-c", "exit 0"]);
+            let Ok(exit) = run_to_files(
+                command,
+                &dir.path().join("out"),
+                &dir.path().join("err"),
+                LONG,
+                &guard,
+                Scope::Tests,
+            ) else {
+                panic!("sh must start");
+            };
+            assert_eq!(exit, Exit::Code(Some(0)));
+        }
+        assert_eq!(guard.kills(), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_read_with_no_row_for_a_live_tree_is_blind() {
+        let mut fake = FakeProbe::new(OVER, Ok(1), 80);
+        let Some(probe) = Arc::get_mut(&mut fake) else {
+            panic!("the fake has one owner");
+        };
+        probe.empty = true;
+        let guard = Guard::with_probe(LIMITS, fake);
+        let exit = sleep_under(&guard, Scope::Tests, LONG);
+        assert_eq!(exit, Exit::Killed(KillReason::Blind));
+    }
+
+    #[test]
+    fn free_memory_blocks_a_start_only_under_the_floor() {
+        assert!(Guard::disabled().memory_is_free());
+        let low = Guard::with_probe(LIMITS, FakeProbe::new(1, Ok(1), 24));
+        assert!(!low.memory_is_free());
+        let free = Guard::with_probe(LIMITS, FakeProbe::new(1, Ok(1), 25));
+        assert!(free.memory_is_free());
+    }
+
+    #[test]
+    fn kill_reasons_name_the_cause() {
+        let low = KillReason::LowMemory {
+            free_percent: 10,
+            floor_percent: 25,
+            footprint_kib: 2048,
+        };
+        assert_eq!(
+            low.to_string(),
+            "memory guard: free memory is 10%, under the floor of 25%, and this process was the largest at 2 MiB"
+        );
+        assert_eq!(
+            KillReason::Blind.to_string(),
+            "memory guard: it cannot read the memory data"
+        );
+    }
+}

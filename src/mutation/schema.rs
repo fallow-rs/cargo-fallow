@@ -243,27 +243,14 @@ impl Writer<'_> {
         let start = self.out.text.len();
         // A write to a `String` cannot fail.
         let _ = write!(self.out.text, "{:#x}_u64 => (", mutant.id);
-        match (self.mode, site.shape) {
-            (Mode::Probe, _) => {
+        match self.mode {
+            Mode::Probe => {
                 let _ = write!(self.out.text, "{PROBE_PREFIX}{:x}", mutant.id);
             }
-            (Mode::Schema, Shape::Condition) => {
-                self.out.text.push_str("!(");
-                self.push(site.range.clone());
-                self.out.text.push(')');
-            }
-            (Mode::Schema, Shape::Binary { lhs_end, rhs_start }) => {
-                // `x as usize < y` is a syntax error: the parser reads `<` as
-                // the start of generic arguments.
-                let wrap = mutant.replacement == "<";
-                self.out.text.push_str(if wrap { "(" } else { "" });
-                self.push(site.range.start..lhs_end);
-                self.out.text.push_str(if wrap { ")" } else { "" });
-                self.out.text.push(' ');
-                self.out.text.push_str(mutant.replacement);
-                self.out.text.push(' ');
-                self.push(rhs_start..site.range.end);
-            }
+            Mode::Schema => self
+                .out
+                .text
+                .push_str(&mutated_text(self.original, site, mutant)),
         }
         self.out.text.push(')');
         self.out.regions.push(Region {
@@ -272,6 +259,24 @@ impl Writer<'_> {
             mutant: Some(mutant.id),
         });
         self.out.text.push_str(", ");
+    }
+}
+
+/// The text of a site with the mutant applied. A nested site stays plain.
+pub fn mutated_text(original: &str, site: &Site, mutant: &Mutant) -> String {
+    match site.shape {
+        Shape::Condition => format!("!({})", &original[site.range.clone()]),
+        Shape::Binary { lhs_end, rhs_start } => {
+            let lhs = &original[site.range.start..lhs_end];
+            let rhs = &original[rhs_start..site.range.end];
+            // `x as usize < y` is a syntax error: the parser reads `<` as the
+            // start of generic arguments.
+            if mutant.replacement == "<" {
+                format!("({lhs}) < {rhs}")
+            } else {
+                format!("{lhs} {} {rhs}", mutant.replacement)
+            }
+        }
     }
 }
 

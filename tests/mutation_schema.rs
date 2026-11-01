@@ -1,9 +1,8 @@
-//! Black-box tests of the hidden `schema-spike` command.
+//! Black-box tests of the schema stage of the `mutation` command.
 //!
-//! Each test writes a small crate and runs the whole pipeline: real cargo, real
-//! rustc and real nextest. No test runs a mutant in the normal test run. The
-//! one test that activates a mutant is marked `#[ignore]`, because a mutated
-//! binary must run under the memory guard and with a timeout.
+//! Each test writes a small crate and runs real cargo, real rustc and real
+//! nextest. The `--no-run` flag stops the command after the removal loop and the
+//! baseline, so no test in this file runs a mutant.
 #![expect(
     clippy::expect_used,
     reason = "a test fails loudly when its setup does not work"
@@ -11,7 +10,6 @@
 
 use std::fs;
 use std::path::Path;
-use std::process::Command as Process;
 
 use assert_cmd::Command;
 use serde_json::Value;
@@ -28,20 +26,22 @@ fn write_crate(dir: &Path, files: &[(&str, &str)]) {
     }
 }
 
-struct Spike {
+struct Stage {
+    /// The `schema` part of the report, with the full report in `full`.
     report: Value,
+    full: Value,
     _source: TempDir,
     work: TempDir,
 }
 
-fn spike(files: &[(&str, &str)]) -> Spike {
+fn stage(files: &[(&str, &str)]) -> Stage {
     let source = tempfile::tempdir().expect("create a temporary directory");
     let work = tempfile::tempdir().expect("create a temporary directory");
     write_crate(source.path(), files);
     let output = Command::cargo_bin("cargo-fallow")
         .expect("the binary exists")
         .env("MBX_DISABLE", "1")
-        .args(["schema-spike", "--manifest-path"])
+        .args(ARGS)
         .arg(source.path().join("Cargo.toml"))
         .args(["--package", "fixture", "--work-dir"])
         .arg(work.path().join("run"))
@@ -52,13 +52,31 @@ fn spike(files: &[(&str, &str)]) -> Spike {
         "stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let report = serde_json::from_slice(&output.stdout).expect("the report is JSON");
-    Spike {
-        report,
+    let full: Value = serde_json::from_slice(&output.stdout).expect("the report is JSON");
+    Stage {
+        report: full["schema"].clone(),
+        full,
         _source: source,
         work,
     }
 }
+
+/// The command up to the baseline, for the schema tier. The memory guard has no
+/// probe on Windows, and `--no-run` runs no mutant.
+const ARGS: [&str; 8] = [
+    "mutation",
+    "--no-run",
+    "--tier",
+    "schema",
+    "--format",
+    "json",
+    if cfg!(windows) {
+        "--no-memory-guard"
+    } else {
+        "--quiet"
+    },
+    "--manifest-path",
+];
 
 fn number(report: &Value, key: &str) -> i64 {
     report[key]
@@ -93,18 +111,18 @@ mod tests {
 
 #[test]
 fn simple_crate_compiles_in_one_round_and_keeps_each_mutant() {
-    let spike = spike(&[("src/lib.rs", SIMPLE)]);
-    let report = &spike.report;
+    let stage = stage(&[("src/lib.rs", SIMPLE)]);
+    let report = &stage.report;
     assert_eq!(report["status"], "compiled", "{report}");
     assert_eq!(number(report, "rounds"), 1);
     // `if` negated, `||`, `==`, and two for `<`.
     assert_eq!(number(report, "candidates"), 5);
     assert_eq!(number(report, "kept"), 5);
     assert_eq!(report["removed"].as_array().map(Vec::len), Some(0));
-    assert_eq!(report["baseline"]["tests_pass_with_schema"], true);
-    assert_eq!(report["baseline"]["schema"]["nextest"]["pass"], 1);
-    assert_eq!(report["baseline"]["clean"]["nextest"]["pass"], 1);
-    let schema = spike.work.path().join("run/schema/src/lib.rs");
+    assert_eq!(stage.full["baseline"]["tests_pass_with_schema"], true);
+    assert_eq!(stage.full["baseline"]["schema"]["nextest"]["pass"], 1);
+    assert_eq!(stage.full["baseline"]["clean"]["nextest"]["pass"], 1);
+    let schema = stage.work.path().join("run/schema/src/lib.rs");
     let text = fs::read_to_string(schema).expect("the schema copy exists");
     assert!(text.contains("__fallow_schema::active()"));
     assert!(text.contains("const LIMIT: bool = 1 == 2;"));
@@ -118,15 +136,9 @@ fn source_tree_stays_untouched() {
     Command::cargo_bin("cargo-fallow")
         .expect("the binary exists")
         .env("MBX_DISABLE", "1")
-        .args([
-            "schema-spike",
-            "--skip-tests",
-            "--package",
-            "fixture",
-            "--manifest-path",
-        ])
+        .args(ARGS)
         .arg(source.path().join("Cargo.toml"))
-        .arg("--work-dir")
+        .args(["--package", "fixture", "--work-dir"])
         .arg(work.path().join("run"))
         .assert()
         .success();
@@ -166,12 +178,12 @@ mod tests {
     }
 }
 ";
-    let spike = spike(&[("src/lib.rs", lib)]);
-    let report = &spike.report;
+    let stage = stage(&[("src/lib.rs", lib)]);
+    let report = &stage.report;
     assert_eq!(report["status"], "compiled", "{report}");
     assert_eq!(number(report, "rounds"), 1, "{report}");
     assert_eq!(number(report, "kept"), 2);
-    assert_eq!(report["baseline"]["tests_pass_with_schema"], true);
+    assert_eq!(stage.full["baseline"]["tests_pass_with_schema"], true);
 }
 
 #[test]
@@ -192,14 +204,15 @@ fn modules_are_followed_in_each_layout_and_unreached_files_are_counted() {
         ("src/t.rs", "pub fn f(x: u8) -> bool { x == 5 }\n"),
         ("src/unused.rs", "pub fn f(x: u8) -> bool { x == 6 }\n"),
     ];
-    let spike = spike(&files);
-    let report = &spike.report;
+    let stage = stage(&files);
+    let report = &stage.report;
     assert_eq!(report["status"], "compiled", "{report}");
     assert_eq!(number(report, "candidates"), 4);
     assert_eq!(number(report, "kept"), 4);
     // `src/t.rs` is test-only, and `src/unused.rs` has no `mod` declaration.
-    assert_eq!(number(report, "unreached_src_files"), 2);
-    assert_eq!(number(report, "files"), 6);
+    let gaps = &stage.full["gaps"];
+    assert_eq!(number(gaps, "unreached_src_files"), 2);
+    assert_eq!(number(gaps, "files"), 6);
 }
 
 #[test]
@@ -214,8 +227,8 @@ pub fn plain(x: u8) -> bool {
     x == 1
 }
 ";
-    let spike = spike(&[("src/lib.rs", lib)]);
-    let report = &spike.report;
+    let stage = stage(&[("src/lib.rs", lib)]);
+    let report = &stage.report;
     assert_eq!(report["status"], "compiled", "{report}");
     assert_eq!(number(report, "candidates"), 2);
     assert_eq!(number(report, "kept"), 1);
@@ -223,11 +236,11 @@ pub fn plain(x: u8) -> bool {
     let removed = &report["removed"][0];
     assert_eq!(removed["line"], 3, "{report}");
     assert_eq!(removed["code"], "E0515");
-    let kept: Vec<&Value> = report["mutants"]
+    let kept: Vec<&Value> = stage.full["mutants"]
         .as_array()
         .expect("mutants")
         .iter()
-        .filter(|mutant| mutant["kept"] == true)
+        .filter(|mutant| mutant["status"] == "pending")
         .collect();
     assert_eq!(kept.len(), 1);
     assert_eq!(kept[0]["line"], 7);
@@ -253,8 +266,8 @@ pub fn uninit(y: bool) -> u8 {
 pub fn d(y: u8) -> bool { y == 4 }
 pub fn e(y: u8) -> bool { y == 5 }
 ";
-    let spike = spike(&[("src/lib.rs", lib)]);
-    let report = &spike.report;
+    let stage = stage(&[("src/lib.rs", lib)]);
+    let report = &stage.report;
     assert_eq!(report["status"], "compiled", "{report}");
     // `==` five times, the `&&`, and the negated `if`.
     assert_eq!(number(report, "candidates"), 7);
@@ -291,8 +304,8 @@ pub fn c(x: u8) -> bool {
     }
 }
 ";
-    let spike = spike(&[("src/lib.rs", lib)]);
-    let report = &spike.report;
+    let stage = stage(&[("src/lib.rs", lib)]);
+    let report = &stage.report;
     assert_eq!(report["status"], "compiled", "{report}");
     assert_eq!(number(report, "rounds"), 1, "{report}");
     assert_eq!(number(report, "kept"), number(report, "candidates"));
@@ -326,18 +339,15 @@ fn package_with_a_dependency_of_the_same_name_is_selected() {
     let output = Command::cargo_bin("cargo-fallow")
         .expect("the binary exists")
         .env("MBX_DISABLE", "1")
-        .args(["schema-spike", "--package", "fixture", "--manifest-path"])
+        .args(ARGS)
         .arg(root.join("Cargo.toml"))
-        .arg("--work-dir")
+        .args(["--package", "fixture", "--work-dir"])
         .arg(work.path().join("run"))
         .output()
         .expect("the binary runs");
-    let report: Value = serde_json::from_slice(&output.stdout).expect("the report is JSON");
-    assert_eq!(report["status"], "compiled", "{report}");
-    assert_eq!(
-        report["baseline"]["tests_pass_with_schema"], true,
-        "{report}"
-    );
+    let full: Value = serde_json::from_slice(&output.stdout).expect("the report is JSON");
+    assert_eq!(full["schema"]["status"], "compiled", "{full}");
+    assert_eq!(full["baseline"]["tests_pass_with_schema"], true, "{full}");
 }
 
 #[test]
@@ -354,29 +364,29 @@ pub fn on(x: u8) -> bool { x == 3 }
 #[cfg(not(unix))]
 pub fn on(x: u8) -> bool { x == 3 }
 ";
-    let spike = spike(&[("src/lib.rs", lib)]);
-    let report = &spike.report;
+    let stage = stage(&[("src/lib.rs", lib)]);
+    let report = &stage.report;
     assert_eq!(report["status"], "compiled", "{report}");
     assert_eq!(number(report, "kept"), 4);
     assert_eq!(number(report, "kept_under_cfg"), 3);
     assert_eq!(number(report, "kept_compile_checked"), 2, "{report}");
     // The probe does not stay in the schema and does not count as a round.
     assert_eq!(number(report, "rounds"), 1);
-    let schema = spike.work.path().join("run/schema/src/lib.rs");
+    let schema = stage.work.path().join("run/schema/src/lib.rs");
     let text = fs::read_to_string(schema).expect("the schema copy exists");
     assert!(!text.contains("__fallow_probe"));
-    assert_eq!(report["baseline"]["tests_pass_with_schema"], true);
+    assert_eq!(stage.full["baseline"]["tests_pass_with_schema"], true);
 }
 
 #[test]
 fn crlf_source_compiles_and_keeps_its_line_endings() {
     let lib = "pub fn f(x: u8) -> bool {\r\n    let s = \"a\r\nb\";\r\n    s.len() == 3 && x == 1\r\n}\r\n";
-    let spike = spike(&[("src/lib.rs", lib)]);
-    let report = &spike.report;
+    let stage = stage(&[("src/lib.rs", lib)]);
+    let report = &stage.report;
     assert_eq!(report["status"], "compiled", "{report}");
     assert_eq!(number(report, "rounds"), 1);
     assert_eq!(number(report, "kept"), 3);
-    let schema = spike.work.path().join("run/schema/src/lib.rs");
+    let schema = stage.work.path().join("run/schema/src/lib.rs");
     let text = fs::read_to_string(schema).expect("the schema copy exists");
     assert!(text.contains("let s = \"a\r\nb\";\r\n"));
 }
@@ -390,39 +400,28 @@ fn file_that_does_not_parse_is_reported_and_skipped() {
         ),
         ("src/broken.rs", "fn f( {\n"),
     ];
-    let spike = spike(&files);
-    let report = &spike.report;
+    let stage = stage(&files);
+    let report = &stage.report;
     assert_eq!(report["status"], "compiled", "{report}");
     assert_eq!(number(report, "kept"), 1);
-    assert_eq!(report["files_skipped"][0]["path"], "src/broken.rs");
-}
-
-#[test]
-fn crate_that_does_not_build_is_reported() {
-    let spike = spike(&[(
-        "src/lib.rs",
-        "pub fn f(x: u8) -> u8 { if x == 1 { \"x\" } else { 0 } }\n",
-    )]);
     assert_eq!(
-        spike.report["status"], "clean_build_failed",
-        "{}",
-        spike.report
+        stage.full["gaps"]["files_skipped"][0]["path"],
+        "src/broken.rs"
     );
-    assert_eq!(number(&spike.report, "rounds"), -1);
 }
 
 #[test]
 fn crate_without_sites_is_reported() {
-    let spike = spike(&[("src/lib.rs", "pub fn f() -> u8 { 1 }\n")]);
-    assert_eq!(spike.report["status"], "no_sites", "{}", spike.report);
-    assert_eq!(number(&spike.report, "candidates"), 0);
+    let stage = stage(&[("src/lib.rs", "pub fn f() -> u8 { 1 }\n")]);
+    assert_eq!(stage.report["status"], "no_sites", "{}", stage.report);
+    assert_eq!(number(&stage.report, "candidates"), 0);
 }
 
 #[test]
 fn doctests_run_separately_and_keep_their_names() {
     let lib = "/// Doc.\n///\n/// ```\n/// assert!(fixture::f(1));\n/// ```\npub fn f(\n    x: u8,\n) -> bool {\n    x\n    .max(1)\n    ==\n    1\n}\n\n/// Second.\n///\n/// ```\n/// assert!(!fixture::g(1));\n/// ```\npub fn g(x: u8) -> bool { x == 2 }\n";
-    let spike = spike(&[("src/lib.rs", lib)]);
-    let baseline = &spike.report["baseline"];
+    let stage = stage(&[("src/lib.rs", lib)]);
+    let baseline = &stage.full["baseline"];
     assert_eq!(baseline["clean"]["doc"]["pass"], 2, "{baseline}");
     assert_eq!(baseline["schema"]["doc"]["pass"], 2, "{baseline}");
     assert_eq!(baseline["tests_pass_with_schema"], true, "{baseline}");
@@ -433,8 +432,8 @@ fn test_that_breaks_with_the_schema_is_a_regression() {
     // The arm holds a copy of the multi-line operand. That moves the code under
     // it, so `line!()` differs.
     let lib = "pub fn f(x: u8) -> bool {\n    x\n    .max(1)\n    == 1\n}\n\npub fn line() -> u32 {\n    line!()\n}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn line_is_stable() {\n        assert_eq!(super::line(), 8);\n    }\n\n    #[test]\n    fn other() {}\n}\n";
-    let spike = spike(&[("src/lib.rs", lib)]);
-    let baseline = &spike.report["baseline"];
+    let stage = stage(&[("src/lib.rs", lib)]);
+    let baseline = &stage.full["baseline"];
     assert_eq!(baseline["tests_pass_with_schema"], false, "{baseline}");
     let regressions = baseline["regressions"].as_array().expect("regressions");
     assert_eq!(regressions.len(), 1, "{baseline}");
@@ -449,8 +448,8 @@ fn test_that_breaks_with_the_schema_is_a_regression() {
 fn test_that_fails_without_the_schema_is_not_a_regression() {
     let lib =
         "pub fn f(x: u8) -> bool { x == 1 }\n\n#[test]\nfn broken() { panic!(\"always\"); }\n";
-    let spike = spike(&[("src/lib.rs", lib)]);
-    let baseline = &spike.report["baseline"];
+    let stage = stage(&[("src/lib.rs", lib)]);
+    let baseline = &stage.full["baseline"];
     assert_eq!(baseline["tests_pass_with_schema"], true, "{baseline}");
     assert_eq!(baseline["clean"]["nextest"]["fail"], 1, "{baseline}");
     assert_eq!(baseline["schema"]["nextest"]["fail"], 1, "{baseline}");
@@ -485,53 +484,16 @@ fn package_flag_selects_one_workspace_member_and_path_dependencies_build() {
     let output = Command::cargo_bin("cargo-fallow")
         .expect("the binary exists")
         .env("MBX_DISABLE", "1")
-        .args([
-            "schema-spike",
-            "--skip-tests",
-            "--package",
-            "b",
-            "--manifest-path",
-        ])
+        .args(ARGS)
         .arg(root.join("Cargo.toml"))
-        .arg("--work-dir")
+        .args(["--package", "b", "--work-dir"])
         .arg(work.path().join("run"))
         .output()
         .expect("the binary runs");
-    let report: Value = serde_json::from_slice(&output.stdout).expect("the report is JSON");
+    let full: Value = serde_json::from_slice(&output.stdout).expect("the report is JSON");
+    let report = &full["schema"];
     assert_eq!(report["status"], "compiled", "{report}");
-    assert_eq!(number(&report, "candidates"), 2);
+    assert_eq!(number(report, "candidates"), 2);
     let other = fs::read_to_string(work.path().join("run/schema/a/src/lib.rs")).expect("the copy");
     assert!(!other.contains("__fallow_schema"));
-}
-
-/// Runs a mutant. A run of this test needs the memory guard and a timeout,
-/// because it runs a mutated binary. The fixture has no loop and no allocation.
-#[test]
-#[ignore = "this test runs a mutated binary, so run it under the memory guard"]
-fn active_id_selects_one_mutant_and_no_id_selects_none() {
-    let lib = "#![no_std]\npub fn is_one(x: u8) -> bool { x == 1 }\n\n\
-               #[cfg(test)]\nmod tests {\n    #[test]\n    fn one() {\n        assert!(super::is_one(1));\n    }\n}\n";
-    let spike = spike(&[("src/lib.rs", lib)]);
-    let id = spike.report["mutants"][0]["id"]
-        .as_str()
-        .expect("an id")
-        .to_owned();
-    let schema = spike.work.path().join("run/schema");
-    let target = spike.work.path().join("run/target-schema");
-    let run = |active: Option<&str>| {
-        let mut command = Process::new("cargo");
-        command
-            .args(["test", "--lib", "--quiet"])
-            .current_dir(&schema)
-            .env("MBX_DISABLE", "1")
-            .env("CARGO_TARGET_DIR", &target)
-            .env_remove("FALLOW_MUTANT");
-        if let Some(active) = active {
-            command.env("FALLOW_MUTANT", active);
-        }
-        command.status().expect("cargo runs").success()
-    };
-    assert!(run(None), "no active mutant: the test passes");
-    assert!(run(Some("0")), "id 0 is no mutant: the test passes");
-    assert!(!run(Some(&id)), "the active mutant fails the test");
 }

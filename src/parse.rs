@@ -90,14 +90,33 @@ pub enum ParseOutcome {
 ///
 /// See [`ParseOutcome`] for the results.
 pub fn parse_source(source: &str, edition: Edition) -> ParseOutcome {
+    match with_parsed(source, edition, |_, _| ()) {
+        Ok(()) => ParseOutcome::Parsed,
+        Err(outcome) => outcome,
+    }
+}
+
+/// Parses `source` and runs `visit` on the tree, with the same guards as
+/// [`parse_source`].
+///
+/// `visit` gets the tree and the text that the parser read. That text has LF
+/// line endings, so a text range of the tree can differ from an offset in
+/// `source`. `visit` runs only when the source parsed with no error. The tree
+/// cannot leave the sized stack, so `visit` must return plain data.
+pub fn with_parsed<T: Send>(
+    source: &str,
+    edition: Edition,
+    visit: impl FnOnce(&SourceFile, &str) -> T + Send,
+) -> Result<T, ParseOutcome> {
     let source = normalize_line_endings(source);
     let Some(stack) = stack_need(source.len()) else {
-        return ParseOutcome::TooDeep;
+        return Err(ParseOutcome::TooDeep);
     };
     if nests_too_deep(&source, edition) {
-        return ParseOutcome::TooDeep;
+        return Err(ParseOutcome::TooDeep);
     }
-    run_with_stack(stack, || parse_unbounded(&source, edition))
+    run_with_stack(stack, || parse_and_visit(&source, edition, visit))
+        .and_then(std::convert::identity)
 }
 
 /// Replaces each CRLF with LF. rustc does this before it lexes a file. The
@@ -161,7 +180,10 @@ fn stack_need(source_len: usize) -> Option<usize> {
 ///
 /// The parsed syntax tree is also dropped on that thread, because the drop
 /// recurses as deep as the parse.
-fn run_with_stack(stack: usize, parse: impl FnOnce() -> ParseOutcome + Send) -> ParseOutcome {
+fn run_with_stack<T: Send>(
+    stack: usize,
+    parse: impl FnOnce() -> T + Send,
+) -> Result<T, ParseOutcome> {
     thread::scope(|scope| {
         let spawned = thread::Builder::new()
             .name("cargo-fallow-parse".to_owned())
@@ -169,30 +191,36 @@ fn run_with_stack(stack: usize, parse: impl FnOnce() -> ParseOutcome + Send) -> 
             .spawn_scoped(scope, parse);
         match spawned {
             // A joined panic does not reach the scope, so the run continues.
-            Ok(handle) => handle.join().unwrap_or(ParseOutcome::Panicked),
-            Err(_) => ParseOutcome::TooDeep,
+            Ok(handle) => handle.join().map_err(|_| ParseOutcome::Panicked),
+            Err(_) => Err(ParseOutcome::TooDeep),
         }
     })
 }
 
-/// Parses `source` on the current thread. Call it only through
-/// [`run_with_stack`].
-fn parse_unbounded(source: &str, edition: Edition) -> ParseOutcome {
+/// Parses `source` on the current thread and runs `visit` on the tree. Call it
+/// only through [`run_with_stack`].
+fn parse_and_visit<T>(
+    source: &str,
+    edition: Edition,
+    visit: impl FnOnce(&SourceFile, &str) -> T,
+) -> Result<T, ParseOutcome> {
     #[expect(
         clippy::disallowed_methods,
-        reason = "the one parse site; it runs on the sized stack of `parse_source`"
+        reason = "the one parse site; it runs on the sized stack of `with_parsed`"
     )]
     let parsed = SourceFile::parse(source, edition);
     match parsed.errors().len() {
-        0 => ParseOutcome::Parsed,
-        count => ParseOutcome::Failed {
+        0 => Ok(visit(&parsed.tree(), source)),
+        count => Err(ParseOutcome::Failed {
             error_count: u32::try_from(count).unwrap_or(u32::MAX),
-        },
+        }),
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use ra_ap_syntax::AstNode;
+
     use super::*;
 
     const EDITION: Edition = Edition::Edition2024;
@@ -313,8 +341,39 @@ mod tests {
     }
 
     #[test]
+    fn visit_gets_the_tree_and_the_normalized_text() {
+        let result = with_parsed("fn f() {}\r\n", EDITION, |file, text| {
+            (file.syntax().text_range().end(), text.to_owned())
+        });
+        let Ok((end, text)) = result else {
+            panic!("the source parses");
+        };
+        assert_eq!(text, "fn f() {}\n");
+        assert_eq!(usize::from(end), text.len());
+    }
+
+    #[test]
+    fn visit_does_not_run_on_a_source_with_errors() {
+        let result = with_parsed("fn f( {", EDITION, |_, _| panic!("no visit"));
+        assert!(matches!(result, Err(ParseOutcome::Failed { .. })));
+    }
+
+    #[test]
+    fn visit_does_not_run_on_a_source_that_nests_too_deep() {
+        let source = "(".repeat(TOO_DEEP);
+        let result = with_parsed(&source, EDITION, |_, _| panic!("no visit"));
+        assert_eq!(result, Err(ParseOutcome::TooDeep));
+    }
+
+    #[test]
+    fn visit_panic_is_reported() {
+        let result = with_parsed("fn f() {}", EDITION, |_, _| -> u8 { panic!("visit panic") });
+        assert_eq!(result, Err(ParseOutcome::Panicked));
+    }
+
+    #[test]
     fn parser_panic_is_reported() {
-        let outcome = run_with_stack(BASE_STACK, || panic!("parser panic"));
-        assert_eq!(outcome, ParseOutcome::Panicked);
+        let outcome = run_with_stack(BASE_STACK, || -> u8 { panic!("parser panic") });
+        assert_eq!(outcome, Err(ParseOutcome::Panicked));
     }
 }

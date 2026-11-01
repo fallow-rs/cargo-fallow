@@ -2,17 +2,24 @@
 //!
 //! A mutant can allocate without limit, and a test timeout does not protect the
 //! machine: on 2026-10-28 two mutants grew to 116 GB and 70 GB within 180 s, and
-//! the Mac had a kernel panic. So a thread watches each process tree:
+//! the Mac had a kernel panic. So two threads watch each process tree.
+//!
+//! The decision thread reads the footprint:
 //!
 //! - It kills a tree when a test process passes the per-process limit.
 //! - It kills the largest tree when the free memory drops under the floor.
 //! - It kills the trees when it cannot read the memory data, so a failure of the
 //!   guard does not leave a mutant without a limit.
 //!
+//! A read of the footprint through `top` takes about 0.7 s, and a mutant can write
+//! more than 5 GiB in each second (both measured). So the second thread reads the
+//! cheap RSS value often, and it stops a process above the limit until the decision
+//! thread has the footprint. RSS never kills a process: it only stops growth.
+//!
 //! A watchdog process kills the trees when this process dies, because a test
 //! process has no other limit after that.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs;
 use std::io::{self, Read};
@@ -24,19 +31,25 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::mutation::probe::{Probe, Row, system_probe};
-use crate::mutation::process::{descendants, kill_tree, new_command};
+use crate::mutation::process::{descendants, kill_tree, new_command, signal};
 
 /// The default limit for one test process: 4 GiB.
 pub const DEFAULT_LIMIT_MIB: u64 = 4096;
 /// The default floor of the free memory.
 pub const DEFAULT_LOW_PERCENT: u32 = 25;
-/// The time between two checks.
-const TICK: Duration = Duration::from_millis(250);
+/// The time between two reads of RSS.
+const RSS_TICK: Duration = Duration::from_millis(200);
+/// The same time when a process is a candidate.
+const CANDIDATE_RSS_TICK: Duration = Duration::from_millis(50);
+/// The time between two checks of the decision thread.
+const DECISION_TICK: Duration = Duration::from_millis(100);
 /// The longest time between two reads of the footprint of a test tree. A
 /// process with most of its pages compressed has a low RSS, so a candidate
 /// filter alone can miss it.
 const FOOTPRINT_EVERY: Duration = Duration::from_secs(5);
-/// Above the floor by this margin the footprint comes only from candidates.
+/// The same time when a process is a candidate.
+const CANDIDATE_FOOTPRINT_EVERY: Duration = Duration::from_secs(1);
+/// Under the floor plus this margin, each check reads the footprint.
 const PRESSURE_MARGIN: u32 = 15;
 /// The checks in a row without memory data before the guard stops the trees.
 const BLIND_LIMIT: u32 = 5;
@@ -192,6 +205,12 @@ struct Registry {
     next: u64,
     entries: BTreeMap<u64, Entry>,
     kills: u32,
+    /// The processes that the RSS thread stopped. The decision thread resumes the
+    /// ones that it does not kill.
+    stopped: BTreeSet<u32>,
+    /// The RSS of each process with a small footprint at its last check. The RSS
+    /// thread stops such a process again only after more growth.
+    cleared: BTreeMap<u32, u64>,
     /// The file for the watchdog. It holds the root of each tree.
     roots_file: Option<PathBuf>,
 }
@@ -225,7 +244,7 @@ impl Shared {
 /// The running guard.
 pub struct Guard {
     shared: Arc<Shared>,
-    thread: Option<JoinHandle<()>>,
+    threads: Vec<JoinHandle<()>>,
     watchdog: Option<Child>,
     probe: Option<Arc<dyn Probe>>,
     limits: Limits,
@@ -239,7 +258,7 @@ impl Guard {
                 registry: Mutex::new(Registry::default()),
                 stop: AtomicBool::new(false),
             }),
-            thread: None,
+            threads: Vec::new(),
             watchdog: None,
             probe: None,
             limits: Limits::new(DEFAULT_LIMIT_MIB, DEFAULT_LOW_PERCENT),
@@ -265,8 +284,14 @@ impl Guard {
         let mut guard = Self::disabled();
         guard.limits = limits;
         guard.probe = Some(Arc::clone(&probe));
+        let (shared, rss_probe) = (Arc::clone(&guard.shared), Arc::clone(&probe));
+        guard.threads.push(thread::spawn(move || {
+            rss_loop(&shared, &*rss_probe, limits);
+        }));
         let shared = Arc::clone(&guard.shared);
-        guard.thread = Some(thread::spawn(move || watch_loop(&shared, &*probe, limits)));
+        guard.threads.push(thread::spawn(move || {
+            decision_loop(&shared, &*probe, limits);
+        }));
         guard
     }
 
@@ -331,7 +356,7 @@ impl Guard {
 impl Drop for Guard {
     fn drop(&mut self) {
         self.shared.stop.store(true, Ordering::SeqCst);
-        if let Some(thread) = self.thread.take() {
+        for thread in self.threads.drain(..) {
             // A panic of the thread has no more effect here.
             let _ = thread.join();
         }
@@ -369,14 +394,119 @@ impl Watch<'_> {
     }
 }
 
-fn watch_loop(shared: &Shared, probe: &dyn Probe, limits: Limits) {
+/// The watched roots that the guard did not kill yet.
+fn current_roots(shared: &Shared) -> Vec<(u64, u32, Scope)> {
+    shared
+        .lock()
+        .entries
+        .iter()
+        .filter(|(_, entry)| entry.reason.is_none())
+        .map(|(&ticket, entry)| (ticket, entry.root, entry.scope))
+        .collect()
+}
+
+fn trees_of(rows: &[Row], roots: &[(u64, u32, Scope)]) -> Vec<Tree> {
+    roots
+        .iter()
+        .map(|&(ticket, root, scope)| {
+            let mut pids = descendants(rows, root);
+            pids.push(root);
+            Tree {
+                ticket,
+                scope,
+                pids,
+            }
+        })
+        .collect()
+}
+
+fn rss_of(rows: &[Row], pid: u32) -> u64 {
+    rows.iter()
+        .find(|row| row.pid == pid)
+        .map_or(0, |row| row.rss_kib)
+}
+
+/// Reads RSS often and stops each process that needs a decision. A stopped process
+/// cannot grow while the decision thread waits for `top`.
+fn rss_loop(shared: &Shared, probe: &dyn Probe, limits: Limits) {
+    let mut blind = 0;
+    while !shared.stop.load(Ordering::SeqCst) {
+        let roots = current_roots(shared);
+        let mut tick = RSS_TICK;
+        if !roots.is_empty() {
+            if let Ok(rows) = probe.table() {
+                blind = 0;
+                let trees = trees_of(&rows, &roots);
+                let (candidate, to_stop) =
+                    rss_decision(shared, &trees, &rows, probe.free_percent(), limits);
+                if candidate {
+                    tick = CANDIDATE_RSS_TICK;
+                }
+                if !to_stop.is_empty() {
+                    signal("-STOP", &to_stop);
+                }
+            } else {
+                blind += 1;
+                if blind >= BLIND_LIMIT {
+                    for &(ticket, _, _) in &roots {
+                        kill(shared, ticket, KillReason::Blind);
+                    }
+                }
+            }
+        }
+        thread::sleep(tick);
+    }
+}
+
+/// Returns true when a test process is a candidate, and the processes to stop.
+fn rss_decision(
+    shared: &Shared,
+    trees: &[Tree],
+    rows: &[Row],
+    free: Option<u32>,
+    limits: Limits,
+) -> (bool, Vec<u32>) {
+    let test_pids = || {
+        trees
+            .iter()
+            .filter(|tree| tree.scope == Scope::Tests)
+            .flat_map(|tree| tree.pids.iter().copied())
+    };
+    let candidate = test_pids().any(|pid| rss_of(rows, pid) >= limits.candidate_kib());
+    let mut registry = shared.lock();
+    let margin = limits.process_kib / 4;
+    let mut to_stop: Vec<u32> = test_pids()
+        .filter(|&pid| rss_of(rows, pid) > limits.process_kib)
+        .filter(|pid| !registry.stopped.contains(pid))
+        .filter(|pid| {
+            registry
+                .cleared
+                .get(pid)
+                .is_none_or(|&rss| rss_of(rows, *pid) >= rss + margin)
+        })
+        .collect();
+    if free.is_some_and(|free| free < limits.low_percent) {
+        let largest = trees
+            .iter()
+            .flat_map(|tree| tree.pids.iter().copied())
+            .max_by_key(|&pid| rss_of(rows, pid));
+        to_stop.extend(largest.filter(|pid| !registry.stopped.contains(pid)));
+    }
+    to_stop.sort_unstable();
+    to_stop.dedup();
+    registry.stopped.extend(to_stop.iter().copied());
+    drop(registry);
+    (candidate, to_stop)
+}
+
+fn decision_loop(shared: &Shared, probe: &dyn Probe, limits: Limits) {
     let mut state = WatchState {
         last_footprint: None,
         blind: 0,
     };
     while !shared.stop.load(Ordering::SeqCst) {
         state.tick(shared, probe, limits);
-        thread::sleep(TICK);
+        thread::sleep(DECISION_TICK);
     }
 }
 
@@ -387,34 +517,18 @@ struct WatchState {
 
 impl WatchState {
     fn tick(&mut self, shared: &Shared, probe: &dyn Probe, limits: Limits) {
-        let roots: Vec<(u64, u32, Scope)> = shared
-            .lock()
-            .entries
-            .iter()
-            .filter(|(_, entry)| entry.reason.is_none())
-            .map(|(&ticket, entry)| (ticket, entry.root, entry.scope))
-            .collect();
+        let roots = current_roots(shared);
         if roots.is_empty() {
             self.blind = 0;
+            resume_stopped(shared);
             return;
         }
         let Ok(rows) = probe.table() else {
             return self.count_blind(shared, &roots);
         };
-        let trees: Vec<Tree> = roots
-            .iter()
-            .map(|&(ticket, root, scope)| {
-                let mut pids = descendants(&rows, root);
-                pids.push(root);
-                Tree {
-                    ticket,
-                    scope,
-                    pids,
-                }
-            })
-            .collect();
+        let trees = trees_of(&rows, &roots);
         let free = probe.free_percent();
-        if !self.needs_footprint(&trees, &rows, free, limits) {
+        if !self.needs_footprint(shared, &trees, &rows, free, limits) {
             return;
         }
         let pids: Vec<u32> = trees.iter().flat_map(|tree| tree.pids.clone()).collect();
@@ -432,26 +546,38 @@ impl WatchState {
         for (ticket, reason) in decide(&trees, &footprints, free, limits) {
             kill(shared, ticket, reason);
         }
+        note_cleared(shared, &rows);
+        resume_stopped(shared);
     }
 
     fn needs_footprint(
         &self,
+        shared: &Shared,
         trees: &[Tree],
         rows: &[Row],
         free: Option<u32>,
         limits: Limits,
     ) -> bool {
+        if !shared.lock().stopped.is_empty() {
+            return true;
+        }
         let pressure = free.is_some_and(|free| free < limits.low_percent + PRESSURE_MARGIN);
         let tests: Vec<&Tree> = trees.iter().filter(|t| t.scope == Scope::Tests).collect();
         let candidate = tests.iter().any(|tree| {
-            rows.iter()
-                .any(|row| row.rss_kib >= limits.candidate_kib() && tree.pids.contains(&row.pid))
+            tree.pids
+                .iter()
+                .any(|&pid| rss_of(rows, pid) >= limits.candidate_kib())
         });
+        let period = if candidate {
+            CANDIDATE_FOOTPRINT_EVERY
+        } else {
+            FOOTPRINT_EVERY
+        };
         let due = !tests.is_empty()
             && self
                 .last_footprint
-                .is_none_or(|last| last.elapsed() >= FOOTPRINT_EVERY);
-        pressure || candidate || due
+                .is_none_or(|last| last.elapsed() >= period);
+        pressure || due
     }
 
     /// Stops all trees after too many checks in a row without memory data.
@@ -463,6 +589,30 @@ impl WatchState {
         for &(ticket, _, _) in roots {
             kill(shared, ticket, KillReason::Blind);
         }
+    }
+}
+
+/// Remembers the RSS of each stopped process that the decision did not kill.
+fn note_cleared(shared: &Shared, rows: &[Row]) {
+    let mut registry = shared.lock();
+    let stopped: Vec<u32> = registry.stopped.iter().copied().collect();
+    for pid in stopped {
+        let rss = rss_of(rows, pid);
+        registry.cleared.insert(pid, rss);
+    }
+}
+
+/// Resumes each stopped process. A process of a killed tree is gone, and a signal
+/// to it changes nothing.
+fn resume_stopped(shared: &Shared) {
+    let mut registry = shared.lock();
+    let stopped = std::mem::take(&mut registry.stopped);
+    if registry.entries.is_empty() {
+        registry.cleared.clear();
+    }
+    drop(registry);
+    if !stopped.is_empty() {
+        signal("-CONT", &stopped.into_iter().collect::<Vec<u32>>());
     }
 }
 
@@ -765,6 +915,34 @@ mod tests {
         let guard = Guard::with_probe(LIMITS, fake);
         let exit = sleep_under(&guard, Scope::Tests, LONG);
         assert_eq!(exit, Exit::Killed(KillReason::Blind));
+    }
+
+    /// A large file mapping counts in RSS and not in the footprint. RSS stops the
+    /// process only until `top` has the footprint.
+    #[cfg(unix)]
+    #[test]
+    fn a_process_with_a_large_rss_and_a_small_footprint_runs_on() {
+        let probe = FakeProbe::new(OVER, Ok(1), 80);
+        let reads = Arc::clone(&probe);
+        let guard = Guard::with_probe(LIMITS, probe);
+        let Ok(dir) = tempfile::tempdir() else {
+            panic!("a temporary directory");
+        };
+        let mut command = new_command("sh");
+        command.args(["-c", "sleep 1; exit 7"]);
+        let Ok(exit) = run_to_files(
+            command,
+            &dir.path().join("out"),
+            &dir.path().join("err"),
+            Duration::from_secs(20),
+            &guard,
+            Scope::Tests,
+        ) else {
+            panic!("sh must start");
+        };
+        assert_eq!(exit, Exit::Code(Some(7)));
+        assert!(reads.footprint_reads.load(Ordering::SeqCst) >= 1);
+        assert_eq!(guard.kills(), 0);
     }
 
     #[test]

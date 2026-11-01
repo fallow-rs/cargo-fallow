@@ -126,7 +126,7 @@ pub fn kill_tree(root: u32) {
 
 /// Sends a signal through the shell builtin, which needs no unsafe code and no
 /// `kill` program in the image.
-fn signal(signal: &str, pids: &[u32]) {
+pub fn signal(signal: &str, pids: &[u32]) {
     let pids: Vec<String> = pids.iter().map(u32::to_string).collect();
     // A process that is gone gives an error status, and that changes nothing.
     let _ = new_command("sh")

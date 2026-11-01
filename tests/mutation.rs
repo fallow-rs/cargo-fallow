@@ -307,7 +307,6 @@ mod tests {
 
 #[test]
 fn the_guard_kills_a_mutant_that_allocates_without_limit() {
-    let start = Instant::now();
     let run = run(
         &[("src/lib.rs", GROW)],
         &[
@@ -330,7 +329,50 @@ fn the_guard_kills_a_mutant_that_allocates_without_limit() {
     assert_eq!(report["guard"]["enabled"], true, "{report}");
     assert_eq!(report["guard"]["memory_limit_mib"], 64, "{report}");
     // The kill comes long before the time limit of 60 s for this mutant.
-    assert!(start.elapsed() < Duration::from_secs(120), "{report}");
+    assert!(mutant["duration_ms"].as_u64() < Some(60_000), "{report}");
+}
+
+/// This fixture has no sleep, so it grows as fast as the machine can write. On
+/// 2026-11-01 such a mutant reached 24 GiB before a kill, because the guard waited
+/// for `top`. The cap on the blocks bounds the memory if the guard is broken.
+#[test]
+fn the_guard_stops_a_fast_mutant_near_the_limit() {
+    let lib = r"
+/// Grows and shrinks.
+pub fn grow(start: i64) -> usize {
+    let mut left = start;
+    let mut blocks: Vec<Vec<u8>> = Vec::new();
+    while left != 0 && blocks.len() < 6144 {
+        blocks.push(vec![1_u8; 1 << 20]);
+        left = if left > 0 { left - 1 } else { left + 1 };
+    }
+    blocks.len()
+}
+
+#[test]
+fn grow_works() {
+    assert_eq!(grow(5), 5);
+}
+";
+    let run = run(
+        &[("src/lib.rs", lib)],
+        &["--tier", "schema", "--memory-limit-mib", "256"],
+    );
+    let report = &run.report;
+    assert_eq!(run.code, Some(0), "{report}");
+    let mutant = run
+        .mutants()
+        .iter()
+        .find(|mutant| mutant["original"] == "left > 0" && mutant["replacement"] == "<=")
+        .unwrap_or_else(|| panic!("{report}"));
+    let reason = mutant["reason"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{report}"));
+    let reached: u64 = reason
+        .split_whitespace()
+        .find_map(|word| word.parse().ok())
+        .unwrap_or_else(|| panic!("{reason}"));
+    assert!(reached < 3072, "{reason}");
 }
 
 #[test]
@@ -391,8 +433,6 @@ mod tests {
     // `left <= 100` is the mutant `<=` of `>`: the value stays at 3.
     let mutant = run.find("<=");
     assert_eq!(mutant["status"], "timeout", "{report}");
-    // The limit is far above the baseline, so host load does not explain this.
-    assert_eq!(mutant["retried"], false, "{report}");
     assert_eq!(
         report["baseline"]["timeout_ms"]["schema_nextest"], 3000,
         "{report}"

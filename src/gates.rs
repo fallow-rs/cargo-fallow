@@ -137,7 +137,7 @@ fn parse_error(workspace: &Workspace, enforced: bool) -> (GateOutcome, Vec<Unrea
 
 /// The parser edition for the edition name in the Cargo metadata. A name that
 /// this version of the parser does not know gets its newest edition.
-fn parse_edition(name: &str) -> Edition {
+pub fn parse_edition(name: &str) -> Edition {
     match name {
         "2015" => Edition::Edition2015,
         "2018" => Edition::Edition2018,

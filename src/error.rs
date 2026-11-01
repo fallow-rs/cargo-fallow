@@ -19,6 +19,8 @@ pub enum ErrorCode {
     MetadataFailed,
     /// The report could not be written.
     OutputFailed,
+    /// A file operation or a process of the `schema-spike` command failed.
+    SpikeFailed,
 }
 
 impl ErrorCode {
@@ -29,6 +31,7 @@ impl ErrorCode {
             Self::ManifestNotFound => "CARGO_FALLOW_MANIFEST_NOT_FOUND",
             Self::MetadataFailed => "CARGO_FALLOW_METADATA_FAILED",
             Self::OutputFailed => "CARGO_FALLOW_OUTPUT_FAILED",
+            Self::SpikeFailed => "CARGO_FALLOW_SPIKE_FAILED",
         }
     }
 }

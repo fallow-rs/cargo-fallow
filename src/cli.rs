@@ -2,6 +2,7 @@
 
 use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
+use std::time::Duration;
 
 use clap::error::ErrorKind;
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -41,6 +42,8 @@ pub struct Options {
 pub enum Parsed {
     /// Run `check` with these options.
     Run(Options),
+    /// Run the hidden `schema-spike` command with these options.
+    Spike(crate::mutation::spike::Options),
     /// Stop with this exit code. The parser already wrote its output.
     Exit(u8),
 }
@@ -64,6 +67,40 @@ struct Cli {
 enum Command {
     /// Analyze the workspace. This is the default command.
     Check(CheckArgs),
+    /// Measure mutant schemata on one crate. The M1 spike uses this command.
+    #[command(hide = true)]
+    SchemaSpike(SpikeArgs),
+}
+
+#[derive(Debug, Args)]
+struct SpikeArgs {
+    /// Path to the Cargo.toml of the workspace.
+    #[arg(long, value_name = "PATH")]
+    manifest_path: PathBuf,
+    /// The package to mutate.
+    #[arg(long)]
+    package: String,
+    /// A new folder for the copies, the build output and the logs.
+    #[arg(long, value_name = "PATH")]
+    work_dir: PathBuf,
+    /// Do not run the baseline tests.
+    #[arg(long)]
+    skip_tests: bool,
+    /// The time limit of each test suite, in seconds.
+    #[arg(long, value_name = "SECONDS", default_value_t = 900)]
+    test_timeout: u64,
+}
+
+impl From<SpikeArgs> for crate::mutation::spike::Options {
+    fn from(args: SpikeArgs) -> Self {
+        Self {
+            manifest_path: args.manifest_path,
+            package: args.package,
+            work_dir: args.work_dir,
+            skip_tests: args.skip_tests,
+            test_limit: Duration::from_secs(args.test_timeout),
+        }
+    }
 }
 
 #[derive(Debug, Args)]
@@ -105,13 +142,11 @@ pub fn strip_cargo_subcommand(mut args: Vec<OsString>) -> Vec<OsString> {
 /// exit code.
 pub fn parse(args: &[OsString]) -> Parsed {
     match Cli::try_parse_from(args) {
-        Ok(cli) => {
-            let check = match cli.command {
-                Some(Command::Check(check)) => check,
-                None => cli.check,
-            };
-            Parsed::Run(check.into())
-        }
+        Ok(cli) => match cli.command {
+            Some(Command::SchemaSpike(spike)) => Parsed::Spike(spike.into()),
+            Some(Command::Check(check)) => Parsed::Run(check.into()),
+            None => Parsed::Run(cli.check.into()),
+        },
         Err(err) => Parsed::Exit(report_usage_error(&err, args)),
     }
 }

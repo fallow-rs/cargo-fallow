@@ -24,6 +24,9 @@ cargo metadata -> workspace model -> gates -> report -> render
 - `src/report.rs` holds the report shape.
 - `src/render/` writes the human, JSON and SARIF output.
 - `src/error.rs` holds the CLI errors and their codes.
+- `src/parse.rs` holds the bounded parse. Each parse goes through this module.
+- `src/mutation/` holds the mutant schema prototype and the hidden
+  `schema-spike` command.
 
 Internal parts are modules, not crates. Shared wire types come from
 `fallow-report-protocol`. Do not define a second copy of them here.

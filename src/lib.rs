@@ -4,18 +4,21 @@
 //! holds every module, so the `missing_docs` lint checks the public API.
 //! The public API is [`run`] only. The modules are internal.
 
-// Only the workspace loader spawns a process. See `.clippy.toml`.
+// Only the workspace loader and the mutation runner spawn a process. See
+// `.clippy.toml`.
 #![cfg_attr(not(test), deny(clippy::disallowed_methods))]
 
 mod cli;
 mod error;
 mod gates;
+mod mutation;
 mod parse;
 mod render;
 mod report;
 mod workspace;
 
 use std::ffi::OsString;
+use std::io;
 use std::process::ExitCode;
 
 use fallow_report_protocol::exit_code::{EXIT_GATE_FAILED, EXIT_INVALID_INPUT, EXIT_OK};
@@ -32,6 +35,7 @@ pub fn run(args: Vec<OsString>) -> ExitCode {
     let args = cli::strip_cargo_subcommand(args);
     let code = match cli::parse(&args) {
         Parsed::Run(options) => run_check(&options),
+        Parsed::Spike(options) => run_spike(&options),
         Parsed::Exit(code) => code,
     };
     ExitCode::from(code)
@@ -43,6 +47,24 @@ fn run_check(options: &Options) -> u8 {
         Ok(code) => code,
         Err(err) => {
             err.emit(options.format);
+            EXIT_INVALID_INPUT
+        }
+    }
+}
+
+/// Runs the hidden `schema-spike` command and returns the process exit code.
+/// The report goes to stdout as JSON. A measured failure of the crate is part of
+/// the report, not an error.
+fn run_spike(options: &mutation::spike::Options) -> u8 {
+    let result = mutation::spike::run(options).and_then(|report| {
+        let text = serde_json::to_string_pretty(&report)
+            .map_err(|err| CliError::output(&io::Error::other(err)))?;
+        render::write_stdout(&text).map_err(|err| CliError::output(&err))
+    });
+    match result {
+        Ok(()) => EXIT_OK,
+        Err(err) => {
+            err.emit(cli::Format::Json);
             EXIT_INVALID_INPUT
         }
     }

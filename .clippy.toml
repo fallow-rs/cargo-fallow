@@ -7,9 +7,9 @@ disallowed-types = [
 
 # Process spawning is allowed crate-wide in Cargo.toml, then denied again at
 # the crate root in src/lib.rs, the same pattern as the fallow analysis
-# crates. The workspace loader in src/workspace.rs is the one module that
-# spawns a process: it runs `cargo metadata`. It carries a narrow expectation
-# at that call site. fallow also bans `glob::glob`. This crate does not depend
+# crates. Two modules spawn a process, and each one carries a narrow expectation
+# at its one call site: the workspace loader in src/workspace.rs runs
+# `cargo metadata`, and src/mutation/process.rs runs cargo. fallow also bans `glob::glob`. This crate does not depend
 # on the glob crate, so that entry does not apply.
 #
 # `MetadataCommand::exec` is in the list because it spawns `cargo` inside the
@@ -19,7 +19,7 @@ disallowed-methods = [
     # `parse::parse_source`, so deep nesting cannot overflow the stack. This
     # entry is the Rust form of scripts/check-parse-sites.mjs in fallow.
     { path = "ra_ap_syntax::SourceFile::parse", reason = "Parse workspace source only through parse::parse_source, which limits the nesting and bounds the stack" },
-    { path = "std::process::Command::new", reason = "Only the workspace loader spawns a process; the deny is scoped by a crate-root attribute" },
+    { path = "std::process::Command::new", reason = "Only the workspace loader and the mutation runner spawn a process; the deny is scoped by a crate-root attribute" },
     { path = "cargo_metadata::MetadataCommand::exec", reason = "Only the workspace loader spawns `cargo metadata`; the deny is scoped by a crate-root attribute" },
 ]
 

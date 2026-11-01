@@ -18,6 +18,9 @@ use crate::mutation::probe::{Row, system_probe};
 /// The time between two checks of a running child.
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
 
+/// The compiler flag that keeps each lint at the warning level.
+const CAP_LINTS: &str = "--cap-lints=warn";
+
 /// How a child process ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Exit {
@@ -32,7 +35,9 @@ pub enum Exit {
 /// A `cargo` command that runs in `dir` and builds into `target_dir`.
 ///
 /// The environment makes two builds with the same command comparable: no
-/// compiler wrapper, a fixed job count, and no active mutant.
+/// compiler wrapper, a fixed job count, and no active mutant. A mutant often
+/// starts a lint, for example an unused variable. In a crate with
+/// `deny(warnings)` that says nothing about the mutant, so lints stay warnings.
 pub fn cargo(dir: &Path, target_dir: &Path, jobs: usize) -> Command {
     let mut command = new_command("cargo");
     command
@@ -41,6 +46,12 @@ pub fn cargo(dir: &Path, target_dir: &Path, jobs: usize) -> Command {
         .env("CARGO_BUILD_JOBS", jobs.to_string())
         .env("RUSTC_WRAPPER", "")
         .env_remove("FALLOW_MUTANT");
+    // RUSTFLAGS replaces the flags of the Cargo config, so it gets an addition.
+    // Without it, the config variable joins the flags of the Cargo config.
+    match std::env::var("RUSTFLAGS") {
+        Ok(flags) => command.env("RUSTFLAGS", format!("{flags} {CAP_LINTS}")),
+        Err(_) => command.env("CARGO_BUILD_RUSTFLAGS", CAP_LINTS),
+    };
     command
 }
 

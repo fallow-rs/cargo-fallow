@@ -253,6 +253,34 @@ fn rebuild_mutants_run_in_their_own_tier() {
     );
 }
 
+/// A crate with `deny(warnings)` must not turn a lint in a mutant into a compile
+/// error: the mutant is valid code, and the tests can judge it.
+#[test]
+fn a_lint_in_a_rebuild_mutant_is_not_a_compile_error() {
+    let lib = r"
+#![deny(warnings)]
+/// The return value replaces the only use of the parameter.
+pub fn same(a: bool) -> bool {
+    a
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn same_works() {
+        assert!(super::same(true));
+        assert!(!super::same(false));
+    }
+}
+";
+    let run = run(&[("src/lib.rs", lib)], &["--tier", "rebuild"]);
+    let report = &run.report;
+    assert_eq!(run.code, Some(0), "{}", run.stderr);
+    let returns = run.with_operator("return-value");
+    assert_eq!(returns.len(), 2, "{report}");
+    assert!(returns.iter().all(|m| m["status"] == "killed"), "{report}");
+}
+
 /// The mutant `left <= 0` never ends and grows by 1 MiB for each step. A sleep
 /// bounds the rate, so the time limit bounds the memory if the guard is broken.
 const GROW: &str = r"
@@ -303,6 +331,35 @@ fn the_guard_kills_a_mutant_that_allocates_without_limit() {
     assert_eq!(report["guard"]["memory_limit_mib"], 64, "{report}");
     // The kill comes long before the time limit of 60 s for this mutant.
     assert!(start.elapsed() < Duration::from_secs(120), "{report}");
+}
+
+#[test]
+fn a_test_over_the_limit_with_no_mutant_stops_the_run_with_the_reason() {
+    let lib = r"
+/// Has a test.
+pub fn f(x: u8) -> bool {
+    x == 1
+}
+
+#[test]
+fn large() {
+    let mut blocks = Vec::new();
+    for _ in 0..512 {
+        blocks.push(vec![1_u8; 1 << 20]);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(f(1) && !blocks.is_empty());
+}
+";
+    let run = run(
+        &[("src/lib.rs", lib)],
+        &["--tier", "schema", "--memory-limit-mib", "64"],
+    );
+    assert_eq!(run.code, Some(2), "{}", run.report);
+    let message = run.report["message"].as_str().expect("a message");
+    assert!(message.contains("over the limit of 64 MiB"), "{message}");
+    let help = run.report["help"].as_str().expect("a hint");
+    assert!(help.contains("--memory-limit-mib"), "{help}");
 }
 
 #[test]

@@ -72,6 +72,26 @@ fn failure(action: &str, err: &io::Error) -> CliError {
     CliError::new(ErrorCode::MutationFailed, format!("cannot {action}: {err}"))
 }
 
+/// A guard kill with no mutant says that the limit is too low for this package,
+/// or that the machine has too little free memory.
+fn stop_on_kill(exit: &Exit) -> io::Result<()> {
+    match exit {
+        Exit::Killed(reason) => Err(io::Error::other(reason.to_string())),
+        _ => Ok(()),
+    }
+}
+
+/// The error of a baseline run, with a hint for a guard kill.
+fn baseline_failure(action: &str, err: &io::Error) -> CliError {
+    let error = failure(action, err);
+    if err.to_string().contains("memory guard") {
+        return error.with_help(
+            "Raise `--memory-limit-mib` when the tests of this package need more memory.",
+        );
+    }
+    error
+}
+
 fn baseline_run(tree: TestTree<'_>, meta: &BuildMeta, label: &str) -> io::Result<TestRun> {
     let spec = RunSpec {
         label: label.to_owned(),
@@ -81,8 +101,10 @@ fn baseline_run(tree: TestTree<'_>, meta: &BuildMeta, label: &str) -> io::Result
         jobs: 1,
         exclude: BTreeSet::new(),
     };
-    let (_, nextest) = run_nextest(tree, meta, &spec)?;
-    let (_, doc) = run_doctests(tree, &spec)?;
+    let (exit, nextest) = run_nextest(tree, meta, &spec)?;
+    stop_on_kill(&exit)?;
+    let (exit, doc) = run_doctests(tree, &spec)?;
+    stop_on_kill(&exit)?;
     Ok(TestRun { nextest, doc })
 }
 
@@ -213,7 +235,7 @@ impl Engine<'_> {
         };
         let schema_setup = self
             .schema_setup(&schema, schema_tree, &clean, &mut baseline)
-            .map_err(|err| failure("run the schema baseline", &err))?;
+            .map_err(|err| baseline_failure("run the schema baseline", &err))?;
         baseline.timeout_ms.rebuild_nextest = millis(self.limit_for(clean.nextest.elapsed_ms));
         baseline.timeout_ms.rebuild_doc = millis(self.limit_for(clean.doc.elapsed_ms));
         let doctests = self.options.doctests && clean.doc.status == SuiteStatus::Completed;
@@ -273,8 +295,8 @@ impl Engine<'_> {
                 )
             })?;
         self.progress("running the clean baseline");
-        let clean =
-            baseline_run(tree, &meta, "clean").map_err(|err| failure("run the baseline", &err))?;
+        let clean = baseline_run(tree, &meta, "clean")
+            .map_err(|err| baseline_failure("run the baseline", &err))?;
         self.check_baseline(&clean)?;
         Ok((meta, clean))
     }

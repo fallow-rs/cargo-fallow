@@ -69,7 +69,7 @@ its configuration.
 `mise.toml` pins the version of each local tool. Run `mise install` to get
 them, or install each tool by hand at the version in that file. The tools
 are `typos`, `cargo-shear`, `cargo-deny`, `cargo-audit`,
-`cargo-nextest`, `cargo-llvm-cov`, `actionlint`, `zizmor`, Node.js 22 and
+`cargo-nextest`, the `llvm-tools` component, `cargo-llvm-cov`, `actionlint`, `zizmor`, Node.js 22 and
 Python 3. The Hawk audit needs `cargo hawk` 0.1.17 on toolchain 1.99.0.
 
 ### Gates that this repository does not have yet

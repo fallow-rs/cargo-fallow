@@ -73,7 +73,7 @@ cargo fallow mutation --max-mutants 200 --time-budget 3600
 | `survived` | Each test passed, also in the retry. |
 | `timeout` | The tests did not end within the limit. A limit at most 10 times the baseline gets a retry with twice the limit, because host load can explain it. |
 | `flaky` | Two runs of the mutant disagree. |
-| `no_coverage` | No build reads the mutant (for example a `cfg` that is off), or the package has no test that passes. |
+| `no_coverage` | No test executes the mutant, no build reads it (for example a `cfg` that is off), or the package has no test that passes. `reason` says which. |
 | `compile_error` | The mutant does not compile. |
 | `runtime_error` | The run has no test result. `reason` says why, for example a kill by the memory guard. |
 | `pending` | The run stopped first: `--time-budget`, `--max-mutants`, `--no-run` or low memory. |
@@ -99,8 +99,70 @@ cgroup limit or `/proc/meminfo`. Other systems have no probe, so the command
 stops unless you pass `--no-memory-guard`.
 
 `--jobs` defaults to a quarter of the cores, with a maximum of 2. Each mutant run
-has a time limit of 5 times the baseline of its build, with a minimum of 20
-seconds. `--timeout` sets another value.
+has a time limit of 5 times the baseline of the tests that it runs, with a minimum
+of 20 seconds. `--timeout` sets another value.
+
+### Test selection
+
+A mutant runs only the tests that execute its lines, and the fastest test runs
+first. A mutant that no test executes gets `no_coverage` and does not run. A
+rebuild mutant then also gets no build, so a mutant that does not compile can get
+`no_coverage` and not `compile_error`.
+
+The selection comes from a coverage map:
+
+1. One build of the unmodified copy has `-C instrument-coverage`. The build needs
+   `llvm-profdata` and `llvm-cov` from the active toolchain. The command stops with
+   an error when they are missing. Run `rustup component add llvm-tools`.
+2. Each test that passes in the baseline runs alone through nextest, with its own
+   profile folder.
+3. The run converts the profiles of the test to line ranges at once and deletes
+   them.
+
+The rule is on the safe side. A test also runs for each mutant when it wrote no
+usable data, when it failed in the coverage build, or when its name is not plain
+text. Each test runs for a mutant on a line that has no coverage data in any test,
+and for a mutant in a constant context such as a `const fn`, because the compiler
+can evaluate that code and no test process then executes it.
+The `selection` part of the report counts these tests and these mutants.
+
+`--no-selection` runs each test for each mutant, with no coverage build. Use it to
+check a result. The selection changes a status in only two ways:
+
+- `survived` or `compile_error` becomes `no_coverage`.
+- `killed` and `timeout` can swap, when one test fails and another test never ends
+  with the same mutant. The run stops at the first result, and the selection changes
+  the order of the tests. Both count as detected, so the score does not change.
+
+Another difference is a bug.
+
+#### Doctests
+
+Doctests have no coverage data on stable Rust, because each doctest is a separate
+binary that the map cannot read. So the selection does not apply to them:
+
+- A mutant that the selected tests do not kill still runs all doctests, as without
+  selection. A doctest can kill it.
+- A mutant that no nextest test executes also runs all doctests. A failed doctest
+  gives `killed`. When the doctests pass, the mutant gets `no_coverage` with a
+  reason that says so, because the map cannot show that a doctest reached it.
+  Without selection the same mutant gets `survived`.
+- `--no-doctests` leaves them out, and the `gaps` part of the report says so.
+
+#### Cache and journal
+
+The run keeps two files in `target/fallow-mutation/<package>/` of the workspace, so
+`cargo clean` removes them. `--no-cache` turns both off.
+
+- The coverage map. Its key is a hash of each file of the workspace copy, the
+  compiler version, `RUSTFLAGS` and the tool version. Each change of a source or a
+  test gives a new map.
+- The journal: one line for each mutant with a result. The key also has the options
+  that change a verdict. A run that stops (`--time-budget`, `--max-mutants`, low
+  memory, a crash) leaves the journal, and the next run with the same key reports
+  those results and runs only the other mutants. `--max-mutants` then counts only
+  the new runs. A `runtime_error` runs again, because it can come from the state of
+  the machine. The journal goes when each mutant has a result.
 
 ### Limits
 
@@ -114,6 +176,13 @@ The `gaps` part of the report counts the code that a run does not cover:
 - Proc-macro targets have no mutants.
 - `.git` is not in the copy, so a test that reads it fails in the baseline and
   decides nothing.
+- A test can lose coverage data and still pass: a child process that the test
+  starts with an empty environment or that aborts writes no profile. A mutant that
+  only such a child executes gets `no_coverage`.
+- The coverage counters are not atomic. A race in a test with threads can in theory
+  hide an executed line. The tool does not turn on atomic counters.
+- A `rustflags` key under `[target]` in the Cargo config replaces the coverage
+  flag. Then each test has no data, a warning says so, and each mutant runs each test.
 
 ## Output formats
 

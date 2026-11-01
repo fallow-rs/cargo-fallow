@@ -15,6 +15,7 @@
 mod baseline;
 mod compile;
 mod files;
+mod id;
 mod process;
 mod schema;
 mod sites;

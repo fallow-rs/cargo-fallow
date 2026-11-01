@@ -15,6 +15,7 @@ use crate::mutation::compile::{
     render_all, run_loop,
 };
 use crate::mutation::files::{Collected, CrateFile, TargetRoot, collect, copy_tree};
+use crate::mutation::id::id_text;
 use crate::mutation::process::{Exit, cargo, run_to_files};
 use crate::mutation::schema::{Mode, Rendered};
 use crate::mutation::sites::Skipped;
@@ -425,10 +426,6 @@ fn summarize(errors: &[CompilerError]) -> Vec<ErrorSummary> {
 
 fn line_of(text: &str, offset: usize) -> usize {
     text[..offset].matches('\n').count() + 1
-}
-
-fn id_text(id: u64) -> String {
-    format!("{id:x}")
 }
 
 impl Report {

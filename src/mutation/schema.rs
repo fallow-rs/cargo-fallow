@@ -79,7 +79,9 @@ const ACTIVE_CALL: &str = "crate::__fallow_schema::active()";
 ///
 /// The helper takes each name from an `extern crate` item in its own module:
 /// that works in a `#![no_std]` crate and in a crate with
-/// `#![no_implicit_prelude]`.
+/// `#![no_implicit_prelude]`. A value that does not parse stops the process:
+/// a silent fallback to 0 runs the baseline, and that reports the mutant as a
+/// survivor.
 const HELPER: &str = r#"
 #[doc(hidden)]
 #[allow(dead_code, missing_docs, unreachable_pub, unused_extern_crates, unused_qualifications)]
@@ -90,10 +92,18 @@ mod __fallow_schema {
     pub(crate) fn active() -> u64 {
         *ACTIVE.get_or_init(|| match self::fallow_std::env::var("FALLOW_MUTANT") {
             self::fallow_std::result::Result::Ok(value) => {
-                u64::from_str_radix(&value, 16).unwrap_or(0)
+                match u64::from_str_radix(&value, 16) {
+                    self::fallow_std::result::Result::Ok(id) => id,
+                    self::fallow_std::result::Result::Err(_) => invalid(),
+                }
             }
-            self::fallow_std::result::Result::Err(_) => 0,
+            self::fallow_std::result::Result::Err(self::fallow_std::env::VarError::NotPresent) => 0,
+            self::fallow_std::result::Result::Err(_) => invalid(),
         })
+    }
+    fn invalid() -> ! {
+        self::fallow_std::eprintln!("cargo-fallow: FALLOW_MUTANT is not a hexadecimal mutant id");
+        self::fallow_std::process::abort()
     }
 }
 "#;

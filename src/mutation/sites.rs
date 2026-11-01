@@ -13,6 +13,7 @@ use std::ops::Range;
 use ra_ap_syntax::ast::{self, HasAttrs, HasName};
 use ra_ap_syntax::{AstNode, NodeOrToken, SourceFile, SyntaxKind, SyntaxNode, SyntaxToken};
 
+use crate::mutation::id::{IdInput, mutant_id};
 use crate::parse::{Edition, ParseOutcome, with_parsed};
 
 /// The shape of a mutation site.
@@ -36,6 +37,8 @@ pub struct Mutant {
     pub id: u64,
     /// The replacement operator, or [`NEGATE`].
     pub replacement: &'static str,
+    /// The operator name of the report.
+    pub operator: &'static str,
 }
 
 /// The replacement text of a negated condition.
@@ -240,6 +243,12 @@ impl Walk<'_> {
         let Some(under_cfg) = self.allowed(condition.syntax()) else {
             return;
         };
+        // `!(a == b)` is the mutant `a != b`, and `!(a < b)` is the mutant
+        // `a >= b` for a total order. A second copy adds a run and inflates the
+        // score.
+        if is_comparison(condition) {
+            return;
+        }
         if has_chain_let(condition) {
             self.found.skipped.let_chain += 1;
             return;
@@ -312,9 +321,19 @@ impl Walk<'_> {
             let mutants = site
                 .replacements
                 .iter()
-                .map(|&replacement| Mutant {
-                    id: mutant_id(file_key, site_text, *occurrence, replacement),
-                    replacement,
+                .map(|&replacement| {
+                    let operator = operator_name(replacement);
+                    Mutant {
+                        id: mutant_id(IdInput {
+                            file: file_key,
+                            site_text,
+                            occurrence: *occurrence,
+                            operator,
+                            replacement,
+                        }),
+                        replacement,
+                        operator,
+                    }
                 })
                 .collect();
             *occurrence += 1;
@@ -526,27 +545,32 @@ fn plain_name(name: &ast::Name) -> String {
         .map_or_else(|| text.clone(), str::to_owned)
 }
 
-/// The FNV-1a hash of the site. The value 0 means "no active mutant", so the
-/// function never returns it. The input has no line number, so an edit of other
-/// code does not change the id.
-fn mutant_id(file_key: &str, site_text: &str, occurrence: u32, replacement: &str) -> u64 {
-    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
-    const PRIME: u64 = 0x0100_0000_01b3;
-    let occurrence = occurrence.to_le_bytes();
-    let parts: [&[u8]; 4] = [
-        file_key.as_bytes(),
-        site_text.as_bytes(),
-        &occurrence,
-        replacement.as_bytes(),
-    ];
-    let mut hash = OFFSET_BASIS;
-    for part in parts {
-        for &byte in part {
-            hash = (hash ^ u64::from(byte)).wrapping_mul(PRIME);
-        }
-        hash = (hash ^ 0xff).wrapping_mul(PRIME);
+/// The operator name of a replacement.
+fn operator_name(replacement: &str) -> &'static str {
+    match replacement {
+        NEGATE => "negate-condition",
+        "&&" | "||" => "logical-operator",
+        _ => "relational-operator",
     }
-    hash.max(1)
+}
+
+/// True when the expression is a comparison, also inside parentheses.
+fn is_comparison(expr: &ast::Expr) -> bool {
+    match expr {
+        ast::Expr::BinExpr(binary) => binary.op_token().is_some_and(|token| {
+            matches!(
+                token.kind(),
+                SyntaxKind::EQ2
+                    | SyntaxKind::NEQ
+                    | SyntaxKind::L_ANGLE
+                    | SyntaxKind::LTEQ
+                    | SyntaxKind::R_ANGLE
+                    | SyntaxKind::GTEQ
+            )
+        }),
+        ast::Expr::ParenExpr(paren) => paren.expr().is_some_and(|inner| is_comparison(&inner)),
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -622,12 +646,25 @@ mod tests {
     #[test]
     fn condition_comes_before_the_binary_site_at_the_same_range() {
         assert_eq!(
-            found("fn f(a: bool, b: bool) { if a == b {} }"),
+            found("fn f(a: bool, b: bool) { if a && b {} }"),
             vec![
-                ("a == b".to_owned(), vec![NEGATE]),
-                ("a == b".to_owned(), vec!["!="])
+                ("a && b".to_owned(), vec![NEGATE]),
+                ("a && b".to_owned(), vec!["||"])
             ]
         );
+    }
+
+    #[test]
+    fn negation_of_a_comparison_is_not_a_second_mutant() {
+        for source in [
+            "fn f(a: u8, b: u8) { if a == b {} }",
+            "fn f(a: u8, b: u8) { if (a == b) {} }",
+            "fn f(a: u8, b: u8) { while a < b {} }",
+        ] {
+            let sites = found(source);
+            assert_eq!(sites.len(), 1, "{source}");
+            assert!(!sites[0].1.contains(&NEGATE), "{source}");
+        }
     }
 
     #[test]

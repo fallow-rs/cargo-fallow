@@ -1,22 +1,35 @@
 //! The `mutants` command: one package, one report.
 
+use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crate::cli::Format;
 use crate::error::{CliError, ErrorCode};
+use crate::gates::RustGateName;
 use crate::gates::parse_edition;
-use crate::mutation::engine::Engine;
-use crate::mutation::files::{Collected, TargetRoot, collect};
+use crate::mutation::coverage::{CoverageMap, LineTests};
+use crate::mutation::diff::Changed;
+use crate::mutation::engine::{Engine, rewrites_of};
+use crate::mutation::files::{Collected, CrateFile, TargetRoot, collect};
 use crate::mutation::guard::{Guard, Limits};
-use crate::mutation::report::{FileSkip, Gaps, GuardInfo, Report, Summary};
+use crate::mutation::plan::{Planned, lines_of, rebuild_mutants, schema_mutants};
+use crate::mutation::report::{
+    CoverageState, DiffInfo, FileSkip, Gaps, GuardInfo, INSPECT_KIND, InspectCoverage,
+    InspectReport, InspectedMutant, KIND, LANGUAGE, MutantRow, Report, Summary, actions_for,
+    survivor_gate,
+};
 use crate::mutation::workdir::{WorkDirs, prepare_copies};
+use crate::report::{SCHEMA_VERSION, TOOL_VERSION};
 use crate::workspace::{self, Member, Workspace};
 
 /// The target kinds that the engine mutates. A proc-macro runs in the compiler,
 /// so a test run does not select a mutant in it.
 const MUTATED_KINDS: [&str; 6] = ["lib", "rlib", "dylib", "cdylib", "staticlib", "bin"];
+
+/// The length of a mutant id.
+const ID_DIGITS: usize = 16;
 
 /// The tiers that a run selects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,6 +92,12 @@ pub struct Options {
     pub no_run: bool,
     /// True when the temporary work folder stays after the run.
     pub keep_work_dir: bool,
+    /// The ref of `--in-diff`.
+    pub in_diff: Option<String>,
+    /// True when a survivor fails the run.
+    pub fail_on_survivors: bool,
+    /// The id of `--inspect`.
+    pub inspect: Option<String>,
     /// The output format.
     pub format: Format,
     /// True when the progress lines stay hidden.
@@ -100,9 +119,14 @@ pub fn run(options: &Options) -> Result<Report, CliError> {
     let start = Instant::now();
     let workspace = workspace::load(options.manifest_path.as_deref())?;
     let member = find_member(&workspace, options.package.as_deref())?;
+    let changed = options
+        .in_diff
+        .as_deref()
+        .map(|reference| Changed::load(workspace.root.as_std_path(), reference))
+        .transpose()?;
     let dirs = WorkDirs::create(options.work_dir.as_deref())
         .map_err(|err| failure("create the work folder", &err))?;
-    let result = run_in(options, &workspace, member, &dirs, start);
+    let result = run_in(options, &workspace, member, &dirs, changed.as_ref(), start);
     dirs.finish(options.keep_work_dir);
     result
 }
@@ -112,13 +136,22 @@ fn run_in(
     workspace: &Workspace,
     member: &Member,
     dirs: &WorkDirs,
+    changed: Option<&Changed>,
     start: Instant,
 ) -> Result<Report, CliError> {
     let guard = start_guard(options, dirs)?;
     let target_dir = workspace.target_dir.as_std_path();
     prepare_copies(workspace.root.as_std_path(), target_dir, dirs, &guard)
         .map_err(|err| failure("copy the source tree", &err))?;
-    let collected = collect(&dirs.scratch, &target_roots(member));
+    let mut collected = collect(&dirs.scratch, &target_roots(member));
+    let sites_outside = changed.map_or(0, |changed| {
+        let removed = changed.retain_sites(&mut collected.files);
+        if options.tier.has_schema() {
+            removed
+        } else {
+            0
+        }
+    });
     let engine = Engine {
         options,
         guard: &guard,
@@ -128,14 +161,31 @@ fn run_in(
         start,
         target_dir: target_dir.to_path_buf(),
         package: member.name.clone(),
+        changed,
     };
-    let (rows, stages) = engine.run()?;
+    let (mut rows, stages) = engine.run()?;
+    let inspect = inspect_command(options, &member.name);
+    for row in &mut rows {
+        row.actions = actions_for(row, &inspect);
+    }
     let summary = Summary::of(&rows);
+    let gate = survivor_gate(&rows, options.no_run, options.fail_on_survivors);
     Ok(Report {
-        kind: "mutation",
+        schema_version: SCHEMA_VERSION,
+        version: TOOL_VERSION,
+        kind: KIND,
+        language: LANGUAGE,
         package: member.name.clone(),
-        version: member.version.clone(),
+        package_version: member.version.clone(),
+        total_issues: summary.survived,
         summary,
+        gate_outcomes: BTreeMap::from([(RustGateName::SurvivingMutants, gate)]),
+        in_diff: changed.map(|changed| DiffInfo {
+            reference: changed.reference.clone(),
+            base: changed.base.clone(),
+            changed_files: changed.file_count(),
+            mutants_outside: sites_outside + stages.rewrites_outside_diff,
+        }),
         stopped_by: stages.stopped_by,
         elapsed_ms: millis(start.elapsed()),
         baseline: stages.baseline,
@@ -152,6 +202,177 @@ fn run_in(
         },
         mutants: rows,
     })
+}
+
+/// The command that inspects one mutant of this package, without the id.
+fn inspect_command(options: &Options, package: &str) -> String {
+    let manifest = options
+        .manifest_path
+        .as_ref()
+        .map_or_else(String::new, |path| {
+            format!(" --manifest-path {}", shell_word(&path.to_string_lossy()))
+        });
+    format!("cargo fallow mutants --package {package}{manifest} --inspect")
+}
+
+/// One word for a POSIX shell.
+fn shell_word(text: &str) -> String {
+    let plain = !text.is_empty()
+        && text
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"-_./=:".contains(&byte));
+    if plain {
+        text.to_owned()
+    } else {
+        format!("'{}'", text.replace('\'', r"'\''"))
+    }
+}
+
+/// Shows one mutant and the tests that execute it. No mutated code runs: the
+/// walk only reads the source, and a new coverage map runs the plain tests in a copy
+/// under the guard.
+pub fn inspect(options: &Options, id: &str) -> Result<InspectReport, CliError> {
+    let start = Instant::now();
+    if id.len() != ID_DIGITS
+        || !id
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    {
+        return Err(CliError::new(
+            ErrorCode::InvalidArgument,
+            format!("`{id}` is not a mutant id: an id has {ID_DIGITS} hexadecimal digits"),
+        )
+        .with_help("The `id` field of a `cargo fallow mutants` report has the value."));
+    }
+    let workspace = workspace::load(options.manifest_path.as_deref())?;
+    let (member, files, planned) = locate(&workspace, options.package.as_deref(), id)?;
+    let dirs = WorkDirs::create(options.work_dir.as_deref())
+        .map_err(|err| failure("create the work folder", &err))?;
+    let result = (|| {
+        let guard = start_guard(options, &dirs)?;
+        let target_dir = workspace.target_dir.as_std_path();
+        prepare_copies(workspace.root.as_std_path(), target_dir, &dirs, &guard)
+            .map_err(|err| failure("copy the source tree", &err))?;
+        Engine {
+            options,
+            guard: &guard,
+            dirs: &dirs,
+            package_dir: package_folder(member),
+            files: &files,
+            start,
+            target_dir: target_dir.to_path_buf(),
+            package: member.name.clone(),
+            changed: None,
+        }
+        .map_only()
+    })();
+    dirs.finish(options.keep_work_dir);
+    let coverage = result?;
+    let file = &files[planned.file];
+    let map = coverage.map.unwrap_or_default();
+    let (state, tests) = coverage_of(&map, file, &planned);
+    let mut tests_without_data = map.unmapped;
+    tests_without_data.sort_unstable();
+    Ok(InspectReport {
+        schema_version: SCHEMA_VERSION,
+        version: TOOL_VERSION,
+        kind: INSPECT_KIND,
+        language: LANGUAGE,
+        package: member.name.clone(),
+        mutant: inspected(file, &planned),
+        coverage: InspectCoverage {
+            map: coverage.source,
+            state,
+            tests,
+            tests_without_data,
+        },
+    })
+}
+
+/// Finds the member and the mutant of an id in the source tree.
+fn locate<'a>(
+    workspace: &'a Workspace,
+    package: Option<&str>,
+    id: &str,
+) -> Result<(&'a Member, Vec<CrateFile>, Planned), CliError> {
+    let members: Vec<&Member> = match package {
+        Some(_) => vec![find_member(workspace, package)?],
+        None => workspace.members.iter().collect(),
+    };
+    for member in members {
+        let collected = collect(workspace.root.as_std_path(), &target_roots(member));
+        let rewrites = rewrites_of(&collected.files);
+        let found = schema_mutants(&collected.files)
+            .into_iter()
+            .chain(rebuild_mutants(&collected.files, &rewrites))
+            .find(|planned| planned.row.id == id);
+        if let Some(planned) = found {
+            return Ok((member, collected.files, planned));
+        }
+    }
+    Err(CliError::new(
+        ErrorCode::InvalidArgument,
+        format!("the source has no mutant `{id}`"),
+    )
+    .with_help(
+        "An id changes when the text of its code changes. Run `cargo fallow mutants` again.",
+    ))
+}
+
+fn coverage_of(
+    map: &CoverageMap,
+    file: &CrateFile,
+    planned: &Planned,
+) -> (CoverageState, Vec<String>) {
+    if planned.constant {
+        return (CoverageState::ConstantContext, Vec::new());
+    }
+    match map.tests_on(&file.path, lines_of(&file.original, &planned.range)) {
+        LineTests::NoData => (CoverageState::NoLineData, Vec::new()),
+        LineTests::Tests(found) => {
+            let mut tests: Vec<String> = found
+                .iter()
+                .filter_map(|index| map.tests.get(*index as usize).cloned())
+                .collect();
+            tests.sort_unstable();
+            let state = if tests.is_empty() {
+                CoverageState::NotCovered
+            } else {
+                CoverageState::Covered
+            };
+            (state, tests)
+        }
+    }
+}
+
+fn inspected(file: &CrateFile, planned: &Planned) -> InspectedMutant {
+    let row: &MutantRow = &planned.row;
+    let text = &file.original;
+    let start = text[..planned.range.start]
+        .rfind('\n')
+        .map_or(0, |at| at + 1);
+    let end = text[planned.range.end..]
+        .find('\n')
+        .map_or(text.len(), |at| planned.range.end + at);
+    let before = &text[start..end];
+    let after = format!(
+        "{}{}{}",
+        &text[start..planned.range.start],
+        planned.text,
+        &text[planned.range.end..end]
+    );
+    InspectedMutant {
+        id: row.id.clone(),
+        tier: row.tier,
+        operator: row.operator,
+        file: row.file.clone(),
+        line: row.line,
+        column: row.column,
+        replacement: row.replacement.clone(),
+        before: before.to_owned(),
+        after,
+        under_cfg: row.under_cfg,
+    }
 }
 
 /// A duration in whole milliseconds.
@@ -258,6 +479,14 @@ fn gaps_of(collected: &Collected, doctests: bool) -> Gaps {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_shell_word_quotes_only_when_it_must() {
+        assert_eq!(shell_word("a/b-c_d.toml"), "a/b-c_d.toml");
+        assert_eq!(shell_word("a b"), "'a b'");
+        assert_eq!(shell_word("it's"), r"'it'\''s'");
+        assert_eq!(shell_word(""), "''");
+    }
 
     #[test]
     fn jobs_default_to_a_safe_value() {

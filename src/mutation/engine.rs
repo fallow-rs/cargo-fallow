@@ -20,6 +20,7 @@ use crate::mutation::cache::{Cache, parts_hash, tree_hash};
 use crate::mutation::coverage::{
     CoverageMap, INSTRUMENT, MapInput, Tools, build_map, find_tools, rustc_version,
 };
+use crate::mutation::diff::Changed;
 use crate::mutation::files::CrateFile;
 use crate::mutation::guard::{Guard, Scope};
 use crate::mutation::id::id_text;
@@ -91,9 +92,8 @@ fn stop_on_kill(exit: &Exit) -> io::Result<()> {
 fn baseline_failure(action: &str, err: &io::Error) -> CliError {
     let error = failure(action, err);
     if err.to_string().contains("memory guard") {
-        return error.with_help(
-            "Raise `--memory-limit` when the tests of this package need more memory.",
-        );
+        return error
+            .with_help("Raise `--memory-limit` when the tests of this package need more memory.");
     }
     error
 }
@@ -150,6 +150,29 @@ pub struct Stages {
     pub doctests: bool,
     /// The test selection part of the report.
     pub selection: SelectionInfo,
+    /// The rebuild mutants that `--in-diff` left out.
+    pub rewrites_outside_diff: usize,
+}
+
+impl Stages {
+    /// The stages of a run with no mutant on a changed line. No build ran.
+    fn no_changed_mutant(rewrites_outside_diff: usize) -> Self {
+        Self {
+            baseline: Baseline::default(),
+            schema: SchemaInfo {
+                probe_verified: true,
+                ..SchemaInfo::default()
+            },
+            rebuild: RebuildInfo {
+                probe_verified: true,
+                ..RebuildInfo::default()
+            },
+            stopped_by: None,
+            doctests: false,
+            selection: SelectionInfo::default(),
+            rewrites_outside_diff,
+        }
+    }
 }
 
 /// One mutant to run, with its row in the report.
@@ -204,6 +227,20 @@ pub struct Engine<'a> {
     pub target_dir: PathBuf,
     /// The name of the package.
     pub package: String,
+    /// The changed lines of `--in-diff`.
+    pub changed: Option<&'a Changed>,
+}
+
+/// The rebuild mutants of each file.
+pub fn rewrites_of(files: &[CrateFile]) -> Vec<FileRewrites> {
+    files
+        .iter()
+        .map(|file| {
+            // The walk of the sites parsed this text, so an error here only
+            // leaves the file without rebuild mutants.
+            find_rewrites(&file.original, file.edition, &file.path).unwrap_or_default()
+        })
+        .collect()
 }
 
 /// The result of the schema build.
@@ -232,6 +269,13 @@ impl Engine<'_> {
 
     /// Runs each stage. The rows have the schema tier first.
     pub fn run(&self) -> Result<(Vec<MutantRow>, Stages), CliError> {
+        let (rewrites, rewrites_outside_diff) = self.find_rewrites();
+        let has_mutant = rewrites.iter().any(|file| !file.rewrites.is_empty())
+            || (self.options.tier.has_schema()
+                && self.files.iter().any(|file| !file.found.sites.is_empty()));
+        if self.changed.is_some() && !has_mutant {
+            return Ok((Vec::new(), Stages::no_changed_mutant(rewrites_outside_diff)));
+        }
         let scratch_package = self.dirs.scratch.join(&self.package_dir);
         let schema_package = self.dirs.schema.join(&self.package_dir);
         let clean_tree = self.tree(&scratch_package, &self.dirs.target_scratch);
@@ -253,7 +297,6 @@ impl Engine<'_> {
                     .map_err(|err| failure("build the schema", &err))?;
             }
         }
-        let rewrites = self.find_rewrites();
         let (rebuild_info, rebuild_unread, rows_rebuild) = self
             .rebuild_stage(&rewrites, &scratch_package)
             .map_err(|err| failure("probe the rebuild mutants", &err))?;
@@ -319,6 +362,7 @@ impl Engine<'_> {
                 stopped_by,
                 doctests,
                 selection,
+                rewrites_outside_diff,
             },
         ))
     }
@@ -584,18 +628,42 @@ impl Engine<'_> {
         render::Progress::new(self.options.quiet).step(message);
     }
 
-    fn find_rewrites(&self) -> Vec<FileRewrites> {
+    /// The rebuild mutants of each file, and the number that `--in-diff` left out.
+    fn find_rewrites(&self) -> (Vec<FileRewrites>, usize) {
         if !self.options.tier.has_rebuild() {
-            return self.files.iter().map(|_| FileRewrites::default()).collect();
+            let empty = self.files.iter().map(|_| FileRewrites::default()).collect();
+            return (empty, 0);
         }
-        self.files
-            .iter()
-            .map(|file| {
-                // The walk of the sites parsed this text, so an error here only
-                // leaves the file without rebuild mutants.
-                find_rewrites(&file.original, file.edition, &file.path).unwrap_or_default()
-            })
-            .collect()
+        let mut outside = 0;
+        let mut all = rewrites_of(self.files);
+        if let Some(changed) = self.changed {
+            for (file, found) in self.files.iter().zip(&mut all) {
+                let before = found.rewrites.len();
+                found.rewrites.retain(|rewrite| {
+                    changed.touches(&file.path, lines_of(&file.original, &rewrite.range))
+                });
+                outside += before - found.rewrites.len();
+            }
+        }
+        (all, outside)
+    }
+
+    /// The coverage map for `--inspect`: from the cache, or from a new build. This
+    /// runs the tests with no mutant.
+    pub fn map_only(&self) -> Result<Coverage, CliError> {
+        let package = self.dirs.scratch.join(&self.package_dir);
+        let cached = self.open_cache(&package)?;
+        let plan = self.selection_plan(&package, cached.as_ref())?;
+        if let SelectionPlan::Cached(map) = plan {
+            return Ok(Coverage {
+                map: Some(map),
+                source: MapSource::Cached,
+                map_ms: 0,
+            });
+        }
+        let tree = self.tree(&package, &self.dirs.target_scratch);
+        let (_, clean) = self.clean_stage(tree)?;
+        self.coverage_stage(plan, &clean, &package, cached.as_ref())
     }
 
     /// A limit for a mutant run, from a baseline of the same tree.
@@ -1275,10 +1343,13 @@ enum SelectionPlan {
 
 /// The map of a run.
 #[derive(Default)]
-struct Coverage {
-    map: Option<CoverageMap>,
-    source: MapSource,
-    map_ms: u64,
+pub struct Coverage {
+    /// The map, or `None` with no selection.
+    pub map: Option<CoverageMap>,
+    /// Where the map comes from.
+    pub source: MapSource,
+    /// The time to build the map, in milliseconds.
+    pub map_ms: u64,
 }
 
 /// Gives each job with a result in the journal its row, and returns the others.

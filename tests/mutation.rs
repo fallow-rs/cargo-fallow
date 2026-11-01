@@ -126,7 +126,7 @@ fn schema_mutants_are_killed_or_survive() {
     let run = run(&[("src/lib.rs", CHECK)], &["--tier", "schema"]);
     let report = &run.report;
     assert_eq!(run.code, Some(0), "{}", run.stderr);
-    assert_eq!(report["kind"], "mutation", "{report}");
+    assert_eq!(report["kind"], "mutants", "{report}");
     assert_eq!(report["summary"]["killed"], 1, "{report}");
     assert_eq!(report["summary"]["survived"], 1, "{report}");
     assert_eq!(report["summary"]["score"], 50.0, "{report}");
@@ -823,7 +823,7 @@ fn human_output_lists_the_survivors() {
         stdout.contains("test selection: 1 tests in the map"),
         "{stdout}"
     );
-    assert!(stdout.contains("src/lib.rs:9"), "{stdout}");
+    assert!(stdout.contains("  src/lib.rs\n    :9:"), "{stdout}");
 }
 
 #[test]
@@ -846,16 +846,6 @@ fn a_package_name_with_a_dash_gets_its_tests_selected() {
             assert_eq!(mutant["tests_run"], 1, "{mutant}");
         }
     }
-}
-
-#[test]
-fn sarif_is_not_a_mutation_format() {
-    let output = Command::cargo_bin("cargo-fallow")
-        .expect("the binary exists")
-        .args(["mutants", "--format", "sarif"])
-        .output()
-        .expect("the binary runs");
-    assert_eq!(output.status.code(), Some(2));
 }
 
 /// The test process has no other limit after the death of the parent. Without

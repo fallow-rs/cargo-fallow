@@ -2,6 +2,7 @@
 
 mod human;
 mod json;
+pub mod mutants;
 mod sarif;
 
 use std::io::{self, Write};

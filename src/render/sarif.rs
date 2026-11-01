@@ -65,6 +65,16 @@ fn log(report: &CheckReport) -> Value {
         })
         .collect();
 
+    document(&rules, &flagged, &results)
+}
+
+/// A SARIF log with one run. Each gate in `flagged` becomes a tool execution
+/// notification.
+pub(super) fn document(
+    rules: &[Value],
+    flagged: &[(RustGateName, &GateOutcome, &'static str)],
+    results: &[Value],
+) -> Value {
     let mut invocation = json!({ "executionSuccessful": true });
     if !flagged.is_empty() {
         invocation["toolExecutionNotifications"] = flagged
@@ -94,7 +104,7 @@ fn log(report: &CheckReport) -> Value {
 /// The SARIF level of a gate that did not pass, or `None` when it passed or
 /// did not run. Only an enforced failure is an `error`, because only that
 /// failure gives exit code 1.
-const fn level(outcome: &GateOutcome) -> Option<&'static str> {
+pub(super) const fn level(outcome: &GateOutcome) -> Option<&'static str> {
     match outcome.status {
         GateStatus::Fail if outcome.enforced => Some("error"),
         GateStatus::Fail | GateStatus::Warn => Some("warning"),
@@ -131,13 +141,15 @@ const fn file_message(name: RustGateName, file: &GateFile) -> &'static str {
         (RustGateName::ErrorSeverityFindings, _) => {
             "The file has a finding with the error severity."
         }
+        (RustGateName::SurvivingMutants, _) => "The file has a mutant that no test detects.",
     }
 }
 
-const fn rule_description(name: RustGateName) -> &'static str {
+pub(super) const fn rule_description(name: RustGateName) -> &'static str {
     match name {
         RustGateName::ParseError => "A target root file does not parse.",
         RustGateName::ErrorSeverityFindings => "The run has a finding with the error severity.",
+        RustGateName::SurvivingMutants => "A mutant survived: each test passed with the change.",
     }
 }
 

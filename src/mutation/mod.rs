@@ -24,11 +24,13 @@
 //!   the tests of one mutant, and [`cache`] and [`journal`] keep the map and the
 //!   results for the next run.
 //! - [`status`] holds the status set and the retry rules.
+//! - [`diff`] reads the changed lines of `--in-diff`.
 //! - [`plan`] lists the mutants, [`engine`] runs the stages, [`workdir`] holds the
 //!   copies, [`run`] is the entry point, and [`report`] holds the output.
 
 mod cache;
 mod coverage;
+mod diff;
 mod engine;
 mod files;
 pub mod guard;
@@ -44,6 +46,6 @@ pub mod run;
 mod schema;
 mod selection;
 mod sites;
-mod status;
+pub mod status;
 mod testrun;
 mod workdir;

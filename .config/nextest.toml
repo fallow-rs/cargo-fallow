@@ -23,5 +23,5 @@ path = "junit.xml"
 max-threads = 1
 
 [[profile.default.overrides]]
-filter = "binary(mutation)"
+filter = "binary(mutation) | binary(mutants_cli)"
 test-group = "mutation"

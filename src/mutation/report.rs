@@ -1,12 +1,21 @@
 //! The report of the `mutants` command.
 
-use std::fmt::Write;
+use std::collections::BTreeMap;
 
+use fallow_report_protocol::{GateFile, GateOutcome, GateStatus};
 use serde::Serialize;
 
+use crate::gates::RustGateName;
 use crate::mutation::removal::{RoundRecord, Via};
 use crate::mutation::status::{Status, Tier, score};
 use crate::mutation::testrun::TestRun;
+
+/// The `kind` of a run report.
+pub const KIND: &str = "mutants";
+/// The `kind` of an inspect report.
+pub const INSPECT_KIND: &str = "mutants-inspect";
+/// The `language` of each report.
+pub const LANGUAGE: &str = "rust";
 
 /// One mutant in the report.
 #[derive(Debug, Clone, Serialize)]
@@ -51,6 +60,89 @@ pub struct MutantRow {
     /// mutant ran each test.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub no_line_data: bool,
+    /// The read-only next steps. The tool never writes a test or changes code, so
+    /// no action can be applied automatically.
+    pub actions: Vec<Action>,
+}
+
+/// A read-only next step for one mutant.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Action {
+    /// The kind of the step.
+    #[serde(rename = "type")]
+    pub kind: &'static str,
+    /// Always false.
+    pub auto_fixable: bool,
+    /// What the step shows.
+    pub description: &'static str,
+    /// The command of the step.
+    pub command: String,
+}
+
+/// The kind of the only action.
+const INSPECT_ACTION: &str = "inspect-mutant";
+
+/// The actions of a mutant with this status. `inspect` is the command that shows
+/// one mutant, without the id.
+pub fn actions_for(row: &MutantRow, inspect: &str) -> Vec<Action> {
+    let description = match row.status {
+        Status::Survived => {
+            "Each test passed with this change. Inspect the change and the tests that execute it."
+        }
+        Status::NoCoverage => {
+            "No test can see this change. Inspect the change and the coverage of its lines."
+        }
+        Status::Flaky => {
+            "Two runs of this change disagree. Inspect the change and the tests that execute it."
+        }
+        Status::Killed
+        | Status::Timeout
+        | Status::CompileError
+        | Status::RuntimeError
+        | Status::Pending => return Vec::new(),
+    };
+    vec![Action {
+        kind: INSPECT_ACTION,
+        auto_fixable: false,
+        description,
+        command: format!("{inspect} {}", row.id),
+    }]
+}
+
+/// The outcome of the `surviving-mutants` gate. A run with no survivor and no
+/// result for some mutant gets `warn`, not `pass`, because the gate did not judge
+/// those mutants.
+pub fn survivor_gate(rows: &[MutantRow], no_run: bool, enforced: bool) -> GateOutcome {
+    let mut per_file: BTreeMap<&str, u32> = BTreeMap::new();
+    let mut undecided = false;
+    for row in rows {
+        match row.status {
+            Status::Survived => *per_file.entry(&row.file).or_default() += 1,
+            Status::Pending | Status::RuntimeError => undecided = true,
+            _ => {}
+        }
+    }
+    let survivors: u32 = per_file.values().sum();
+    let status = if no_run {
+        GateStatus::Skipped
+    } else if survivors > 0 {
+        GateStatus::Fail
+    } else if undecided {
+        GateStatus::Warn
+    } else {
+        GateStatus::Pass
+    };
+    let mut outcome = GateOutcome::measured(status, enforced, f64::from(survivors), 0.0);
+    outcome.files = per_file
+        .into_iter()
+        .map(|(path, error_count)| GateFile {
+            path: path.to_owned(),
+            error_count,
+            panicked: false,
+            reason: None,
+        })
+        .collect();
+    outcome
 }
 
 /// The count of each status.
@@ -314,17 +406,45 @@ pub enum StopReason {
     LowMemory,
 }
 
+/// The diff of an `--in-diff` run.
+#[derive(Debug, Clone, Serialize)]
+pub struct DiffInfo {
+    /// The ref of the flag.
+    #[serde(rename = "ref")]
+    pub reference: String,
+    /// The commit that the working tree is compared with: the fork point of the
+    /// ref and `HEAD`.
+    pub base: String,
+    /// The files with a changed line.
+    pub changed_files: usize,
+    /// The mutants that the run left out, because no line of the mutant changed.
+    pub mutants_outside: usize,
+}
+
 /// The report of one run.
 #[derive(Debug, Clone, Serialize)]
 pub struct Report {
-    /// Always `mutation`.
+    /// The version of the report shape.
+    pub schema_version: u32,
+    /// The version of cargo-fallow.
+    pub version: &'static str,
+    /// Always `mutants`.
     pub kind: &'static str,
+    /// Always `rust`.
+    pub language: &'static str,
     /// The package.
     pub package: String,
     /// The package version.
-    pub version: String,
+    pub package_version: String,
+    /// The number of surviving mutants.
+    pub total_issues: usize,
     /// The count of each status.
     pub summary: Summary,
+    /// The gate outcomes, keyed by gate name.
+    pub gate_outcomes: BTreeMap<RustGateName, GateOutcome>,
+    /// The diff of an `--in-diff` run.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub in_diff: Option<DiffInfo>,
     /// Why the run stopped before its last mutant.
     pub stopped_by: Option<StopReason>,
     /// The wall time of the run.
@@ -345,86 +465,209 @@ pub struct Report {
     pub mutants: Vec<MutantRow>,
 }
 
-/// Writes the report for a person.
-pub fn human(report: &Report) -> String {
-    let mut out = String::new();
-    let s = &report.summary;
-    // A write to a `String` cannot fail.
-    let _ = writeln!(
-        out,
-        "{} {}: {} mutants: {} killed, {} survived, {} timeout, {} flaky, {} no coverage, \
-         {} compile error, {} runtime error, {} pending",
-        report.package,
-        report.version,
-        s.total,
-        s.killed,
-        s.survived,
-        s.timeout,
-        s.flaky,
-        s.no_coverage,
-        s.compile_error,
-        s.runtime_error,
-        s.pending
-    );
-    let _ = match s.score {
-        Some(score) => writeln!(out, "score {score:.1}%"),
-        None => writeln!(out, "no score: no mutant has a test result"),
-    };
-    if let Some(reason) = report.stopped_by {
-        let text = match reason {
-            StopReason::TimeBudget => "the time budget ended",
-            StopReason::LowMemory => "free memory stayed under the floor",
-        };
-        let _ = writeln!(out, "the run stopped early: {text}");
+impl Report {
+    /// True when an enforced gate failed.
+    pub fn fails_run(&self) -> bool {
+        self.gate_outcomes.values().any(GateOutcome::fails_run)
     }
-    let _ = writeln!(out, "memory guard kills: {}", report.guard.kills);
-    let selection = &report.selection;
-    if selection.enabled {
-        let _ = writeln!(
-            out,
-            "test selection: {} tests in the map, {} with no data, {} test runs, {} doctest runs",
-            selection.tests_mapped,
-            selection.tests_unmapped.len(),
-            selection.tests_run,
-            selection.doctests_run
-        );
+
+    /// True when the gate is enforced, found no survivor, and the machine stopped
+    /// the run. The gate then has no verdict that a person chose to accept, so the
+    /// run is an execution error.
+    pub fn gate_has_no_verdict(&self) -> bool {
+        self.stopped_by == Some(StopReason::LowMemory)
+            && self
+                .gate_outcomes
+                .values()
+                .any(|gate| gate.enforced && gate.status == GateStatus::Warn)
     }
-    if selection.resumed > 0 {
-        let _ = writeln!(
-            out,
-            "resumed: {} mutants came from the journal",
-            selection.resumed
-        );
-    }
-    for (status, title) in [
-        (Status::Survived, "survived"),
-        (Status::Flaky, "flaky"),
-        (Status::RuntimeError, "runtime error"),
-    ] {
-        write_group(&mut out, report, status, title);
-    }
-    out
 }
 
-fn write_group(out: &mut String, report: &Report, status: Status, title: &str) {
-    let rows: Vec<&MutantRow> = report
-        .mutants
-        .iter()
-        .filter(|m| m.status == status)
-        .collect();
-    if rows.is_empty() {
-        return;
-    }
-    let _ = writeln!(out, "\n{title}:");
-    for row in rows {
-        let _ = write!(
-            out,
-            "  {}:{} {} `{}` -> `{}` [{}]",
-            row.file, row.line, row.operator, row.original, row.replacement, row.id
-        );
-        if let Some(reason) = &row.reason {
-            let _ = write!(out, ": {reason}");
+/// How the coverage map sees the lines of one mutant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CoverageState {
+    /// The listed tests execute a line of the mutant.
+    Covered,
+    /// The map has data on the lines, and no test executes them.
+    NotCovered,
+    /// The map has no data on the lines, so a run has each test.
+    NoLineData,
+    /// The mutant is in a constant context. The compiler can evaluate such code, so
+    /// the map says nothing about it, and a run has each test.
+    ConstantContext,
+}
+
+/// The mutant of an inspect report.
+#[derive(Debug, Clone, Serialize)]
+pub struct InspectedMutant {
+    /// The stable id.
+    pub id: String,
+    /// The tier of the mutant. A schema mutant can move to the rebuild tier in a run
+    /// when it breaks the schema build.
+    pub tier: Tier,
+    /// The operator name.
+    pub operator: &'static str,
+    /// The file, relative to the workspace root.
+    pub file: String,
+    /// The line, from 1.
+    pub line: usize,
+    /// The column, from 1, in bytes.
+    pub column: usize,
+    /// The replacement text.
+    pub replacement: String,
+    /// The whole lines of the mutant in the source.
+    pub before: String,
+    /// The same lines with the mutant applied.
+    pub after: String,
+    /// True when a `cfg` attribute is on an enclosing item.
+    pub under_cfg: bool,
+}
+
+/// The coverage part of an inspect report.
+#[derive(Debug, Clone, Serialize)]
+pub struct InspectCoverage {
+    /// Where the map comes from.
+    pub map: MapSource,
+    /// How the map sees the lines of the mutant.
+    pub state: CoverageState,
+    /// The tests that execute a line of the mutant, sorted by name.
+    pub tests: Vec<String>,
+    /// The tests with no usable data, sorted by name. A run has these tests for each
+    /// mutant.
+    pub tests_without_data: Vec<String>,
+}
+
+/// The report of `--inspect`.
+#[derive(Debug, Clone, Serialize)]
+pub struct InspectReport {
+    /// The version of the report shape.
+    pub schema_version: u32,
+    /// The version of cargo-fallow.
+    pub version: &'static str,
+    /// Always `mutants-inspect`.
+    pub kind: &'static str,
+    /// Always `rust`.
+    pub language: &'static str,
+    /// The package.
+    pub package: String,
+    /// The mutant.
+    pub mutant: InspectedMutant,
+    /// The tests of the mutant.
+    pub coverage: InspectCoverage,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(file: &str, status: Status) -> MutantRow {
+        MutantRow {
+            id: "0000000000000001".to_owned(),
+            tier: Tier::Schema,
+            operator: "o",
+            file: file.to_owned(),
+            line: 1,
+            column: 1,
+            original: "a".to_owned(),
+            replacement: "b".to_owned(),
+            status,
+            reason: None,
+            killed_by: None,
+            retried: false,
+            removed_from_schema: false,
+            under_cfg: false,
+            duration_ms: 0,
+            tests_run: 0,
+            doctests_run: 0,
+            no_line_data: false,
+            actions: Vec::new(),
         }
-        out.push('\n');
+    }
+
+    fn status_of(statuses: &[Status]) -> GateStatus {
+        let rows: Vec<MutantRow> = statuses.iter().map(|s| row("a.rs", *s)).collect();
+        survivor_gate(&rows, false, true).status
+    }
+
+    #[test]
+    fn the_gate_counts_only_survivors_and_warns_on_a_mutant_with_no_result() {
+        assert_eq!(status_of(&[]), GateStatus::Pass);
+        assert_eq!(status_of(&[Status::Killed]), GateStatus::Pass);
+        assert_eq!(status_of(&[Status::NoCoverage]), GateStatus::Pass);
+        assert_eq!(status_of(&[Status::Flaky]), GateStatus::Pass);
+        assert_eq!(status_of(&[Status::Pending]), GateStatus::Warn);
+        assert_eq!(status_of(&[Status::RuntimeError]), GateStatus::Warn);
+        let both = [Status::Pending, Status::Survived];
+        assert_eq!(status_of(&both), GateStatus::Fail);
+    }
+
+    #[test]
+    fn the_gate_names_each_file_once_with_its_count() {
+        let rows = [
+            row("b.rs", Status::Survived),
+            row("a.rs", Status::Survived),
+            row("b.rs", Status::Survived),
+            row("c.rs", Status::Killed),
+        ];
+        let gate = survivor_gate(&rows, false, false);
+        assert!(!gate.fails_run());
+        assert_eq!(gate.observed, Some(3.0));
+        let files: Vec<(&str, u32)> = gate
+            .files
+            .iter()
+            .map(|file| (file.path.as_str(), file.error_count))
+            .collect();
+        assert_eq!(files, [("a.rs", 1), ("b.rs", 2)]);
+    }
+
+    #[test]
+    fn an_enforced_gate_has_no_verdict_after_a_low_memory_stop() {
+        let verdict = |status: GateStatus, enforced: bool, stop: Option<StopReason>| {
+            let mut gates = BTreeMap::new();
+            gates.insert(
+                RustGateName::SurvivingMutants,
+                GateOutcome::measured(status, enforced, 0.0, 0.0),
+            );
+            let report = Report {
+                schema_version: 1,
+                version: "0",
+                kind: KIND,
+                language: LANGUAGE,
+                package: String::new(),
+                package_version: String::new(),
+                total_issues: 0,
+                summary: Summary::default(),
+                gate_outcomes: gates,
+                in_diff: None,
+                stopped_by: stop,
+                elapsed_ms: 0,
+                baseline: Baseline::default(),
+                schema: SchemaInfo::default(),
+                rebuild: RebuildInfo::default(),
+                gaps: Gaps::default(),
+                selection: SelectionInfo::default(),
+                guard: GuardInfo {
+                    enabled: true,
+                    memory_limit_mib: 1,
+                    low_memory_percent: 1,
+                    kills: 0,
+                    jobs: 1,
+                },
+                mutants: Vec::new(),
+            };
+            report.gate_has_no_verdict()
+        };
+        let low = Some(StopReason::LowMemory);
+        assert!(verdict(GateStatus::Warn, true, low));
+        assert!(!verdict(GateStatus::Warn, false, low));
+        // A survivor is a verdict, also in a stopped run.
+        assert!(!verdict(GateStatus::Fail, true, low));
+        // A time budget is a limit that a person chose.
+        assert!(!verdict(
+            GateStatus::Warn,
+            true,
+            Some(StopReason::TimeBudget)
+        ));
     }
 }

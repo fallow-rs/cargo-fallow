@@ -56,34 +56,62 @@ fn run_check(options: &Options) -> u8 {
     }
 }
 
-/// Runs the `mutants` command and returns the process exit code. Survivors do
-/// not fail a run.
+/// Runs the `mutants` command and returns the process exit code.
 fn run_mutants(options: &mutation::run::Options) -> u8 {
-    let result = mutation_report(options);
-    match result {
-        Ok(()) => EXIT_OK,
-        Err(err) => {
-            err.emit(options.format);
-            EXIT_INVALID_INPUT
-        }
-    }
+    let result = match &options.inspect {
+        Some(id) => inspect_report(options, id),
+        None => mutants_report(options),
+    };
+    result.unwrap_or_else(|err| {
+        err.emit(options.format);
+        EXIT_INVALID_INPUT
+    })
 }
 
-fn mutation_report(options: &mutation::run::Options) -> Result<(), CliError> {
+fn mutants_report(options: &mutation::run::Options) -> Result<u8, CliError> {
+    let report = mutation::run::run(options)?;
+    if report.gate_has_no_verdict() {
+        return Err(CliError::new(
+            error::ErrorCode::MutationFailed,
+            "free memory stayed under the floor, so the run stopped before the gate could judge \
+             each mutant",
+        )
+        .with_help("Run the command again with more free memory. The journal keeps the results."));
+    }
+    let text = match options.format {
+        cli::Format::Human => render::mutants::human(&report),
+        cli::Format::Json => to_json(&report)?,
+        cli::Format::Sarif => {
+            render::mutants::sarif(&report).map_err(|err| CliError::output(&err))?
+        }
+    };
+    render::write_stdout(text.trim_end()).map_err(|err| CliError::output(&err))?;
+    Ok(if report.fails_run() {
+        EXIT_GATE_FAILED
+    } else {
+        EXIT_OK
+    })
+}
+
+fn inspect_report(options: &mutation::run::Options, id: &str) -> Result<u8, CliError> {
     if options.format == cli::Format::Sarif {
         return Err(CliError::new(
             error::ErrorCode::InvalidArgument,
-            "the `mutants` command has no SARIF output",
+            "`--inspect` has no SARIF output",
         )
         .with_help("Use `--format human` or `--format json`."));
     }
-    let report = mutation::run::run(options)?;
+    let report = mutation::run::inspect(options, id)?;
     let text = match options.format {
-        cli::Format::Json => serde_json::to_string_pretty(&report)
-            .map_err(|err| CliError::output(&io::Error::other(err)))?,
-        _ => mutation::report::human(&report),
+        cli::Format::Json => to_json(&report)?,
+        _ => render::mutants::inspect_human(&report),
     };
-    render::write_stdout(&text).map_err(|err| CliError::output(&err))
+    render::write_stdout(text.trim_end()).map_err(|err| CliError::output(&err))?;
+    Ok(EXIT_OK)
+}
+
+fn to_json(value: &impl serde::Serialize) -> Result<String, CliError> {
+    serde_json::to_string_pretty(value).map_err(|err| CliError::output(&io::Error::other(err)))
 }
 
 fn check(options: &Options) -> Result<u8, CliError> {

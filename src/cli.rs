@@ -110,6 +110,20 @@ struct MutantsArgs {
     /// Hide the progress lines on stderr.
     #[arg(long)]
     quiet: bool,
+    /// Run only the mutants on lines that changed since the fork point of this ref.
+    /// The changes of the working tree and the untracked files count.
+    #[arg(long, value_name = "REF")]
+    in_diff: Option<String>,
+    /// Exit 1 when a mutant survives. A mutant with `no_coverage` does not count.
+    #[arg(long)]
+    fail_on_survivors: bool,
+    /// Show one mutant and the tests that execute it. This runs no mutant. It builds
+    /// the coverage map when the cache has no map for this source.
+    #[arg(long, value_name = "ID", conflicts_with_all = [
+        "in_diff", "fail_on_survivors", "tier", "timeout", "time_budget", "max_mutants",
+        "no_retry", "no_doctests", "no_schema", "no_selection", "no_cache", "no_run",
+    ])]
+    inspect: Option<String>,
     /// The mutants to run.
     #[arg(long, value_enum, default_value_t = TierArg::All)]
     tier: TierArg,
@@ -190,6 +204,9 @@ impl From<MutantsArgs> for crate::mutation::run::Options {
             cache: !args.no_cache,
             no_run: args.no_run,
             keep_work_dir: args.keep_work_dir,
+            in_diff: args.in_diff,
+            fail_on_survivors: args.fail_on_survivors,
+            inspect: args.inspect,
             format: args.format,
             quiet: args.quiet,
         }

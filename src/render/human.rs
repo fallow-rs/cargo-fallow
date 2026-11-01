@@ -32,7 +32,7 @@ pub fn render(report: &CheckReport) -> String {
     text
 }
 
-fn gate_line(outcome: &GateOutcome) -> String {
+pub(super) fn gate_line(outcome: &GateOutcome) -> String {
     let status = match outcome.status {
         GateStatus::Pass => "pass",
         GateStatus::Warn => "warn",
@@ -50,7 +50,7 @@ fn gate_line(outcome: &GateOutcome) -> String {
     line
 }
 
-const fn plural<'a>(count: usize, one: &'a str, many: &'a str) -> &'a str {
+pub(super) const fn plural<'a>(count: usize, one: &'a str, many: &'a str) -> &'a str {
     if count == 1 { one } else { many }
 }
 

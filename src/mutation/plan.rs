@@ -123,6 +123,7 @@ fn row(file: &CrateFile, input: &RowInput<'_>) -> MutantRow {
         tests_run: 0,
         doctests_run: 0,
         no_line_data: false,
+        actions: Vec::new(),
     }
 }
 

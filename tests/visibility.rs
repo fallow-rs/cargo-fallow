@@ -333,3 +333,23 @@ fn a_struct_literal_in_macro_tokens_credits_only_its_own_fields() {
         set(&["unnecessary_public Link", "unnecessary_public Link::text"])
     );
 }
+
+#[test]
+fn a_path_from_outside_the_workspace_credits_no_workspace_item() {
+    let dir = workspace(&[
+        (
+            "app/src/main.rs",
+            "fn main() { let text = String::new(); mid::run(&text); }\n",
+        ),
+        (
+            "mid/src/lib.rs",
+            "pub struct Thing;\nimpl Thing {\n    pub fn new() -> Self { Thing }\n}\n\
+             pub fn run(_: &str) { let _ = Thing::new(); }\n",
+        ),
+    ]);
+    let (found, _) = findings(&dir, &[]);
+    assert_eq!(
+        found,
+        set(&["unnecessary_public Thing", "unnecessary_public Thing::new"])
+    );
+}

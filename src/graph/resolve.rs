@@ -251,6 +251,7 @@ impl<'g> Resolver<'g> {
                 };
                 push_targets(credits, base, class, &targets, &modules, self.graph);
                 if class != Class::Exact
+                    && targets.is_empty()
                     && let Some(last) = segments.last()
                 {
                     self.credit_names(credits, base, last, class, |_| true);
@@ -398,8 +399,18 @@ impl<'g> Resolver<'g> {
         };
         let mut current = self.start(krate, module, first, global, doc);
         let mut through = Vec::new();
-        if current.is_empty() {
-            return (Vec::new(), Class::Fallback, through);
+        let guessed = current.is_empty();
+        if guessed {
+            if rest.is_empty() {
+                return (Vec::new(), Class::Fallback, through);
+            }
+            // The first name is not in scope. When no visible crate has a type
+            // or a module with that name, the path names something outside
+            // the workspace, such as `String::new`.
+            current = self.types_named(krate, first, doc);
+            if current.is_empty() {
+                return (vec![Target::Outside], Class::Exact, through);
+            }
         }
         for segment in rest {
             if current.iter().all(|target| *target == Target::Outside) {
@@ -421,7 +432,37 @@ impl<'g> Resolver<'g> {
             }
             current = next;
         }
-        (current, Class::Exact, through)
+        let class = if guessed {
+            Class::Fallback
+        } else {
+            Class::Exact
+        };
+        (current, class, through)
+    }
+
+    /// The types and modules called `name` in the visible crates.
+    fn types_named(&self, krate: CrateId, name: &str, doc: bool) -> Vec<Target> {
+        let visible = self.visible_crates(krate, doc);
+        self.by_name
+            .get(name)
+            .into_iter()
+            .flatten()
+            .filter(|&&item| {
+                let entry = &self.graph.items[item];
+                entry.parent.is_none()
+                    && visible.contains(&entry.krate)
+                    && matches!(
+                        entry.kind,
+                        ItemKind::Module
+                            | ItemKind::Struct
+                            | ItemKind::Enum
+                            | ItemKind::Union
+                            | ItemKind::Trait
+                            | ItemKind::TypeAlias
+                    )
+            })
+            .map(|&item| Target::Item(item))
+            .collect()
     }
 
     fn start(

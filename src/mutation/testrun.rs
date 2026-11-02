@@ -20,7 +20,7 @@ use crate::mutation::process::{Exit, cargo_with_flags, run_to_files, with_active
 use crate::mutation::status::{Status, Verdict};
 
 /// The exit code of nextest when tests ran and one failed.
-const NEXTEST_TESTS_FAILED: i32 = 100;
+pub const NEXTEST_TESTS_FAILED: i32 = 100;
 /// The time limit of one `cargo metadata` call and of one listing.
 const LIST_LIMIT: Duration = Duration::from_secs(600);
 
@@ -58,6 +58,13 @@ pub struct Suite {
     /// The time of each passed test in milliseconds, when the runner reports it.
     #[serde(skip)]
     pub times: BTreeMap<String, u64>,
+    /// The failed tests that the nextest config of the project ended at its time
+    /// limit. No assert failed in these tests.
+    #[serde(skip)]
+    pub timed_out: BTreeSet<String>,
+    /// The tests that started, also the ones with no result at the end of the run.
+    #[serde(skip)]
+    pub started: u32,
 }
 
 impl Suite {
@@ -71,6 +78,8 @@ impl Suite {
             passes: BTreeMap::new(),
             failed: Vec::new(),
             times: BTreeMap::new(),
+            timed_out: BTreeSet::new(),
+            started: 0,
         }
     }
 
@@ -88,6 +97,27 @@ impl Suite {
             Outcome::Ignored => self.ignored += 1,
         }
     }
+
+    /// The tests that ran, also the ones that the end of the run stopped. nextest
+    /// keeps its lines in a buffer, so a run that the time limit ended can have no
+    /// line. Such a run spent its time in at least one test.
+    pub fn tests_run(&self) -> u32 {
+        let stopped = u32::from(self.status == SuiteStatus::TimedOut);
+        self.started.max(self.pass + self.fail).max(stopped)
+    }
+}
+
+/// The failures of each test name that a run with no mutant has. A doctest name
+/// has no line number, so two doctests of one item share a name.
+pub type KnownFailures = BTreeMap<String, u32>;
+
+/// Counts the failures of each name.
+pub fn known_failures<'a>(names: impl Iterator<Item = &'a String>) -> KnownFailures {
+    let mut known = KnownFailures::new();
+    for name in names {
+        *known.entry(name.clone()).or_default() += 1;
+    }
+    known
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -123,6 +153,8 @@ pub struct TestTree<'a> {
     pub guard: &'a Guard,
     /// More compiler flags for each crate of the build.
     pub rustflags: &'a str,
+    /// The flags that select the packages of a build and of the doctests.
+    pub select: &'a [String],
 }
 
 impl TestTree<'_> {
@@ -264,6 +296,7 @@ pub fn prepare(tree: TestTree<'_>, label: &str) -> io::Result<Result<BuildMeta, 
         "--message-format",
         "json",
     ]);
+    command.args(tree.select);
     let exit = run_to_files(
         command,
         &binaries,
@@ -330,7 +363,7 @@ pub fn run_nextest(
     }
     // This run builds nothing, and a test that starts cargo gets a plain compiler.
     command.env("RUSTC_WRAPPER", "");
-    let command = activate(command, tree, spec)?;
+    activate(&mut command, tree, spec)?;
     let out = tree.logs.join(format!("{}-nextest.json", spec.label));
     let err = tree.logs.join(format!("{}-nextest.err", spec.label));
     let start = Instant::now();
@@ -349,27 +382,32 @@ pub fn run_nextest(
 }
 
 /// Selects the mutant of `spec` in `command`.
-fn activate(command: Command, tree: TestTree<'_>, spec: &RunSpec) -> io::Result<Command> {
+fn activate(command: &mut Command, tree: TestTree<'_>, spec: &RunSpec) -> io::Result<()> {
     let Some(mutant) = spec.mutant else {
-        return Ok(command);
+        return Ok(());
     };
     let record = tree.logs.join(format!("{}.active", spec.label));
     with_active_mutant(command, &record, mutant)
 }
 
-/// The filter that leaves out `exclude`, with the binary part of each name
-/// removed. A name in two binaries stays out of both, and that only loses a test.
+/// The filter that leaves out `exclude`. Each term has the package and the binary:
+/// a test with the same name in another binary stays in the run. A name that a
+/// filter cannot hold also leaves out the same name in another binary, and that only
+/// loses a test.
 fn exclude_filter(exclude: &BTreeSet<String>) -> Option<String> {
     if exclude.is_empty() {
         return None;
     }
     let terms: Vec<String> = exclude
         .iter()
-        .map(|name| {
-            let test = name
-                .rsplit_once('$')
-                .map_or(name.as_str(), |(_, test)| test);
-            format!("test(={})", escape_filter(test))
+        .map(|name| match TestName::parse(name) {
+            Some(parsed) => format!("({})", parsed.filter()),
+            None => {
+                let test = name
+                    .rsplit_once('$')
+                    .map_or(name.as_str(), |(_, test)| test);
+                format!("test(={})", escape_filter(test))
+            }
         })
         .collect();
     Some(format!("not ({})", terms.join(" | ")))
@@ -462,7 +500,11 @@ struct NextestLine {
     event: String,
     name: Option<String>,
     exec_time: Option<f64>,
+    reason: Option<String>,
 }
+
+/// The reason of nextest for a test that its config ended.
+const TIME_LIMIT_REASON: &str = "time limit exceeded";
 
 fn parse_nextest(stdout: &str, status: SuiteStatus) -> Suite {
     let mut suite = Suite::new(status);
@@ -474,12 +516,19 @@ fn parse_nextest(stdout: &str, status: SuiteStatus) -> Suite {
             continue;
         };
         let outcome = match parsed.event.as_str() {
+            "started" => {
+                suite.started += 1;
+                continue;
+            }
             "ok" => Outcome::Pass,
             "failed" | "timeout" => Outcome::Fail,
             "ignored" => Outcome::Ignored,
             _ => continue,
         };
         suite.record(&name, outcome);
+        if parsed.event == "timeout" || parsed.reason.as_deref() == Some(TIME_LIMIT_REASON) {
+            suite.timed_out.insert(name.clone());
+        }
         if outcome == Outcome::Pass
             && let Some(seconds) = parsed.exec_time
         {
@@ -499,15 +548,10 @@ fn seconds_to_ms(seconds: f64) -> u64 {
 /// Runs the doctests of the tree.
 pub fn run_doctests(tree: TestTree<'_>, spec: &RunSpec) -> io::Result<(Exit, Suite)> {
     let mut command = tree.cargo();
-    command.args([
-        "test",
-        "--doc",
-        "--no-fail-fast",
-        "--",
-        "--test-threads",
-        &spec.jobs.to_string(),
-    ]);
-    let command = activate(command, tree, spec)?;
+    command.args(["test", "--doc", "--no-fail-fast"]);
+    command.args(tree.select);
+    command.args(["--", "--test-threads", &spec.jobs.to_string()]);
+    activate(&mut command, tree, spec)?;
     let out = tree.logs.join(format!("{}-doc.out", spec.label));
     let err = tree.logs.join(format!("{}-doc.err", spec.label));
     let start = Instant::now();
@@ -557,14 +601,23 @@ fn parse_doctests(stdout: &str) -> Suite {
     suite
 }
 
+/// The first failure of a run that a run with no mutant does not have.
+pub fn new_failure<'a>(suite: &'a Suite, known: &KnownFailures) -> Option<&'a str> {
+    let mut seen: BTreeMap<&str, u32> = BTreeMap::new();
+    suite.failed.iter().map(String::as_str).find(|name| {
+        let count = seen.entry(name).or_default();
+        *count += 1;
+        *count > known.get(*name).copied().unwrap_or(0)
+    })
+}
+
 /// The verdict of one suite with an active mutant, or `None` when each test that
-/// counts passed. A test in `known_failures` fails with no mutant, so it decides
-/// nothing.
+/// counts passed. A test in `known` fails with no mutant, so it decides nothing.
 pub fn classify(
     runner: &str,
     exit: &Exit,
     suite: &Suite,
-    known_failures: &BTreeSet<String>,
+    known: &KnownFailures,
 ) -> Option<Verdict> {
     let code = match exit {
         Exit::Killed(reason) => {
@@ -577,11 +630,13 @@ pub fn classify(
         Exit::Code(Some(0)) => return None,
         Exit::Code(code) => code,
     };
-    if let Some(test) = suite
-        .failed
-        .iter()
-        .find(|name| !known_failures.contains(*name))
-    {
+    if let Some(test) = new_failure(suite, known) {
+        if suite.timed_out.contains(test) {
+            return Some(Verdict::with_reason(
+                Status::Timeout,
+                "the nextest config of the project ended the test at its time limit",
+            ));
+        }
         return Some(Verdict::killed(test.replace('$', " ")));
     }
     if !suite.failed.is_empty() {
@@ -749,13 +804,44 @@ mod tests {
     }
 
     #[test]
-    fn exclude_filter_uses_the_test_part_and_escapes() {
+    fn exclude_filter_keeps_the_binary_and_escapes() {
         assert_eq!(exclude_filter(&BTreeSet::new()), None);
         let names: BTreeSet<String> = ["p::p$t::a".to_owned(), "b(x, 1)".to_owned()].into();
         assert_eq!(
             exclude_filter(&names).as_deref(),
-            Some("not (test(=b\\(x\\,\\ 1\\)) | test(=t::a))")
+            Some("not (test(=b\\(x\\,\\ 1\\)) | (package(=p) & binary(=p) & test(=t::a)))")
         );
+    }
+
+    #[test]
+    fn a_second_failure_of_a_known_doctest_name_is_new() {
+        let suite = failed_suite(&["src/lib.rs - f", "src/lib.rs - f"]);
+        let known = known_failures(["src/lib.rs - f".to_owned()].iter());
+        assert_eq!(new_failure(&suite, &known), Some("src/lib.rs - f"));
+        let known = known_failures(suite.failed.iter());
+        assert_eq!(new_failure(&suite, &known), None);
+    }
+
+    #[test]
+    fn a_test_that_the_config_ends_is_a_timeout_and_not_a_kill() {
+        let stdout = concat!(
+            r#"{"type":"test","event":"started","name":"p::p$a"}"#,
+            "\n",
+            r#"{"type":"test","event":"failed","name":"p::p$a","reason":"time limit exceeded"}"#,
+            "\n",
+        );
+        let suite = parse_nextest(stdout, SuiteStatus::Completed);
+        let status = verdict(&Exit::Code(Some(100)), &suite, &[]).map(|verdict| verdict.status);
+        assert_eq!(status, Some(Status::Timeout));
+        assert_eq!(suite.tests_run(), 1);
+    }
+
+    #[test]
+    fn a_started_test_with_no_result_counts_as_run() {
+        let stdout = r#"{"type":"test","event":"started","name":"p::p$a"}"#;
+        assert_eq!(parse_nextest(stdout, SuiteStatus::Completed).tests_run(), 1);
+        assert_eq!(parse_nextest("", SuiteStatus::TimedOut).tests_run(), 1);
+        assert_eq!(parse_nextest("", SuiteStatus::Completed).tests_run(), 0);
     }
 
     fn failed_suite(names: &[&str]) -> Suite {
@@ -767,8 +853,8 @@ mod tests {
     }
 
     fn verdict(exit: &Exit, suite: &Suite, known: &[&str]) -> Option<Verdict> {
-        let known = known.iter().map(|name| (*name).to_owned()).collect();
-        classify("nextest", exit, suite, &known)
+        let names: Vec<String> = known.iter().map(|name| (*name).to_owned()).collect();
+        classify("nextest", exit, suite, &known_failures(names.iter()))
     }
 
     #[test]

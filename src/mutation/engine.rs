@@ -11,7 +11,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Mutex, PoisonError, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -35,13 +35,14 @@ use crate::mutation::report::{
     SchemaStatus, SelectionInfo, StopReason,
 };
 use crate::mutation::rewrites::{FileRewrites, Rewrite, apply, find_rewrites, render_probe};
-use crate::mutation::run::{Options, millis};
+use crate::mutation::run::{Options, file_selected, millis};
 use crate::mutation::schema::{Mode, Rendered};
 use crate::mutation::selection::{Picked, Selector, write_order};
 use crate::mutation::status::{Status, Tier, Verdict, merge_retry};
 use crate::mutation::testrun::{
-    BuildMeta, RunSpec, Suite, SuiteStatus, TestRun, TestTree, classify, compare, failures,
-    lost_passes, prepare, run_doctests, run_nextest,
+    BuildMeta, KnownFailures, RunSpec, Suite, SuiteStatus, TestName, TestRun, TestTree, classify,
+    compare, failures, known_failures, lost_passes, new_failure, prepare, run_doctests,
+    run_nextest,
 };
 use crate::mutation::workdir::WorkDirs;
 use crate::render;
@@ -55,6 +56,12 @@ const BASELINE_LIMIT: Duration = Duration::from_mins(30);
 const TIMEOUT_FACTOR: u32 = 5;
 /// The shortest limit of a mutant run.
 const MIN_TIMEOUT: Duration = Duration::from_secs(20);
+/// A rebuild of a mutant builds less than the clean build, and this share of the
+/// clean build leaves room for host load. A mutant in a `const fn` can loop in the
+/// compiler for hours, because the lint cap turns off the lint that stops it.
+const REBUILD_FACTOR: u32 = 3;
+/// The shortest limit of one rebuild of a mutant.
+const MIN_REBUILD_LIMIT: Duration = Duration::from_secs(30);
 /// The longest wait for free memory before the run stops.
 const MEMORY_WAIT: Duration = Duration::from_secs(120);
 /// The time between two checks of the free memory in a wait.
@@ -112,10 +119,12 @@ fn baseline_run(tree: TestTree<'_>, meta: &BuildMeta, label: &str) -> io::Result
 }
 
 /// The compile command. It runs in the package folder, because `-p name` is
-/// ambiguous when a dependency has the same name.
-fn build_command(dir: &Path, target_dir: &Path, jobs: usize) -> Command {
+/// ambiguous when a dependency has the same name. `select` holds the flags for the
+/// cases where that folder does not select the right packages.
+fn build_command(dir: &Path, target_dir: &Path, jobs: usize, select: &[String]) -> Command {
     let mut command = cargo(dir, target_dir, jobs);
     command.args(["test", "--no-run", "--message-format=json"]);
+    command.args(select);
     command
 }
 
@@ -186,7 +195,8 @@ struct TierRun<'a> {
     tree: TestTree<'a>,
     meta: BuildMeta,
     nextest_exclude: BTreeSet<String>,
-    doc_known: BTreeSet<String>,
+    nextest_known: KnownFailures,
+    doc_known: KnownFailures,
     nextest_limit: Duration,
     nextest_baseline_ms: u64,
     doc_limit: Duration,
@@ -195,6 +205,8 @@ struct TierRun<'a> {
     tests: Vec<(String, u64)>,
     /// The nextest tool config with the order of `tests`.
     order: Option<PathBuf>,
+    /// The limit of one rebuild of a mutant.
+    rebuild_limit: Duration,
 }
 
 /// The tests that pass in a baseline and that stay in the run, fastest first.
@@ -229,6 +241,11 @@ pub struct Engine<'a> {
     pub package: String,
     /// The changed lines of `--in-diff`.
     pub changed: Option<&'a Changed>,
+    /// The flags that select the packages of each build and each doctest run.
+    pub select: Vec<String>,
+    /// A normal test run holds this lock for reading. A second look at a kill holds
+    /// it for writing, so no other test of this run can cause the failure.
+    pub alone: RwLock<()>,
 }
 
 /// The rebuild mutants of each file.
@@ -264,6 +281,7 @@ impl Engine<'_> {
             build_jobs: self.options.jobs,
             guard: self.guard,
             rustflags: "",
+            select: &self.select,
         }
     }
 
@@ -273,7 +291,7 @@ impl Engine<'_> {
         let has_mutant = rewrites.iter().any(|file| !file.rewrites.is_empty())
             || (self.options.tier.has_schema()
                 && self.files.iter().any(|file| !file.found.sites.is_empty()));
-        if self.changed.is_some() && !has_mutant {
+        if self.is_narrowed() && !has_mutant {
             return Ok((Vec::new(), Stages::no_changed_mutant(rewrites_outside_diff)));
         }
         let scratch_package = self.dirs.scratch.join(&self.package_dir);
@@ -281,22 +299,17 @@ impl Engine<'_> {
         let clean_tree = self.tree(&scratch_package, &self.dirs.target_scratch);
         let cached = self.open_cache(&scratch_package)?;
         let plan = self.selection_plan(&scratch_package, cached.as_ref())?;
+        let build_start = Instant::now();
         let (clean_meta, clean) = self.clean_stage(clean_tree)?;
+        let rebuild_limit = rebuild_limit(build_start.elapsed().saturating_sub(
+            Duration::from_millis(clean.nextest.elapsed_ms + clean.doc.elapsed_ms),
+        ));
         let coverage = self.coverage_stage(plan, &clean, &scratch_package, cached.as_ref())?;
         let selector = coverage.map.map(Selector::new);
+        let fail_alone = fail_alone_tests(selector.as_ref());
 
         let schema_tree = self.tree(&schema_package, &self.dirs.target_schema);
-        let mut schema = SchemaStage::default();
-        let mut rows_schema: Vec<Planned> = Vec::new();
-        if self.options.tier.has_schema() {
-            rows_schema = schema_mutants(self.files);
-            if !self.options.no_schema {
-                self.progress("compiling the schema");
-                schema = self
-                    .schema_stage(&schema_package, rows_schema.len())
-                    .map_err(|err| failure("build the schema", &err))?;
-            }
-        }
+        let (mut schema, rows_schema) = self.schema_part(&schema_package)?;
         let (rebuild_info, rebuild_unread, rows_rebuild) = self
             .rebuild_stage(&rewrites, &scratch_package)
             .map_err(|err| failure("probe the rebuild mutants", &err))?;
@@ -307,13 +320,13 @@ impl Engine<'_> {
             ..Baseline::default()
         };
         let schema_setup = self
-            .schema_setup(&schema, schema_tree, &clean, &mut baseline)
+            .schema_setup(&schema, schema_tree, &clean, &fail_alone, &mut baseline)
             .map_err(|err| baseline_failure("run the schema baseline", &err))?;
         baseline.timeout_ms.rebuild_nextest = millis(self.limit_for(clean.nextest.elapsed_ms));
         baseline.timeout_ms.rebuild_doc = millis(self.limit_for(clean.doc.elapsed_ms));
         let doctests = self.options.doctests && clean.doc.status == SuiteStatus::Completed;
         let clean_setup = self
-            .clean_setup(clean_tree, clean_meta, &clean)
+            .clean_setup(clean_tree, clean_meta, &clean, &fail_alone, rebuild_limit)
             .map_err(|err| failure("write the test order", &err))?;
 
         let mut rows: Vec<MutantRow> = Vec::new();
@@ -323,6 +336,13 @@ impl Engine<'_> {
             rows_rebuild,
             &rebuild_unread,
             &mut rows,
+        );
+        let (schema_jobs, rebuild_jobs) = self.move_jobs_of_lost_tests(
+            (schema_jobs, rebuild_jobs),
+            baseline.schema.as_ref().map(|run| (&clean, run)),
+            selector.as_ref(),
+            &mut rows,
+            &mut schema.info,
         );
         let has_test = clean.nextest.pass + clean.doc.pass > 0;
         let journal = cached.as_ref().and_then(|cached| self.open_journal(cached));
@@ -365,6 +385,22 @@ impl Engine<'_> {
                 rewrites_outside_diff,
             },
         ))
+    }
+
+    /// Builds the schema of the mutants of the schema tier.
+    fn schema_part(&self, package: &Path) -> Result<(SchemaStage, Vec<Planned>), CliError> {
+        if !self.options.tier.has_schema() {
+            return Ok((SchemaStage::default(), Vec::new()));
+        }
+        let planned = schema_mutants(self.files);
+        if self.options.no_schema {
+            return Ok((SchemaStage::default(), planned));
+        }
+        self.progress("compiling the schema");
+        let stage = self
+            .schema_stage(package, planned.len())
+            .map_err(|err| failure("build the schema", &err))?;
+        Ok((stage, planned))
     }
 
     /// Runs the jobs that the journal has no result for. Returns why the run
@@ -423,8 +459,11 @@ impl Engine<'_> {
         tree: TestTree<'t>,
         meta: BuildMeta,
         clean: &TestRun,
+        fail_alone: &BTreeSet<String>,
+        rebuild_limit: Duration,
     ) -> io::Result<TierRun<'t>> {
-        let nextest_exclude: BTreeSet<String> = clean.nextest.failed.iter().cloned().collect();
+        let mut nextest_exclude: BTreeSet<String> = clean.nextest.failed.iter().cloned().collect();
+        nextest_exclude.extend(fail_alone.iter().cloned());
         let tests = ordered_tests(&clean.nextest, &nextest_exclude);
         let order = self.write_order("clean", &tests)?;
         Ok(TierRun {
@@ -432,8 +471,10 @@ impl Engine<'_> {
             meta,
             tests,
             order,
+            nextest_known: known_failures(nextest_exclude.iter()),
             nextest_exclude,
-            doc_known: clean.doc.failed.iter().cloned().collect(),
+            doc_known: known_failures(clean.doc.failed.iter()),
+            rebuild_limit,
             nextest_limit: self.limit_for(clean.nextest.elapsed_ms),
             nextest_baseline_ms: clean.nextest.elapsed_ms,
             doc_limit: self.limit_for(clean.doc.elapsed_ms),
@@ -462,6 +503,7 @@ impl Engine<'_> {
         let hash = tree_hash(&self.dirs.scratch).map_err(|err| failure("hash the source", &err))?;
         let version = rustc_version(package);
         let flags = std::env::var("RUSTFLAGS").unwrap_or_default();
+        let encoded_flags = std::env::var("CARGO_ENCODED_RUSTFLAGS").unwrap_or_default();
         Ok(Some(CachedTree {
             cache: Cache::new(&self.target_dir, &self.package),
             key: parts_hash(&[
@@ -469,6 +511,9 @@ impl Engine<'_> {
                 &hash.to_string(),
                 &version,
                 &flags,
+                &encoded_flags,
+                &self.dirs.parent_configs,
+                &self.select.join(" "),
                 &self.package,
             ]),
         }))
@@ -555,13 +600,30 @@ impl Engine<'_> {
             ))
         })?;
         let tests = ordered_tests(&clean.nextest, &BTreeSet::new());
-        let files = self.files.iter().map(|file| file.path.clone()).collect();
+        // A run on a part of the package needs line data only for that part, and a
+        // smaller export is faster. Such a map stays out of the cache.
+        let narrowed = self.is_narrowed();
+        let files: BTreeSet<String> = self
+            .files
+            .iter()
+            .map(|file| file.path.clone())
+            .filter(|path| !narrowed || self.in_narrow_scope(path))
+            .collect();
+        let sources: Vec<PathBuf> = if narrowed {
+            files
+                .iter()
+                .map(|path| self.dirs.scratch.join(path))
+                .collect()
+        } else {
+            vec![package.to_path_buf()]
+        };
         let built = build_map(&MapInput {
             tree,
             meta: &meta,
             tools,
             tests: &tests,
             files: &files,
+            sources: &sources,
             root: &self.dirs.scratch,
             jobs: self.options.jobs,
         })?;
@@ -569,6 +631,7 @@ impl Engine<'_> {
             render::warn("no test wrote usable coverage data, so each mutant runs each test");
         }
         if built.complete
+            && !narrowed
             && let Some(cached) = cached
         {
             cached.cache.write_map(cached.key, &built.map);
@@ -636,6 +699,11 @@ impl Engine<'_> {
         }
         let mut outside = 0;
         let mut all = rewrites_of(self.files);
+        for (file, found) in self.files.iter().zip(&mut all) {
+            if !file_selected(&self.options.files, &file.path) {
+                found.rewrites.clear();
+            }
+        }
         if let Some(changed) = self.changed {
             for (file, found) in self.files.iter().zip(&mut all) {
                 let before = found.rewrites.len();
@@ -646,6 +714,17 @@ impl Engine<'_> {
             }
         }
         (all, outside)
+    }
+
+    /// True when the flags of a narrow run keep a mutant in this file.
+    fn in_narrow_scope(&self, path: &str) -> bool {
+        file_selected(&self.options.files, path)
+            && self.changed.is_none_or(|changed| changed.has_file(path))
+    }
+
+    /// True when a flag leaves out a part of the package.
+    fn is_narrowed(&self) -> bool {
+        self.changed.is_some() || !self.options.files.is_empty()
     }
 
     /// The coverage map for `--inspect`: from the cache, or from a new build. This
@@ -827,15 +906,34 @@ impl Engine<'_> {
     }
 
     fn compile(&self, package: &Path, target: &Path, label: &str) -> io::Result<Build> {
+        self.compile_within(package, target, label, BUILD_LIMIT)
+    }
+
+    fn compile_within(
+        &self,
+        package: &Path,
+        target: &Path,
+        label: &str,
+        limit: Duration,
+    ) -> io::Result<Build> {
         let out = self.dirs.logs.join(format!("{label}.json"));
         let err = self.dirs.logs.join(format!("{label}.err"));
-        let command = build_command(package, target, self.options.jobs);
-        let exit = run_to_files(command, &out, &err, BUILD_LIMIT, self.guard, Scope::Build)?;
+        let command = build_command(package, target, self.options.jobs, &self.select);
+        let exit = run_to_files(command, &out, &err, limit, self.guard, Scope::Build)?;
         if let Exit::Killed(reason) = &exit {
             return Err(io::Error::other(reason.to_string()));
         }
         let mut build = parse_build(&fs::read_to_string(out)?);
         build.success = build.success && exit == Exit::Code(Some(0));
+        if exit == Exit::TimedOut {
+            build.errors.insert(
+                0,
+                CompilerError {
+                    message: format!("the compile passed its time limit of {} s", limit.as_secs()),
+                    ..CompilerError::default()
+                },
+            );
+        }
         Ok(build)
     }
 
@@ -846,6 +944,7 @@ impl Engine<'_> {
         schema: &SchemaStage,
         tree: TestTree<'t>,
         clean: &TestRun,
+        fail_alone: &BTreeSet<String>,
         baseline: &mut Baseline,
     ) -> io::Result<Option<TierRun<'t>>> {
         if schema.info.status != SchemaStatus::Compiled {
@@ -869,9 +968,12 @@ impl Engine<'_> {
         let mut nextest_exclude: BTreeSet<String> = clean.nextest.failed.iter().cloned().collect();
         nextest_exclude.extend(run.nextest.failed.iter().cloned());
         nextest_exclude.extend(lost_passes(&clean.nextest, &run.nextest));
-        let mut doc_known: BTreeSet<String> = clean.doc.failed.iter().cloned().collect();
-        doc_known.extend(run.doc.failed.iter().cloned());
-        doc_known.extend(lost_passes(&clean.doc, &run.doc));
+        nextest_exclude.extend(fail_alone.iter().cloned());
+        let mut doc_known = known_failures(clean.doc.failed.iter());
+        for (name, count) in known_failures(run.doc.failed.iter()) {
+            let known = doc_known.entry(name).or_default();
+            *known = count.max(*known);
+        }
         let tests = ordered_tests(&run.nextest, &nextest_exclude);
         let order = self.write_order("schema", &tests)?;
         let setup = TierRun {
@@ -879,8 +981,10 @@ impl Engine<'_> {
             meta,
             tests,
             order,
+            nextest_known: known_failures(nextest_exclude.iter()),
             nextest_exclude,
             doc_known,
+            rebuild_limit: BUILD_LIMIT,
             nextest_limit: self.limit_for(run.nextest.elapsed_ms),
             nextest_baseline_ms: run.nextest.elapsed_ms,
             doc_limit: self.limit_for(run.doc.elapsed_ms),
@@ -1013,6 +1117,49 @@ impl Engine<'_> {
         (schema_jobs, rebuild_jobs)
     }
 
+    /// Moves a schema job to the rebuild tier when a test that the schema build broke
+    /// can see the mutant. That test does not run in the schema tier, so the switch
+    /// would hide the mutant from it. With no line data each job can be such a job, and
+    /// a doctest has no line data.
+    fn move_jobs_of_lost_tests(
+        &self,
+        (schema_jobs, mut rebuild_jobs): (Vec<Job>, Vec<Job>),
+        runs: Option<(&TestRun, &TestRun)>,
+        selector: Option<&Selector>,
+        rows: &mut [MutantRow],
+        info: &mut SchemaInfo,
+    ) -> (Vec<Job>, Vec<Job>) {
+        let Some((clean, schema)) = runs else {
+            return (schema_jobs, rebuild_jobs);
+        };
+        let lost: Vec<(String, u64)> = lost_passes(&clean.nextest, &schema.nextest)
+            .into_iter()
+            .map(|name| (name, 0))
+            .collect();
+        let lost_doc = !lost_passes(&clean.doc, &schema.doc).is_empty();
+        if lost.is_empty() && !lost_doc {
+            return (schema_jobs, rebuild_jobs);
+        }
+        let mut kept = Vec::new();
+        for mut job in schema_jobs {
+            let sees_it = lost_doc
+                || selector.is_none_or(|selector| {
+                    let file = &self.files[job.planned.file];
+                    let lines = lines_of(&file.original, &job.planned.range);
+                    !selector.pick(&lost, &file.path, lines).empty
+                });
+            if sees_it {
+                job.planned.row.tier = Tier::Rebuild;
+                rows[job.row].tier = Tier::Rebuild;
+                rebuild_jobs.push(job);
+                info.moved_to_rebuild += 1;
+            } else {
+                kept.push(job);
+            }
+        }
+        (kept, rebuild_jobs)
+    }
+
     /// Keeps the first `--max-mutants` jobs, schema jobs first. The others stay
     /// `pending`.
     fn apply_cap(&self, mut schema: Vec<Job>, mut rebuild: Vec<Job>) -> (Vec<Job>, Vec<Job>) {
@@ -1048,41 +1195,21 @@ impl Engine<'_> {
         state: RunState<'_>,
         rows: &mut [MutantRow],
     ) -> io::Result<Option<StopReason>> {
-        let next = AtomicUsize::new(0);
-        let results: Mutex<Vec<(usize, io::Result<MutantRow>)>> = Mutex::new(Vec::new());
         let start_rows: &[MutantRow] = rows;
         let stop: Mutex<Option<StopReason>> = Mutex::new(None);
-        thread::scope(|scope| {
-            for _ in 0..self.options.jobs {
-                scope.spawn(|| {
-                    loop {
-                        let index = next.fetch_add(1, Ordering::SeqCst);
-                        let Some(job) = jobs.get(index) else {
-                            return;
-                        };
-                        if let Some(reason) = self.stop_reason() {
-                            *stop.lock().unwrap_or_else(PoisonError::into_inner) = Some(reason);
-                            next.store(jobs.len(), Ordering::SeqCst);
-                            return;
-                        }
-                        let picked = self.pick(state, setup, job);
-                        let label = id_text(job.planned.id);
-                        let row = self
-                            .evaluate(setup, Some(job.planned.id), &label, &picked)
-                            .map(|done| {
-                                self.finished_row(&start_rows[job.row], done, &picked, state)
-                            });
-                        results
-                            .lock()
-                            .unwrap_or_else(PoisonError::into_inner)
-                            .push((index, row));
-                    }
-                });
+        let results = run_workers(jobs.len(), self.options.jobs, |index| {
+            let job = &jobs[index];
+            if let Some(reason) = self.stop_reason() {
+                *stop.lock().unwrap_or_else(PoisonError::into_inner) = Some(reason);
+                return Ok(None);
             }
-        });
-        let results = results.into_inner().unwrap_or_else(PoisonError::into_inner);
+            let picked = self.pick(state, setup, job);
+            let label = id_text(job.planned.id);
+            self.evaluate(setup, state, Some(job.planned.id), &label, &picked)
+                .map(|done| Some(self.finished_row(&start_rows[job.row], done, &picked, state)))
+        })?;
         for (index, row) in results {
-            rows[jobs[index].row] = row?;
+            rows[jobs[index].row] = row;
         }
         Ok(stop.into_inner().unwrap_or_else(PoisonError::into_inner))
     }
@@ -1108,7 +1235,7 @@ impl Engine<'_> {
                 let path = self.dirs.scratch.join(&file.path);
                 let text = apply(&file.original, &job.planned.range, &job.planned.text);
                 let done = fs::write(&path, text)
-                    .and_then(|()| self.rebuild_and_test(job, setup, &picked));
+                    .and_then(|()| self.rebuild_and_test(job, setup, state, &picked));
                 fs::write(&path, &file.original)?;
                 done?
             };
@@ -1149,10 +1276,16 @@ impl Engine<'_> {
         &self,
         job: &Job,
         setup: &TierRun<'_>,
+        state: RunState<'_>,
         picked: &Picked,
     ) -> io::Result<Done> {
         let start = Instant::now();
-        let build = self.compile(setup.tree.dir, setup.tree.target_dir, "rebuild");
+        let build = self.compile_within(
+            setup.tree.dir,
+            setup.tree.target_dir,
+            "rebuild",
+            setup.rebuild_limit,
+        );
         let build = match build {
             Ok(build) => build,
             // The guard killed the compiler, and a compile says nothing about the
@@ -1173,7 +1306,7 @@ impl Engine<'_> {
                 ))
             });
         }
-        let mut done = self.evaluate(setup, None, &id_text(job.planned.id), picked)?;
+        let mut done = self.evaluate(setup, state, None, &id_text(job.planned.id), picked)?;
         done.elapsed = start.elapsed();
         Ok(done)
     }
@@ -1182,6 +1315,7 @@ impl Engine<'_> {
     fn evaluate(
         &self,
         setup: &TierRun<'_>,
+        state: RunState<'_>,
         mutant: Option<u64>,
         label: &str,
         picked: &Picked,
@@ -1191,27 +1325,37 @@ impl Engine<'_> {
         }
         let start = Instant::now();
         let limit = self.nextest_limit(setup, picked);
-        let first = self.one_pass(setup, mutant, label, 1, picked)?;
+        let run = MutantRun {
+            setup,
+            mutant,
+            label,
+            picked,
+        };
+        let first = self.shared_pass(run, 1)?;
         let mut done = Done {
             elapsed: start.elapsed(),
             tests_run: first.tests_run,
             doctests_run: first.doctests_run,
-            ..Done::of(first.verdict)
+            ..Done::of(first.verdict.clone())
         };
+        if self.options.retry && done.verdict.status == Status::Killed {
+            self.confirm_kill(run, state, &first, &mut done)?;
+            done.elapsed = start.elapsed();
+        }
         let retry_useful = if done.verdict.status == Status::Timeout {
             retry_can_change_a_timeout(limit, picked.baseline_ms)
         } else {
             // A second run of only the doctests says nothing about the lines.
             !picked.empty
         };
-        if self.options.retry && done.verdict.wants_retry() && retry_useful {
+        if self.options.retry && !done.retried && done.verdict.wants_retry() && retry_useful {
             // Host load often lasts into the retry, so a timeout waits twice as long.
             let factor = if done.verdict.status == Status::Timeout {
                 2
             } else {
                 1
             };
-            let retry = self.one_pass(setup, mutant, label, factor, picked)?;
+            let retry = self.shared_pass(run, factor)?;
             done.verdict = merge_retry(done.verdict, retry.verdict);
             done.retried = true;
             done.tests_run += retry.tests_run;
@@ -1224,6 +1368,73 @@ impl Engine<'_> {
         Ok(done)
     }
 
+    /// Takes a second look at a kill, with no other test process of this run.
+    ///
+    /// A kill can come from another test at the same time, from the fastest-first
+    /// order, or from a flaky test. The cheap case first: the failing test alone. The
+    /// map says that this test passes alone with no mutant, so its failure comes from
+    /// the mutant. Else the selected tests run again, in the plain order of the
+    /// project and one at a time.
+    fn confirm_kill(
+        &self,
+        run: MutantRun<'_>,
+        state: RunState<'_>,
+        first: &Pass,
+        done: &mut Done,
+    ) -> io::Result<()> {
+        let setup = run.setup;
+        let _alone = self.alone.write().unwrap_or_else(PoisonError::into_inner);
+        done.retried = true;
+        let filter = first
+            .killer
+            .as_deref()
+            .filter(|killer| state.selector.is_some_and(|map| map.passes_alone(killer)))
+            .and_then(TestName::parse)
+            .map(|name| name.filter());
+        if let Some(only) = filter {
+            let spec = self.second_look_spec(run, Some(only));
+            let (exit, suite) = run_nextest(setup.tree, &setup.meta, &spec)?;
+            done.tests_run += u64::from(suite.tests_run());
+            let verdict = classify("nextest", &exit, &suite, &setup.nextest_known);
+            if verdict.as_ref().is_some_and(|v| v.status == Status::Killed) {
+                return Ok(());
+            }
+        }
+        let again = self.one_pass(run, 1, true)?;
+        done.tests_run += again.tests_run;
+        done.doctests_run += again.doctests_run;
+        done.verdict = match again.verdict.status {
+            Status::Survived if self.options.jobs > 1 => Verdict::with_reason(
+                Status::Survived,
+                "a test failed next to another test, and each test passed one at a time",
+            ),
+            Status::Survived => Verdict {
+                status: Status::Flaky,
+                reason: Some("the first run failed a test, and the second run passed".to_owned()),
+                killed_by: first.verdict.killed_by.clone(),
+            },
+            _ => again.verdict,
+        };
+        Ok(())
+    }
+
+    /// The run of a second look: one process at a time, in the plain order.
+    fn second_look_spec(&self, run: MutantRun<'_>, only: Option<String>) -> RunSpec {
+        let setup = run.setup;
+        RunSpec {
+            label: format!("mutant-{}", run.label),
+            mutant: run.mutant,
+            limit: self.nextest_limit(setup, run.picked),
+            fail_fast: true,
+            jobs: 1,
+            exclude: setup.nextest_exclude.clone(),
+            only,
+            profile_file: None,
+            order: None,
+            remove_logs: true,
+        }
+    }
+
     /// The limit of a nextest run: from the selected tests with a map.
     fn nextest_limit(&self, setup: &TierRun<'_>, picked: &Picked) -> Duration {
         if picked.only.is_some() {
@@ -1233,39 +1444,39 @@ impl Engine<'_> {
         }
     }
 
-    fn one_pass(
-        &self,
-        setup: &TierRun<'_>,
-        mutant: Option<u64>,
-        label: &str,
-        factor: u32,
-        picked: &Picked,
-    ) -> io::Result<Pass> {
-        let mut spec = RunSpec {
-            label: format!("mutant-{label}"),
-            mutant,
-            limit: self.nextest_limit(setup, picked) * factor,
-            fail_fast: true,
-            jobs: if mutant.is_some() {
-                1
-            } else {
-                self.options.jobs
-            },
-            exclude: setup.nextest_exclude.clone(),
-            only: picked.only.clone(),
-            profile_file: None,
-            order: setup.order.clone(),
-            remove_logs: true,
+    /// One run next to other test runs of this run.
+    fn shared_pass(&self, run: MutantRun<'_>, factor: u32) -> io::Result<Pass> {
+        let _shared = self.alone.read().unwrap_or_else(PoisonError::into_inner);
+        self.one_pass(run, factor, false)
+    }
+
+    fn one_pass(&self, run: MutantRun<'_>, factor: u32, one_at_a_time: bool) -> io::Result<Pass> {
+        let MutantRun { setup, picked, .. } = run;
+        let mut spec = if one_at_a_time {
+            self.second_look_spec(run, picked.only.clone())
+        } else {
+            RunSpec {
+                jobs: if run.mutant.is_some() {
+                    1
+                } else {
+                    self.options.jobs
+                },
+                order: setup.order.clone(),
+                ..self.second_look_spec(run, picked.only.clone())
+            }
         };
+        spec.limit = self.nextest_limit(setup, picked) * factor;
         let mut pass = Pass {
             verdict: Verdict::new(Status::Survived),
             tests_run: 0,
             doctests_run: 0,
+            killer: None,
         };
         if !picked.empty {
             let (exit, suite) = run_nextest(setup.tree, &setup.meta, &spec)?;
-            pass.tests_run = u64::from(suite.pass + suite.fail);
-            if let Some(verdict) = classify("nextest", &exit, &suite, &setup.nextest_exclude) {
+            pass.tests_run = u64::from(suite.tests_run());
+            if let Some(verdict) = classify("nextest", &exit, &suite, &setup.nextest_known) {
+                pass.killer = new_failure(&suite, &setup.nextest_known).map(str::to_owned);
                 pass.verdict = verdict;
                 return Ok(pass);
             }
@@ -1388,6 +1599,8 @@ fn selection_info(
         map_ms,
         tests_mapped: selector.map_or(0, |selector| selector.map().tests.len()),
         tests_unmapped: selector.map_or_else(Vec::new, |selector| selector.map().unmapped.clone()),
+        tests_fail_alone: selector
+            .map_or_else(Vec::new, |selector| selector.map().fail_alone.clone()),
         mutants_without_line_data: rows.iter().filter(|row| row.no_line_data).count(),
         resumed,
         tests_run: rows.iter().map(|row| row.tests_run).sum(),
@@ -1395,11 +1608,22 @@ fn selection_info(
     }
 }
 
+/// One mutant in one tier.
+#[derive(Clone, Copy)]
+struct MutantRun<'a> {
+    setup: &'a TierRun<'a>,
+    mutant: Option<u64>,
+    label: &'a str,
+    picked: &'a Picked,
+}
+
 /// The result of one run of one mutant.
 struct Pass {
     verdict: Verdict,
     tests_run: u64,
     doctests_run: u64,
+    /// The full name of the nextest test that failed.
+    killer: Option<String>,
 }
 
 /// The result of the runs of one mutant.
@@ -1439,6 +1663,68 @@ fn tail(text: &str) -> String {
     const LINES: usize = 40;
     let lines: Vec<&str> = text.lines().collect();
     lines[lines.len().saturating_sub(LINES)..].join("\n")
+}
+
+/// The tests that the map found to fail alone.
+fn fail_alone_tests(selector: Option<&Selector>) -> BTreeSet<String> {
+    selector.map_or_else(BTreeSet::new, |selector| {
+        selector.map().fail_alone.iter().cloned().collect()
+    })
+}
+
+/// Runs `work` for each index on `workers` threads. `work` returns `None` when no
+/// new index can start. After an error no new index starts, because the error can
+/// be a full disk or a broken copy, and the other indexes then only cost time.
+fn run_workers<T: Send>(
+    count: usize,
+    workers: usize,
+    work: impl Fn(usize) -> io::Result<Option<T>> + Sync,
+) -> io::Result<Vec<(usize, T)>> {
+    let next = AtomicUsize::new(0);
+    let results: Mutex<Vec<(usize, T)>> = Mutex::new(Vec::new());
+    let first_error: Mutex<Option<io::Error>> = Mutex::new(None);
+    thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(|| {
+                loop {
+                    let index = next.fetch_add(1, Ordering::SeqCst);
+                    if index >= count {
+                        return;
+                    }
+                    match work(index) {
+                        Ok(Some(row)) => results
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .push((index, row)),
+                        Ok(None) => {
+                            next.store(count, Ordering::SeqCst);
+                            return;
+                        }
+                        Err(err) => {
+                            next.store(count, Ordering::SeqCst);
+                            first_error
+                                .lock()
+                                .unwrap_or_else(PoisonError::into_inner)
+                                .get_or_insert(err);
+                            return;
+                        }
+                    }
+                }
+            });
+        }
+    });
+    if let Some(err) = first_error
+        .into_inner()
+        .unwrap_or_else(PoisonError::into_inner)
+    {
+        return Err(err);
+    }
+    Ok(results.into_inner().unwrap_or_else(PoisonError::into_inner))
+}
+
+/// The limit of one rebuild of a mutant, from the time of the clean build.
+fn rebuild_limit(clean_build: Duration) -> Duration {
+    (clean_build * REBUILD_FACTOR).clamp(MIN_REBUILD_LIMIT, BUILD_LIMIT)
 }
 
 /// The result of the probe builds.
@@ -1564,6 +1850,38 @@ mod tests {
         };
         assert!(probed.read.is_empty());
         assert!(!probed.verified);
+    }
+
+    #[test]
+    fn workers_start_no_new_job_after_an_error() {
+        let calls = AtomicUsize::new(0);
+        let result: io::Result<Vec<(usize, ())>> = run_workers(1000, 2, |_| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Err(io::Error::other("broken"))
+        });
+        assert_eq!(
+            result.map_err(|err| err.to_string()),
+            Err("broken".to_owned())
+        );
+        assert!(calls.load(Ordering::SeqCst) <= 2);
+    }
+
+    #[test]
+    fn workers_stop_at_none_and_keep_the_results() {
+        let Ok(results) = run_workers(5, 1, |index| Ok((index < 2).then_some(index))) else {
+            panic!("no error");
+        };
+        assert_eq!(results, [(0, 0), (1, 1)]);
+    }
+
+    #[test]
+    fn a_rebuild_limit_comes_from_the_clean_build() {
+        assert_eq!(rebuild_limit(Duration::from_secs(1)), MIN_REBUILD_LIMIT);
+        assert_eq!(
+            rebuild_limit(Duration::from_mins(5)),
+            Duration::from_mins(15)
+        );
+        assert_eq!(rebuild_limit(Duration::from_hours(9)), BUILD_LIMIT);
     }
 
     #[test]

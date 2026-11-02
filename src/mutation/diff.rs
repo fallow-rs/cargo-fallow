@@ -103,6 +103,11 @@ impl Changed {
         self.files.len()
     }
 
+    /// True when a line of this file changed.
+    pub fn has_file(&self, file: &str) -> bool {
+        self.files.contains_key(file)
+    }
+
     /// True when a line of the closed range changed.
     pub fn touches(&self, file: &str, (first, last): LineRange) -> bool {
         self.files.get(file).is_some_and(|ranges| {

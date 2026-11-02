@@ -36,8 +36,12 @@ pub fn run(args: Vec<OsString>) -> ExitCode {
     let code = match cli::parse(&args) {
         Parsed::Run(options) => run_check(&options),
         Parsed::Mutants(options) => run_mutants(&options),
-        Parsed::Watchdog(roots) => {
-            mutation::guard::run_watchdog(&roots);
+        Parsed::Watchdog {
+            roots,
+            sweep,
+            remove,
+        } => {
+            mutation::guard::run_watchdog(&roots, sweep.as_deref(), remove);
             EXIT_OK
         }
         Parsed::Exit(code) => code,

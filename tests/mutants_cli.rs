@@ -152,7 +152,7 @@ fn assert_survivor_is_shown(format: &str, output: &Output, enforced: bool) {
     match format {
         "human" => {
             assert!(output.stdout.contains("src/lib.rs"), "{}", output.stdout);
-            assert!(output.stdout.contains(":8:5"), "{}", output.stdout);
+            assert!(output.stdout.contains(":8:7"), "{}", output.stdout);
             let wanted = if enforced {
                 "surviving-mutants: fail (1 file)\n"
             } else {
@@ -291,11 +291,12 @@ fn json_has_the_report_contract_and_one_object_for_each_mutant() {
     let killed = killed[0];
     assert_eq!(killed["file"], "src/lib.rs");
     assert_eq!(killed["line"], 3);
-    assert_eq!(killed["column"], 5);
+    assert_eq!(killed["column"], 7);
     assert_eq!(killed["operator"], "relational-operator");
     assert_eq!(killed["replacement"], "!=");
     assert_eq!(killed["tier"], "schema");
-    assert_eq!(killed["tests_run"], 1);
+    // The first run and the second look at the kill.
+    assert_eq!(killed["tests_run"], 2);
     assert!(killed["duration_ms"].is_u64(), "{killed}");
     let id = killed["id"].as_str().expect("the id");
     assert_eq!(id.len(), 16, "{id}");
@@ -363,8 +364,8 @@ fn human_output_has_the_summary_first_and_groups_survivors_by_file() {
         "{text}"
     );
     let header = text.find("\nSurvived (2)\n").expect("the survivor header");
-    let first = text.find("\n  src/a.rs\n    :8:5 relational-operator `a == 2` -> `!=` [");
-    let second = text.find("\n  src/b.rs\n    :8:5 relational-operator `a == 2` -> `!=` [");
+    let first = text.find("\n  src/a.rs\n    :8:7 relational-operator `a == 2` -> `!=` [");
+    let second = text.find("\n  src/b.rs\n    :8:7 relational-operator `a == 2` -> `!=` [");
     let (first, second) = (first.expect("file a"), second.expect("file b"));
     assert!(header < first && first < second, "{text}");
     assert!(
@@ -390,7 +391,7 @@ fn human_output_sorts_a_file_by_position_over_both_tiers() {
         .filter_map(|line| line.split(' ').next())
         .collect();
     // The rebuild mutants of the body start on line 7, before the schema mutant.
-    assert_eq!(positions.last(), Some(&"8:5"), "{section}");
+    assert_eq!(positions.last(), Some(&"8:7"), "{section}");
     assert!(positions.len() > 1, "{section}");
     assert!(positions[0].starts_with("7:"), "{section}");
 }
@@ -453,7 +454,7 @@ fn inspect_shows_the_mutation_and_the_tests_that_cover_it() {
     assert_eq!(mutant["id"], id.as_str(), "{report}");
     assert_eq!(mutant["file"], "src/lib.rs");
     assert_eq!(mutant["line"], 8);
-    assert_eq!(mutant["column"], 5);
+    assert_eq!(mutant["column"], 7);
     assert_eq!(mutant["tier"], "schema");
     assert_eq!(mutant["operator"], "relational-operator");
     assert_eq!(mutant["replacement"], "!=");
@@ -474,7 +475,7 @@ fn inspect_shows_the_mutation_and_the_tests_that_cover_it() {
     let text = &human.stdout;
     assert_eq!(human.code, Some(0), "{}", human.stderr);
     assert!(text.contains(&format!("mutant {id}")), "{text}");
-    assert!(text.contains("src/lib.rs:8:5"), "{text}");
+    assert!(text.contains("src/lib.rs:8:7"), "{text}");
     assert!(text.contains("-     a == 2\n"), "{text}");
     assert!(text.contains("+     a != 2\n"), "{text}");
     assert!(text.contains("tests::check_works"), "{text}");

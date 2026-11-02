@@ -30,6 +30,9 @@ pub struct Member {
     pub manifest_path: String,
     /// The targets, sorted by kind and then by name.
     pub targets: Vec<Target>,
+    /// The names of the direct dependencies. They are not part of the report.
+    #[serde(skip)]
+    pub dependencies: Vec<String>,
 }
 
 /// One target of a member.
@@ -130,6 +133,11 @@ fn member(root: &Utf8Path, package: &Package) -> Member {
         version: package.version.to_string(),
         manifest_path: relative_path(root, &package.manifest_path),
         targets,
+        dependencies: package
+            .dependencies
+            .iter()
+            .map(|dependency| dependency.name.clone())
+            .collect(),
     }
 }
 

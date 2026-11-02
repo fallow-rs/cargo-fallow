@@ -52,6 +52,11 @@ impl Selector {
         Self { map, index }
     }
 
+    /// True when the test passed alone with no mutant in the map run.
+    pub fn passes_alone(&self, test: &str) -> bool {
+        self.index.contains_key(test)
+    }
+
     /// The map.
     pub const fn map(&self) -> &CoverageMap {
         &self.map

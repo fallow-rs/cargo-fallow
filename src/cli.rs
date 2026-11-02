@@ -47,7 +47,14 @@ pub enum Parsed {
     /// Run the `mutants` command with these options.
     Mutants(Box<crate::mutation::run::Options>),
     /// Run the hidden watchdog of the memory guard.
-    Watchdog(PathBuf),
+    Watchdog {
+        /// The file that lists the root of each process tree.
+        roots: PathBuf,
+        /// The folder of the run.
+        sweep: Option<PathBuf>,
+        /// True when the folder of the run goes when the parent is gone.
+        remove: bool,
+    },
     /// Stop with this exit code. The parser already wrote its output.
     Exit(u8),
 }
@@ -79,6 +86,12 @@ enum Command {
     MutationWatchdog {
         /// The file that lists the root of each process tree.
         roots: PathBuf,
+        /// The folder of the run. A test binary in this folder dies with the parent.
+        #[arg(long, value_name = "DIR")]
+        sweep: Option<PathBuf>,
+        /// Remove the folder of the run when the parent is gone.
+        #[arg(long)]
+        remove: bool,
     },
 }
 
@@ -121,7 +134,7 @@ struct MutantsArgs {
     /// the coverage map when the cache has no map for this source.
     #[arg(long, value_name = "ID", conflicts_with_all = [
         "in_diff", "fail_on_survivors", "tier", "timeout", "time_budget", "max_mutants",
-        "no_retry", "no_doctests", "no_schema", "no_selection", "no_cache", "no_run",
+        "no_retry", "no_doctests", "no_schema", "no_selection", "no_cache", "no_run", "files",
     ])]
     inspect: Option<String>,
     /// The mutants to run.
@@ -143,7 +156,7 @@ struct MutantsArgs {
     no_memory_guard: bool,
     /// The time limit of each mutant run. The default is 5 times the baseline,
     /// with a minimum of 20 seconds.
-    #[arg(long, value_name = "SECONDS")]
+    #[arg(long, value_name = "SECONDS", value_parser = clap::value_parser!(u64).range(1..))]
     timeout: Option<u64>,
     /// Start no new mutant after this time. The other mutants stay `pending`.
     #[arg(long, value_name = "SECONDS")]
@@ -151,7 +164,8 @@ struct MutantsArgs {
     /// Run at most this many mutants. The other mutants stay `pending`.
     #[arg(long, value_name = "N")]
     max_mutants: Option<usize>,
-    /// Give a survivor and a timeout no second run.
+    /// Give no mutant a second run. Without this flag a survivor, a timeout and a
+    /// kill get a second run. A second run stops a flaky test from giving a verdict.
     #[arg(long)]
     no_retry: bool,
     /// Do not run the doctests for a survivor.
@@ -174,6 +188,15 @@ struct MutantsArgs {
     /// Keep the temporary work folder after the run.
     #[arg(long)]
     keep_work_dir: bool,
+    /// Run the tests of each workspace member for each mutant. Without this flag only
+    /// the tests of the package run, and the report names the other members that
+    /// depend on it.
+    #[arg(long)]
+    test_workspace: bool,
+    /// Put mutants only in this file or folder, by the path from the workspace root.
+    /// The flag can repeat. A value that matches no file of the package is an error.
+    #[arg(long = "file", short = 'f', value_name = "PATH")]
+    files: Vec<String>,
 }
 
 impl From<MutantsArgs> for crate::mutation::run::Options {
@@ -204,6 +227,8 @@ impl From<MutantsArgs> for crate::mutation::run::Options {
             cache: !args.no_cache,
             no_run: args.no_run,
             keep_work_dir: args.keep_work_dir,
+            test_workspace: args.test_workspace,
+            files: args.files,
             in_diff: args.in_diff,
             fail_on_survivors: args.fail_on_survivors,
             inspect: args.inspect,
@@ -254,7 +279,15 @@ pub fn parse(args: &[OsString]) -> Parsed {
     match Cli::try_parse_from(args) {
         Ok(cli) => match cli.command {
             Some(Command::Mutants(args)) => Parsed::Mutants(Box::new(args.into())),
-            Some(Command::MutationWatchdog { roots }) => Parsed::Watchdog(roots),
+            Some(Command::MutationWatchdog {
+                roots,
+                sweep,
+                remove,
+            }) => Parsed::Watchdog {
+                roots,
+                sweep,
+                remove,
+            },
             Some(Command::Check(check)) => Parsed::Run(check.into()),
             None => Parsed::Run(cli.check.into()),
         },

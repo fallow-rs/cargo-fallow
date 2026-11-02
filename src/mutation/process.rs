@@ -125,7 +125,7 @@ fn add_compiler_flags(command: &mut Command, _target_dir: &Path, flags: &str) {
 /// On Unix a small shell opens the file on [`MUTANT_FD`] and then runs the command.
 /// The process id stays the same. Each child inherits the descriptor, also a child
 /// with an empty environment. Other systems read an environment variable.
-pub fn with_active_mutant(command: Command, record: &Path, mutant: u64) -> io::Result<Command> {
+pub fn with_active_mutant(command: &mut Command, record: &Path, mutant: u64) -> io::Result<()> {
     #[cfg(unix)]
     {
         std::fs::write(record, mutant_record(mutant))?;
@@ -145,15 +145,14 @@ pub fn with_active_mutant(command: Command, record: &Path, mutant: u64) -> io::R
                 None => shell.env_remove(key),
             };
         }
-        Ok(shell)
+        *command = shell;
     }
     #[cfg(not(unix))]
     {
         let _ = record;
-        let mut command = command;
         command.env("FALLOW_MUTANT", format!("{mutant:x}"));
-        Ok(command)
     }
+    Ok(())
 }
 
 /// The one place in the mutation module that creates a process.
@@ -186,15 +185,20 @@ pub fn run_to_files(
     let deadline = Instant::now() + limit;
     loop {
         if let Some(status) = child.try_wait()? {
-            return Ok(watch
-                .finish()
-                .map_or_else(|| Exit::Code(status.code()), Exit::Killed));
+            let reason = watch.finish();
+            if scope == Scope::Tests {
+                guard.sweep_orphans();
+            }
+            return Ok(reason.map_or_else(|| Exit::Code(status.code()), Exit::Killed));
         }
         if Instant::now() >= deadline {
             let reason = watch.finish();
             kill_tree(child.id());
             child.kill()?;
             child.wait()?;
+            if scope == Scope::Tests {
+                guard.sweep_orphans();
+            }
             return Ok(reason.map_or(Exit::TimedOut, Exit::Killed));
         }
         thread::sleep(POLL_INTERVAL);
@@ -211,23 +215,108 @@ fn start_new_group(command: &mut Command) {
 fn start_new_group(_command: &mut Command) {}
 
 /// Stops `root`, so that it starts no new child, and then kills it and all its
-/// descendants. A process that is gone is no error.
+/// descendants. A process that is gone is no error. The process group of `root` also
+/// gets the signal, so a failed read of the process table still stops most of a tree.
 pub fn kill_tree(root: u32) {
-    let Some(probe) = system_probe() else {
-        return;
-    };
-    signal("-STOP", &[root]);
-    let mut pids = probe
-        .table()
-        .map(|rows| descendants(&rows, root))
-        .unwrap_or_default();
+    let table = system_probe().and_then(|probe| {
+        signal("-STOP", &[root]);
+        probe.table().ok()
+    });
+    kill_tree_with(root, table.as_deref());
+}
+
+fn kill_tree_with(root: u32, table: Option<&[Row]>) {
+    let mut pids = table.map_or_else(Vec::new, |rows| descendants(rows, root));
     pids.push(root);
     signal("-KILL", &pids);
+    kill_group(root);
+}
+
+/// Kills the process group that a child of [`run_to_files`] leads.
+fn kill_group(leader: u32) {
+    // A process that is gone gives an error status, and that changes nothing.
+    let _ = new_command("sh")
+        .args(["-c", "kill -KILL -- \"-$1\" 2>/dev/null", "sh"])
+        .arg(leader.to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+/// One row of the table that [`list_commands`] reads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandRow {
+    /// The process id.
+    pub pid: u32,
+    /// The id of the parent.
+    pub ppid: u32,
+    /// The command line.
+    pub command: String,
+}
+
+/// Reads the command line of each process. A failed read gives an empty table,
+/// because this table only finds more processes to stop.
+pub fn list_commands() -> Vec<CommandRow> {
+    new_command("ps")
+        .args(["-axo", "pid=,ppid=,command="])
+        .output()
+        .map_or_else(
+            |_| Vec::new(),
+            |out| parse_commands(&String::from_utf8_lossy(&out.stdout)),
+        )
+}
+
+fn parse_commands(text: &str) -> Vec<CommandRow> {
+    text.lines()
+        .filter_map(|line| {
+            let (pid, rest) = line.trim_start().split_once(char::is_whitespace)?;
+            let (ppid, command) = rest.trim_start().split_once(char::is_whitespace)?;
+            Some(CommandRow {
+                pid: pid.parse().ok()?,
+                ppid: ppid.parse().ok()?,
+                command: command.trim_start().to_owned(),
+            })
+        })
+        .collect()
+}
+
+/// The processes that run a program from `folder` and that no tree in `roots` holds.
+/// A test binary lives in that folder, so a mutated program cannot hide from this
+/// list. A plain tool that a test starts can stay, and a plain tool has no mutant.
+pub fn processes_under(table: &[CommandRow], folder: &Path, roots: &[u32]) -> Vec<u32> {
+    let rows: Vec<Row> = table
+        .iter()
+        .map(|row| Row {
+            pid: row.pid,
+            ppid: row.ppid,
+            rss_kib: 0,
+        })
+        .collect();
+    let mut held: Vec<u32> = roots.to_vec();
+    for root in roots {
+        held.extend(descendants(&rows, *root));
+    }
+    let prefix = folder.to_string_lossy();
+    table
+        .iter()
+        .filter(|row| {
+            row.command
+                .strip_prefix(prefix.as_ref())
+                .is_some_and(|rest| rest.starts_with('/'))
+                && !held.contains(&row.pid)
+                && row.pid != std::process::id()
+        })
+        .map(|row| row.pid)
+        .collect()
 }
 
 /// Sends a signal through the shell builtin, which needs no unsafe code and no
 /// `kill` program in the image.
 pub fn signal(signal: &str, pids: &[u32]) {
+    if pids.is_empty() {
+        return;
+    }
     let pids: Vec<String> = pids.iter().map(u32::to_string).collect();
     // A process that is gone gives an error status, and that changes nothing.
     let _ = new_command("sh")
@@ -311,6 +400,41 @@ mod tests {
         assert_eq!(exit, Exit::TimedOut);
         thread::sleep(Duration::from_millis(200));
         assert!(!alive(marker), "the descendant must be gone");
+    }
+
+    /// A failed read of the process table must still stop the test processes.
+    #[cfg(unix)]
+    #[test]
+    fn with_no_process_table_the_group_of_the_root_gets_the_signal() {
+        let marker = "sleep 47.3128";
+        let mut command = new_command("sh");
+        command.args(["-c", &format!("{marker} & wait")]);
+        start_new_group(&mut command);
+        let Ok(mut child) = command.spawn() else {
+            panic!("sh must start");
+        };
+        thread::sleep(Duration::from_millis(200));
+        assert!(alive(marker), "the child must run");
+        kill_tree_with(child.id(), None);
+        let _ = child.wait();
+        thread::sleep(Duration::from_millis(200));
+        assert!(!alive(marker), "the child must be gone");
+    }
+
+    #[test]
+    fn a_process_that_runs_from_the_folder_with_no_tree_is_an_orphan() {
+        let table = parse_commands(
+            "  10  1 /work/target/debug/deps/t-1 --exact a\n\
+             \x20 20 30 /work/target/debug/deps/t-1 --exact b\n\
+             \x20 40  1 /usr/bin/sleep 9\n\
+             \x20 50  1 /work-other/x\n\
+             not a row\n",
+        );
+        assert_eq!(table.len(), 4);
+        assert_eq!(table[0].command, "/work/target/debug/deps/t-1 --exact a");
+        let folder = Path::new("/work");
+        assert_eq!(processes_under(&table, folder, &[30]), [10]);
+        assert_eq!(processes_under(&table, folder, &[]), [10, 20]);
     }
 
     #[test]

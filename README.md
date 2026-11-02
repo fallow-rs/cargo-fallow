@@ -65,6 +65,8 @@ cargo fallow mutants --inspect 04658712a47ab204
 | `--manifest-path <PATH>` | The `Cargo.toml` of the workspace or the package. |
 | `--package <NAME>` | The package to mutate. A workspace with one package needs no value. |
 | `--in-diff <REF>` | Run only the mutants on changed lines. See [Changed code](#changed-code). |
+| `--file <PATH>` | Put mutants only in this file or folder, by the path from the workspace root. The flag can repeat. A value that matches no file is an error. |
+| `--test-workspace` | Run the tests of each workspace member for each mutant. |
 | `--format human\|json\|sarif` | The output format. The default is `human`. `--inspect` has no SARIF form. |
 | `--quiet` | Hide the progress lines on stderr. |
 | `--jobs <N>` | The test processes that run at the same time. |
@@ -206,22 +208,31 @@ result. An unknown id exits 2. An id changes when the text of its code changes.
 | Tier | Operators | How it runs |
 | --- | --- | --- |
 | `schema` | `relational-operator`, `logical-operator`, `negate-condition` | All mutants go into one build. A runtime switch selects one mutant in each test process, so a mutant costs no compile. The removal loop removes a mutant that breaks the build, and that mutant then runs in a rebuild. |
-| `rebuild` | `arithmetic-operator`, `unary-operator`, `return-value`, `deleted-match-arm` | Each mutant gets its own rebuild of one reused scratch copy, because these operators are not type-safe by construction. |
+| `rebuild` | `arithmetic-operator`, `unary-operator`, `return-value`, `deleted-match-arm`, `match-guard` | Each mutant gets its own rebuild of one reused scratch copy, because these operators are not type-safe by construction. |
 
 ### Status
 
 | Status | Meaning |
 | --- | --- |
-| `killed` | A test failed with the mutant. `killed_by` names the first one. |
-| `survived` | Each test passed, also in the retry. |
-| `timeout` | The tests did not end within the limit. A limit at most 10 times the baseline gets a retry with twice the limit, because host load can explain it. |
+| `killed` | A test failed with the mutant, also in a second look with no other test process of the run. `killed_by` names the test. |
+| `survived` | Each test passed, also in the retry. A first failure next to another test that does not repeat one at a time also gives this status, and `reason` says so. |
+| `timeout` | The tests did not end within the limit of the tool, or the nextest config of the project ended a test at its limit. A limit at most 10 times the baseline gets a retry with twice the limit, because host load can explain it. |
 | `flaky` | Two runs of the mutant disagree. |
 | `no_coverage` | No test executes the mutant, no build reads it (for example a `cfg` that is off), or the package has no test that passes. `reason` says which. |
-| `compile_error` | The mutant does not compile. |
+| `compile_error` | The mutant does not compile, or its compile passed the limit: 3 times the clean build, with a minimum of 30 seconds. A mutant in a `const fn` can loop in the compiler. |
 | `runtime_error` | The run has no test result. `reason` says why, for example a kill by the memory guard. |
 | `pending` | The run stopped first: `--time-budget`, `--max-mutants`, `--no-run` or low memory. |
 
 The score is `killed + timeout` over `killed + timeout + survived`.
+
+A switch can change the result of a test with no active mutant: the match of a switch
+ends a temporary earlier, and `column!()` on the line of a site gets another value.
+`baseline.regressions` names such a test, and the human report does too. The test does
+not run in the schema tier, so each mutant that it executes runs as a rebuild. A
+doctest has no line data, so a changed doctest moves each mutant. `--tier schema` also
+moves them. `schema.moved_to_rebuild` counts them.
+
+`--no-retry` gives no mutant a second run, also no second look at a kill.
 
 ### Safety
 
@@ -234,7 +245,11 @@ machine. The memory guard is on by default:
 - It kills the largest process tree when the free memory drops under
   `--low-memory-percent` (default 25).
 - It kills the process trees when it cannot read the memory data.
-- A watchdog process kills the process trees when `cargo fallow` dies.
+- A test can leave a child that runs on. After each test run the command kills each
+  such process that runs a program from the work folder. A plain tool that a test
+  starts can stay, because a plain tool has no mutant.
+- A watchdog process kills the process trees when `cargo fallow` dies, and it removes
+  the temporary work folder. That covers a signal and a panic.
 
 macOS reads the footprint from `top`, because RSS does not count compressed
 pages. Linux reads RSS plus swap from `/proc`, and the free memory from the
@@ -263,11 +278,15 @@ The selection comes from a coverage map:
    them.
 
 The rule is on the safe side. A test also runs for each mutant when it wrote no
-usable data, when it failed in the coverage build, or when its name is not plain
-text. Each test runs for a mutant on a line that has no coverage data in any test,
+usable data or when its name is not plain text. Each test runs for a mutant on a line that has no coverage data in any test,
 and for a mutant in a constant context such as a `const fn`, because the compiler
 can evaluate that code and no test process then executes it.
 The `selection` part of the report counts these tests and these mutants.
+
+A test that passes in the baseline and fails alone needs another test, so its result
+says nothing about a mutant in a run of selected tests. Such a test decides nothing.
+`selection.tests_fail_alone` and the human report name it. `--file` and `--in-diff`
+limit the line data to their files, and such a map stays out of the cache.
 
 `--no-selection` runs each test for each mutant, with no coverage build. Use it to
 check a result. The selection changes a status in only two ways:
@@ -328,8 +347,13 @@ The `gaps` part of the report counts the code that a run does not cover:
   only such a child executes gets `no_coverage`.
 - The coverage counters are not atomic. A race in a test with threads can in theory
   hide an executed line. The tool does not turn on atomic counters.
-- A `rustflags` key under `[target]` in the Cargo config replaces the coverage
-  flag. Then each test has no data, a warning says so, and each mutant runs each test.
+- Without `--test-workspace` only the tests of the package run. The tests of a member
+  that depends on the package can see a mutant, so a mutant can survive here and die
+  with the flag. `gaps.untested_dependents` and the human report name those members.
+- A `.cargo/config.toml` above the workspace root reaches the copy, but a relative
+  path in such a file then starts at the work folder.
+- A test that closes each inherited file descriptor, or a system with no `/dev/fd`,
+  turns the schema switch off. Then a mutant can survive. `--no-schema` checks that.
 
 ## Output formats
 

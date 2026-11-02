@@ -276,6 +276,9 @@ pub struct ErrorSummary {
 pub struct SchemaInfo {
     /// The result of the build.
     pub status: SchemaStatus,
+    /// The mutants that ran as a rebuild, because the schema build changes the result
+    /// of a test that can see them.
+    pub moved_to_rebuild: usize,
     /// The compile rounds, or -1 when the schema never compiled.
     pub rounds: i64,
     /// The size of the source files.
@@ -343,6 +346,9 @@ pub struct Gaps {
     pub features: &'static str,
     /// True when the doctests ran for the survivors.
     pub doctests: bool,
+    /// The workspace members that depend on the package and whose tests did not run.
+    /// `--test-workspace` runs them.
+    pub untested_dependents: Vec<String>,
 }
 
 /// Where the coverage map of a run comes from.
@@ -371,6 +377,8 @@ pub struct SelectionInfo {
     pub tests_mapped: usize,
     /// The tests with no usable data. Each mutant runs these tests.
     pub tests_unmapped: Vec<String>,
+    /// The tests that fail when they run alone with no mutant. They decide nothing.
+    pub tests_fail_alone: Vec<String>,
     /// The mutants with no coverage data on their lines, so they ran each test.
     pub mutants_without_line_data: usize,
     /// The mutants that the journal gave. These mutants did not run again.

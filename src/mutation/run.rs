@@ -1,8 +1,9 @@
 //! The `mutants` command: one package, one report.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
 use crate::cli::Format;
@@ -92,6 +93,10 @@ pub struct Options {
     pub no_run: bool,
     /// True when the temporary work folder stays after the run.
     pub keep_work_dir: bool,
+    /// True when the tests of each workspace member run for each mutant.
+    pub test_workspace: bool,
+    /// The files with mutants. An empty list means each file of the package.
+    pub files: Vec<String>,
     /// The ref of `--in-diff`.
     pub in_diff: Option<String>,
     /// True when a survivor fails the run.
@@ -124,11 +129,13 @@ pub fn run(options: &Options) -> Result<Report, CliError> {
         .as_deref()
         .map(|reference| Changed::load(workspace.root.as_std_path(), reference))
         .transpose()?;
-    let dirs = WorkDirs::create(options.work_dir.as_deref())
-        .map_err(|err| failure("create the work folder", &err))?;
-    let result = run_in(options, &workspace, member, &dirs, changed.as_ref(), start);
-    dirs.finish(options.keep_work_dir);
-    result
+    let dirs = WorkDirs::create(
+        options.work_dir.as_deref(),
+        options.keep_work_dir,
+        workspace.root.as_std_path(),
+    )
+    .map_err(|err| failure("create the work folder", &err))?;
+    run_in(options, &workspace, member, &dirs, changed.as_ref(), start)
 }
 
 fn run_in(
@@ -144,6 +151,7 @@ fn run_in(
     prepare_copies(workspace.root.as_std_path(), target_dir, dirs, &guard)
         .map_err(|err| failure("copy the source tree", &err))?;
     let mut collected = collect(&dirs.scratch, &target_roots(member));
+    retain_selected_files(options, &mut collected.files)?;
     let sites_outside = changed.map_or(0, |changed| {
         let removed = changed.retain_sites(&mut collected.files);
         if options.tier.has_schema() {
@@ -162,6 +170,8 @@ fn run_in(
         target_dir: target_dir.to_path_buf(),
         package: member.name.clone(),
         changed,
+        select: package_selection(options, workspace, member),
+        alone: RwLock::new(()),
     };
     let (mut rows, stages) = engine.run()?;
     let inspect = inspect_command(options, &member.name);
@@ -191,7 +201,14 @@ fn run_in(
         baseline: stages.baseline,
         schema: stages.schema,
         rebuild: stages.rebuild,
-        gaps: gaps_of(&collected, stages.doctests),
+        gaps: Gaps {
+            untested_dependents: if options.test_workspace {
+                Vec::new()
+            } else {
+                dependents_of(workspace, member)
+            },
+            ..gaps_of(&collected, stages.doctests)
+        },
         selection: stages.selection,
         guard: GuardInfo {
             enabled: options.memory_guard,
@@ -246,8 +263,12 @@ pub fn inspect(options: &Options, id: &str) -> Result<InspectReport, CliError> {
     }
     let workspace = workspace::load(options.manifest_path.as_deref())?;
     let (member, files, planned) = locate(&workspace, options.package.as_deref(), id)?;
-    let dirs = WorkDirs::create(options.work_dir.as_deref())
-        .map_err(|err| failure("create the work folder", &err))?;
+    let dirs = WorkDirs::create(
+        options.work_dir.as_deref(),
+        options.keep_work_dir,
+        workspace.root.as_std_path(),
+    )
+    .map_err(|err| failure("create the work folder", &err))?;
     let result = (|| {
         let guard = start_guard(options, &dirs)?;
         let target_dir = workspace.target_dir.as_std_path();
@@ -263,10 +284,12 @@ pub fn inspect(options: &Options, id: &str) -> Result<InspectReport, CliError> {
             target_dir: target_dir.to_path_buf(),
             package: member.name.clone(),
             changed: None,
+            select: package_selection(options, &workspace, member),
+            alone: RwLock::new(()),
         }
         .map_only()
     })();
-    dirs.finish(options.keep_work_dir);
+    drop(dirs);
     let coverage = result?;
     let file = &files[planned.file];
     let map = coverage.map.unwrap_or_default();
@@ -389,10 +412,16 @@ fn start_guard(options: &Options, dirs: &WorkDirs) -> Result<Guard, CliError> {
     } else {
         Guard::disabled()
     };
+    guard.set_run_folder(&dirs.root);
     if cfg!(unix) {
         let exe = std::env::current_exe().map_err(|err| failure("find this program", &err))?;
         guard
-            .start_watchdog(&exe, dirs.root.join("watchdog-roots"))
+            .start_watchdog(
+                &exe,
+                dirs.root.join("watchdog-roots"),
+                &dirs.root,
+                dirs.removes_folder(),
+            )
             .map_err(|err| failure("start the watchdog", &err))?;
     }
     Ok(guard)
@@ -423,6 +452,77 @@ fn find_member<'a>(
             ),
         )
     })
+}
+
+/// True when `--file` selects this path. An empty list selects each path.
+pub fn file_selected(selected: &[String], path: &str) -> bool {
+    selected.is_empty()
+        || selected.iter().any(|value| {
+            let value = value.trim_start_matches("./").trim_end_matches('/');
+            path == value
+                || path
+                    .strip_prefix(value)
+                    .is_some_and(|rest| rest.starts_with('/'))
+        })
+}
+
+/// Removes the sites of each file that `--file` leaves out. The file stays in the
+/// list: a target root holds the helper of the schema. A value that matches no file
+/// is an error, because a run with the wrong scope looks like a clean result.
+fn retain_selected_files(options: &Options, files: &mut [CrateFile]) -> Result<(), CliError> {
+    for value in &options.files {
+        let one = std::slice::from_ref(value);
+        if !files.iter().any(|file| file_selected(one, &file.path)) {
+            return Err(CliError::new(
+                ErrorCode::InvalidArgument,
+                format!("`--file {value}` matches no source file of the package"),
+            )
+            .with_help("Pass a path from the workspace root, for example `src/lib.rs`."));
+        }
+    }
+    for file in files {
+        if !file_selected(&options.files, &file.path) {
+            file.found.sites.clear();
+        }
+    }
+    Ok(())
+}
+
+/// The flags that select the packages of each build and each doctest run.
+///
+/// cargo runs in the package folder, and that selects the package, with one
+/// exception: in the workspace root cargo selects the default members, and those can
+/// leave out the root package. `--package` there needs the version: the same name
+/// can be a dependency.
+fn package_selection(options: &Options, workspace: &Workspace, member: &Member) -> Vec<String> {
+    if options.test_workspace {
+        return vec!["--workspace".to_owned()];
+    }
+    if workspace.members.len() > 1 && package_folder(member).as_os_str().is_empty() {
+        return vec![
+            "--package".to_owned(),
+            format!("{}@{}", member.name, member.version),
+        ];
+    }
+    Vec::new()
+}
+
+/// The members that depend on the package, directly or through other members. Their
+/// tests can see a mutant, and they do not run without `--test-workspace`.
+fn dependents_of(workspace: &Workspace, member: &Member) -> Vec<String> {
+    let mut found: BTreeSet<&str> = BTreeSet::new();
+    let mut frontier = vec![member.name.as_str()];
+    while let Some(name) = frontier.pop() {
+        for other in &workspace.members {
+            if other.name != member.name
+                && other.dependencies.iter().any(|dep| dep == name)
+                && found.insert(&other.name)
+            {
+                frontier.push(&other.name);
+            }
+        }
+    }
+    found.into_iter().map(str::to_owned).collect()
 }
 
 /// The folder of the package, relative to the workspace root.

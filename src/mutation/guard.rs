@@ -31,7 +31,9 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::mutation::probe::{Probe, Row, system_probe};
-use crate::mutation::process::{descendants, kill_tree, new_command, signal};
+use crate::mutation::process::{
+    descendants, kill_tree, list_commands, new_command, processes_under, signal,
+};
 
 /// The default limit for one test process: 4 GiB.
 pub const DEFAULT_LIMIT_MIB: u64 = 4096;
@@ -213,6 +215,8 @@ struct Registry {
     cleared: BTreeMap<u32, u64>,
     /// The file for the watchdog. It holds the root of each tree.
     roots_file: Option<PathBuf>,
+    /// The folder of the run.
+    run_folder: Option<PathBuf>,
 }
 
 impl Registry {
@@ -296,16 +300,28 @@ impl Guard {
     }
 
     /// Starts the watchdog process. `exe` is this program, and `roots` is a new
-    /// file for the list of roots.
-    pub fn start_watchdog(&mut self, exe: &Path, roots: PathBuf) -> io::Result<()> {
+    /// file for the list of roots. `folder` is the folder of the run. The watchdog
+    /// removes it when `remove` is true and the parent dies.
+    pub fn start_watchdog(
+        &mut self,
+        exe: &Path,
+        roots: PathBuf,
+        folder: &Path,
+        remove: bool,
+    ) -> io::Result<()> {
         fs::write(&roots, "")?;
         let mut command = new_command(exe);
         command
             .arg("mutation-watchdog")
             .arg(&roots)
+            .arg("--sweep")
+            .arg(folder)
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
+        if remove {
+            command.arg("--remove");
+        }
         // Ctrl-C goes to the foreground group. The watchdog must outlive it.
         #[cfg(unix)]
         {
@@ -336,6 +352,31 @@ impl Guard {
             guard: self,
             ticket,
         }
+    }
+
+    /// Sets the folder of the run. A process that runs from this folder and has no
+    /// watched parent is an orphan of a test.
+    pub fn set_run_folder(&self, folder: &Path) {
+        self.shared.lock().run_folder = Some(folder.to_path_buf());
+    }
+
+    /// Kills each orphan of a test. A test can leave a child that runs on after the
+    /// test ends. That child has a new parent, so no tree holds it, and no limit
+    /// watches it, but it can still grow.
+    pub fn sweep_orphans(&self) {
+        let Some(folder) = self.shared.lock().run_folder.clone() else {
+            return;
+        };
+        // The table comes first. A tree that starts later has no process in it.
+        let table = list_commands();
+        let roots: Vec<u32> = self
+            .shared
+            .lock()
+            .entries
+            .values()
+            .map(|e| e.root)
+            .collect();
+        signal("-KILL", &processes_under(&table, &folder, &roots));
     }
 
     /// The number of trees that the guard killed.
@@ -642,17 +683,27 @@ fn kill(shared: &Shared, ticket: u64, reason: KillReason) {
 
 /// The hidden `mutation-watchdog` command. It waits until the pipe on stdin
 /// closes: that is the end of the parent, in any way. Then it kills each tree
-/// that the file lists.
-pub fn run_watchdog(roots: &Path) {
+/// that the file lists and each process that runs from the folder of the run, and it
+/// removes that folder when `remove` is true. The parent can end through a signal,
+/// so it cannot do this work itself. The folder can hold many GiB.
+pub fn run_watchdog(roots: &Path, sweep: Option<&Path>, remove: bool) {
     let mut sink = Vec::new();
     // Each result of the read means that the parent is gone or that the pipe is
     // broken. Both end the wait.
     let _ = io::stdin().read_to_end(&mut sink);
-    let Ok(text) = fs::read_to_string(roots) else {
+    if let Ok(text) = fs::read_to_string(roots) {
+        for root in text.lines().filter_map(|line| line.parse().ok()) {
+            kill_tree(root);
+        }
+    }
+    let Some(folder) = sweep else {
         return;
     };
-    for root in text.lines().filter_map(|line| line.parse().ok()) {
-        kill_tree(root);
+    let table = list_commands();
+    signal("-KILL", &processes_under(&table, folder, &[]));
+    if remove {
+        // A failed removal only leaves files in the temporary directory of the system.
+        let _ = fs::remove_dir_all(folder);
     }
 }
 

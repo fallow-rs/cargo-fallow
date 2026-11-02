@@ -112,11 +112,46 @@ fn summary_lines(out: &mut String, report: &Report) {
             selection.doctests_run
         );
     }
+    gap_lines(out, report);
     if selection.resumed > 0 {
         let _ = writeln!(
             out,
             "resumed: {} mutants came from the journal",
             selection.resumed
+        );
+    }
+}
+
+/// The facts that change how a person reads the verdicts.
+fn gap_lines(out: &mut String, report: &Report) {
+    if !report.baseline.regressions.is_empty() {
+        let _ = writeln!(
+            out,
+            "the schema build changes the result of {} ({}), so {} ran as a rebuild",
+            plural(report.baseline.regressions.len(), "a test", "these tests"),
+            report.baseline.regressions.join(", "),
+            plural(
+                report.schema.moved_to_rebuild,
+                "1 mutant",
+                &format!("{} mutants", report.schema.moved_to_rebuild)
+            ),
+        );
+    }
+    let alone = &report.selection.tests_fail_alone;
+    if !alone.is_empty() {
+        let _ = writeln!(
+            out,
+            "these tests fail alone with no mutant, so they decide nothing: {}",
+            alone.join(", ")
+        );
+    }
+    let dependents = &report.gaps.untested_dependents;
+    if !dependents.is_empty() {
+        let _ = writeln!(
+            out,
+            "the tests of these members that depend on this package did not run: {}. \
+             Pass `--test-workspace` to run them",
+            dependents.join(", ")
         );
     }
 }

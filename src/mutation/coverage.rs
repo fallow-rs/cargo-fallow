@@ -23,10 +23,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::mutation::guard::Scope;
 use crate::mutation::process::{Exit, new_command, run_to_files};
-use crate::mutation::testrun::{BuildMeta, RunSpec, TestName, TestTree, run_nextest};
+use crate::mutation::testrun::{
+    BuildMeta, NEXTEST_TESTS_FAILED, RunSpec, TestName, TestTree, run_nextest,
+};
 
 /// The version of the map layout. A change of the layout changes this value.
-pub const MAP_FORMAT: u32 = 1;
+pub const MAP_FORMAT: u32 = 2;
 /// The compiler flag of the coverage build.
 pub const INSTRUMENT: &str = "-C instrument-coverage";
 /// The time limit of one call of an LLVM tool.
@@ -121,6 +123,10 @@ pub struct CoverageMap {
     pub tests: Vec<String>,
     /// The tests with no usable data, as the full nextest names.
     pub unmapped: Vec<String>,
+    /// The tests that fail when they run alone with no mutant, and pass in the
+    /// baseline. Such a test needs another test, so its result says nothing about a
+    /// mutant in a run of selected tests.
+    pub fail_alone: Vec<String>,
     /// The data of each file, by the path from the workspace root.
     pub files: BTreeMap<String, FileCoverage>,
 }
@@ -219,6 +225,8 @@ pub struct MapInput<'a> {
     pub tests: &'a [(String, u64)],
     /// The files with mutants, by the path from the workspace root.
     pub files: &'a BTreeSet<String>,
+    /// The source paths that the export of LLVM reads: files or folders.
+    pub sources: &'a [PathBuf],
     /// The workspace root of the instrumented tree.
     pub root: &'a Path,
     /// The test processes that run at the same time.
@@ -240,6 +248,8 @@ enum OneTest {
     Mapped(TestLines),
     Unmapped,
     Killed,
+    /// The test ran and failed. Another test at the same time can cause that.
+    Failed,
 }
 
 /// Runs each test alone and builds the map.
@@ -268,7 +278,13 @@ pub fn build_map(input: &MapInput<'_>) -> io::Result<Built> {
     results.sort_by_key(|(index, _)| *index);
     let mut collector = Collector::default();
     for (index, one) in results {
-        collector.add(&input.tests[index].0, one?);
+        let (name, baseline_ms) = &input.tests[index];
+        let mut one = one?;
+        // No other test runs now, so a second failure is the result of the test.
+        if matches!(one, OneTest::Failed) && input.jobs > 1 {
+            one = run_one(input, &objects, index, name, *baseline_ms)?;
+        }
+        collector.add(name, one);
     }
     Ok(collector.finish())
 }
@@ -289,6 +305,7 @@ impl Collector {
                 self.map.unmapped.push(name.to_owned());
             }
             OneTest::Unmapped => self.map.unmapped.push(name.to_owned()),
+            OneTest::Failed => self.map.fail_alone.push(name.to_owned()),
             // A test always executes its own lines. No executed line means that
             // the profile of the test process is missing, and that only a listing
             // process wrote a profile.
@@ -347,6 +364,7 @@ fn run_one(
     let one = match exit {
         Exit::Killed(_) => OneTest::Killed,
         Exit::Code(Some(0)) if suite.pass >= 1 => convert(input, objects, &parsed, &folder)?,
+        Exit::Code(Some(NEXTEST_TESTS_FAILED)) if suite.fail >= 1 => OneTest::Failed,
         _ => OneTest::Unmapped,
     };
     // A failed removal only leaves files in a work folder.
@@ -402,7 +420,7 @@ fn convert(
     for object in others.iter().chain(&objects.non_test) {
         command.arg("--object").arg(object);
     }
-    command.arg(input.tree.dir);
+    command.args(input.sources);
     if !run_tool(command, input, folder, "export")? {
         return Ok(OneTest::Unmapped);
     }

@@ -609,8 +609,8 @@ fn a_test_that_breaks_with_the_schema_does_not_kill() {
             .is_some_and(|name| name.ends_with("other")),
         "{report}"
     );
-    // The line of a mutant is the line in the original file.
-    assert_eq!(mutant["line"], 2, "{report}");
+    // The line of a mutant is the line of its operator in the original file.
+    assert_eq!(mutant["line"], 4, "{report}");
 }
 
 #[test]

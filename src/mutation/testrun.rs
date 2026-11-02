@@ -282,6 +282,43 @@ impl BuildMeta {
     }
 }
 
+impl BuildMeta {
+    /// The cargo flags that build each test binary, by `package::binary`. A
+    /// rebuild with these flags builds only the binaries of the selected tests.
+    pub fn target_flags(&self) -> io::Result<BTreeMap<String, Vec<String>>> {
+        let text = fs::read_to_string(&self.binaries)?;
+        let list: BinaryList = serde_json::from_str(&text)?;
+        let mut flags: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for entry in list.binaries.into_values() {
+            let (package, target) = entry
+                .id
+                .split_once("::")
+                .map_or((entry.id.as_str(), None), |(package, target)| {
+                    (package, Some(target))
+                });
+            let added: Vec<String> = match target {
+                None => vec!["--lib".to_owned()],
+                Some(target) => {
+                    let (flag, name) = [
+                        ("bin/", "--bin"),
+                        ("example/", "--example"),
+                        ("bench/", "--bench"),
+                    ]
+                    .into_iter()
+                    .find_map(|(prefix, flag)| Some((flag, target.strip_prefix(prefix)?)))
+                    .unwrap_or(("--test", target));
+                    vec![flag.to_owned(), name.to_owned()]
+                }
+            };
+            flags
+                .entry(format!("{package}::{}", entry.name))
+                .or_default()
+                .extend(added);
+        }
+        Ok(flags)
+    }
+}
+
 /// Builds the tests and lists the binaries. Returns the stderr text of a build
 /// that failed.
 pub fn prepare(tree: TestTree<'_>, label: &str) -> io::Result<Result<BuildMeta, String>> {
@@ -791,6 +828,41 @@ mod tests {
         assert_eq!(objects.tests["p::x"], [Path::new("/t/debug/deps/x")]);
         assert_eq!(objects.tests["my-p::my_p"], [Path::new("/t/debug/deps/l")]);
         assert_eq!(objects.non_test, [Path::new("/t/debug/m")]);
+    }
+
+    #[test]
+    fn the_binary_list_gives_the_cargo_flags_of_each_suite() {
+        let Ok(dir) = tempfile::tempdir() else {
+            panic!("a temporary directory");
+        };
+        let binaries = dir.path().join("list.json");
+        let text = r#"{"rust-build-meta":{"target-directory":"/t"},"rust-binaries":{
+            "a":{"binary-id":"p::bin/x","binary-name":"x","binary-path":"/t/a"},
+            "b":{"binary-id":"my-p","binary-name":"my_p","binary-path":"/t/b"},
+            "c":{"binary-id":"p::it-one","binary-name":"it-one","binary-path":"/t/c"},
+            "d":{"binary-id":"p::example/e","binary-name":"e","binary-path":"/t/d"},
+            "e":{"binary-id":"p::bench/b","binary-name":"b","binary-path":"/t/e"},
+            "f":{"binary-id":"p::x","binary-name":"x","binary-path":"/t/f"}}}"#;
+        let Ok(()) = fs::write(&binaries, text) else {
+            panic!("write the list");
+        };
+        let meta = BuildMeta {
+            binaries,
+            cargo: PathBuf::new(),
+        };
+        let Ok(flags) = meta.target_flags() else {
+            panic!("the list is valid");
+        };
+        let strings = |items: &[&str]| -> Vec<String> {
+            items.iter().map(|item| (*item).to_owned()).collect()
+        };
+        assert_eq!(flags["my-p::my_p"], strings(&["--lib"]));
+        assert_eq!(flags["p::it-one"], strings(&["--test", "it-one"]));
+        assert_eq!(flags["p::e"], strings(&["--example", "e"]));
+        assert_eq!(flags["p::b"], strings(&["--bench", "b"]));
+        // A bin target and a test target can share a name, and a suite then
+        // needs both.
+        assert_eq!(flags["p::x"], strings(&["--bin", "x", "--test", "x"]));
     }
 
     #[test]

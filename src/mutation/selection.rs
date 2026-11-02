@@ -26,6 +26,9 @@ const TOP_PRIORITY: i32 = 100;
 pub struct Picked {
     /// The filter of the run, or `None` when the run needs no filter of tests.
     pub only: Option<String>,
+    /// The test binaries of the filter, as `package::binary`. `None` when the run
+    /// has no filter, so each binary can run.
+    pub suites: Option<BTreeSet<String>>,
     /// True when no test of this tier executes the mutant.
     pub empty: bool,
     /// The baseline time of the selected tests, in milliseconds.
@@ -83,8 +86,16 @@ impl Selector {
         } else {
             only_filter(selected.iter().map(|(name, _)| name.as_str()))
         };
+        let suites = only.as_ref().map(|_| {
+            selected
+                .iter()
+                .filter_map(|(name, _)| TestName::parse(name))
+                .map(|name| format!("{}::{}", name.package, name.binary))
+                .collect()
+        });
         Picked {
             only,
+            suites,
             empty: selected.is_empty(),
             baseline_ms,
             no_line_data: hits.is_none(),
@@ -191,6 +202,7 @@ mod tests {
             Some("(package(=p) & binary(=b) & (test(=two)))")
         );
         assert_eq!(picked.baseline_ms, 7);
+        assert_eq!(picked.suites, Some(["p::b".to_owned()].into()));
         assert!(!picked.empty);
         assert!(!picked.no_line_data);
     }
@@ -219,6 +231,7 @@ mod tests {
         let all = tests(&[("p::b$one", 5), ("p::b$two", 7)]);
         let picked = selector().pick(&all, "a.rs", (40, 41));
         assert_eq!(picked.only, None);
+        assert_eq!(picked.suites, None);
         assert_eq!(picked.baseline_ms, 12);
         assert!(picked.no_line_data);
     }

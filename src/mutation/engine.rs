@@ -5,7 +5,7 @@
 //! 3. Run the schema mutants through workers, with one switch value per process.
 //! 4. Run the rebuild mutants one by one in the scratch copy.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -223,6 +223,9 @@ struct TierRun<'a> {
     rebuild_limit: Duration,
     /// False when a pass of each test gets no second run.
     retry_a_pass: bool,
+    /// The cargo flags of each test binary, for a rebuild of only the binaries
+    /// that a mutant needs. `None` builds each binary.
+    targets: Option<BTreeMap<String, Vec<String>>>,
 }
 
 /// The tests that pass in a baseline and that stay in the run, fastest first.
@@ -607,9 +610,18 @@ impl Engine<'_> {
         nextest_exclude.extend(fail_alone.iter().cloned());
         let tests = ordered_tests(&clean.nextest, &nextest_exclude);
         let order = self.write_order("clean", &tests)?;
+        // A build of the workspace selects many packages, and a target flag of one
+        // package does not select the same binary there.
+        let one_package = !tree.select.iter().any(|flag| flag == "--workspace");
+        let targets = if one_package {
+            meta.target_flags().ok()
+        } else {
+            None
+        };
         Ok(TierRun {
             tree,
             meta,
+            targets,
             tests,
             order,
             nextest_known: known_failures(nextest_exclude.iter()),
@@ -1056,18 +1068,22 @@ impl Engine<'_> {
     }
 
     fn compile(&self, package: &Path, target: &Path, label: &str) -> io::Result<Build> {
-        self.compile_within(self.tree(package, target), label, BUILD_LIMIT)
+        self.compile_within(self.tree(package, target), label, BUILD_LIMIT, &[])
     }
 
+    /// Builds `tree`. `targets` selects the binaries, and an empty list builds each
+    /// binary.
     fn compile_within(
         &self,
         tree: TestTree<'_>,
         label: &str,
         limit: Duration,
+        targets: &[String],
     ) -> io::Result<Build> {
         let out = self.dirs.logs.join(format!("{label}.json"));
         let err = self.dirs.logs.join(format!("{label}.err"));
-        let command = build_command(tree.dir, tree.target_dir, self.options.jobs, tree.select);
+        let mut command = build_command(tree.dir, tree.target_dir, self.options.jobs, tree.select);
+        command.args(targets);
         let exit = run_to_files(command, &out, &err, limit, self.guard, Scope::Build)?;
         if let Exit::Killed(reason) = &exit {
             return Err(io::Error::other(reason.to_string()));
@@ -1149,6 +1165,7 @@ impl Engine<'_> {
             doc_known,
             rebuild_limit: BUILD_LIMIT,
             retry_a_pass: true,
+            targets: None,
             nextest_limit: self.limit_for(run.nextest.elapsed_ms),
             nextest_baseline_ms: run.nextest.elapsed_ms,
             doc_limit: self.limit_for(run.doc.elapsed_ms),
@@ -1411,6 +1428,7 @@ impl Engine<'_> {
         let Some(selector) = state.selector else {
             return Picked {
                 only: None,
+                suites: None,
                 empty: false,
                 baseline_ms: setup.nextest_baseline_ms,
                 no_line_data: false,
@@ -1419,6 +1437,7 @@ impl Engine<'_> {
         if job.planned.constant {
             return Picked {
                 only: None,
+                suites: None,
                 empty: false,
                 baseline_ms: setup.nextest_baseline_ms,
                 no_line_data: true,
@@ -1442,7 +1461,10 @@ impl Engine<'_> {
         picked: &Picked,
     ) -> io::Result<Done> {
         let start = Instant::now();
-        let build = self.compile_within(setup.tree, "rebuild", setup.rebuild_limit);
+        // The tests of a mutant run only from the binaries that this build makes. A
+        // doctest run builds the library itself.
+        let targets = build_targets(setup.targets.as_ref(), picked.suites.as_ref());
+        let build = self.compile_within(setup.tree, "rebuild", setup.rebuild_limit, &targets);
         let build = match build {
             Ok(build) => build,
             // The guard killed the compiler, and a compile says nothing about the
@@ -1910,6 +1932,26 @@ fn run_workers<T: Send>(
 }
 
 /// The limit of one rebuild of a mutant, from the time of the clean build.
+/// The cargo flags that build only the binaries of `suites`. The list is empty,
+/// so the build makes each binary, when a suite has no known flags or when no
+/// filter selects the suites.
+fn build_targets(
+    targets: Option<&BTreeMap<String, Vec<String>>>,
+    suites: Option<&BTreeSet<String>>,
+) -> Vec<String> {
+    let (Some(targets), Some(suites)) = (targets, suites) else {
+        return Vec::new();
+    };
+    let mut flags = Vec::new();
+    for suite in suites {
+        let Some(found) = targets.get(suite) else {
+            return Vec::new();
+        };
+        flags.extend(found.iter().cloned());
+    }
+    flags
+}
+
 fn rebuild_limit(clean_build: Duration) -> Duration {
     (clean_build * REBUILD_FACTOR).clamp(MIN_REBUILD_LIMIT, BUILD_LIMIT)
 }
@@ -1966,6 +2008,39 @@ mod tests {
         assert!(retry_can_change_a_timeout(limit, 2000));
         assert!(retry_can_change_a_timeout(limit, 15_000));
         assert!(!retry_can_change_a_timeout(Duration::ZERO, 0));
+    }
+
+    #[test]
+    fn a_rebuild_builds_only_the_binaries_of_the_selected_tests() {
+        let targets: BTreeMap<String, Vec<String>> = [
+            ("p::p", vec!["--lib"]),
+            ("p::it", vec!["--test", "it"]),
+            ("p::x", vec!["--bin", "x", "--test", "x"]),
+        ]
+        .into_iter()
+        .map(|(suite, flags)| {
+            (
+                suite.to_owned(),
+                flags.into_iter().map(str::to_owned).collect(),
+            )
+        })
+        .collect();
+        let suites = |names: &[&str]| -> BTreeSet<String> {
+            names.iter().map(|name| (*name).to_owned()).collect()
+        };
+        assert_eq!(
+            build_targets(Some(&targets), Some(&suites(&["p::it", "p::p"]))),
+            ["--test", "it", "--lib"]
+        );
+        assert_eq!(
+            build_targets(Some(&targets), Some(&suites(&["p::x"]))),
+            ["--bin", "x", "--test", "x"]
+        );
+        // An unknown binary, no filter, no test or no list: the whole build.
+        assert!(build_targets(Some(&targets), Some(&suites(&["p::it", "q::q"]))).is_empty());
+        assert!(build_targets(Some(&targets), None).is_empty());
+        assert!(build_targets(Some(&targets), Some(&suites(&[]))).is_empty());
+        assert!(build_targets(None, Some(&suites(&["p::it"]))).is_empty());
     }
 
     #[test]

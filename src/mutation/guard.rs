@@ -32,7 +32,7 @@ use std::time::{Duration, Instant};
 
 use crate::mutation::probe::{Probe, Row, system_probe};
 use crate::mutation::process::{
-    descendants, kill_tree, list_commands, new_command, processes_under, signal,
+    descendants, kill_tree, list_commands, new_command, processes_from, processes_under, signal,
 };
 
 /// The default limit for one test process: 4 GiB.
@@ -395,7 +395,7 @@ impl Guard {
     /// test ends. That child has a new parent, so no tree holds it, and no limit
     /// watches it, but it can still grow.
     pub fn sweep_orphans(&self) {
-        sweep_orphans(&self.shared);
+        sweep_orphans(&self.shared, self.probe.as_deref());
     }
 
     /// The number of trees that the guard killed.
@@ -486,14 +486,39 @@ fn rss_of(rows: &[Row], pid: u32) -> u64 {
         .map_or(0, |row| row.rss_kib)
 }
 
-fn sweep_orphans(shared: &Shared) {
+fn sweep_orphans(shared: &Shared, probe: Option<&dyn Probe>) {
     let Some(folder) = shared.lock().run_folder.clone() else {
         return;
     };
-    // The table comes first. A tree that starts later has no process in it.
-    let table = list_commands();
-    let roots: Vec<u32> = shared.lock().entries.values().map(|e| e.root).collect();
-    signal("-KILL", &processes_under(&table, &folder, &roots));
+    let roots = || -> Vec<u32> { shared.lock().entries.values().map(|e| e.root).collect() };
+    // The search and the table come first. A tree that starts later has no
+    // process in them. A failed search reads the command line of each process.
+    let Some(found) = processes_from(&folder) else {
+        let table = list_commands();
+        signal("-KILL", &processes_under(&table, &folder, &roots()));
+        return;
+    };
+    if found.is_empty() {
+        return;
+    }
+    // The table of the parents comes after the search, so it holds each process
+    // that the search found.
+    let Some(rows) = probe.and_then(|probe| probe.table().ok()) else {
+        let table = list_commands();
+        signal("-KILL", &processes_under(&table, &folder, &roots()));
+        return;
+    };
+    let roots = roots();
+    let mut held = roots.clone();
+    for root in &roots {
+        held.extend(descendants(&rows, *root));
+    }
+    let me = std::process::id();
+    let orphans: Vec<u32> = found
+        .into_iter()
+        .filter(|pid| *pid != me && !held.contains(pid))
+        .collect();
+    signal("-KILL", &orphans);
 }
 
 /// Reads RSS often and stops each process that needs a decision. A stopped process
@@ -508,7 +533,7 @@ fn rss_loop(shared: &Shared, probe: &dyn Probe, limits: Limits) {
             // An orphan can grow during a long run, and no tree holds it.
             if last_sweep.elapsed() >= ORPHAN_TICK {
                 last_sweep = Instant::now();
-                sweep_orphans(shared);
+                sweep_orphans(shared, Some(probe));
             }
             let free = probe.free_percent();
             if !table_needed(shared, &roots, free, limits) {

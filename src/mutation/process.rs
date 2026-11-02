@@ -336,6 +336,42 @@ fn parse_commands(text: &str) -> Vec<CommandRow> {
         .collect()
 }
 
+/// The processes with a command line that starts in `folder`, through `pgrep`.
+/// `pgrep` reads less data than `ps` with the command lines. `None` when the search
+/// fails, so the caller reads the whole table.
+pub fn processes_from(folder: &Path) -> Option<Vec<u32>> {
+    let output = new_command("pgrep")
+        .arg("-f")
+        .arg(folder_pattern(folder))
+        .stdin(Stdio::null())
+        .output()
+        .ok()?;
+    match output.status.code() {
+        Some(0) => Some(
+            String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .filter_map(|line| line.trim().parse().ok())
+                .collect(),
+        ),
+        // No process matches.
+        Some(1) => Some(Vec::new()),
+        _ => None,
+    }
+}
+
+/// The extended regular expression of a command line that starts in `folder`.
+fn folder_pattern(folder: &Path) -> String {
+    let mut pattern = String::from("^");
+    for c in folder.to_string_lossy().chars() {
+        if ".[]()*+?{}|^$\\".contains(c) {
+            pattern.push('\\');
+        }
+        pattern.push(c);
+    }
+    pattern.push('/');
+    pattern
+}
+
 /// The processes that run a program from `folder` and that no tree in `roots` holds.
 /// A test binary lives in that folder, so a mutated program cannot hide from this
 /// list. A plain tool that a test starts can stay, and a plain tool has no mutant.
@@ -402,6 +438,47 @@ pub fn descendants(rows: &[Row], root: u32) -> Vec<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_folder_pattern_escapes_each_special_character() {
+        assert_eq!(
+            folder_pattern(Path::new("/t/a.b+c(d)[e]{f}|g^h$i*j?k\\l")),
+            "^/t/a\\.b\\+c\\(d\\)\\[e\\]\\{f\\}\\|g\\^h\\$i\\*j\\?k\\\\l/"
+        );
+    }
+
+    /// The search finds a program that runs from the folder, and nothing in an
+    /// empty folder.
+    #[cfg(unix)]
+    #[test]
+    fn the_search_finds_a_program_that_runs_from_the_folder() {
+        let Ok(dir) = tempfile::tempdir() else {
+            panic!("a temporary directory");
+        };
+        let Ok(folder) = dir.path().canonicalize() else {
+            panic!("a real path");
+        };
+        assert_eq!(processes_from(&folder), Some(Vec::new()));
+        // A link starts the known program with a path in the folder. A new copy can
+        // wait for a malware scan before its first start.
+        let program = folder.join("link-to-sleep");
+        let Ok(()) = std::os::unix::fs::symlink("/bin/sleep", &program) else {
+            panic!("link a program");
+        };
+        let Ok(mut child) = new_command(&program).arg("47.4242").spawn() else {
+            panic!("the link starts");
+        };
+        // The child can still be in its exec, so the search can need a moment.
+        let start = Instant::now();
+        let mut found = processes_from(&folder);
+        while found.as_deref() != Some(&[child.id()]) && start.elapsed() < GONE_LIMIT {
+            thread::sleep(POLL_INTERVAL);
+            found = processes_from(&folder);
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_eq!(found, Some(vec![child.id()]));
+    }
 
     /// Each POSIX shell must run the group kill, also dash.
     #[cfg(unix)]

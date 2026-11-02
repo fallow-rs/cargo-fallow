@@ -188,7 +188,11 @@ mod tests {
     assert_eq!(report["status"], "compiled", "{report}");
     assert_eq!(number(report, "rounds"), 1, "{report}");
     assert_eq!(number(report, "kept"), 2);
-    assert_eq!(stage.full["baseline"]["tests_pass_with_schema"], true);
+    assert_eq!(
+        stage.full["baseline"]["tests_pass_with_schema"], true,
+        "{}",
+        stage.full["baseline"]
+    );
 }
 
 #[test]

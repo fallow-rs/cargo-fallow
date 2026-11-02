@@ -26,7 +26,6 @@ const POLL_INTERVAL: Duration = Duration::from_millis(10);
 /// see through, so the other flags keep those warnings out of the build output.
 const BUILD_FLAGS: &str = "--cap-lints=warn -Aunused_parens -Aunused_comparisons";
 /// The flag that keeps each lint of a doctest build at the warning level.
-#[cfg(unix)]
 const CAP_LINTS: &str = "--cap-lints=warn";
 
 /// How a child process ended.
@@ -148,6 +147,12 @@ fn add_compiler_flags(command: &mut Command, _target_dir: &Path, flags: &str) {
     match std::env::var("RUSTFLAGS") {
         Ok(own) => command.env("RUSTFLAGS", format!("{own} {flags}")),
         Err(_) => command.env("CARGO_BUILD_RUSTFLAGS", flags),
+    };
+    // rustdoc reads its own flags. A doctest build also reads the lint levels of
+    // the crate, and the switch can start a lint that the crate denies.
+    match std::env::var("RUSTDOCFLAGS") {
+        Ok(own) => command.env("RUSTDOCFLAGS", format!("{own} {CAP_LINTS}")),
+        Err(_) => command.env("CARGO_BUILD_RUSTDOCFLAGS", CAP_LINTS),
     };
 }
 

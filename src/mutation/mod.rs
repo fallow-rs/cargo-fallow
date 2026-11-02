@@ -44,6 +44,7 @@ pub mod report;
 mod rewrites;
 pub mod run;
 mod schema;
+mod schema_build;
 mod selection;
 mod sites;
 pub mod status;

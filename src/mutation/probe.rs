@@ -14,6 +14,8 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::Path;
+use std::thread;
+use std::time::Duration;
 
 use crate::mutation::process::new_command;
 
@@ -83,6 +85,18 @@ impl Probe for MacProbe {
 /// `None` when the tool is missing or fails in another way, so that `top` reads
 /// the values. A process that ended has no row.
 fn footprint_tool(pids: &[u32]) -> Option<BTreeMap<u32, u64>> {
+    // `footprint` cannot read a process during an exec. A second read a moment
+    // later is still much cheaper than `top`.
+    footprint_read(pids).or_else(|| {
+        thread::sleep(FOOTPRINT_RETRY);
+        footprint_read(pids)
+    })
+}
+
+/// The wait before the second read of `footprint`.
+const FOOTPRINT_RETRY: Duration = Duration::from_millis(50);
+
+fn footprint_read(pids: &[u32]) -> Option<BTreeMap<u32, u64>> {
     let mut command = new_command(FOOTPRINT);
     command.args(["-f", "bytes"]);
     for pid in pids {

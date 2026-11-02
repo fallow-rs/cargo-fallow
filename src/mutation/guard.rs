@@ -629,6 +629,12 @@ impl WatchState {
         if !self.needs_footprint(shared, &trees, &rows, free, limits) {
             return;
         }
+        // A test process can end within the age of a shared table. A read of the
+        // footprint of ended processes gives no data, so it gets a new table.
+        let Ok(rows) = probe.table().map(|rows| shared.keep_table(rows)) else {
+            return self.count_blind(shared, &roots);
+        };
+        let trees = trees_of(&rows, &roots);
         let pids: Vec<u32> = trees.iter().flat_map(|tree| tree.pids.clone()).collect();
         let read = probe.footprints(&pids);
         // A read can take 0.7 s, so a fast test run can end during the read.

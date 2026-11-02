@@ -62,12 +62,15 @@ impl Rendered {
 const ACTIVE_CALL: &str = "crate::__fallow_schema::active()";
 
 /// The file descriptor that holds the record of the active mutant.
+#[cfg(unix)]
 pub const MUTANT_FD: u32 = 9;
 
 /// The first bytes of the record of the active mutant.
+#[cfg(unix)]
 pub const RECORD_PREFIX: &str = "fallow-mutant:";
 
 /// The record of a mutant: the prefix and 16 hexadecimal digits.
+#[cfg(unix)]
 pub fn mutant_record(mutant: u64) -> String {
     format!("{RECORD_PREFIX}{mutant:016x}")
 }
@@ -509,6 +512,7 @@ mod tests {
         assert!(out.text.contains("extern crate std as fallow_std;"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_record_has_the_size_that_the_helper_reads() {
         let record = mutant_record(0xfa);

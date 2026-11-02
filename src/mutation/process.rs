@@ -125,6 +125,13 @@ fn add_compiler_flags(command: &mut Command, _target_dir: &Path, flags: &str) {
 /// On Unix a small shell opens the file on [`MUTANT_FD`] and then runs the command.
 /// The process id stays the same. Each child inherits the descriptor, also a child
 /// with an empty environment. Other systems read an environment variable.
+#[cfg_attr(
+    not(unix),
+    expect(
+        clippy::unnecessary_wraps,
+        reason = "only the Unix form writes a file, and both forms have one signature"
+    )
+)]
 pub fn with_active_mutant(command: &mut Command, record: &Path, mutant: u64) -> io::Result<()> {
     #[cfg(unix)]
     {

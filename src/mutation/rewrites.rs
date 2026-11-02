@@ -406,7 +406,11 @@ fn generic_return_values(ty: &str) -> Option<Vec<String>> {
     }
     let default = || Some(vec!["Default::default()".to_owned()]);
     let Some((head, args)) = ty.split_once('<') else {
-        return default();
+        // An alias such as `fmt::Result` has its error type in the alias.
+        return Some(match ty.rsplit("::").next().unwrap_or(ty) {
+            "Result" => vec!["Ok(Default::default())".to_owned()],
+            _ => vec!["Default::default()".to_owned()],
+        });
     };
     let args = args.strip_suffix('>')?;
     let wrap = |open: &str, close: &str, first: &str| -> Option<Vec<String>> {
@@ -573,6 +577,7 @@ mod tests {
 
     #[test]
     fn a_type_with_no_entry_gets_the_default_when_a_default_can_exist() {
+        assert_eq!(values("fmt::Result"), ["Ok(Default::default())"]);
         assert_eq!(values("Self"), ["Default::default()"]);
         assert_eq!(values("Identifier"), ["Default::default()"]);
         assert_eq!(values("HashMap<K,V>"), ["Default::default()"]);

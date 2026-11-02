@@ -268,11 +268,12 @@ impl Shared {
     }
 
     /// The last value of the free memory when it is new enough, else a new read.
-    /// Each read starts `sysctl` on macOS.
+    /// Each read starts `sysctl` on macOS. Free memory can drop fast during a
+    /// build, so a value is new enough for one decision tick only.
     fn fresh_free(&self, probe: &dyn Probe) -> Option<u32> {
         let kept = *self.free.lock().unwrap_or_else(PoisonError::into_inner);
         match kept {
-            Some((at, free)) if at.elapsed() <= TABLE_AGE => free,
+            Some((at, free)) if at.elapsed() <= DECISION_TICK => free,
             _ => self.read_free(probe),
         }
     }
@@ -897,7 +898,7 @@ mod tests {
     struct FakeProbe {
         rss_kib: u64,
         footprint: Result<u64, ()>,
-        free: u32,
+        free: AtomicU32,
         footprint_reads: AtomicU32,
         table_reads: AtomicU32,
         free_reads: AtomicU32,
@@ -912,7 +913,7 @@ mod tests {
             Arc::new(Self {
                 rss_kib,
                 footprint,
-                free,
+                free: AtomicU32::new(free),
                 footprint_reads: AtomicU32::new(0),
                 table_reads: AtomicU32::new(0),
                 free_reads: AtomicU32::new(0),
@@ -951,7 +952,7 @@ mod tests {
 
         fn free_percent(&self) -> Option<u32> {
             self.free_reads.fetch_add(1, Ordering::SeqCst);
-            Some(self.free)
+            Some(self.free.load(Ordering::SeqCst))
         }
     }
 
@@ -1044,6 +1045,18 @@ mod tests {
 
     /// Each read of the table starts `ps`, and `ps` reads each process of the
     /// system. The two threads share one read.
+    /// Free memory can drop fast during a build, so a shared value may be only one
+    /// decision tick old.
+    #[test]
+    fn a_free_memory_value_older_than_a_decision_tick_is_read_again() {
+        let probe = FakeProbe::new(1, Ok(1), 80);
+        let guard = Guard::disabled();
+        assert_eq!(guard.shared.fresh_free(probe.as_ref()), Some(80));
+        probe.free.store(10, Ordering::SeqCst);
+        thread::sleep(DECISION_TICK + Duration::from_millis(50));
+        assert_eq!(guard.shared.fresh_free(probe.as_ref()), Some(10));
+    }
+
     #[cfg(unix)]
     #[test]
     fn the_threads_share_the_reads_of_the_table() {
@@ -1057,8 +1070,10 @@ mod tests {
         let count = reads.table_reads.load(Ordering::SeqCst);
         assert!(count <= 12, "{count} reads of the table");
         // Each read of the free memory starts `sysctl`, so the threads share it too.
+        // A value is new enough for one decision tick, so the decision thread
+        // reads about 20 times in 2 s and the RSS thread mostly reuses its value.
         let free = reads.free_reads.load(Ordering::SeqCst);
-        assert!(free <= 14, "{free} reads of the free memory");
+        assert!(free <= 26, "{free} reads of the free memory");
     }
 
     #[cfg(unix)]

@@ -81,8 +81,10 @@ pub fn analyze(graph: &Graph, options: &Options) -> Analysis {
     let credits = resolver.credits();
     let surface = Surface::new(graph, &resolver, options);
     let findings = decide(graph, &surface, &credits, options, |_| true);
+    // A doc block credit stays: a type-aware check of the crate cannot see
+    // the doc tests either.
     let typed = decide(graph, &surface, &credits, options, |credit| {
-        credit.class != Class::Untyped
+        credit.class != Class::Untyped || credit.origin == Origin::Doc
     });
     let known: FxHashSet<(ItemId, FindingKind)> = findings
         .iter()
@@ -335,7 +337,15 @@ fn decide(
     let mut findings = Vec::new();
     for (item, entry) in graph.items.iter().enumerate() {
         let test_only = !production.contains(&item) && any.contains(&item);
-        if surface.public_candidate(graph, item) && !required.contains(&item) {
+        // A consumer path to a required item can go through the re-export,
+        // and the syntax cannot show which path it took.
+        let reexports_required = entry.kind == ItemKind::Use
+            && surface
+                .reexport_targets
+                .get(&item)
+                .is_some_and(|targets| targets.iter().any(|target| required.contains(target)));
+        if surface.public_candidate(graph, item) && !required.contains(&item) && !reexports_required
+        {
             let live = any.contains(&item)
                 || graph.items[item]
                     .child_module

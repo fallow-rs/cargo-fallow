@@ -262,3 +262,33 @@ fn a_restricted_type_in_a_wider_signature_keeps_its_visibility() {
         "{found:?}"
     );
 }
+
+#[test]
+fn a_doc_block_credit_does_not_make_a_finding_undecided() {
+    let dir = workspace(&[(
+        "mid/src/lib.rs",
+        "/// ```\n/// let thing = mid::Thing;\n/// thing.show();\n/// ```\npub struct Thing;\n\
+         impl Thing {\n    pub fn show(&self) {}\n}\n",
+    )]);
+    let (found, undecided) = findings(&dir, &[]);
+    assert_eq!(found, set(&[]));
+    assert_eq!(undecided, set(&[]));
+}
+
+#[test]
+fn a_reexport_of_a_required_item_stays() {
+    let dir = workspace(&[
+        (
+            "app/src/main.rs",
+            "fn main() { let _ = mid::graph::Graph.closure(); }\n",
+        ),
+        (
+            "mid/src/lib.rs",
+            "pub mod graph {\n    mod load {\n        pub struct Closure;\n        \
+             impl super::Graph {\n            pub fn closure(&self) -> Closure { Closure }\n        }\n    }\n    \
+             pub struct Graph;\n    pub use load::Closure;\n}\n",
+        ),
+    ]);
+    let (found, _) = findings(&dir, &[]);
+    assert!(!found.contains("dead_public graph::Closure"), "{found:?}");
+}

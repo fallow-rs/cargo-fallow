@@ -4,3 +4,4 @@ tests/fixtures/**/Cargo.lock
 node_modules/
 fuzz/artifacts/
 fuzz/target/
+experimental/*/target

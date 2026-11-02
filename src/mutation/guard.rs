@@ -510,12 +510,14 @@ fn rss_loop(shared: &Shared, probe: &dyn Probe, limits: Limits) {
                 last_sweep = Instant::now();
                 sweep_orphans(shared);
             }
-            if let Ok(rows) = probe.table() {
+            let free = probe.free_percent();
+            if !table_needed(shared, &roots, free, limits) {
+                blind = 0;
+            } else if let Ok(rows) = probe.table() {
                 let rows = shared.keep_table(rows);
                 blind = 0;
                 let trees = trees_of(&rows, &roots);
-                let (candidate, to_stop) =
-                    rss_decision(shared, &trees, &rows, probe.free_percent(), limits);
+                let (candidate, to_stop) = rss_decision(shared, &trees, &rows, free, limits);
                 if candidate {
                     tick = CANDIDATE_RSS_TICK;
                 }
@@ -533,6 +535,21 @@ fn rss_loop(shared: &Shared, probe: &dyn Probe, limits: Limits) {
         }
         thread::sleep(tick);
     }
+}
+
+/// True when a check needs the process table. Only a test process has a limit of
+/// its own. A build only counts under memory pressure, so a run of builds with free
+/// memory does not read the table. Each read starts `ps`, and `ps` reads each
+/// process of the system.
+fn table_needed(
+    shared: &Shared,
+    roots: &[(u64, u32, Scope)],
+    free: Option<u32>,
+    limits: Limits,
+) -> bool {
+    roots.iter().any(|&(_, _, scope)| scope == Scope::Tests)
+        || free.is_none_or(|free| free < limits.low_percent + PRESSURE_MARGIN)
+        || !shared.lock().stopped.is_empty()
 }
 
 /// Returns true when a test process is a candidate, and the processes to stop.
@@ -600,11 +617,15 @@ impl WatchState {
             resume_stopped(shared);
             return;
         }
+        let free = probe.free_percent();
+        if !table_needed(shared, &roots, free, limits) {
+            self.blind = 0;
+            return;
+        }
         let Ok(rows) = shared.fresh_table(probe) else {
             return self.count_blind(shared, &roots);
         };
         let trees = trees_of(&rows, &roots);
-        let free = probe.free_percent();
         if !self.needs_footprint(shared, &trees, &rows, free, limits) {
             return;
         }
@@ -992,6 +1013,9 @@ mod tests {
         let exit = sleep_under(&guard, Scope::Build, Duration::from_millis(600));
         assert_eq!(exit, Exit::TimedOut);
         assert_eq!(reads.footprint_reads.load(Ordering::SeqCst), 0);
+        // A build has no per-process limit, so with free memory the guard does not
+        // need the table.
+        assert_eq!(reads.table_reads.load(Ordering::SeqCst), 0);
     }
 
     #[cfg(unix)]

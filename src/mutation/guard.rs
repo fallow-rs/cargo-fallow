@@ -244,6 +244,8 @@ struct Shared {
     stop: AtomicBool,
     /// The last table of the RSS thread, with the time of the read.
     table: Mutex<Option<(Instant, Arc<[Row]>)>>,
+    /// The last value of the free memory, with the time of the read.
+    free: Mutex<Option<(Instant, Option<u32>)>>,
 }
 
 impl Shared {
@@ -256,6 +258,23 @@ impl Shared {
         *self.table.lock().unwrap_or_else(PoisonError::into_inner) =
             Some((Instant::now(), Arc::clone(&rows)));
         rows
+    }
+
+    /// Reads the free memory and keeps the value for the other thread.
+    fn read_free(&self, probe: &dyn Probe) -> Option<u32> {
+        let free = probe.free_percent();
+        *self.free.lock().unwrap_or_else(PoisonError::into_inner) = Some((Instant::now(), free));
+        free
+    }
+
+    /// The last value of the free memory when it is new enough, else a new read.
+    /// Each read starts `sysctl` on macOS.
+    fn fresh_free(&self, probe: &dyn Probe) -> Option<u32> {
+        let kept = *self.free.lock().unwrap_or_else(PoisonError::into_inner);
+        match kept {
+            Some((at, free)) if at.elapsed() <= TABLE_AGE => free,
+            _ => self.read_free(probe),
+        }
     }
 
     /// The last table of the RSS thread when it is new enough, else a new read.
@@ -292,6 +311,7 @@ impl Guard {
                 registry: Mutex::new(Registry::default()),
                 stop: AtomicBool::new(false),
                 table: Mutex::new(None),
+                free: Mutex::new(None),
             }),
             threads: Vec::new(),
             watchdog: None,
@@ -406,8 +426,8 @@ impl Guard {
     /// True when the free memory is above the floor, or when the guard is off.
     pub fn memory_is_free(&self) -> bool {
         self.probe.as_ref().is_none_or(|probe| {
-            probe
-                .free_percent()
+            self.shared
+                .fresh_free(&**probe)
                 .is_none_or(|free| free >= self.limits.low_percent)
         })
     }
@@ -535,7 +555,7 @@ fn rss_loop(shared: &Shared, probe: &dyn Probe, limits: Limits) {
                 last_sweep = Instant::now();
                 sweep_orphans(shared, Some(probe));
             }
-            let free = probe.free_percent();
+            let free = shared.read_free(probe);
             if !table_needed(shared, &roots, free, limits) {
                 blind = 0;
             } else if let Ok(rows) = probe.table() {
@@ -642,7 +662,7 @@ impl WatchState {
             resume_stopped(shared);
             return;
         }
-        let free = probe.free_percent();
+        let free = shared.fresh_free(probe);
         if !table_needed(shared, &roots, free, limits) {
             self.blind = 0;
             return;
@@ -880,6 +900,7 @@ mod tests {
         free: u32,
         footprint_reads: AtomicU32,
         table_reads: AtomicU32,
+        free_reads: AtomicU32,
         /// The time of one read of the footprint. `top` takes about 0.7 s.
         delay: Duration,
         /// True when a read lists no process.
@@ -894,6 +915,7 @@ mod tests {
                 free,
                 footprint_reads: AtomicU32::new(0),
                 table_reads: AtomicU32::new(0),
+                free_reads: AtomicU32::new(0),
                 delay: Duration::ZERO,
                 empty: false,
             })
@@ -928,6 +950,7 @@ mod tests {
         }
 
         fn free_percent(&self) -> Option<u32> {
+            self.free_reads.fetch_add(1, Ordering::SeqCst);
             Some(self.free)
         }
     }
@@ -1033,6 +1056,9 @@ mod tests {
         // reads up to 20 times.
         let count = reads.table_reads.load(Ordering::SeqCst);
         assert!(count <= 12, "{count} reads of the table");
+        // Each read of the free memory starts `sysctl`, so the threads share it too.
+        let free = reads.free_reads.load(Ordering::SeqCst);
+        assert!(free <= 14, "{free} reads of the free memory");
     }
 
     #[cfg(unix)]

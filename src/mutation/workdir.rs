@@ -39,26 +39,18 @@ pub struct WorkDirs {
 }
 
 impl WorkDirs {
-    /// Creates the work folder. An existing folder with content is an error, so
-    /// the command never writes over other files. With no `work`, the run gets a new
-    /// temporary folder that only this user can read, and it stays when `keep` is true.
+    /// Creates the work folder that only this user can read. The run builds and runs
+    /// code from this folder, so `work` must be a new path: an existing folder or a
+    /// symlink is an error. With no `work`, the run gets a new temporary folder with a
+    /// random name, and it stays when `keep` is true.
     pub fn create(work: Option<&Path>, keep: bool, workspace: &Path) -> io::Result<Self> {
         let remove = work.is_none() && !keep;
         let work = match work {
             Some(work) => {
-                if fs::read_dir(work).is_ok_and(|mut entries| entries.next().is_some()) {
-                    return Err(io::Error::other(format!(
-                        "the work folder `{}` is not empty",
-                        work.display()
-                    )));
-                }
-                fs::create_dir_all(work)?;
+                create_new_folder(work)?;
                 work.to_path_buf()
             }
-            None => tempfile::Builder::new()
-                .prefix("cargo-fallow-mutation-")
-                .tempdir()?
-                .keep(),
+            None => temporary_folder()?,
         };
         let root = work.canonicalize()?;
         let configs = cargo_configs_above(workspace);
@@ -97,6 +89,46 @@ impl Drop for WorkDirs {
             let _ = fs::remove_dir_all(&self.root);
         }
     }
+}
+
+/// The mode of a work folder: only the owner can read, write, or enter it.
+#[cfg(unix)]
+const OWNER_ONLY: u32 = 0o700;
+
+/// Creates `work` and each missing parent. The last step fails when `work` exists,
+/// also as a symlink, so no other user can prepare the folder.
+fn create_new_folder(work: &Path) -> io::Result<()> {
+    if let Some(parent) = work
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent)?;
+    }
+    let mut builder = fs::DirBuilder::new();
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, OWNER_ONLY);
+    builder.create(work).map_err(|err| {
+        if err.kind() == io::ErrorKind::AlreadyExists {
+            io::Error::new(
+                err.kind(),
+                format!(
+                    "the work folder `{}` exists: give a path that does not exist",
+                    work.display()
+                ),
+            )
+        } else {
+            err
+        }
+    })
+}
+
+/// Creates a new temporary folder with a random name.
+fn temporary_folder() -> io::Result<PathBuf> {
+    let mut builder = tempfile::Builder::new();
+    builder.prefix("cargo-fallow-mutation-");
+    #[cfg(unix)]
+    builder.permissions(std::os::unix::fs::PermissionsExt::from_mode(OWNER_ONLY));
+    Ok(builder.tempdir()?.keep())
 }
 
 /// The names of a Cargo config file in a `.cargo` folder.
@@ -167,4 +199,80 @@ pub fn prepare_copies(
         run_to_files(command, &out, &err, LOCK_LIMIT, guard, Scope::Build)?;
     }
     copy_tree(&dirs.scratch, &dirs.schema, None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temporary() -> tempfile::TempDir {
+        let Ok(dir) = tempfile::tempdir() else {
+            panic!("a temporary directory");
+        };
+        dir
+    }
+
+    fn refusal(work: &Path) -> String {
+        let workspace = temporary();
+        match WorkDirs::create(Some(work), true, workspace.path()) {
+            Ok(_) => panic!("`{}` must be refused", work.display()),
+            Err(err) => err.to_string(),
+        }
+    }
+
+    #[test]
+    fn an_existing_empty_work_folder_is_refused() {
+        let base = temporary();
+        let work = base.path().join("run");
+        let Ok(()) = fs::create_dir(&work) else {
+            panic!("create the folder");
+        };
+        assert!(refusal(&work).contains("exists"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_as_work_folder_is_refused() {
+        let base = temporary();
+        let target = base.path().join("target");
+        let work = base.path().join("run");
+        let Ok(()) = fs::create_dir(&target) else {
+            panic!("create the folder");
+        };
+        let Ok(()) = std::os::unix::fs::symlink(&target, &work) else {
+            panic!("create the symlink");
+        };
+        assert!(refusal(&work).contains("exists"));
+        assert!(fs::read_dir(&target).is_ok_and(|mut entries| entries.next().is_none()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_new_work_folder_is_for_the_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let base = temporary();
+        let workspace = temporary();
+        let work = base.path().join("parent").join("run");
+        let Ok(dirs) = WorkDirs::create(Some(&work), true, workspace.path()) else {
+            panic!("create the work folder");
+        };
+        let Ok(meta) = fs::metadata(&dirs.root) else {
+            panic!("read the work folder");
+        };
+        assert_eq!(meta.permissions().mode() & 0o777, 0o700);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_temporary_work_folder_is_for_the_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let workspace = temporary();
+        let Ok(dirs) = WorkDirs::create(None, false, workspace.path()) else {
+            panic!("create the work folder");
+        };
+        let Ok(meta) = fs::metadata(&dirs.root) else {
+            panic!("read the work folder");
+        };
+        assert_eq!(meta.permissions().mode() & 0o777, 0o700);
+    }
 }

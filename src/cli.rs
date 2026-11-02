@@ -113,8 +113,9 @@ struct MutantsArgs {
     /// The package to mutate. A workspace with one package needs no value.
     #[arg(long, short = 'p')]
     package: Option<String>,
-    /// A new folder for the copies and the build output. The folder stays after
-    /// the run. Without this flag the run uses a temporary folder.
+    /// A new folder for the copies and the build output. An existing folder or a
+    /// symlink is an error. The folder stays after the run. Without this flag the
+    /// run uses a temporary folder.
     #[arg(long, value_name = "PATH")]
     work_dir: Option<PathBuf>,
     /// The output format.

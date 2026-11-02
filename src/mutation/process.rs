@@ -91,21 +91,50 @@ fn add_compiler_flags(command: &mut Command, target_dir: &Path, flags: &str) {
     command.env("RUSTC_WRAPPER", rustc).env("RUSTDOC", rustdoc);
 }
 
+/// The wrappers that this process wrote, with their text. cargo runs a wrapper as
+/// the compiler, so a file that exists before the run is never trusted: the first
+/// use always writes it.
+#[cfg(unix)]
+static WRITTEN: std::sync::Mutex<std::collections::BTreeMap<std::path::PathBuf, String>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
 #[cfg(unix)]
 fn write_wrapper(path: &Path, body: &str) -> io::Result<()> {
+    use std::io::Write;
     use std::os::unix::fs::PermissionsExt;
-    if path.exists() {
+    let text = format!("#!/bin/sh\n{body}");
+    if written_text(path).as_ref() == Some(&text) {
         return Ok(());
     }
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    // A second call has the same text, because the name comes from the target
-    // folder of the build. A rename keeps a half file out of each call.
-    let temporary = path.with_extension(format!("{}.tmp", std::process::id()));
-    std::fs::write(&temporary, format!("#!/bin/sh\n{body}"))?;
-    std::fs::set_permissions(&temporary, std::fs::Permissions::from_mode(0o755))?;
-    std::fs::rename(&temporary, path)
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent)?;
+    // A new file with a random name and an exclusive create, then a rename over the
+    // old name: no other process can supply the text, and no call sees a half file.
+    let mut file = tempfile::Builder::new()
+        .prefix(".wrapper-")
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempfile_in(parent)?;
+    file.write_all(text.as_bytes())?;
+    file.persist(path).map_err(|err| err.error)?;
+    // Two writers of one path are safe: each rename puts a whole file in place.
+    written_wrappers().insert(path.to_path_buf(), text);
+    Ok(())
+}
+
+/// The set of written wrappers. A poisoned lock only means that another thread
+/// panicked, and the map stays valid.
+#[cfg(unix)]
+fn written_wrappers()
+-> std::sync::MutexGuard<'static, std::collections::BTreeMap<std::path::PathBuf, String>> {
+    WRITTEN
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// The text that this process wrote to the wrapper at `path`.
+#[cfg(unix)]
+fn written_text(path: &Path) -> Option<String> {
+    written_wrappers().get(path).cloned()
 }
 
 /// A system with no `sh` has no wrapper. There `RUSTFLAGS` replaces the flags of
@@ -354,6 +383,51 @@ pub fn descendants(rows: &[Row], root: u32) -> Vec<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_wrapper_with_new_text_replaces_the_old_text() {
+        let Ok(dir) = tempfile::tempdir() else {
+            panic!("a temporary directory");
+        };
+        let path = dir.path().join("target.rustc.sh");
+        for body in ["exec first\n", "exec second\n"] {
+            let Ok(()) = write_wrapper(&path, body) else {
+                panic!("write the wrapper");
+            };
+        }
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap_or_default(),
+            "#!/bin/sh\nexec second\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_wrapper_replaces_a_file_that_exists_before_the_run() {
+        use std::os::unix::fs::PermissionsExt;
+        let Ok(dir) = tempfile::tempdir() else {
+            panic!("a temporary directory");
+        };
+        let path = dir.path().join("target.rustc.sh");
+        let Ok(()) = std::fs::write(&path, "#!/bin/sh\necho planted\n") else {
+            panic!("write the planted file");
+        };
+        let Ok(()) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o777)) else {
+            panic!("set the mode");
+        };
+        let Ok(()) = write_wrapper(&path, "exec true\n") else {
+            panic!("write the wrapper");
+        };
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap_or_default(),
+            "#!/bin/sh\nexec true\n"
+        );
+        let Ok(meta) = std::fs::metadata(&path) else {
+            panic!("read the wrapper");
+        };
+        assert_eq!(meta.permissions().mode() & 0o777, 0o700);
+    }
 
     #[cfg(unix)]
     fn run(script: &str, limit: Duration) -> (Exit, String) {

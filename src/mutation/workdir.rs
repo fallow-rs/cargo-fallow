@@ -104,9 +104,14 @@ fn create_new_folder(work: &Path) -> io::Result<()> {
     {
         fs::create_dir_all(parent)?;
     }
-    let mut builder = fs::DirBuilder::new();
     #[cfg(unix)]
-    std::os::unix::fs::DirBuilderExt::mode(&mut builder, OWNER_ONLY);
+    let builder = {
+        let mut builder = fs::DirBuilder::new();
+        std::os::unix::fs::DirBuilderExt::mode(&mut builder, OWNER_ONLY);
+        builder
+    };
+    #[cfg(not(unix))]
+    let builder = fs::DirBuilder::new();
     builder.create(work).map_err(|err| {
         if err.kind() == io::ErrorKind::AlreadyExists {
             io::Error::new(

@@ -49,7 +49,8 @@ fn stage(files: &[(&str, &str)]) -> Stage {
         .expect("the binary runs");
     assert!(
         output.status.success(),
-        "stderr: {}",
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
     let full: Value = serde_json::from_slice(&output.stdout).expect("the report is JSON");

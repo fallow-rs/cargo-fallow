@@ -275,11 +275,15 @@ fn kill_tree_with(root: u32, table: Option<&[Row]>) {
     kill_group(root);
 }
 
+/// The script that kills the process group `$1`. The `-s` form is POSIX: dash, the
+/// `sh` of Debian and Ubuntu, refuses `--` after `-KILL`.
+const KILL_GROUP: &str = "kill -s KILL -- \"-$1\" 2>/dev/null";
+
 /// Kills the process group that a child of [`run_to_files`] leads.
 fn kill_group(leader: u32) {
     // A process that is gone gives an error status, and that changes nothing.
     let _ = new_command("sh")
-        .args(["-c", "kill -KILL -- \"-$1\" 2>/dev/null", "sh"])
+        .args(["-c", KILL_GROUP, "sh"])
         .arg(leader.to_string())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -390,6 +394,43 @@ pub fn descendants(rows: &[Row], root: u32) -> Vec<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Each POSIX shell must run the group kill, also dash.
+    #[cfg(unix)]
+    #[test]
+    fn each_shell_kills_the_group() {
+        for shell in ["/bin/sh", "/bin/dash"] {
+            if !Path::new(shell).exists() {
+                continue;
+            }
+            let marker = format!("sleep 48.{}", shell.len());
+            let mut command = new_command("sh");
+            command.args(["-c", &format!("{marker} & wait")]);
+            start_new_group(&mut command);
+            let Ok(mut child) = command.spawn() else {
+                panic!("sh must start");
+            };
+            thread::sleep(Duration::from_millis(200));
+            assert!(alive(&marker), "the child must run");
+            let _ = new_command(shell)
+                .args(["-c", KILL_GROUP, "sh"])
+                .arg(child.id().to_string())
+                .status();
+            let start = Instant::now();
+            while child.try_wait().is_ok_and(|status| status.is_none()) {
+                if start.elapsed() > GONE_LIMIT {
+                    kill_tree_with(child.id(), None);
+                    let _ = child.wait();
+                    panic!("{shell} left the group alive");
+                }
+                thread::sleep(POLL_INTERVAL);
+            }
+            assert!(
+                gone_within(&marker, GONE_LIMIT),
+                "{shell} left the sleep alive"
+            );
+        }
+    }
 
     #[cfg(unix)]
     #[test]

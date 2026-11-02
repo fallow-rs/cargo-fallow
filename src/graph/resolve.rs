@@ -235,7 +235,11 @@ impl<'g> Resolver<'g> {
         match kind {
             RefKind::Path { segments, global } => {
                 if untyped_origin && segments.len() == 1 {
-                    self.credit_names(credits, base, &segments[0], Class::Untyped, |_| true);
+                    // A bare name cannot name a field or a method. A `Member`
+                    // reference covers the names that can.
+                    self.credit_names(credits, base, &segments[0], Class::Untyped, |kind| {
+                        !matches!(kind, ItemKind::Field | ItemKind::Method)
+                    });
                     return;
                 }
                 let (targets, class, modules) =
@@ -286,6 +290,11 @@ impl<'g> Resolver<'g> {
                         kind == ItemKind::Field
                     });
                 }
+            }
+            RefKind::Member(name) => {
+                self.credit_names(credits, base, name, Class::Untyped, |kind| {
+                    matches!(kind, ItemKind::Field | ItemKind::Method)
+                });
             }
             RefKind::Macro(name) => self.credit_names(credits, base, name, Class::Exact, |kind| {
                 kind == ItemKind::Macro

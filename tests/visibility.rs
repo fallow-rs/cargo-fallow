@@ -292,3 +292,44 @@ fn a_reexport_of_a_required_item_stays() {
     let (found, _) = findings(&dir, &[]);
     assert!(!found.contains("dead_public graph::Closure"), "{found:?}");
 }
+
+#[test]
+fn a_bare_name_in_tokens_does_not_credit_a_field_or_a_method() {
+    let dir = workspace(&[
+        (
+            "app/src/main.rs",
+            "fn main() { let text = mid::label(); println!(\"{}\", text); }\n",
+        ),
+        (
+            "mid/src/lib.rs",
+            "/// ```\n/// let text = mid::label();\n/// ```\npub fn label() -> String { Link { text: String::new() }.text }\n\
+             pub struct Link {\n    pub text: String,\n}\n",
+        ),
+    ]);
+    let (found, _) = findings(&dir, &[]);
+    assert_eq!(
+        found,
+        set(&["unnecessary_public Link", "unnecessary_public Link::text"])
+    );
+}
+
+#[test]
+fn a_struct_literal_in_macro_tokens_credits_only_its_own_fields() {
+    let dir = workspace(&[
+        (
+            "app/src/main.rs",
+            "fn main() { let all = vec![mid::Parser { text: None }]; mid::run(&all); }\n",
+        ),
+        (
+            "mid/src/lib.rs",
+            "pub struct Parser {\n    pub text: Option<String>,\n}\npub struct Link {\n    pub text: String,\n}\n\
+             pub fn run(all: &[Parser]) -> usize { all.len() + make().text.len() }\n\
+             fn make() -> Link { Link { text: String::new() } }\n",
+        ),
+    ]);
+    let (found, _) = findings(&dir, &[]);
+    assert_eq!(
+        found,
+        set(&["unnecessary_public Link", "unnecessary_public Link::text"])
+    );
+}

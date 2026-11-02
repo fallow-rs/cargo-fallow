@@ -206,6 +206,8 @@ pub enum RefKind {
     },
     /// A macro call `name!`.
     Macro(String),
+    /// A name in tokens that can be a field or a method.
+    Member(String),
 }
 
 /// Where a reference is.
@@ -268,21 +270,50 @@ pub fn doc_refs_of_markdown(markdown: &str, edition: Edition) -> Vec<RawRef> {
     rust_code_blocks(markdown)
         .iter()
         .flat_map(|code| paths_in_code(code, edition))
-        .map(doc_ref)
+        .flat_map(doc_ref)
         .collect()
 }
 
-fn doc_ref(path: TokenPath) -> RawRef {
-    RawRef {
-        inline: Vec::new(),
-        owner: None,
-        kind: RefKind::Path {
-            segments: path.segments,
-            global: path.global,
-        },
-        origin: Origin::Doc,
-        test_only: true,
+fn doc_ref(path: TokenPath) -> Vec<RawRef> {
+    token_ref_kinds(path)
+        .into_iter()
+        .map(|kind| RawRef {
+            inline: Vec::new(),
+            owner: None,
+            kind,
+            origin: Origin::Doc,
+            test_only: true,
+        })
+        .collect()
+}
+
+/// The references of one token path: the path, and a member reference for a
+/// name that can be a field or a method.
+fn token_ref_kinds(path: TokenPath) -> Vec<RefKind> {
+    if let (Some(record), Some(field)) = (path.record, path.segments.first()) {
+        return vec![
+            RefKind::Path {
+                segments: path.segments.clone(),
+                global: false,
+            },
+            RefKind::RecordField {
+                segments: record,
+                global: path.global,
+                field: field.clone(),
+            },
+        ];
     }
+    let member = path
+        .member
+        .then(|| path.segments.first().cloned())
+        .flatten()
+        .map(RefKind::Member);
+    let mut kinds = vec![RefKind::Path {
+        segments: path.segments,
+        global: path.global,
+    }];
+    kinds.extend(member);
+    kinds
 }
 
 #[derive(Debug, Clone)]
@@ -843,22 +874,17 @@ impl<'a> Walker<'a> {
     }
 
     fn token_refs(&mut self, tree: &SyntaxNode, origin: Origin) {
-        for path in paths_in_tree(tree) {
-            let segments = match (path.segments.first(), self.impl_self()) {
-                (Some(first), Some(self_ty)) if first == "Self" => {
-                    let mut segments = self_ty;
-                    segments.extend(path.segments.into_iter().skip(1));
-                    segments
-                }
-                _ => path.segments,
-            };
-            self.add_ref(
-                RefKind::Path {
-                    segments,
-                    global: path.global,
-                },
-                origin,
-            );
+        for mut path in paths_in_tree(tree) {
+            if let (Some(first), Some(self_ty)) = (path.segments.first(), self.impl_self())
+                && first == "Self"
+            {
+                let mut segments = self_ty;
+                segments.extend(path.segments.into_iter().skip(1));
+                path.segments = segments;
+            }
+            for kind in token_ref_kinds(path) {
+                self.add_ref(kind, origin);
+            }
         }
     }
 

@@ -7,6 +7,7 @@
 
 use ra_ap_parser::{LexedStr, SyntaxKind};
 use ra_ap_syntax::{NodeOrToken, SyntaxNode, T};
+use rustc_hash::FxHashMap;
 
 use crate::parse::Edition;
 
@@ -17,6 +18,12 @@ pub struct TokenPath {
     pub segments: Vec<String>,
     /// True when the chain starts with `::`.
     pub global: bool,
+    /// True for a single name that can be a field or a method: after `.`,
+    /// or before `:`, `,` or `}` as in a struct expression.
+    pub member: bool,
+    /// For a field name in a struct expression `Path { field: .. }`, the path
+    /// of the struct.
+    pub record: Option<Vec<String>>,
 }
 
 /// A token with only the facts that the scan needs.
@@ -25,6 +32,12 @@ enum Piece<'a> {
     Ident(&'a str),
     Colon,
     Dollar,
+    Dot,
+    Comma,
+    OpenBrace,
+    CloseBrace,
+    Open,
+    Close,
     Other,
 }
 
@@ -76,6 +89,12 @@ fn piece(kind: SyntaxKind, text: &str) -> Piece<'_> {
         T![Self] => Piece::Ident("Self"),
         T![:] => Piece::Colon,
         T![$] => Piece::Dollar,
+        T![.] => Piece::Dot,
+        T![,] => Piece::Comma,
+        T!['{'] => Piece::OpenBrace,
+        T!['}'] => Piece::CloseBrace,
+        T!['('] | T!['['] => Piece::Open,
+        T![')'] | T![']'] => Piece::Close,
         _ => Piece::Other,
     }
 }
@@ -83,6 +102,7 @@ fn piece(kind: SyntaxKind, text: &str) -> Piece<'_> {
 /// Finds the chains of names joined by `::`. A `$name` is a macro variable and
 /// does not count, but `$crate` does.
 fn chains(pieces: &[Piece<'_>]) -> Vec<TokenPath> {
+    let mut records: FxHashMap<usize, Vec<String>> = FxHashMap::default();
     let mut paths = Vec::new();
     let mut index = 0;
     while index < pieces.len() {
@@ -108,10 +128,66 @@ fn chains(pieces: &[Piece<'_>]) -> Vec<TokenPath> {
             segments.push((*name).to_owned());
             next += 3;
         }
-        paths.push(TokenPath { segments, global });
+        let single_colon =
+            pieces.get(next) == Some(&Piece::Colon) && pieces.get(next + 1) != Some(&Piece::Colon);
+        let member = segments.len() == 1
+            && ((index > 0 && pieces[index - 1] == Piece::Dot)
+                || single_colon
+                || matches!(pieces.get(next), Some(Piece::Comma | Piece::CloseBrace)));
+        if pieces.get(next) == Some(&Piece::OpenBrace) && starts_upper(&segments) {
+            for field in record_fields(pieces, next) {
+                records.insert(field, segments.clone());
+            }
+        }
+        let record = records.remove(&index);
+        paths.push(TokenPath {
+            segments,
+            global,
+            member: member && record.is_none(),
+            record,
+        });
         index = next;
     }
     paths
+}
+
+/// True when the last segment of a path starts with an upper case letter, as
+/// the name of a struct or a variant does.
+fn starts_upper(segments: &[String]) -> bool {
+    segments
+        .last()
+        .and_then(|last| last.chars().next())
+        .is_some_and(char::is_uppercase)
+}
+
+/// The indexes of the field names of the struct expression whose `{` is at
+/// `open`: a name at depth one, after `{` or `,` and before `:`, `,` or `}`.
+fn record_fields(pieces: &[Piece<'_>], open: usize) -> Vec<usize> {
+    let mut fields = Vec::new();
+    let mut depth = 0_u32;
+    for index in open..pieces.len() {
+        match pieces[index] {
+            Piece::OpenBrace | Piece::Open => depth += 1,
+            Piece::CloseBrace | Piece::Close => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    break;
+                }
+            }
+            Piece::Ident(_) if depth == 1 => {
+                let after_start = matches!(pieces[index - 1], Piece::OpenBrace | Piece::Comma);
+                let before_end = matches!(
+                    pieces.get(index + 1),
+                    Some(Piece::Colon | Piece::Comma | Piece::CloseBrace)
+                ) && pieces.get(index + 2) != Some(&Piece::Colon);
+                if after_start && before_end {
+                    fields.push(index);
+                }
+            }
+            _ => {}
+        }
+    }
+    fields
 }
 
 /// A path in a string literal, as in `#[serde(with = "a::b")]`.
@@ -128,6 +204,8 @@ fn path_in_string(literal: &str) -> Option<TokenPath> {
     looks_like_path.then(|| TokenPath {
         segments: text.split("::").map(str::to_owned).collect(),
         global: false,
+        member: false,
+        record: None,
     })
 }
 
@@ -226,6 +304,39 @@ mod tests {
     fn macro_variables_do_not_count_but_dollar_crate_does() {
         let paths = paths_in_code("$x:expr => $crate::inner::run($x)", Edition::Edition2021);
         assert_eq!(names(&paths), ["expr", "crate::inner::run"]);
+    }
+
+    #[test]
+    fn member_names_and_record_fields_are_marked() {
+        let paths = paths_in_code(
+            "x.field; Link { text: a, more }; call(b, c)",
+            Edition::Edition2021,
+        );
+        let marks: Vec<(String, bool, Option<String>)> = paths
+            .iter()
+            .map(|path| {
+                (
+                    path.segments.join("::"),
+                    path.member,
+                    path.record.as_ref().map(|record| record.join("::")),
+                )
+            })
+            .collect();
+        let link = Some("Link".to_owned());
+        assert_eq!(
+            marks,
+            [
+                ("x".to_owned(), false, None),
+                ("field".to_owned(), true, None),
+                ("Link".to_owned(), false, None),
+                ("text".to_owned(), false, link.clone()),
+                ("a".to_owned(), true, None),
+                ("more".to_owned(), false, link),
+                ("call".to_owned(), false, None),
+                ("b".to_owned(), true, None),
+                ("c".to_owned(), false, None),
+            ]
+        );
     }
 
     #[test]

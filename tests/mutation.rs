@@ -421,7 +421,7 @@ fn the_guard_kills_a_mutant_that_allocates_without_limit() {
         ],
     );
     let report = &run.report;
-    assert_eq!(run.code, Some(0), "{}", run.stderr);
+    assert_eq!(run.code, Some(0), "{}\n{report}", run.stderr);
     let mutant = run.find("<=");
     assert_eq!(mutant["status"], "runtime_error", "{report}");
     let reason = mutant["reason"].as_str().expect("a reason");

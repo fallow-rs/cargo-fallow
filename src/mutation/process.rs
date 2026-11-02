@@ -460,8 +460,9 @@ mod tests {
         };
         assert_eq!(processes_from(&folder), Some(Vec::new()));
         // A link starts the known program with a path in the folder. A new copy can
-        // wait for a malware scan before its first start.
-        let program = folder.join("link-to-sleep");
+        // wait for a malware scan before its first start. The link keeps the name
+        // `sleep`, because a multicall coreutils picks its tool from that name.
+        let program = folder.join("sleep");
         let Ok(()) = std::os::unix::fs::symlink("/bin/sleep", &program) else {
             panic!("link a program");
         };

@@ -513,8 +513,9 @@ fn fails_once() {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/runs");
     let runs: u32 = std::fs::read_to_string(path).ok().and_then(|t| t.parse().ok()).unwrap_or(0) + 1;
     std::fs::write(path, runs.to_string()).unwrap();
-    // Run 1 and 2 are the baselines. Run 3 is the first mutant.
-    assert!(runs != 3);
+    // Each copy has its own count. In the schema copy, run 1 is the baseline and run
+    // 2 is the first mutant.
+    assert!(runs != 2);
 }
 "#;
     let run = run(
@@ -739,7 +740,8 @@ fn the_report_names_the_members_whose_tests_do_not_run() {
     );
 }
 
-/// `--test-workspace` runs the tests of each member against the mutant.
+/// `--test-workspace` runs the tests of each member against a survivor, also against
+/// a rebuild mutant, and a mutant that a test of the package kills needs no such run.
 #[test]
 fn test_workspace_runs_the_tests_of_the_other_members() {
     for flags in [
@@ -760,7 +762,55 @@ fn test_workspace_runs_the_tests_of_the_other_members() {
             run.report["gaps"]["untested_dependents"],
             Value::Array(Vec::new())
         );
+        assert_eq!(run.report["workspace_tests"]["mutants_run"], 1);
+        assert_eq!(run.report["workspace_tests"]["detected"], 1);
     }
+    let run = run_in(".", &WORKSPACE, &["-p", "core-x", "--test-workspace"]);
+    assert_eq!(run.code, Some(0), "{}", run.stderr);
+    assert!(
+        run.mutants().iter().any(|m| m["tier"] == "rebuild"),
+        "{}",
+        run.report
+    );
+    run.assert_all("killed");
+}
+
+/// A mutant that no test in the workspace detects is a survivor, also when no test of
+/// the package executes it.
+#[test]
+fn test_workspace_leaves_a_real_survivor() {
+    let mut files = WORKSPACE;
+    files[5] = (
+        "app/tests/it.rs",
+        "#[test]\nfn t() { let _ = app_x::g(1); }\n",
+    );
+    let run = run_in(
+        ".",
+        &files,
+        &["-p", "core-x", "--test-workspace", "--tier", "schema"],
+    );
+    run.assert_all("survived");
+    assert_eq!(run.report["workspace_tests"]["mutants_run"], 1);
+    assert_eq!(run.report["workspace_tests"]["detected"], 0);
+    // A pass of the whole workspace gets no second run.
+    assert_eq!(run.mutants()[0]["retried"], false);
+}
+
+/// A test of the package kills the mutant, so the workspace tests do not run.
+#[test]
+fn test_workspace_skips_a_detected_mutant() {
+    let mut files = WORKSPACE;
+    files[3] = (
+        "core/src/lib.rs",
+        "pub fn f(a: u8) -> bool {\n    a == 1\n}\n#[test]\nfn t() { assert!(f(1)); assert!(!f(2)); }\n",
+    );
+    let run = run_in(
+        ".",
+        &files,
+        &["-p", "core-x", "--test-workspace", "--tier", "schema"],
+    );
+    run.assert_all("killed");
+    assert_eq!(run.report["workspace_tests"]["mutants_run"], 0);
 }
 
 /// A Cargo config above the workspace root changes the build, so the copy needs it.
@@ -821,7 +871,7 @@ fn leaves_a_child() {
         return;
     }
     let child = std::process::Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", "leaves_a_child", "--orphan-marker-48213"])
+        .args(["leaves_a_child", "orphan-marker-48213"])
         .env("ORPHAN", "1")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -926,10 +976,18 @@ fn a_signal_leaves_no_temporary_folder() {
 fn a_time_limit_of_zero_is_a_usage_error() {
     let output = Command::cargo_bin("cargo-fallow")
         .expect("the binary exists")
-        .args(["mutants", "--timeout", "0"])
+        .args([
+            "mutants",
+            "--timeout",
+            "0",
+            "--manifest-path",
+            "/no/such/file",
+        ])
         .output()
         .expect("the binary runs");
     assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--timeout"), "{stderr}");
 }
 
 const TWO_FILES: [(&str, &str); 3] = [

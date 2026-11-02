@@ -32,7 +32,7 @@ use crate::mutation::removal::{
 };
 use crate::mutation::report::{
     Baseline, ErrorSummary, MapSource, MutantRow, RebuildInfo, RemovedMutant, SchemaInfo,
-    SchemaStatus, SelectionInfo, StopReason,
+    SchemaStatus, SelectionInfo, StopReason, WorkspaceTests,
 };
 use crate::mutation::rewrites::{FileRewrites, Rewrite, apply, find_rewrites, render_probe};
 use crate::mutation::run::{Options, file_selected, millis};
@@ -56,6 +56,8 @@ const BASELINE_LIMIT: Duration = Duration::from_mins(30);
 const TIMEOUT_FACTOR: u32 = 5;
 /// The shortest limit of a mutant run.
 const MIN_TIMEOUT: Duration = Duration::from_secs(20);
+/// The time limit of one baseline suite of the whole workspace.
+const WORKSPACE_BASELINE_LIMIT: Duration = Duration::from_hours(2);
 /// A rebuild of a mutant builds less than the clean build, and this share of the
 /// clean build leaves room for host load. A mutant in a `const fn` can loop in the
 /// compiler for hours, because the lint cap turns off the lint that stops it.
@@ -106,14 +108,21 @@ fn baseline_failure(action: &str, err: &io::Error) -> CliError {
 }
 
 fn baseline_run(tree: TestTree<'_>, meta: &BuildMeta, label: &str) -> io::Result<TestRun> {
-    let spec = RunSpec {
-        label: label.to_owned(),
-        limit: BASELINE_LIMIT,
-        ..RunSpec::new(1)
-    };
-    let (exit, nextest) = run_nextest(tree, meta, &spec)?;
+    baseline_with(
+        tree,
+        meta,
+        &RunSpec {
+            label: label.to_owned(),
+            limit: BASELINE_LIMIT,
+            ..RunSpec::new(1)
+        },
+    )
+}
+
+fn baseline_with(tree: TestTree<'_>, meta: &BuildMeta, spec: &RunSpec) -> io::Result<TestRun> {
+    let (exit, nextest) = run_nextest(tree, meta, spec)?;
     stop_on_kill(&exit)?;
-    let (exit, doc) = run_doctests(tree, &spec)?;
+    let (exit, doc) = run_doctests(tree, spec)?;
     stop_on_kill(&exit)?;
     Ok(TestRun { nextest, doc })
 }
@@ -161,6 +170,8 @@ pub struct Stages {
     pub selection: SelectionInfo,
     /// The rebuild mutants that `--in-diff` left out.
     pub rewrites_outside_diff: usize,
+    /// The run of the survivors against the tests of the workspace.
+    pub workspace: Option<WorkspaceTests>,
 }
 
 impl Stages {
@@ -180,11 +191,13 @@ impl Stages {
             doctests: false,
             selection: SelectionInfo::default(),
             rewrites_outside_diff,
+            workspace: None,
         }
     }
 }
 
 /// One mutant to run, with its row in the report.
+#[derive(Clone)]
 struct Job {
     row: usize,
     planned: Planned,
@@ -207,6 +220,8 @@ struct TierRun<'a> {
     order: Option<PathBuf>,
     /// The limit of one rebuild of a mutant.
     rebuild_limit: Duration,
+    /// False when a pass of each test gets no second run.
+    retry_a_pass: bool,
 }
 
 /// The tests that pass in a baseline and that stay in the run, fastest first.
@@ -288,10 +303,7 @@ impl Engine<'_> {
     /// Runs each stage. The rows have the schema tier first.
     pub fn run(&self) -> Result<(Vec<MutantRow>, Stages), CliError> {
         let (rewrites, rewrites_outside_diff) = self.find_rewrites();
-        let has_mutant = rewrites.iter().any(|file| !file.rewrites.is_empty())
-            || (self.options.tier.has_schema()
-                && self.files.iter().any(|file| !file.found.sites.is_empty()));
-        if self.is_narrowed() && !has_mutant {
+        if self.is_narrowed() && !self.has_mutant(&rewrites) {
             return Ok((Vec::new(), Stages::no_changed_mutant(rewrites_outside_diff)));
         }
         let scratch_package = self.dirs.scratch.join(&self.package_dir);
@@ -351,21 +363,28 @@ impl Engine<'_> {
             selector: selector.as_ref(),
             journal: journal.as_ref(),
         };
-        let (stopped_by, resumed) = self.run_jobs(
+        let all_jobs = (schema_jobs.clone(), rebuild_jobs.clone());
+        let (mut stopped_by, resumed) = self.run_jobs(
             (schema_jobs, rebuild_jobs),
             tiers,
             state,
             has_test,
             &mut rows,
         )?;
-        rows.sort_by(|a, b| {
-            (a.tier == Tier::Rebuild, &a.file, a.line, a.column).cmp(&(
-                b.tier == Tier::Rebuild,
-                &b.file,
-                b.line,
-                b.column,
-            ))
-        });
+        let phase = WorkspacePhase {
+            schema: schema_tree,
+            clean: clean_tree,
+            schema_compiled: schema_setup.is_some(),
+            rebuild_limit,
+        };
+        let workspace = self.end_of_run(
+            &phase,
+            all_jobs,
+            &mut stopped_by,
+            journal.as_ref(),
+            &mut rows,
+        )?;
+        sort_rows(&mut rows);
         let selection = selection_info(
             coverage.source,
             coverage.map_ms,
@@ -383,6 +402,7 @@ impl Engine<'_> {
                 doctests,
                 selection,
                 rewrites_outside_diff,
+                workspace,
             },
         ))
     }
@@ -429,12 +449,132 @@ impl Engine<'_> {
         let (schema_jobs, rebuild_jobs) =
             restore_jobs(state.journal, schema_jobs, rebuild_jobs, rows, &mut resumed);
         let stopped_by = self.execute(schema_jobs, rebuild_jobs, tiers, state, rows)?;
-        if let Some(journal) = state.journal
+        Ok((stopped_by, resumed))
+    }
+
+    /// Runs the stage of the workspace when the flag asks for it, and removes the
+    /// journal when each mutant has a result.
+    fn end_of_run(
+        &self,
+        phase: &WorkspacePhase<'_>,
+        jobs: (Vec<Job>, Vec<Job>),
+        stopped_by: &mut Option<StopReason>,
+        journal: Option<&Journal>,
+        rows: &mut [MutantRow],
+    ) -> Result<Option<WorkspaceTests>, CliError> {
+        let mut workspace = None;
+        if self.options.test_workspace && !self.options.no_run && stopped_by.is_none() {
+            let (info, stop) = self
+                .workspace_stage(phase, jobs, rows)
+                .map_err(|err| baseline_failure("run the tests of the workspace", &err))?;
+            workspace = Some(info);
+            *stopped_by = stop;
+        }
+        if let Some(journal) = journal
             && rows.iter().all(|row| row.status != Status::Pending)
         {
             journal.finish();
         }
-        Ok((stopped_by, resumed))
+        Ok(workspace)
+    }
+
+    /// Runs each mutant that the tests of the package do not detect against the tests
+    /// of each workspace member.
+    ///
+    /// The tests of the package are fast and the coverage map holds them, so they run
+    /// first. A workspace can hold many tests, and such a run needs one build of each
+    /// test binary, so only the remaining mutants get this run. A schema build runs
+    /// these mutants with no further compile.
+    fn workspace_stage(
+        &self,
+        phase: &WorkspacePhase<'_>,
+        (schema_jobs, rebuild_jobs): (Vec<Job>, Vec<Job>),
+        rows: &mut [MutantRow],
+    ) -> io::Result<(WorkspaceTests, Option<StopReason>)> {
+        let start = Instant::now();
+        let open = |job: &Job| {
+            let row = &rows[job.row];
+            matches!(row.status, Status::Survived)
+                || (row.status == Status::NoCoverage && row.reason.as_deref() == Some(NO_TEST))
+        };
+        let schema_jobs: Vec<Job> = schema_jobs.into_iter().filter(&open).collect();
+        let rebuild_jobs: Vec<Job> = rebuild_jobs.into_iter().filter(&open).collect();
+        let mutants_run = schema_jobs.len() + rebuild_jobs.len();
+        let mut info = WorkspaceTests {
+            mutants_run,
+            ..WorkspaceTests::default()
+        };
+        if mutants_run == 0 {
+            return Ok((info, None));
+        }
+        self.progress("building the tests of the workspace");
+        let select = ["--workspace".to_owned()];
+        let clean_tree = TestTree {
+            select: &select,
+            ..phase.clean
+        };
+        let build_start = Instant::now();
+        let clean_meta = prepare_or_error(clean_tree, "workspace-clean")?;
+        let rebuild_limit = rebuild_limit(build_start.elapsed()).max(phase.rebuild_limit);
+        let spec = RunSpec {
+            label: "workspace-clean".to_owned(),
+            limit: WORKSPACE_BASELINE_LIMIT,
+            ..RunSpec::new(self.options.jobs)
+        };
+        self.progress("running the baseline of the workspace");
+        let clean = baseline_with(clean_tree, &clean_meta, &spec)?;
+        info.failures = failures(&clean).into_iter().collect();
+        let no_tests = BTreeSet::new();
+        let mut clean_setup =
+            self.clean_setup(clean_tree, clean_meta, &clean, &no_tests, rebuild_limit)?;
+        clean_setup.order = None;
+        clean_setup.retry_a_pass = false;
+        let schema_tree = TestTree {
+            select: &select,
+            ..phase.schema
+        };
+        let schema_part = if phase.schema_compiled && !schema_jobs.is_empty() {
+            let meta = prepare_or_error(schema_tree, "workspace-schema")?;
+            let spec = RunSpec {
+                label: "workspace-schema".to_owned(),
+                ..spec
+            };
+            let run = baseline_with(schema_tree, &meta, &spec)?;
+            let mut setup = self.schema_tier(schema_tree, meta, &clean, &run, &no_tests)?;
+            setup.order = None;
+            setup.retry_a_pass = false;
+            Some((setup, run))
+        } else {
+            None
+        };
+        let mut unused = SchemaInfo::default();
+        let (schema_jobs, rebuild_jobs) = self.move_jobs_of_lost_tests(
+            (schema_jobs, rebuild_jobs),
+            schema_part.as_ref().map(|(_, run)| (&clean, run)),
+            None,
+            rows,
+            &mut unused,
+        );
+        let before: Vec<u64> = rows.iter().map(|row| row.tests_run).collect();
+        let state = RunState {
+            selector: None,
+            journal: None,
+        };
+        let mut stopped = match &schema_part {
+            Some((setup, _)) => self.run_schema_jobs(&schema_jobs, setup, state, rows)?,
+            None => None,
+        };
+        if stopped.is_none() {
+            stopped = self.run_rebuild_jobs(&rebuild_jobs, &clean_setup, state, rows)?;
+        }
+        for job in schema_jobs.iter().chain(&rebuild_jobs) {
+            rows[job.row].tests_run += before[job.row];
+            if matches!(rows[job.row].status, Status::Killed | Status::Timeout) {
+                info.detected += 1;
+            }
+        }
+        info.elapsed_ms = millis(start.elapsed());
+        Ok((info, stopped))
     }
 
     fn clean_stage(&self, tree: TestTree<'_>) -> Result<(BuildMeta, TestRun), CliError> {
@@ -475,6 +615,7 @@ impl Engine<'_> {
             nextest_exclude,
             doc_known: known_failures(clean.doc.failed.iter()),
             rebuild_limit,
+            retry_a_pass: true,
             nextest_limit: self.limit_for(clean.nextest.elapsed_ms),
             nextest_baseline_ms: clean.nextest.elapsed_ms,
             doc_limit: self.limit_for(clean.doc.elapsed_ms),
@@ -644,8 +785,9 @@ impl Engine<'_> {
     fn open_journal(&self, cached: &CachedTree) -> Option<Journal> {
         let options = self.options;
         let setup = format!(
-            "{}|{:?}|{}|{}|{}|{}|{:?}|{}|{}",
+            "{}|{}|{:?}|{}|{}|{}|{}|{:?}|{}|{}",
             cached.key,
+            options.test_workspace,
             options.tier,
             options.no_schema,
             options.doctests,
@@ -714,6 +856,13 @@ impl Engine<'_> {
             }
         }
         (all, outside)
+    }
+
+    /// True when a tier of this run has a mutant.
+    fn has_mutant(&self, rewrites: &[FileRewrites]) -> bool {
+        rewrites.iter().any(|file| !file.rewrites.is_empty())
+            || (self.options.tier.has_schema()
+                && self.files.iter().any(|file| !file.found.sites.is_empty()))
     }
 
     /// True when the flags of a narrow run keep a mutant in this file.
@@ -906,19 +1055,18 @@ impl Engine<'_> {
     }
 
     fn compile(&self, package: &Path, target: &Path, label: &str) -> io::Result<Build> {
-        self.compile_within(package, target, label, BUILD_LIMIT)
+        self.compile_within(self.tree(package, target), label, BUILD_LIMIT)
     }
 
     fn compile_within(
         &self,
-        package: &Path,
-        target: &Path,
+        tree: TestTree<'_>,
         label: &str,
         limit: Duration,
     ) -> io::Result<Build> {
         let out = self.dirs.logs.join(format!("{label}.json"));
         let err = self.dirs.logs.join(format!("{label}.err"));
-        let command = build_command(package, target, self.options.jobs, &self.select);
+        let command = build_command(tree.dir, tree.target_dir, self.options.jobs, tree.select);
         let exit = run_to_files(command, &out, &err, limit, self.guard, Scope::Build)?;
         if let Exit::Killed(reason) = &exit {
             return Err(io::Error::other(reason.to_string()));
@@ -965,6 +1113,20 @@ impl Engine<'_> {
         baseline.tests_pass_with_schema = comparison.tests_pass_with_schema;
         baseline.timeout_ms.schema_nextest = millis(self.limit_for(run.nextest.elapsed_ms));
         baseline.timeout_ms.schema_doc = millis(self.limit_for(run.doc.elapsed_ms));
+        let setup = self.schema_tier(tree, meta, clean, &run, fail_alone)?;
+        baseline.schema = Some(run);
+        Ok(Some(setup))
+    }
+
+    /// The test setup of a schema build, from its baseline.
+    fn schema_tier<'t>(
+        &self,
+        tree: TestTree<'t>,
+        meta: BuildMeta,
+        clean: &TestRun,
+        run: &TestRun,
+        fail_alone: &BTreeSet<String>,
+    ) -> io::Result<TierRun<'t>> {
         let mut nextest_exclude: BTreeSet<String> = clean.nextest.failed.iter().cloned().collect();
         nextest_exclude.extend(run.nextest.failed.iter().cloned());
         nextest_exclude.extend(lost_passes(&clean.nextest, &run.nextest));
@@ -976,7 +1138,7 @@ impl Engine<'_> {
         }
         let tests = ordered_tests(&run.nextest, &nextest_exclude);
         let order = self.write_order("schema", &tests)?;
-        let setup = TierRun {
+        Ok(TierRun {
             tree,
             meta,
             tests,
@@ -985,15 +1147,14 @@ impl Engine<'_> {
             nextest_exclude,
             doc_known,
             rebuild_limit: BUILD_LIMIT,
+            retry_a_pass: true,
             nextest_limit: self.limit_for(run.nextest.elapsed_ms),
             nextest_baseline_ms: run.nextest.elapsed_ms,
             doc_limit: self.limit_for(run.doc.elapsed_ms),
             doctests: self.options.doctests
                 && run.doc.status == SuiteStatus::Completed
                 && run.doc.pass > 0,
-        };
-        baseline.schema = Some(run);
-        Ok(Some(setup))
+        })
     }
 
     fn rebuild_stage(
@@ -1280,12 +1441,7 @@ impl Engine<'_> {
         picked: &Picked,
     ) -> io::Result<Done> {
         let start = Instant::now();
-        let build = self.compile_within(
-            setup.tree.dir,
-            setup.tree.target_dir,
-            "rebuild",
-            setup.rebuild_limit,
-        );
+        let build = self.compile_within(setup.tree, "rebuild", setup.rebuild_limit);
         let build = match build {
             Ok(build) => build,
             // The guard killed the compiler, and a compile says nothing about the
@@ -1346,7 +1502,7 @@ impl Engine<'_> {
             retry_can_change_a_timeout(limit, picked.baseline_ms)
         } else {
             // A second run of only the doctests says nothing about the lines.
-            !picked.empty
+            !picked.empty && setup.retry_a_pass
         };
         if self.options.retry && !done.retried && done.verdict.wants_retry() && retry_useful {
             // Host load often lasts into the retry, so a timeout waits twice as long.
@@ -1532,6 +1688,24 @@ const NO_TEST: &str = "no test executes this line";
 const NO_TEST_BUT_DOCTESTS: &str =
     "no nextest test executes this line, and the doctests pass with the mutant";
 
+/// The trees of the run against the tests of the workspace.
+struct WorkspacePhase<'a> {
+    schema: TestTree<'a>,
+    clean: TestTree<'a>,
+    schema_compiled: bool,
+    rebuild_limit: Duration,
+}
+
+/// Builds the test binaries of a tree. A build error stops the stage.
+fn prepare_or_error(tree: TestTree<'_>, label: &str) -> io::Result<BuildMeta> {
+    prepare(tree, label)?.map_err(|text| {
+        io::Error::other(format!(
+            "the tests of the workspace do not build:\n{}",
+            tail(&text)
+        ))
+    })
+}
+
 /// The source of the map, the cache and the journal of one run.
 #[derive(Clone, Copy)]
 struct RunState<'a> {
@@ -1663,6 +1837,18 @@ fn tail(text: &str) -> String {
     const LINES: usize = 40;
     let lines: Vec<&str> = text.lines().collect();
     lines[lines.len().saturating_sub(LINES)..].join("\n")
+}
+
+/// The schema tier first, then by position.
+fn sort_rows(rows: &mut [MutantRow]) {
+    rows.sort_by(|a, b| {
+        (a.tier == Tier::Rebuild, &a.file, a.line, a.column).cmp(&(
+            b.tier == Tier::Rebuild,
+            &b.file,
+            b.line,
+            b.column,
+        ))
+    });
 }
 
 /// The tests that the map found to fail alone.

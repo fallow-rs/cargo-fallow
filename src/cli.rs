@@ -188,9 +188,9 @@ struct MutantsArgs {
     /// Keep the temporary work folder after the run.
     #[arg(long)]
     keep_work_dir: bool,
-    /// Run the tests of each workspace member for each mutant. Without this flag only
-    /// the tests of the package run, and the report names the other members that
-    /// depend on it.
+    /// Run each mutant that the tests of the package do not detect against the tests
+    /// of each workspace member. Without this flag only the tests of the package run,
+    /// and the report names the other members that depend on it.
     #[arg(long)]
     test_workspace: bool,
     /// Put mutants only in this file or folder, by the path from the workspace root.

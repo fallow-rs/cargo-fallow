@@ -351,6 +351,19 @@ pub struct Gaps {
     pub untested_dependents: Vec<String>,
 }
 
+/// The run of the survivors against the tests of each workspace member.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct WorkspaceTests {
+    /// The mutants that ran these tests.
+    pub mutants_run: usize,
+    /// The mutants that these tests detected.
+    pub detected: usize,
+    /// The time of this stage in milliseconds.
+    pub elapsed_ms: u64,
+    /// The tests that fail with no mutant in the workspace run.
+    pub failures: Vec<String>,
+}
+
 /// Where the coverage map of a run comes from.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -467,6 +480,8 @@ pub struct Report {
     pub gaps: Gaps,
     /// The test selection.
     pub selection: SelectionInfo,
+    /// The run of the survivors against the tests of the workspace.
+    pub workspace_tests: Option<WorkspaceTests>,
     /// The memory guard.
     pub guard: GuardInfo,
     /// Each mutant, by tier, file and offset.
@@ -638,6 +653,7 @@ mod tests {
                 GateOutcome::measured(status, enforced, 0.0, 0.0),
             );
             let report = Report {
+                workspace_tests: None,
                 schema_version: 1,
                 version: "0",
                 kind: KIND,

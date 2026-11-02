@@ -66,7 +66,7 @@ cargo fallow mutants --inspect 04658712a47ab204
 | `--package <NAME>` | The package to mutate. A workspace with one package needs no value. |
 | `--in-diff <REF>` | Run only the mutants on changed lines. See [Changed code](#changed-code). |
 | `--file <PATH>` | Put mutants only in this file or folder, by the path from the workspace root. The flag can repeat. A value that matches no file is an error. |
-| `--test-workspace` | Run the tests of each workspace member for each mutant. |
+| `--test-workspace` | Run each mutant that the tests of the package do not detect against the tests of each workspace member. |
 | `--format human\|json\|sarif` | The output format. The default is `human`. `--inspect` has no SARIF form. |
 | `--quiet` | Hide the progress lines on stderr. |
 | `--jobs <N>` | The test processes that run at the same time. |
@@ -351,6 +351,9 @@ The `gaps` part of the report counts the code that a run does not cover:
 - Without `--test-workspace` only the tests of the package run. The tests of a member
   that depends on the package can see a mutant, so a mutant can survive here and die
   with the flag. `gaps.untested_dependents` and the human report name those members.
+  With the flag, each `survived` and `no_coverage` mutant then runs each test of the
+  workspace, with no selection and no second run of a pass. A stop in this stage
+  repeats this stage in the next run. `workspace_tests` has the counts.
 - A `.cargo/config.toml` above the workspace root reaches the copy, but a relative
   path in such a file then starts at the work folder.
 - A test that closes each inherited file descriptor, or a system with no `/dev/fd`,

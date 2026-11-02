@@ -145,6 +145,15 @@ fn gap_lines(out: &mut String, report: &Report) {
             alone.join(", ")
         );
     }
+    if let Some(workspace) = &report.workspace_tests {
+        let _ = writeln!(
+            out,
+            "workspace tests: {} of {} remaining {} detected",
+            workspace.detected,
+            workspace.mutants_run,
+            plural(workspace.mutants_run, "mutant", "mutants"),
+        );
+    }
     let dependents = &report.gaps.untested_dependents;
     if !dependents.is_empty() {
         let _ = writeln!(

@@ -93,7 +93,8 @@ pub struct Options {
     pub no_run: bool,
     /// True when the temporary work folder stays after the run.
     pub keep_work_dir: bool,
-    /// True when the tests of each workspace member run for each mutant.
+    /// True when each mutant that the tests of the package do not detect also runs
+    /// the tests of each workspace member.
     pub test_workspace: bool,
     /// The files with mutants. An empty list means each file of the package.
     pub files: Vec<String>,
@@ -170,7 +171,7 @@ fn run_in(
         target_dir: target_dir.to_path_buf(),
         package: member.name.clone(),
         changed,
-        select: package_selection(options, workspace, member),
+        select: package_selection(workspace, member),
         alone: RwLock::new(()),
     };
     let (mut rows, stages) = engine.run()?;
@@ -210,6 +211,7 @@ fn run_in(
             ..gaps_of(&collected, stages.doctests)
         },
         selection: stages.selection,
+        workspace_tests: stages.workspace,
         guard: GuardInfo {
             enabled: options.memory_guard,
             memory_limit_mib: options.memory_limit_mib,
@@ -284,7 +286,7 @@ pub fn inspect(options: &Options, id: &str) -> Result<InspectReport, CliError> {
             target_dir: target_dir.to_path_buf(),
             package: member.name.clone(),
             changed: None,
-            select: package_selection(options, &workspace, member),
+            select: package_selection(&workspace, member),
             alone: RwLock::new(()),
         }
         .map_only()
@@ -494,10 +496,7 @@ fn retain_selected_files(options: &Options, files: &mut [CrateFile]) -> Result<(
 /// exception: in the workspace root cargo selects the default members, and those can
 /// leave out the root package. `--package` there needs the version: the same name
 /// can be a dependency.
-fn package_selection(options: &Options, workspace: &Workspace, member: &Member) -> Vec<String> {
-    if options.test_workspace {
-        return vec!["--workspace".to_owned()];
-    }
+fn package_selection(workspace: &Workspace, member: &Member) -> Vec<String> {
     if workspace.members.len() > 1 && package_folder(member).as_os_str().is_empty() {
         return vec![
             "--package".to_owned(),

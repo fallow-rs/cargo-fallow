@@ -361,8 +361,12 @@ fn run_one(
         ..RunSpec::new(1)
     };
     let (exit, suite) = run_nextest(input.tree, input.meta, &spec)?;
+    let lost_profile = take_default_profiles(input.tree.dir);
     let one = match exit {
         Exit::Killed(_) => OneTest::Killed,
+        // A child with an empty environment writes its profile under the default
+        // name. Its lines are not in the data of the test, so that data is too small.
+        Exit::Code(Some(0)) if lost_profile => OneTest::Unmapped,
         Exit::Code(Some(0)) if suite.pass >= 1 => convert(input, objects, &parsed, &folder)?,
         Exit::Code(Some(NEXTEST_TESTS_FAILED)) if suite.fail >= 1 => OneTest::Failed,
         _ => OneTest::Unmapped,
@@ -370,6 +374,26 @@ fn run_one(
     // A failed removal only leaves files in a work folder.
     let _ = fs::remove_dir_all(&folder);
     Ok(one)
+}
+
+/// Removes the profiles with the default name from the working folder of the tests,
+/// and returns true when one exists. The other test process can also take such a file.
+/// That process then runs for each mutant, and that only costs time.
+fn take_default_profiles(dir: &Path) -> bool {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return false;
+    };
+    let mut found = false;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with("default") && name.ends_with(".profraw") {
+            // A failed removal only makes a later test run for each mutant.
+            let _ = fs::remove_file(entry.path());
+            found = true;
+        }
+    }
+    found
 }
 
 /// Joins the profiles of one test, deletes them, and reads the lines of the test.

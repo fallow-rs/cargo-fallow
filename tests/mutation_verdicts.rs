@@ -224,11 +224,9 @@ fn prints() {
     assert_eq!(o.stdout, b"one\n");
 }
 "#;
-    let run = run(
-        &[("src/main.rs", main), ("tests/cli.rs", test)],
-        &["--tier", "schema", "--no-selection", "-j", "1"],
-    );
-    run.assert_all("killed");
+    let files = [("src/main.rs", main), ("tests/cli.rs", test)];
+    run(&files, &["--tier", "schema", "--no-selection", "-j", "1"]).assert_all("killed");
+    run(&files, &["--tier", "schema", "-j", "1"]).assert_all("killed");
 }
 
 /// A test that removes each environment variable still runs the mutant.

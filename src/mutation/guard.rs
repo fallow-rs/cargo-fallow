@@ -41,6 +41,8 @@ pub const DEFAULT_LIMIT_MIB: u64 = 4096;
 pub const DEFAULT_LOW_PERCENT: u32 = 25;
 /// The time between two reads of RSS.
 const RSS_TICK: Duration = Duration::from_millis(200);
+/// The time between two searches for an orphan of a test.
+const ORPHAN_TICK: Duration = Duration::from_secs(1);
 /// The same time when a process is a candidate.
 const CANDIDATE_RSS_TICK: Duration = Duration::from_millis(50);
 /// The time between two checks of the decision thread.
@@ -364,19 +366,7 @@ impl Guard {
     /// test ends. That child has a new parent, so no tree holds it, and no limit
     /// watches it, but it can still grow.
     pub fn sweep_orphans(&self) {
-        let Some(folder) = self.shared.lock().run_folder.clone() else {
-            return;
-        };
-        // The table comes first. A tree that starts later has no process in it.
-        let table = list_commands();
-        let roots: Vec<u32> = self
-            .shared
-            .lock()
-            .entries
-            .values()
-            .map(|e| e.root)
-            .collect();
-        signal("-KILL", &processes_under(&table, &folder, &roots));
+        sweep_orphans(&self.shared);
     }
 
     /// The number of trees that the guard killed.
@@ -467,14 +457,30 @@ fn rss_of(rows: &[Row], pid: u32) -> u64 {
         .map_or(0, |row| row.rss_kib)
 }
 
+fn sweep_orphans(shared: &Shared) {
+    let Some(folder) = shared.lock().run_folder.clone() else {
+        return;
+    };
+    // The table comes first. A tree that starts later has no process in it.
+    let table = list_commands();
+    let roots: Vec<u32> = shared.lock().entries.values().map(|e| e.root).collect();
+    signal("-KILL", &processes_under(&table, &folder, &roots));
+}
+
 /// Reads RSS often and stops each process that needs a decision. A stopped process
 /// cannot grow while the decision thread waits for `top`.
 fn rss_loop(shared: &Shared, probe: &dyn Probe, limits: Limits) {
     let mut blind = 0;
+    let mut last_sweep = Instant::now();
     while !shared.stop.load(Ordering::SeqCst) {
         let roots = current_roots(shared);
         let mut tick = RSS_TICK;
         if !roots.is_empty() {
+            // An orphan can grow during a long run, and no tree holds it.
+            if last_sweep.elapsed() >= ORPHAN_TICK {
+                last_sweep = Instant::now();
+                sweep_orphans(shared);
+            }
             if let Ok(rows) = probe.table() {
                 blind = 0;
                 let trees = trees_of(&rows, &roots);
@@ -884,6 +890,36 @@ mod tests {
         let guard = Guard::with_probe(LIMITS, FakeProbe::new(OVER, Err(()), 80));
         let exit = sleep_under(&guard, Scope::Tests, LONG);
         assert_eq!(exit, Exit::Killed(KillReason::Blind));
+    }
+
+    /// A child that outlives its test can grow during the rest of the run.
+    #[cfg(unix)]
+    #[test]
+    fn the_thread_kills_an_orphan_during_a_run() {
+        let Ok(dir) = tempfile::tempdir() else {
+            panic!("a temporary directory");
+        };
+        let Ok(folder) = dir.path().canonicalize() else {
+            panic!("a real path");
+        };
+        let program = folder.join("copy-of-sleep");
+        let Ok(_) = fs::copy("/bin/sleep", &program) else {
+            panic!("copy a program");
+        };
+        let Ok(mut orphan) = new_command(&program).arg("47.3129").spawn() else {
+            panic!("the copy starts");
+        };
+        let guard = Guard::with_probe(LIMITS, FakeProbe::new(0, Ok(0), 80));
+        guard.set_run_folder(&folder);
+        let exit = sleep_under(&guard, Scope::Tests, Duration::from_secs(4));
+        assert_eq!(exit, Exit::TimedOut);
+        let waited = orphan.try_wait();
+        let _ = orphan.kill();
+        let _ = orphan.wait();
+        assert!(
+            matches!(waited, Ok(Some(_))),
+            "the orphan still runs: {waited:?}"
+        );
     }
 
     #[cfg(unix)]

@@ -376,7 +376,7 @@ pub fn run_nextest(
     let mut suite = parse_nextest(&fs::read_to_string(&out)?, status);
     suite.elapsed_ms = elapsed_ms(start);
     if spec.remove_logs {
-        remove_logs(&[out, err]);
+        remove_logs(&[out, err, record_path(tree, spec)]);
     }
     Ok((exit, suite))
 }
@@ -386,8 +386,12 @@ fn activate(command: &mut Command, tree: TestTree<'_>, spec: &RunSpec) -> io::Re
     let Some(mutant) = spec.mutant else {
         return Ok(());
     };
-    let record = tree.logs.join(format!("{}.active", spec.label));
-    with_active_mutant(command, &record, mutant)
+    with_active_mutant(command, &record_path(tree, spec), mutant)
+}
+
+/// The file that holds the record of the active mutant.
+fn record_path(tree: TestTree<'_>, spec: &RunSpec) -> PathBuf {
+    tree.logs.join(format!("{}.active", spec.label))
 }
 
 /// The filter that leaves out `exclude`. Each term has the package and the binary:
@@ -567,7 +571,7 @@ pub fn run_doctests(tree: TestTree<'_>, spec: &RunSpec) -> io::Result<(Exit, Sui
         Exit::Code(_) => SuiteStatus::DidNotRun,
     };
     if spec.remove_logs {
-        remove_logs(&[out, err]);
+        remove_logs(&[out, err, record_path(tree, spec)]);
     }
     Ok((
         exit,

@@ -342,9 +342,10 @@ The `gaps` part of the report counts the code that a run does not cover:
 - Proc-macro targets have no mutants.
 - `.git` is not in the copy, so a test that reads it fails in the baseline and
   decides nothing.
-- A test can lose coverage data and still pass: a child process that the test
-  starts with an empty environment or that aborts writes no profile. A mutant that
-  only such a child executes gets `no_coverage`.
+- A test can lose coverage data and still pass: a child process that aborts writes
+  no profile. A mutant that only such a child executes gets `no_coverage`. A child
+  with an empty environment writes a profile under the default name in the working
+  folder of the test. The run sees that file, and the test then runs for each mutant.
 - The coverage counters are not atomic. A race in a test with threads can in theory
   hide an executed line. The tool does not turn on atomic counters.
 - Without `--test-workspace` only the tests of the package run. The tests of a member

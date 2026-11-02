@@ -353,3 +353,43 @@ fn a_path_from_outside_the_workspace_credits_no_workspace_item() {
         set(&["unnecessary_public Thing", "unnecessary_public Thing::new"])
     );
 }
+
+#[test]
+fn a_struct_literal_of_an_outside_type_credits_no_workspace_field() {
+    let dir = workspace(&[
+        (
+            "app/src/main.rs",
+            "use std::ops::Range;\nfn main() { let span = Range { start: 0, end: mid::frame().line }; drop(span); }\n",
+        ),
+        (
+            "mid/src/lib.rs",
+            "pub struct Frame {\n    pub line: u32,\n    pub start: u32,\n}\n\
+             pub fn frame() -> Frame { let made = Frame { line: 1, start: 0 }; let _ = made.start; made }\n",
+        ),
+    ]);
+    let (found, _) = findings(&dir, &[]);
+    assert!(
+        found.contains("unnecessary_public Frame::start"),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn a_local_variable_does_not_credit_a_field_with_its_name() {
+    let dir = workspace(&[
+        (
+            "app/src/main.rs",
+            "fn main() { let column = 3; mid::show(column); }\n",
+        ),
+        (
+            "mid/src/lib.rs",
+            "pub struct Frame {\n    pub column: u32,\n}\n\
+             pub fn show(value: u32) -> u32 { Frame { column: value }.column }\n",
+        ),
+    ]);
+    let (found, _) = findings(&dir, &[]);
+    assert!(
+        found.contains("unnecessary_public Frame::column"),
+        "{found:?}"
+    );
+}

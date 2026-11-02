@@ -254,7 +254,11 @@ impl<'g> Resolver<'g> {
                     && targets.is_empty()
                     && let Some(last) = segments.last()
                 {
-                    self.credit_names(credits, base, last, class, |_| true);
+                    // A path names no field. A one-name path names no method.
+                    let single = segments.len() == 1;
+                    self.credit_names(credits, base, last, class, |kind| {
+                        kind != ItemKind::Field && !(single && kind == ItemKind::Method)
+                    });
                 }
             }
             RefKind::Method(name) => {
@@ -282,12 +286,20 @@ impl<'g> Resolver<'g> {
                     })
                     .flat_map(|item| self.fields_of(item, field))
                     .collect();
-                if class == Class::Exact && !fields.is_empty() {
+                let outside =
+                    !targets.is_empty() && targets.iter().all(|target| *target == Target::Outside);
+                if !fields.is_empty() {
                     for item in fields {
-                        credits.push(Credit { item, ..base });
+                        credits.push(Credit {
+                            item,
+                            class,
+                            ..base
+                        });
                     }
-                } else {
-                    self.credit_names(credits, base, field, Class::Fallback, |kind| {
+                } else if !outside {
+                    // The struct is unknown, so any field with the name can be
+                    // the one.
+                    self.credit_names(credits, base, field, Class::Untyped, |kind| {
                         kind == ItemKind::Field
                     });
                 }

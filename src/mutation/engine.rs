@@ -784,8 +784,8 @@ impl Engine<'_> {
             ))
         })?;
         let tests = ordered_tests(&clean.nextest, &BTreeSet::new());
-        // A run on a part of the package needs line data only for that part, and a
-        // smaller export is faster. Such a map stays out of the cache.
+        // A run on a part of the package needs line data only for that part. Such a
+        // map stays out of the cache.
         let narrowed = self.is_narrowed();
         let files: BTreeSet<String> = self
             .files
@@ -793,21 +793,12 @@ impl Engine<'_> {
             .map(|file| file.path.clone())
             .filter(|path| !narrowed || self.in_narrow_scope(path))
             .collect();
-        let sources: Vec<PathBuf> = if narrowed {
-            files
-                .iter()
-                .map(|path| self.dirs.scratch.join(path))
-                .collect()
-        } else {
-            vec![package.to_path_buf()]
-        };
         let built = build_map(&MapInput {
             tree,
             meta: &meta,
             tools,
             tests: &tests,
             files: &files,
-            sources: &sources,
             root: &self.dirs.scratch,
             jobs: self.options.jobs,
         })?;

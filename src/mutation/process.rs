@@ -49,9 +49,8 @@ pub fn cargo(dir: &Path, target_dir: &Path, jobs: usize) -> Command {
     cargo_with_flags(dir, target_dir, jobs, "")
 }
 
-/// The same command with more compiler flags for each crate of the build.
+/// The same command with more compiler flags for each crate of the selected package.
 pub fn cargo_with_flags(dir: &Path, target_dir: &Path, jobs: usize, extra: &str) -> Command {
-    let flags = format!("{BUILD_FLAGS} {extra}");
     let mut command = new_command("cargo");
     command
         .current_dir(dir)
@@ -60,7 +59,7 @@ pub fn cargo_with_flags(dir: &Path, target_dir: &Path, jobs: usize, extra: &str)
         // The output goes to files and into the report, never to a terminal.
         .env("CARGO_TERM_COLOR", "never")
         .env_remove("FALLOW_MUTANT");
-    add_compiler_flags(&mut command, target_dir, flags.trim_end());
+    add_compiler_flags(&mut command, target_dir, extra);
     command
 }
 
@@ -70,17 +69,24 @@ pub fn cargo_with_flags(dir: &Path, target_dir: &Path, jobs: usize, extra: &str)
 /// `RUSTFLAGS`, else the `[target]` keys of the config, else `build.rustflags`. So
 /// an environment variable can replace the flags of the project, or the project can
 /// replace the flags of this tool. A wrapper does neither. The flags of the tool go
-/// first, so `--cap-lints` of cargo for a registry package stays in force. A wrapper
+/// first, so `--cap-lints` of cargo for a registry package stays in force. `extra`
+/// reaches only the crates of the selected package. A wrapper
 /// of the user does not run: a compile cache only adds doubt to a comparison.
 #[cfg(unix)]
-fn add_compiler_flags(command: &mut Command, target_dir: &Path, flags: &str) {
+fn add_compiler_flags(command: &mut Command, target_dir: &Path, extra: &str) {
     let rustc = target_dir.with_extension("rustc.sh");
     let rustdoc = target_dir.with_extension("rustdoc.sh");
     let real_rustdoc = std::env::var("RUSTDOC").unwrap_or_else(|_| "rustdoc".to_owned());
     // A failed write gives a clear error from cargo at the first build.
     let _ = write_wrapper(
         &rustc,
-        &format!("rustc=\"$1\"\nshift\nexec \"$rustc\" {flags} \"$@\"\n"),
+        &format!(
+            "rustc=\"$1\"\nshift\n\
+             if [ -n \"$CARGO_PRIMARY_PACKAGE\" ]; then\n\
+             exec \"$rustc\" {BUILD_FLAGS} {extra} \"$@\"\n\
+             fi\n\
+             exec \"$rustc\" {BUILD_FLAGS} \"$@\"\n"
+        ),
     );
     // A doctest build reads the lint levels of the crate too, and the switch can
     // start a lint that the crate forbids. This cap has no other flags: the flags
@@ -142,7 +148,9 @@ fn written_text(path: &Path) -> Option<String> {
 /// the Cargo config, so it gets an addition. Without it, the config variable joins
 /// the flags of the Cargo config.
 #[cfg(not(unix))]
-fn add_compiler_flags(command: &mut Command, _target_dir: &Path, flags: &str) {
+fn add_compiler_flags(command: &mut Command, _target_dir: &Path, extra: &str) {
+    let flags = format!("{BUILD_FLAGS} {extra}");
+    let flags = flags.trim_end();
     command.env("RUSTC_WRAPPER", "");
     match std::env::var("RUSTFLAGS") {
         Ok(own) => command.env("RUSTFLAGS", format!("{own} {flags}")),

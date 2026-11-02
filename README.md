@@ -303,7 +303,12 @@ The `selection` part of the report counts these tests and these mutants.
 A test that passes in the baseline and fails alone needs another test, so its result
 says nothing about a mutant in a run of selected tests. Such a test decides nothing.
 `selection.tests_fail_alone` and the human report name it. `--file` and `--in-diff`
-limit the line data to their files, and such a map stays out of the cache.
+keep the line data of their files only, and such a map stays out of the cache. They
+still run each test once for the map, because no other data says which test executes
+a line.
+
+The coverage flag reaches only the crates of the selected package. A test binary is
+then smaller and faster, and the map holds no other crate.
 
 `--no-selection` runs each test for each mutant, with no coverage build. Use it to
 check a result. The selection changes a status in only two ways:

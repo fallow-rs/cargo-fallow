@@ -225,8 +225,6 @@ pub struct MapInput<'a> {
     pub tests: &'a [(String, u64)],
     /// The files with mutants, by the path from the workspace root.
     pub files: &'a BTreeSet<String>,
-    /// The source paths that the export of LLVM reads: files or folders.
-    pub sources: &'a [PathBuf],
     /// The workspace root of the instrumented tree.
     pub root: &'a Path,
     /// The test processes that run at the same time.
@@ -444,7 +442,9 @@ fn convert(
     for object in others.iter().chain(&objects.non_test) {
         command.arg("--object").arg(object);
     }
-    command.args(input.sources);
+    // The whole package, also for a narrow run: a test with no executed line counts
+    // as a test with no data, and a narrow export cannot tell that apart.
+    command.arg(input.tree.dir);
     if !run_tool(command, input, folder, "export")? {
         return Ok(OneTest::Unmapped);
     }

@@ -8,6 +8,7 @@ use crate::mutation::id::id_text;
 use crate::mutation::report::MutantRow;
 use crate::mutation::rewrites::{FileRewrites, Rewrite};
 use crate::mutation::schema::mutated_text;
+use crate::mutation::sites::{Shape, Site};
 use crate::mutation::status::{Status, Tier};
 
 /// The longest text of the `original` field, in bytes.
@@ -50,6 +51,7 @@ pub fn schema_mutants(files: &[CrateFile]) -> Vec<Planned> {
                             id: mutant.id,
                             operator: mutant.operator,
                             range: &site.range,
+                            position: operator_position(&file.original, site),
                             replacement: mutant.replacement,
                             under_cfg: site.under_cfg,
                         },
@@ -86,6 +88,7 @@ fn rebuild_mutant(file: &CrateFile, index: usize, rewrite: &Rewrite) -> Planned 
                 id: rewrite.id,
                 operator: rewrite.operator,
                 range: &rewrite.range,
+                position: rewrite.range.start,
                 replacement: &rewrite.replacement,
                 under_cfg: rewrite.under_cfg,
             },
@@ -98,12 +101,27 @@ struct RowInput<'a> {
     id: u64,
     operator: &'static str,
     range: &'a Range<usize>,
+    /// The offset that the report points at.
+    position: usize,
     replacement: &'a str,
     under_cfg: bool,
 }
 
+/// The offset of the operator of a binary site, else the start of the site. A chain
+/// such as `a && b && c` has some sites with one start, so only the operator tells
+/// them apart.
+fn operator_position(text: &str, site: &Site) -> usize {
+    match site.shape {
+        Shape::Binary { lhs_end, rhs_start } => {
+            let between = &text[lhs_end..rhs_start];
+            lhs_end + (between.len() - between.trim_start().len())
+        }
+        Shape::Condition => site.range.start,
+    }
+}
+
 fn row(file: &CrateFile, input: &RowInput<'_>) -> MutantRow {
-    let (line, column) = line_and_column(&file.original, input.range.start);
+    let (line, column) = line_and_column(&file.original, input.position);
     MutantRow {
         id: id_text(input.id),
         tier: input.tier,
@@ -144,9 +162,9 @@ pub fn lines_of(text: &str, range: &Range<usize>) -> LineRange {
     (line(first), line(last))
 }
 
-/// One line of at most [`ORIGINAL_LIMIT`] bytes.
+/// The text in one line of at most [`ORIGINAL_LIMIT`] bytes.
 fn short_text(text: &str) -> String {
-    let line = text.lines().next().unwrap_or_default().trim_end();
+    let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut end = line.len().min(ORIGINAL_LIMIT);
     while !line.is_char_boundary(end) {
         end -= 1;
@@ -157,6 +175,24 @@ fn short_text(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_binary_site_points_at_its_operator() {
+        let text = "fn f(a: bool, b: bool, c: bool) -> bool {\n    a\n    && b\n    && c\n}\n";
+        let Ok(found) = crate::mutation::sites::find_sites(
+            text,
+            crate::parse::Edition::Edition2021,
+            "src/lib.rs",
+        ) else {
+            panic!("the source parses");
+        };
+        let places: Vec<(usize, usize)> = found
+            .sites
+            .iter()
+            .map(|site| line_and_column(text, operator_position(text, site)))
+            .collect();
+        assert_eq!(places, [(4, 5), (3, 5)]);
+    }
 
     #[test]
     fn line_and_column_start_at_one() {
@@ -179,7 +215,7 @@ mod tests {
 
     #[test]
     fn short_text_keeps_one_line_and_a_char_boundary() {
-        assert_eq!(short_text("a == b\n  && c"), "a == b");
+        assert_eq!(short_text("a == b\n  && c"), "a == b && c");
         assert_eq!(short_text(""), "");
         let long = "é".repeat(100);
         let short = short_text(&long);

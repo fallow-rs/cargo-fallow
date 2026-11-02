@@ -15,7 +15,9 @@ use ra_ap_syntax::{AstNode, SourceFile, SyntaxKind, SyntaxNode, SyntaxToken};
 
 use crate::mutation::id::{IdInput, mutant_id};
 use crate::mutation::schema::PROBE_PREFIX;
-use crate::mutation::sites::{OffsetMap, attr_context, in_constant_context, range_of};
+use crate::mutation::sites::{
+    OffsetMap, attr_context, has_chain_let, in_constant_context, range_of, scope_of,
+};
 use crate::parse::{Edition, ParseOutcome, with_parsed};
 
 /// Where a probe build puts its undefined name.
@@ -189,7 +191,7 @@ impl Walk<'_> {
             .trim_start_matches('{')
             .trim_end_matches('}')
             .trim();
-        for &value in values {
+        for value in &values {
             let is_same = inner == value || (value == "()" && inner.is_empty());
             if is_same {
                 continue;
@@ -215,6 +217,9 @@ impl Walk<'_> {
         if !arms.iter().any(is_catch_all) {
             return;
         }
+        for arm in &arms {
+            self.match_guard(arm, under_cfg);
+        }
         for arm in arms.iter().filter(|arm| !is_catch_all(arm)) {
             let Some(expr) = arm.expr() else {
                 continue;
@@ -230,6 +235,30 @@ impl Walk<'_> {
         }
     }
 
+    /// Replaces the guard of an arm with each constant. A guard with `let` has
+    /// bindings that the arm needs, so it stays.
+    fn match_guard(&mut self, arm: &ast::MatchArm, under_cfg: bool) {
+        let Some(condition) = arm.guard().and_then(|guard| guard.condition()) else {
+            return;
+        };
+        let Some(expr) = arm.expr() else {
+            return;
+        };
+        if has_chain_let(&condition) {
+            return;
+        }
+        for replacement in ["true", "false"] {
+            self.push(Part {
+                site: condition.syntax(),
+                operator: "match-guard",
+                range: range_of(condition.syntax()),
+                replacement: replacement.to_owned(),
+                under_cfg,
+                probe: ProbeSpot::Wrap(range_of(expr.syntax())),
+            });
+        }
+    }
+
     fn push(&mut self, part: Part<'_>) {
         let site_text = self
             .text
@@ -238,10 +267,15 @@ impl Walk<'_> {
             .to_owned();
         // A site can have some mutants, so the count is per site and operator,
         // and each replacement of the site uses the count of the site.
-        let key = (format!("{site_text}\0{}", part.replacement), part.operator);
+        let scope = scope_of(part.site);
+        let key = (
+            format!("{scope}\0{site_text}\0{}", part.replacement),
+            part.operator,
+        );
         let occurrence = self.occurrences.entry(key).or_default();
         let id = mutant_id(IdInput {
             file: self.file_key,
+            scope: &scope,
             site_text: &site_text,
             occurrence: *occurrence,
             operator: part.operator,
@@ -312,34 +346,127 @@ const fn arithmetic_swaps(kind: SyntaxKind) -> Option<&'static [&'static str]> {
     })
 }
 
+/// The most replacement bodies of one return type.
+const MAX_RETURN_VALUES: usize = 8;
+
 /// The replacement bodies of a return type without whitespace, or `None` when
 /// the type has no known value. The text `` is a function with no return type.
-fn return_values(ty: &str) -> Option<&'static [&'static str]> {
-    const UNSIGNED: &[&str] = &["0", "1"];
-    const SIGNED: &[&str] = &["0", "1", "-1"];
-    const FLOAT: &[&str] = &["0.0", "1.0", "-1.0"];
-    Some(match ty {
-        "" | "()" => &["()"],
-        "bool" => &["true", "false"],
-        "u8" | "u16" | "u32" | "u64" | "u128" | "usize" => UNSIGNED,
-        "i8" | "i16" | "i32" | "i64" | "i128" | "isize" => SIGNED,
-        "f32" | "f64" => FLOAT,
-        "String" => &["String::new()", "\"xyzzy\".into()"],
+///
+/// A type with no entry gets `Default::default()`. That does not compile for each
+/// type, and a mutant that does not compile only costs one failed compile. A type
+/// with a reference, a raw pointer or a trait has no such value, so it stays out.
+fn return_values(ty: &str) -> Option<Vec<String>> {
+    let plain = |values: &[&str]| Some(values.iter().map(|&value| value.to_owned()).collect());
+    match ty {
+        "" | "()" => plain(&["()"]),
+        "bool" => plain(&["true", "false"]),
+        "u8" | "u16" | "u32" | "u64" | "u128" | "usize" => plain(&["0", "1"]),
+        "i8" | "i16" | "i32" | "i64" | "i128" | "isize" => plain(&["0", "1", "-1"]),
+        "f32" | "f64" => plain(&["0.0", "1.0", "-1.0"]),
+        "String" => plain(&["String::new()", "\"xyzzy\".into()"]),
         _ if ty.starts_with('&') && ty.ends_with("str") && !ty.contains("mut") => {
-            &["\"\"", "\"xyzzy\""]
+            plain(&["\"\"", "\"xyzzy\""])
         }
-        _ => return generic_return_values(ty),
-    })
+        _ if ty.starts_with('(') => tuple_values(ty),
+        _ => generic_return_values(ty),
+    }
 }
 
-fn generic_return_values(ty: &str) -> Option<&'static [&'static str]> {
-    let head = ty.split('<').next().unwrap_or(ty);
-    Some(match head.rsplit("::").next().unwrap_or(head) {
-        "Option" => &["None"],
-        "Result" => &["Ok(Default::default())"],
-        "Vec" => &["Vec::new()"],
-        _ => return None,
-    })
+/// The values of a tuple: each mix of the values of its parts.
+fn tuple_values(ty: &str) -> Option<Vec<String>> {
+    let inner = ty.strip_prefix('(')?.strip_suffix(')')?;
+    let parts = split_type_list(inner)?;
+    let mut mixes = vec![Vec::new()];
+    for part in &parts {
+        let values = return_values(part)?;
+        mixes = mixes
+            .iter()
+            .flat_map(|mix: &Vec<String>| {
+                values.iter().map(move |value| {
+                    let mut next = mix.clone();
+                    next.push(value.clone());
+                    next
+                })
+            })
+            .take(MAX_RETURN_VALUES)
+            .collect();
+    }
+    let trailing = if parts.len() == 1 { "," } else { "" };
+    Some(
+        mixes
+            .into_iter()
+            .map(|mix| format!("({}{trailing})", mix.join(", ")))
+            .collect(),
+    )
+}
+
+fn generic_return_values(ty: &str) -> Option<Vec<String>> {
+    if has_no_default(ty) {
+        return None;
+    }
+    let default = || Some(vec!["Default::default()".to_owned()]);
+    let Some((head, args)) = ty.split_once('<') else {
+        return default();
+    };
+    let args = args.strip_suffix('>')?;
+    let wrap = |open: &str, close: &str, first: &str| -> Option<Vec<String>> {
+        let inner = split_type_list(args)?;
+        let values = return_values(inner.first()?)?;
+        Some(
+            first
+                .is_empty()
+                .then(Vec::new)
+                .unwrap_or_else(|| vec![first.to_owned()])
+                .into_iter()
+                .chain(values.iter().map(|value| format!("{open}{value}{close}")))
+                .take(MAX_RETURN_VALUES)
+                .collect(),
+        )
+    };
+    match head.rsplit("::").next().unwrap_or(head) {
+        "Option" => wrap("Some(", ")", "None").or_else(|| Some(vec!["None".to_owned()])),
+        "Result" => wrap("Ok(", ")", ""),
+        "Vec" => wrap("vec![", "]", "Vec::new()").or_else(|| Some(vec!["Vec::new()".to_owned()])),
+        "Box" => wrap("Box::new(", ")", ""),
+        "Rc" | "Arc" => wrap(&format!("{head}::new("), ")", ""),
+        _ => default(),
+    }
+}
+
+/// True for a type that `Default::default()` cannot give.
+fn has_no_default(ty: &str) -> bool {
+    ty.starts_with('&')
+        || ty.starts_with('*')
+        || ty.starts_with('!')
+        || ty.starts_with("impl")
+        || ty.starts_with("dyn")
+        || ty.starts_with("fn(")
+        || ty.starts_with("unsafefn")
+        || ty.starts_with('[')
+}
+
+/// Splits a list of types at the top level. A function type has a `->`, and that `>`
+/// has no match, so such a list gets `None`.
+fn split_type_list(text: &str) -> Option<Vec<&str>> {
+    if text.contains("->") {
+        return None;
+    }
+    let (mut parts, mut depth, mut start) = (Vec::new(), 0_i32, 0);
+    for (at, c) in text.char_indices() {
+        match c {
+            '<' | '(' | '[' => depth += 1,
+            '>' | ')' | ']' => depth -= 1,
+            ',' if depth == 0 => {
+                parts.push(&text[start..at]);
+                start = at + 1;
+            }
+            _ => {}
+        }
+    }
+    if start < text.len() {
+        parts.push(&text[start..]);
+    }
+    Some(parts)
 }
 
 fn is_catch_all(arm: &ast::MatchArm) -> bool {
@@ -412,6 +539,67 @@ pub fn render_probe(original: &str, rewrites: &[&Rewrite]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn values(ty: &str) -> Vec<String> {
+        return_values(ty).unwrap_or_default()
+    }
+
+    #[test]
+    fn a_wrapper_holds_the_values_of_its_type() {
+        assert_eq!(
+            values("Option<bool>"),
+            ["None", "Some(true)", "Some(false)"]
+        );
+        assert_eq!(values("Result<u8,E>"), ["Ok(0)", "Ok(1)"]);
+        assert_eq!(values("Vec<u8>"), ["Vec::new()", "vec![0]", "vec![1]"]);
+        assert_eq!(values("Box<bool>"), ["Box::new(true)", "Box::new(false)"]);
+        assert_eq!(values("Arc<bool>"), ["Arc::new(true)", "Arc::new(false)"]);
+        assert_eq!(values("std::option::Option<u8>")[0], "None");
+    }
+
+    #[test]
+    fn a_tuple_holds_each_mix_of_its_values() {
+        assert_eq!(
+            values("Result<(u64,&str),Error>"),
+            [
+                "Ok((0, \"\"))",
+                "Ok((0, \"xyzzy\"))",
+                "Ok((1, \"\"))",
+                "Ok((1, \"xyzzy\"))"
+            ]
+        );
+        assert_eq!(values("(bool,)"), ["(true,)", "(false,)"]);
+    }
+
+    #[test]
+    fn a_type_with_no_entry_gets_the_default_when_a_default_can_exist() {
+        assert_eq!(values("Self"), ["Default::default()"]);
+        assert_eq!(values("Identifier"), ["Default::default()"]);
+        assert_eq!(values("HashMap<K,V>"), ["Default::default()"]);
+        assert_eq!(values("Result<Foo,E>"), ["Ok(Default::default())"]);
+        assert_eq!(values("Option<Foo>"), ["None", "Some(Default::default())"]);
+        for ty in [
+            "&mutFoo",
+            "&Foo",
+            "*constu8",
+            "implIterator",
+            "dynFoo",
+            "!",
+            "fn(u8)->u8",
+        ] {
+            assert_eq!(return_values(ty), None, "{ty}");
+        }
+        assert_eq!(values("Option<&Foo>"), ["None"]);
+    }
+
+    #[test]
+    fn a_match_guard_gets_each_constant() {
+        let source = "fn f(a: u8) -> u8 { match a { x if x > 1 => 2, _ => 3 } }";
+        let found = only_operator(source, "match-guard");
+        assert_eq!(found.len(), 2);
+        assert!(found[0].contains("x if true =>"), "{}", found[0]);
+        assert!(found[1].contains("x if false =>"), "{}", found[1]);
+    }
 
     fn found(source: &str) -> FileRewrites {
         let Ok(found) = find_rewrites(source, Edition::Edition2021, "src/lib.rs") else {
@@ -524,11 +712,11 @@ mod tests {
             ("f64", &["0.0", "1.0", "-1.0"]),
             ("String", &["String::new()", "\"xyzzy\".into()"]),
             ("&'static str", &["\"\"", "\"xyzzy\""]),
-            ("Option<u8>", &["None"]),
-            ("std::option::Option<u8>", &["None"]),
-            ("Result<u8, E>", &["Ok(Default::default())"]),
-            ("io::Result<()>", &["Ok(Default::default())"]),
-            ("Vec<u8>", &["Vec::new()"]),
+            ("Option<u8>", &["None", "Some(0)", "Some(1)"]),
+            ("std::option::Option<u8>", &["None", "Some(0)", "Some(1)"]),
+            ("Result<u8, E>", &["Ok(0)", "Ok(1)"]),
+            ("io::Result<()>", &["Ok(())"]),
+            ("Vec<u8>", &["Vec::new()", "vec![0]", "vec![1]"]),
         ] {
             let source = format!("fn f() -> {ty} {{ todo!() }}");
             let expected: Vec<String> = values
@@ -560,9 +748,8 @@ mod tests {
     #[test]
     fn unknown_return_types_are_counted() {
         for source in [
-            "fn f() -> Foo { x() }",
             "fn f() -> impl Iterator<Item = u8> { x() }",
-            "fn f<T>() -> T { x() }",
+            "fn f() -> *const u8 { x() }",
             "fn f() -> &'static mut str { x() }",
         ] {
             let found = found(source);

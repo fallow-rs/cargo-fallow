@@ -1,9 +1,11 @@
 //! The stable id of a mutant.
 //!
-//! An id is the XXH3 hash of the file key, the text of the site, the occurrence
-//! of that text in the file, the operator and the replacement. The input has no
-//! line number, so an edit of other code does not change the id. The value 0
-//! means "no active mutant", so the function never returns it.
+//! An id is the XXH3 hash of the file key, the items around the site, the text of
+//! the site, the occurrence of that text in those items, the operator and the
+//! replacement. The input has no line number, so an edit in another function does
+//! not change the id. An edit that adds the same text earlier in the same function
+//! does change it. The value 0 means "no active mutant", so the function never
+//! returns it.
 
 use xxhash_rust::xxh3::xxh3_64;
 
@@ -12,9 +14,11 @@ use xxhash_rust::xxh3::xxh3_64;
 pub struct IdInput<'a> {
     /// The file path, relative to the workspace root, with `/` separators.
     pub file: &'a str,
+    /// The items around the site.
+    pub scope: &'a str,
     /// The text of the site.
     pub site_text: &'a str,
-    /// The number of earlier sites with the same text in the same file.
+    /// The number of earlier sites with the same text in the same items.
     pub occurrence: u32,
     /// The operator name.
     pub operator: &'a str,
@@ -23,7 +27,7 @@ pub struct IdInput<'a> {
 }
 
 /// The version of the input layout. A change of the layout changes this value.
-const LAYOUT: u32 = 1;
+const LAYOUT: u32 = 2;
 
 /// Computes the id.
 pub fn mutant_id(input: IdInput<'_>) -> u64 {
@@ -31,6 +35,7 @@ pub fn mutant_id(input: IdInput<'_>) -> u64 {
     bytes.extend_from_slice(&LAYOUT.to_le_bytes());
     for part in [
         input.file,
+        input.scope,
         input.site_text,
         input.operator,
         input.replacement,
@@ -54,6 +59,7 @@ mod tests {
 
     const fn input(site_text: &str, occurrence: u32) -> IdInput<'_> {
         IdInput {
+            scope: "fn f",
             file: "src/lib.rs",
             site_text,
             occurrence,
@@ -66,7 +72,7 @@ mod tests {
     /// deliberate change of `LAYOUT`.
     #[test]
     fn the_value_is_stable() {
-        assert_eq!(id_text(mutant_id(input("a == b", 0))), "04658712a47ab204");
+        assert_eq!(id_text(mutant_id(input("a == b", 0))), "2b667b0a24330022");
     }
 
     #[test]

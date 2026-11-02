@@ -155,6 +155,8 @@ struct Pending {
     operands: Option<(usize, usize)>,
     replacements: &'static [&'static str],
     under_cfg: bool,
+    /// The enclosing items, as in [`scope_of`].
+    scope: String,
 }
 
 struct Walk<'a> {
@@ -232,6 +234,7 @@ impl Walk<'_> {
             operands: Some(operands),
             replacements,
             under_cfg,
+            scope: scope_of(binary.syntax()),
         });
     }
 
@@ -254,6 +257,7 @@ impl Walk<'_> {
             operands: None,
             replacements: &[NEGATE],
             under_cfg,
+            scope: scope_of(condition.syntax()),
         });
     }
 
@@ -310,10 +314,10 @@ impl Walk<'_> {
                 site.operands.is_some(),
             )
         });
-        let mut occurrences: BTreeMap<&str, u32> = BTreeMap::new();
+        let mut occurrences: BTreeMap<(&str, &str), u32> = BTreeMap::new();
         for site in &self.pending {
             let site_text = text.get(site.range.clone()).unwrap_or_default();
-            let occurrence = occurrences.entry(site_text).or_default();
+            let occurrence = occurrences.entry((&site.scope, site_text)).or_default();
             let mutants = site
                 .replacements
                 .iter()
@@ -322,6 +326,7 @@ impl Walk<'_> {
                     Mutant {
                         id: mutant_id(IdInput {
                             file: file_key,
+                            scope: &site.scope,
                             site_text,
                             occurrence: *occurrence,
                             operator,
@@ -348,6 +353,43 @@ impl Walk<'_> {
         }
         self.found
     }
+}
+
+/// The items around a node, outermost first: modules, traits, impl blocks and
+/// functions. A mutant id holds this text, so a new site with the same text in another
+/// function does not change the id of a mutant.
+pub fn scope_of(node: &SyntaxNode) -> String {
+    let compact = |node: &SyntaxNode| -> String {
+        node.text()
+            .to_string()
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect()
+    };
+    let mut parts: Vec<String> = node
+        .ancestors()
+        .filter_map(|ancestor| {
+            if let Some(item) = ast::Fn::cast(ancestor.clone()) {
+                return Some(format!("fn {}", plain_name(&item.name()?)));
+            }
+            if let Some(item) = ast::Module::cast(ancestor.clone()) {
+                return Some(format!("mod {}", plain_name(&item.name()?)));
+            }
+            if let Some(item) = ast::Trait::cast(ancestor.clone()) {
+                return Some(format!("trait {}", plain_name(&item.name()?)));
+            }
+            let item = ast::Impl::cast(ancestor)?;
+            let target = item
+                .self_ty()
+                .map_or_else(String::new, |ty| compact(ty.syntax()));
+            let of = item
+                .trait_()
+                .map_or_else(String::new, |ty| compact(ty.syntax()));
+            Some(format!("impl {of} for {target}"))
+        })
+        .collect();
+    parts.reverse();
+    parts.join("/")
 }
 
 /// The text range of a node as a byte range.
@@ -386,7 +428,7 @@ const fn starts_operator(first: SyntaxKind, second: SyntaxKind) -> bool {
 }
 
 /// True when the expression is a `let`, or a chain with a `let` at its top.
-fn has_chain_let(expr: &ast::Expr) -> bool {
+pub fn has_chain_let(expr: &ast::Expr) -> bool {
     match expr {
         ast::Expr::LetExpr(_) => true,
         ast::Expr::BinExpr(binary) => {
@@ -538,25 +580,78 @@ fn attr_body(attr: &ast::Attr) -> String {
 fn classify(body: &str) -> AttrClass {
     if let Some(condition) = body.strip_prefix("cfg(") {
         let condition = condition.strip_suffix(')').unwrap_or(condition);
-        let only_tests = condition == "test"
-            || (condition.starts_with("all(")
-                && has_word(condition, "test")
-                && !has_word(condition, "not"));
-        return if only_tests {
+        return if only_in_tests(condition) {
             AttrClass::Test
         } else {
             AttrClass::Cfg
         };
     }
-    if body == "test" || body == "bench" || body.ends_with("::test") {
+    if let Some(inner) = body.strip_prefix("cfg_attr(") {
+        let inner = inner.strip_suffix(')').unwrap_or(inner);
+        let parts = split_list(inner);
+        return match parts.split_first() {
+            Some((condition, attrs))
+                if only_in_tests(condition) && attrs.iter().any(|attr| is_test_attribute(attr)) =>
+            {
+                AttrClass::Test
+            }
+            _ => AttrClass::Other,
+        };
+    }
+    if is_test_attribute(body) {
         return AttrClass::Test;
     }
     AttrClass::Other
 }
 
-fn has_word(text: &str, word: &str) -> bool {
-    text.split(|c: char| !c.is_alphanumeric() && c != '_')
-        .any(|part| part == word)
+/// True for an attribute that makes a test out of a function. The list holds the
+/// test macros of the wider ecosystem, also with a path before the name.
+fn is_test_attribute(body: &str) -> bool {
+    const NAMES: [&str; 5] = ["test", "bench", "rstest", "test_case", "quickcheck"];
+    let name = body.split('(').next().unwrap_or(body);
+    let last = name.rsplit("::").next().unwrap_or(name);
+    NAMES.contains(&last)
+}
+
+/// True when a `cfg` condition with no whitespace can only hold in a test build.
+fn only_in_tests(condition: &str) -> bool {
+    if matches!(condition, "test" | "doctest") {
+        return true;
+    }
+    if let Some(list) = condition
+        .strip_prefix("all(")
+        .and_then(|rest| rest.strip_suffix(')'))
+    {
+        return split_list(list).iter().any(|part| only_in_tests(part));
+    }
+    if let Some(list) = condition
+        .strip_prefix("any(")
+        .and_then(|rest| rest.strip_suffix(')'))
+    {
+        let parts = split_list(list);
+        return !parts.is_empty() && parts.iter().all(|part| only_in_tests(part));
+    }
+    false
+}
+
+/// Splits a comma list at the top level of its parentheses and square brackets.
+fn split_list(text: &str) -> Vec<&str> {
+    let (mut parts, mut depth, mut start) = (Vec::new(), 0_u32, 0);
+    for (at, c) in text.char_indices() {
+        match c {
+            '(' | '[' => depth += 1,
+            ')' | ']' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                parts.push(&text[start..at]);
+                start = at + 1;
+            }
+            _ => {}
+        }
+    }
+    if start < text.len() {
+        parts.push(&text[start..]);
+    }
+    parts
 }
 
 fn path_attribute(attr: &ast::Attr) -> Option<String> {
@@ -823,6 +918,41 @@ mod tests {
         assert_ne!(other.sites[0].mutants[0].id, ids[0]);
     }
 
+    /// The id of a mutant stays when other code changes.
+    #[test]
+    fn an_id_does_not_depend_on_the_sites_of_other_functions() {
+        let ids = |source: &str, function: &str| -> Vec<u64> {
+            let found = file(source);
+            let start = source.find(function).unwrap_or(0);
+            let end = start + source[start..].find('}').unwrap_or(0);
+            found
+                .sites
+                .iter()
+                .filter(|site| (start..end).contains(&site.range.start))
+                .flat_map(|site| site.mutants.iter().map(|mutant| mutant.id))
+                .collect()
+        };
+        let base = "fn a(x: u8) -> bool { x > 0 }\nfn b(x: u8) -> bool { x > 0 }\n";
+        let (a, b) = (ids(base, "fn a"), ids(base, "fn b"));
+        assert_ne!(a, b);
+        let added = format!("fn z(x: u8) -> bool {{ x > 0 }}\n{base}");
+        assert_eq!(ids(&added, "fn a"), a);
+        assert_eq!(ids(&added, "fn b"), b);
+        let edited = "fn a(x: u8) -> bool { x>0 }\nfn b(x: u8) -> bool { x > 0 }\n";
+        assert_eq!(ids(edited, "fn b"), b);
+        assert!(
+            !ids(edited, "fn a")
+                .iter()
+                .any(|id| a.contains(id) || b.contains(id))
+        );
+    }
+
+    #[test]
+    fn two_sites_with_one_text_in_one_function_have_their_own_ids() {
+        let sites = file("fn a(x: u8) { let _ = x > 0; let _ = x > 0; }").sites;
+        assert_ne!(sites[0].mutants[0].id, sites[1].mutants[0].id);
+    }
+
     #[test]
     fn crlf_offsets_map_back_to_the_original_bytes() {
         let source = "fn f(a: u8) -> bool {\r\n    let _ = \"x\r\ny\";\r\n    a == 1\r\n}\r\n";
@@ -832,6 +962,40 @@ mod tests {
             panic!("a binary site");
         };
         assert_eq!(&source[lhs_end..rhs_start], " == ");
+    }
+
+    #[test]
+    fn each_test_only_condition_is_test_code() {
+        for attr in [
+            "#[cfg(test)]",
+            "#[cfg(all(test, not(miri)))]",
+            "#[cfg(all(not(miri), test))]",
+            "#[cfg(any(test, doctest))]",
+            "#[cfg(doctest)]",
+            "#[cfg_attr(test, rstest)]",
+            "#[cfg_attr(all(test, unix), tokio::test)]",
+            "#[rstest]",
+            "#[tokio::test(flavor = \"current_thread\")]",
+            "#[test_case(1)]",
+        ] {
+            let source = format!("{attr}\nfn f(a: u8) -> bool {{ a == 1 }}\n");
+            assert!(file(&source).sites.is_empty(), "{attr}");
+        }
+    }
+
+    #[test]
+    fn a_condition_that_holds_outside_tests_is_not_test_code() {
+        for attr in [
+            "#[cfg(not(test))]",
+            "#[cfg(any(test, feature = \"x\"))]",
+            "#[cfg(unix)]",
+            "#[cfg_attr(test, derive(Clone))]",
+            "#[cfg_attr(unix, rstest)]",
+            "#[attest]",
+        ] {
+            let source = format!("{attr}\nfn f(a: u8) -> bool {{ a == 1 }}\n");
+            assert!(!file(&source).sites.is_empty(), "{attr}");
+        }
     }
 
     #[test]

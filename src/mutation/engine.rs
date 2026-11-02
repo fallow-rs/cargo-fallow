@@ -25,7 +25,9 @@ use crate::mutation::files::CrateFile;
 use crate::mutation::guard::{Guard, Scope};
 use crate::mutation::id::id_text;
 use crate::mutation::journal::Journal;
-use crate::mutation::plan::{Planned, lines_of, rebuild_mutants, schema_mutants};
+use crate::mutation::plan::{
+    Planned, keep_rebuild_only, lines_of, rebuild_mutants, rewrites_of, schema_mutants,
+};
 use crate::mutation::process::{Exit, cargo, run_to_files};
 use crate::mutation::removal::{
     Build, CompilerError, LoopResult, Removal, parse_build, render_all, run_loop,
@@ -34,18 +36,16 @@ use crate::mutation::report::{
     Baseline, ErrorSummary, MapSource, MutantRow, RebuildInfo, RemovedMutant, SchemaInfo,
     SchemaStatus, SelectionInfo, StopReason, WorkspaceTests,
 };
-use crate::mutation::rewrites::{
-    FileRewrites, Rewrite, apply, find_rewrites, render_probe, schema_sites,
-};
+use crate::mutation::rewrites::{FileRewrites, Rewrite, apply, render_probe};
 use crate::mutation::run::{Options, file_selected, millis};
 use crate::mutation::schema::Mode;
 use crate::mutation::schema_build::{SchemaWriter, read_by_build};
 use crate::mutation::selection::{Picked, Selector, write_order};
 use crate::mutation::status::{Status, Tier, Verdict, merge_retry};
 use crate::mutation::testrun::{
-    BuildMeta, KnownFailures, RunSpec, Suite, SuiteStatus, TestName, TestRun, TestTree, classify,
-    compare, failures, known_failures, lost_passes, new_failure, prepare, run_doctests,
-    run_nextest,
+    BuildMeta, KnownFailures, RunSpec, Suite, SuiteStatus, TestName, TestRun, TestTree,
+    build_targets, classify, compare, failures, known_failures, lost_passes, new_failure, prepare,
+    run_doctests, run_nextest,
 };
 use crate::mutation::workdir::WorkDirs;
 use crate::render;
@@ -267,46 +267,6 @@ pub struct Engine<'a> {
     /// A normal test run holds this lock for reading. A second look at a kill holds
     /// it for writing, so no other test of this run can cause the failure.
     pub alone: RwLock<()>,
-}
-
-/// Adds the rebuild mutants with a schema form to the schema sites of each file.
-/// Such a mutant then runs in the schema build. When it breaks that build, the
-/// removal loop moves it back to the rebuild tier.
-pub fn move_into_schema(files: &mut [CrateFile]) {
-    for file in files {
-        let Ok(found) = find_rewrites(&file.original, file.edition, &file.path) else {
-            continue;
-        };
-        file.found.sites.extend(schema_sites(&found.rewrites));
-        // Outer sites first. At one range, a site of a rebuild operator is the
-        // outer one, and the order of the other sites stays.
-        file.found.sites.sort_by_key(|site| {
-            (
-                site.range.start,
-                std::cmp::Reverse(site.range.end),
-                site.origin.is_none(),
-            )
-        });
-    }
-}
-
-/// Removes the rebuild mutants that [`move_into_schema`] put into the schema.
-pub fn keep_rebuild_only(rewrites: &mut [FileRewrites]) {
-    for file in rewrites {
-        file.rewrites.retain(|rewrite| rewrite.schema.is_none());
-    }
-}
-
-/// The rebuild mutants of each file.
-pub fn rewrites_of(files: &[CrateFile]) -> Vec<FileRewrites> {
-    files
-        .iter()
-        .map(|file| {
-            // The walk of the sites parsed this text, so an error here only
-            // leaves the file without rebuild mutants.
-            find_rewrites(&file.original, file.edition, &file.path).unwrap_or_default()
-        })
-        .collect()
 }
 
 /// The result of the schema build.
@@ -1964,26 +1924,6 @@ fn run_workers<T: Send>(
 }
 
 /// The limit of one rebuild of a mutant, from the time of the clean build.
-/// The cargo flags that build only the binaries of `suites`. The list is empty,
-/// so the build makes each binary, when a suite has no known flags or when no
-/// filter selects the suites.
-fn build_targets(
-    targets: Option<&BTreeMap<String, Vec<String>>>,
-    suites: Option<&BTreeSet<String>>,
-) -> Vec<String> {
-    let (Some(targets), Some(suites)) = (targets, suites) else {
-        return Vec::new();
-    };
-    let mut flags = Vec::new();
-    for suite in suites {
-        let Some(found) = targets.get(suite) else {
-            return Vec::new();
-        };
-        flags.extend(found.iter().cloned());
-    }
-    flags
-}
-
 fn rebuild_limit(clean_build: Duration) -> Duration {
     (clean_build * REBUILD_FACTOR).clamp(MIN_REBUILD_LIMIT, BUILD_LIMIT)
 }
@@ -2040,39 +1980,6 @@ mod tests {
         assert!(retry_can_change_a_timeout(limit, 2000));
         assert!(retry_can_change_a_timeout(limit, 15_000));
         assert!(!retry_can_change_a_timeout(Duration::ZERO, 0));
-    }
-
-    #[test]
-    fn a_rebuild_builds_only_the_binaries_of_the_selected_tests() {
-        let targets: BTreeMap<String, Vec<String>> = [
-            ("p::p", vec!["--lib"]),
-            ("p::it", vec!["--test", "it"]),
-            ("p::x", vec!["--bin", "x", "--test", "x"]),
-        ]
-        .into_iter()
-        .map(|(suite, flags)| {
-            (
-                suite.to_owned(),
-                flags.into_iter().map(str::to_owned).collect(),
-            )
-        })
-        .collect();
-        let suites = |names: &[&str]| -> BTreeSet<String> {
-            names.iter().map(|name| (*name).to_owned()).collect()
-        };
-        assert_eq!(
-            build_targets(Some(&targets), Some(&suites(&["p::it", "p::p"]))),
-            ["--test", "it", "--lib"]
-        );
-        assert_eq!(
-            build_targets(Some(&targets), Some(&suites(&["p::x"]))),
-            ["--bin", "x", "--test", "x"]
-        );
-        // An unknown binary, no filter, no test or no list: the whole build.
-        assert!(build_targets(Some(&targets), Some(&suites(&["p::it", "q::q"]))).is_empty());
-        assert!(build_targets(Some(&targets), None).is_empty());
-        assert!(build_targets(Some(&targets), Some(&suites(&[]))).is_empty());
-        assert!(build_targets(None, Some(&suites(&["p::it"]))).is_empty());
     }
 
     #[test]

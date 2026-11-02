@@ -12,10 +12,13 @@ use crate::gates::RustGateName;
 use crate::gates::parse_edition;
 use crate::mutation::coverage::{CoverageMap, LineTests};
 use crate::mutation::diff::Changed;
-use crate::mutation::engine::{Engine, keep_rebuild_only, move_into_schema, rewrites_of};
+use crate::mutation::engine::Engine;
 use crate::mutation::files::{Collected, CrateFile, TargetRoot, collect};
 use crate::mutation::guard::{Guard, Limits};
-use crate::mutation::plan::{Planned, lines_of, rebuild_mutants, schema_mutants};
+use crate::mutation::plan::{
+    Planned, keep_rebuild_only, lines_of, move_into_schema, rebuild_mutants, rewrites_of,
+    schema_mutants,
+};
 use crate::mutation::report::{
     CoverageState, DiffInfo, FileSkip, Gaps, GuardInfo, INSPECT_KIND, InspectCoverage,
     InspectReport, InspectedMutant, KIND, LANGUAGE, MutantRow, Report, Summary, actions_for,

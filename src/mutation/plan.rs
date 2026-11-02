@@ -6,7 +6,7 @@ use crate::mutation::coverage::LineRange;
 use crate::mutation::files::CrateFile;
 use crate::mutation::id::id_text;
 use crate::mutation::report::MutantRow;
-use crate::mutation::rewrites::{FileRewrites, Rewrite};
+use crate::mutation::rewrites::{FileRewrites, Rewrite, find_rewrites, schema_sites};
 use crate::mutation::schema::mutated_text;
 use crate::mutation::sites::{Shape, Site};
 use crate::mutation::status::{Status, Tier};
@@ -30,6 +30,46 @@ pub struct Planned {
     pub constant: bool,
     /// The row of the report.
     pub row: MutantRow,
+}
+
+/// Adds the rebuild mutants with a schema form to the schema sites of each file.
+/// Such a mutant then runs in the schema build. When it breaks that build, the
+/// removal loop moves it back to the rebuild tier.
+pub fn move_into_schema(files: &mut [CrateFile]) {
+    for file in files {
+        let Ok(found) = find_rewrites(&file.original, file.edition, &file.path) else {
+            continue;
+        };
+        file.found.sites.extend(schema_sites(&found.rewrites));
+        // Outer sites first. At one range, a site of a rebuild operator is the
+        // outer one, and the order of the other sites stays.
+        file.found.sites.sort_by_key(|site| {
+            (
+                site.range.start,
+                std::cmp::Reverse(site.range.end),
+                site.origin.is_none(),
+            )
+        });
+    }
+}
+
+/// Removes the rebuild mutants that [`move_into_schema`] put into the schema.
+pub fn keep_rebuild_only(rewrites: &mut [FileRewrites]) {
+    for file in rewrites {
+        file.rewrites.retain(|rewrite| rewrite.schema.is_none());
+    }
+}
+
+/// The rebuild mutants of each file.
+pub fn rewrites_of(files: &[CrateFile]) -> Vec<FileRewrites> {
+    files
+        .iter()
+        .map(|file| {
+            // The walk of the sites parsed this text, so an error here only
+            // leaves the file without rebuild mutants.
+            find_rewrites(&file.original, file.edition, &file.path).unwrap_or_default()
+        })
+        .collect()
 }
 
 /// The mutants of the schema tier, by file and offset.

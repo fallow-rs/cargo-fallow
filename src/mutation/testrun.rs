@@ -319,6 +319,26 @@ impl BuildMeta {
     }
 }
 
+/// The cargo flags that build only the binaries of `suites`. The list is empty,
+/// so the build makes each binary, when a suite has no known flags or when no
+/// filter selects the suites.
+pub fn build_targets(
+    targets: Option<&BTreeMap<String, Vec<String>>>,
+    suites: Option<&BTreeSet<String>>,
+) -> Vec<String> {
+    let (Some(targets), Some(suites)) = (targets, suites) else {
+        return Vec::new();
+    };
+    let mut flags = Vec::new();
+    for suite in suites {
+        let Some(found) = targets.get(suite) else {
+            return Vec::new();
+        };
+        flags.extend(found.iter().cloned());
+    }
+    flags
+}
+
 /// Builds the tests and lists the binaries. Returns the stderr text of a build
 /// that failed.
 pub fn prepare(tree: TestTree<'_>, label: &str) -> io::Result<Result<BuildMeta, String>> {
@@ -828,6 +848,39 @@ mod tests {
         assert_eq!(objects.tests["p::x"], [Path::new("/t/debug/deps/x")]);
         assert_eq!(objects.tests["my-p::my_p"], [Path::new("/t/debug/deps/l")]);
         assert_eq!(objects.non_test, [Path::new("/t/debug/m")]);
+    }
+
+    #[test]
+    fn a_rebuild_builds_only_the_binaries_of_the_selected_tests() {
+        let targets: BTreeMap<String, Vec<String>> = [
+            ("p::p", vec!["--lib"]),
+            ("p::it", vec!["--test", "it"]),
+            ("p::x", vec!["--bin", "x", "--test", "x"]),
+        ]
+        .into_iter()
+        .map(|(suite, flags)| {
+            (
+                suite.to_owned(),
+                flags.into_iter().map(str::to_owned).collect(),
+            )
+        })
+        .collect();
+        let suites = |names: &[&str]| -> BTreeSet<String> {
+            names.iter().map(|name| (*name).to_owned()).collect()
+        };
+        assert_eq!(
+            build_targets(Some(&targets), Some(&suites(&["p::it", "p::p"]))),
+            ["--test", "it", "--lib"]
+        );
+        assert_eq!(
+            build_targets(Some(&targets), Some(&suites(&["p::x"]))),
+            ["--bin", "x", "--test", "x"]
+        );
+        // An unknown binary, no filter, no test or no list: the whole build.
+        assert!(build_targets(Some(&targets), Some(&suites(&["p::it", "q::q"]))).is_empty());
+        assert!(build_targets(Some(&targets), None).is_empty());
+        assert!(build_targets(Some(&targets), Some(&suites(&[]))).is_empty());
+        assert!(build_targets(None, Some(&suites(&["p::it"]))).is_empty());
     }
 
     #[test]

@@ -74,6 +74,8 @@ fn run_in(folder: &str, files: &[(&str, &str)], flags: &[&str]) -> Run {
     let output = Command::cargo_bin("cargo-fallow")
         .expect("the binary exists")
         .env("MBX_DISABLE", "1")
+        // An outer nextest run names its own profile, and a fixture has no such profile.
+        .env_remove("NEXTEST_PROFILE")
         .current_dir(source.path().join(folder))
         .args(["mutants", "--no-cache", "--format", "json", "--work-dir"])
         .arg(work.path().join("run"))
@@ -921,6 +923,8 @@ fn a_signal_leaves_no_temporary_folder() {
         .args(["mutants", "--no-cache", "--quiet", "--tier", "schema"])
         .current_dir(source.path())
         .env("MBX_DISABLE", "1")
+        // An outer nextest run names its own profile, and a fixture has no such profile.
+        .env_remove("NEXTEST_PROFILE")
         .env("TMPDIR", temp.path())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -1042,6 +1046,8 @@ fn the_human_report_names_the_gaps() {
     let output = Command::cargo_bin("cargo-fallow")
         .expect("the binary exists")
         .env("MBX_DISABLE", "1")
+        // An outer nextest run names its own profile, and a fixture has no such profile.
+        .env_remove("NEXTEST_PROFILE")
         .current_dir(source.path())
         .args([
             "mutants",
@@ -1068,6 +1074,8 @@ fn the_human_report_names_the_gaps() {
     let output = Command::cargo_bin("cargo-fallow")
         .expect("the binary exists")
         .env("MBX_DISABLE", "1")
+        // An outer nextest run names its own profile, and a fixture has no such profile.
+        .env_remove("NEXTEST_PROFILE")
         .current_dir(source.path())
         .args(["mutants", "--no-cache", "--tier", "schema", "--work-dir"])
         .arg(work.path().join("run"))

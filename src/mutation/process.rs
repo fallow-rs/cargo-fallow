@@ -58,6 +58,8 @@ pub fn cargo_with_flags(dir: &Path, target_dir: &Path, jobs: usize, extra: &str)
         .current_dir(dir)
         .env("CARGO_TARGET_DIR", target_dir)
         .env("CARGO_BUILD_JOBS", jobs.to_string())
+        // The output goes to files and into the report, never to a terminal.
+        .env("CARGO_TERM_COLOR", "never")
         .env_remove("FALLOW_MUTANT");
     add_compiler_flags(&mut command, target_dir, flags.trim_end());
     command
@@ -444,6 +446,22 @@ mod tests {
         (exit, std::fs::read_to_string(out).unwrap_or_default())
     }
 
+    /// The time that a signalled process gets to end on a busy machine.
+    #[cfg(unix)]
+    const GONE_LIMIT: Duration = Duration::from_secs(5);
+
+    #[cfg(unix)]
+    fn gone_within(pattern: &str, limit: Duration) -> bool {
+        let start = Instant::now();
+        while alive(pattern) {
+            if start.elapsed() > limit {
+                return false;
+            }
+            thread::sleep(POLL_INTERVAL * 5);
+        }
+        true
+    }
+
     #[cfg(unix)]
     fn alive(pattern: &str) -> bool {
         new_command("pgrep")
@@ -479,8 +497,10 @@ mod tests {
         let script = format!("perl -e 'setpgrp(0,0); exec @ARGV' {marker} & wait");
         let (exit, _) = run(&script, Duration::from_millis(500));
         assert_eq!(exit, Exit::TimedOut);
-        thread::sleep(Duration::from_millis(200));
-        assert!(!alive(marker), "the descendant must be gone");
+        assert!(
+            gone_within(marker, GONE_LIMIT),
+            "the descendant must be gone"
+        );
     }
 
     /// A failed read of the process table must still stop the test processes.
@@ -498,8 +518,7 @@ mod tests {
         assert!(alive(marker), "the child must run");
         kill_tree_with(child.id(), None);
         let _ = child.wait();
-        thread::sleep(Duration::from_millis(200));
-        assert!(!alive(marker), "the child must be gone");
+        assert!(gone_within(marker, GONE_LIMIT), "the child must be gone");
     }
 
     #[test]

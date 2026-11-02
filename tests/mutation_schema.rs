@@ -41,6 +41,8 @@ fn stage(files: &[(&str, &str)]) -> Stage {
     let output = Command::cargo_bin("cargo-fallow")
         .expect("the binary exists")
         .env("MBX_DISABLE", "1")
+        // An outer nextest run names its own profile, and a fixture has no such profile.
+        .env_remove("NEXTEST_PROFILE")
         .args(ARGS)
         .arg(source.path().join("Cargo.toml"))
         .args(["--package", "fixture", "--work-dir"])
@@ -137,6 +139,8 @@ fn source_tree_stays_untouched() {
     Command::cargo_bin("cargo-fallow")
         .expect("the binary exists")
         .env("MBX_DISABLE", "1")
+        // An outer nextest run names its own profile, and a fixture has no such profile.
+        .env_remove("NEXTEST_PROFILE")
         .args(ARGS)
         .arg(source.path().join("Cargo.toml"))
         .args(["--package", "fixture", "--work-dir"])
@@ -340,6 +344,8 @@ fn package_with_a_dependency_of_the_same_name_is_selected() {
     let output = Command::cargo_bin("cargo-fallow")
         .expect("the binary exists")
         .env("MBX_DISABLE", "1")
+        // An outer nextest run names its own profile, and a fixture has no such profile.
+        .env_remove("NEXTEST_PROFILE")
         .args(ARGS)
         .arg(root.join("Cargo.toml"))
         .args(["--package", "fixture", "--work-dir"])
@@ -485,6 +491,8 @@ fn package_flag_selects_one_workspace_member_and_path_dependencies_build() {
     let output = Command::cargo_bin("cargo-fallow")
         .expect("the binary exists")
         .env("MBX_DISABLE", "1")
+        // An outer nextest run names its own profile, and a fixture has no such profile.
+        .env_remove("NEXTEST_PROFILE")
         .args(ARGS)
         .arg(root.join("Cargo.toml"))
         .args(["--package", "b", "--work-dir"])
@@ -497,4 +505,32 @@ fn package_flag_selects_one_workspace_member_and_path_dependencies_build() {
     assert_eq!(number(report, "candidates"), 2);
     let other = fs::read_to_string(work.path().join("run/schema/a/src/lib.rs")).expect("the copy");
     assert!(!other.contains("__fallow_schema"));
+}
+
+#[test]
+fn a_build_error_has_no_terminal_colors_in_the_report() {
+    let source = tempfile::tempdir().expect("create a temporary directory");
+    let work = tempfile::tempdir().expect("create a temporary directory");
+    write_crate(
+        source.path(),
+        &[(
+            "src/lib.rs",
+            "pub fn f() -> u8 {\n    \"not a number\"\n}\n",
+        )],
+    );
+    let output = Command::cargo_bin("cargo-fallow")
+        .expect("the binary exists")
+        .env("MBX_DISABLE", "1")
+        .env_remove("NEXTEST_PROFILE")
+        .env("CARGO_TERM_COLOR", "always")
+        .args(ARGS)
+        .arg(source.path().join("Cargo.toml"))
+        .args(["--package", "fixture", "--work-dir"])
+        .arg(work.path().join("run"))
+        .output()
+        .expect("the binary runs");
+    let report: Value = serde_json::from_slice(&output.stdout).expect("the report is JSON");
+    let message = report["message"].as_str().expect("an error has a message");
+    assert!(message.contains("does not build"), "{message}");
+    assert!(!message.contains('\u{1b}'), "{message:?}");
 }

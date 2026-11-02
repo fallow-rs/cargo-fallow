@@ -74,6 +74,8 @@ fn run(files: &[(&str, &str)], flags: &[&str]) -> Run {
     let output = Command::cargo_bin("cargo-fallow")
         .expect("the binary exists")
         .env("MBX_DISABLE", "1")
+        // An outer nextest run names its own profile, and a fixture has no such profile.
+        .env_remove("NEXTEST_PROFILE")
         .args([
             "mutants",
             "--format",
@@ -769,6 +771,8 @@ fn an_invalid_mutant_record_aborts_the_test_process() {
             .args(["cargo", "test", "--lib", "--quiet", "--", "--nocapture"])
             .current_dir(&schema)
             .env("MBX_DISABLE", "1")
+            // An outer nextest run names its own profile, and a fixture has no such profile.
+            .env_remove("NEXTEST_PROFILE")
             .env("CARGO_TARGET_DIR", &target)
             .output()
             .expect("cargo runs")
@@ -808,6 +812,8 @@ fn human_output_lists_the_survivors() {
     let output = Command::cargo_bin("cargo-fallow")
         .expect("the binary exists")
         .env("MBX_DISABLE", "1")
+        // An outer nextest run names its own profile, and a fixture has no such profile.
+        .env_remove("NEXTEST_PROFILE")
         .args([
             "mutants",
             "--tier",
@@ -899,6 +905,8 @@ mod tests {
         .arg("--work-dir")
         .arg(work.path().join("run"))
         .env("MBX_DISABLE", "1")
+        // An outer nextest run names its own profile, and a fixture has no such profile.
+        .env_remove("NEXTEST_PROFILE")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -942,6 +950,8 @@ fn run_in(source: &Path, flags: &[&str], rustc: Option<&Path>) -> (Value, String
     }
     let output = command
         .env("MBX_DISABLE", "1")
+        // An outer nextest run names its own profile, and a fixture has no such profile.
+        .env_remove("NEXTEST_PROFILE")
         .args(["mutants", "--format", "json", "--jobs", "2"])
         .arg("--manifest-path")
         .arg(source.join("Cargo.toml"))

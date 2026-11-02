@@ -102,6 +102,8 @@ fn mutants(dir: &Path, flags: &[&str]) -> Output {
     let output = Command::cargo_bin("cargo-fallow")
         .expect("the binary exists")
         .env("MBX_DISABLE", "1")
+        // An outer nextest run names its own profile, and a fixture has no such profile.
+        .env_remove("NEXTEST_PROFILE")
         .args(["mutants", "--quiet", "--jobs", "2", "--manifest-path"])
         .arg(dir.join("Cargo.toml"))
         .args(flags)

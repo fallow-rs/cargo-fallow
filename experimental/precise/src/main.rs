@@ -129,6 +129,8 @@ fn decide<'db>(
 ) -> Option<Option<String>> {
     let definition = definition_at(sema, db, vfs, &root.join(&row.file), row.line, row.column)?;
     let home = definition.krate(db)?;
+    let home_module = definition.module(db);
+    let restricted = row.kind == "unnecessary_restricted_visibility";
     let mut same_crate = false;
     for (file, references) in definition.usages(sema).all() {
         let crates: Vec<Crate> = sema
@@ -142,8 +144,23 @@ fn decide<'db>(
             return Some(None);
         }
         same_crate = true;
+        for reference in &references {
+            let Some(node) = reference.name.syntax().parent() else {
+                continue;
+            };
+            // A restricted item stays when a use is outside its module.
+            if restricted
+                && let (Some(scope), Some(home_module)) = (sema.scope(&node), home_module)
+                && !within(db, scope.module(), home_module)
+            {
+                return Some(None);
+            }
+            // A public item stays when a public signature names it.
+            if !restricted && in_public_signature(&node) {
+                return Some(None);
+            }
+        }
     }
-    let restricted = row.kind == "unnecessary_restricted_visibility";
     Some(Some(if restricted {
         row.kind.clone()
     } else if same_crate {
@@ -151,6 +168,43 @@ fn decide<'db>(
     } else {
         "dead_public".to_owned()
     }))
+}
+
+/// True when `module` is `home` or a module below it.
+fn within(db: &RootDatabase, module: ra_ap_hir::Module, home: ra_ap_hir::Module) -> bool {
+    let mut current = Some(module);
+    while let Some(next) = current {
+        if next == home {
+            return true;
+        }
+        current = next.parent(db);
+    }
+    false
+}
+
+/// True when the node is in the signature of an item with a `pub` keyword:
+/// a field type, a parameter, a return type or a bound, not a body.
+fn in_public_signature(node: &ra_ap_syntax::SyntaxNode) -> bool {
+    for ancestor in node.ancestors() {
+        match ancestor.kind() {
+            SyntaxKind::BLOCK_EXPR | SyntaxKind::STMT_LIST => return false,
+            SyntaxKind::RECORD_FIELD
+            | SyntaxKind::TUPLE_FIELD
+            | SyntaxKind::FN
+            | SyntaxKind::TYPE_ALIAS
+            | SyntaxKind::CONST
+            | SyntaxKind::STATIC
+            | SyntaxKind::TRAIT
+            | SyntaxKind::IMPL => {
+                return ancestor
+                    .children()
+                    .find(|child| child.kind() == SyntaxKind::VISIBILITY)
+                    .is_some_and(|vis| vis.text() == "pub");
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 /// The definition whose name starts at `line` and `column` (one-based, in

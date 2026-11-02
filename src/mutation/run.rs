@@ -12,7 +12,7 @@ use crate::gates::RustGateName;
 use crate::gates::parse_edition;
 use crate::mutation::coverage::{CoverageMap, LineTests};
 use crate::mutation::diff::Changed;
-use crate::mutation::engine::{Engine, rewrites_of};
+use crate::mutation::engine::{Engine, keep_rebuild_only, move_into_schema, rewrites_of};
 use crate::mutation::files::{Collected, CrateFile, TargetRoot, collect};
 use crate::mutation::guard::{Guard, Limits};
 use crate::mutation::plan::{Planned, lines_of, rebuild_mutants, schema_mutants};
@@ -50,6 +50,16 @@ impl TierChoice {
 
     pub const fn has_rebuild(self) -> bool {
         matches!(self, Self::Rebuild | Self::All)
+    }
+}
+
+impl Options {
+    /// True when the schema also holds the operators that are not type-safe by
+    /// construction. Such a mutant needs the rebuild tier when it breaks the
+    /// schema, so only a run of both tiers moves it. `--tier schema` keeps the
+    /// type-safe operators only, and `--no-schema` runs each mutant as a rebuild.
+    pub fn schema_takes_rebuild_operators(&self) -> bool {
+        self.tier == TierChoice::All && !self.no_schema
     }
 }
 
@@ -152,6 +162,9 @@ fn run_in(
     prepare_copies(workspace.root.as_std_path(), target_dir, dirs, &guard)
         .map_err(|err| failure("copy the source tree", &err))?;
     let mut collected = collect(&dirs.scratch, &target_roots(member));
+    if options.schema_takes_rebuild_operators() {
+        move_into_schema(&mut collected.files);
+    }
     retain_selected_files(options, &mut collected.files)?;
     let sites_outside = changed.map_or(0, |changed| {
         let removed = changed.retain_sites(&mut collected.files);
@@ -325,8 +338,10 @@ fn locate<'a>(
         None => workspace.members.iter().collect(),
     };
     for member in members {
-        let collected = collect(workspace.root.as_std_path(), &target_roots(member));
-        let rewrites = rewrites_of(&collected.files);
+        let mut collected = collect(workspace.root.as_std_path(), &target_roots(member));
+        move_into_schema(&mut collected.files);
+        let mut rewrites = rewrites_of(&collected.files);
+        keep_rebuild_only(&mut rewrites);
         let found = schema_mutants(&collected.files)
             .into_iter()
             .chain(rebuild_mutants(&collected.files, &rewrites))

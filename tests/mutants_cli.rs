@@ -633,13 +633,15 @@ fn in_diff_also_limits_the_rebuild_mutants() {
         let line = mutant["line"].as_u64().expect("a line");
         assert!((7..=9).contains(&line), "{mutant}");
     }
-    let rebuild = report["mutants"]
+    // An operator that is not type-safe by construction also stays in the diff. In
+    // a run of both tiers it is in the schema.
+    let rebuild_operators = report["mutants"]
         .as_array()
         .expect("the mutants")
         .iter()
-        .filter(|mutant| mutant["tier"] == "rebuild")
+        .filter(|mutant| mutant["operator"] == "return-value")
         .count();
-    assert!(rebuild > 0, "{report}");
+    assert!(rebuild_operators > 0, "{report}");
     assert_eq!(
         report["in_diff"]["mutants_outside"],
         total - kept,

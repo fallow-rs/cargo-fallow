@@ -38,24 +38,35 @@ pub fn schema_mutants(files: &[CrateFile]) -> Vec<Planned> {
     for (index, file) in files.iter().enumerate() {
         for site in &file.found.sites {
             for mutant in &site.mutants {
+                // A mutant of a rebuild operator keeps the range and the text of its
+                // rewrite, so its row is the same in each tier, and a rebuild of it
+                // applies the same text.
+                let (range, text, replacement) = match &mutant.text {
+                    Some(text) => (site.report_range().clone(), text.clone(), text.as_str()),
+                    None => (
+                        site.range.clone(),
+                        mutated_text(&file.original, site, mutant),
+                        mutant.replacement,
+                    ),
+                };
                 planned.push(Planned {
                     id: mutant.id,
                     file: index,
-                    range: site.range.clone(),
-                    text: mutated_text(&file.original, site, mutant),
-                    constant: false,
                     row: row(
                         file,
                         &RowInput {
                             tier: Tier::Schema,
                             id: mutant.id,
                             operator: mutant.operator,
-                            range: &site.range,
+                            range: &range,
                             position: operator_position(&file.original, site),
-                            replacement: mutant.replacement,
+                            replacement,
                             under_cfg: site.under_cfg,
                         },
                     ),
+                    range,
+                    text,
+                    constant: false,
                 });
             }
         }
@@ -116,7 +127,9 @@ fn operator_position(text: &str, site: &Site) -> usize {
             let between = &text[lhs_end..rhs_start];
             lhs_end + (between.len() - between.trim_start().len())
         }
-        Shape::Condition => site.range.start,
+        Shape::Condition | Shape::Splice { .. } | Shape::Block | Shape::ArmGuard { .. } => {
+            site.report_range().start
+        }
     }
 }
 

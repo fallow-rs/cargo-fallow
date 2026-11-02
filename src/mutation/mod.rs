@@ -5,9 +5,10 @@
 //!
 //! The engine has two tiers:
 //!
-//! - The schema tier puts all operators that are type-safe by construction into
-//!   one build, and a runtime switch selects one mutant in each test process.
-//! - The rebuild tier runs each other operator in its own rebuild of one reused
+//! - The schema tier puts all mutants outside a constant context into one build,
+//!   and a runtime switch selects one mutant in each test process. A mutant that
+//!   breaks the build goes back to the rebuild tier.
+//! - The rebuild tier runs each other mutant in its own rebuild of one reused
 //!   scratch copy, in the style of cargo-mutants.
 //!
 //! The parts are:

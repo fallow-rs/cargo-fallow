@@ -769,6 +769,14 @@ fn test_workspace_runs_the_tests_of_the_other_members() {
     }
     let run = run_in(".", &WORKSPACE, &["-p", "core-x", "--test-workspace"]);
     assert_eq!(run.code, Some(0), "{}", run.stderr);
+    run.assert_all("killed");
+    // A rebuild mutant runs against the tests of the workspace too.
+    let run = run_in(
+        ".",
+        &WORKSPACE,
+        &["-p", "core-x", "--test-workspace", "--tier", "rebuild"],
+    );
+    assert_eq!(run.code, Some(0), "{}", run.stderr);
     assert!(
         run.mutants().iter().any(|m| m["tier"] == "rebuild"),
         "{}",

@@ -267,7 +267,16 @@ impl Writer<'_> {
     fn switch(&mut self, node: &Node) {
         let sites = self.sites;
         let site = &sites[node.site];
+        if let Shape::ArmGuard { pattern_end, guard } = site.shape {
+            self.arm_guard(node, pattern_end, guard);
+            return;
+        }
         let start = self.out.text.len();
+        // A function body must stay a block.
+        let block = site.shape == Shape::Block;
+        if block {
+            self.out.text.push_str("{ ");
+        }
         self.out.text.push_str("(match ");
         self.out.text.push_str(ACTIVE_CALL);
         self.out.text.push_str(" { ");
@@ -279,11 +288,79 @@ impl Writer<'_> {
         self.out.text.push_str("_ => (");
         self.range(site.range.clone(), &node.children);
         self.out.text.push_str(") })");
+        if block {
+            self.out.text.push_str(" }");
+        }
         self.out.regions.push(Region {
             range: start..self.out.text.len(),
             site: node.site,
             mutant: None,
         });
+    }
+
+    /// Writes a match arm with a guard that is false when one of its mutants is
+    /// active: `pat if ID != M && (guard) => body`. The arm then takes no value,
+    /// and that is the same as a deleted arm.
+    fn arm_guard(&mut self, node: &Node, pattern_end: usize, guard: Option<(usize, usize)>) {
+        let site = &self.sites[node.site];
+        let start = self.out.text.len();
+        self.push(site.range.start..pattern_end);
+        self.out.text.push_str(" if ");
+        let mut first = true;
+        for mutant in site.mutants.iter().filter(|m| self.enabled.contains(&m.id)) {
+            if !first {
+                self.out.text.push_str(" && ");
+            }
+            first = false;
+            let at = self.out.text.len();
+            // A write to a `String` cannot fail.
+            let _ = match self.mode {
+                Mode::Probe => write!(self.out.text, "{PROBE_PREFIX}{:x}", mutant.id),
+                Mode::Schema => write!(self.out.text, "{ACTIVE_CALL} != {:#x}_u64", mutant.id),
+            };
+            self.out.regions.push(Region {
+                range: at..self.out.text.len(),
+                site: node.site,
+                mutant: Some(mutant.id),
+            });
+        }
+        let rest_start = match guard {
+            Some((guard_start, guard_end)) => {
+                let inside: Vec<&Node> = node
+                    .children
+                    .iter()
+                    .filter(|child| self.sites[child.site].range.start < guard_end)
+                    .collect();
+                self.out.text.push_str(" && (");
+                self.range_of_nodes(guard_start..guard_end, &inside);
+                self.out.text.push(')');
+                guard_end
+            }
+            None => pattern_end,
+        };
+        let after: Vec<&Node> = node
+            .children
+            .iter()
+            .filter(|child| self.sites[child.site].range.start >= rest_start)
+            .collect();
+        self.range_of_nodes(rest_start..site.range.end, &after);
+        self.out.regions.push(Region {
+            range: start..self.out.text.len(),
+            site: node.site,
+            mutant: None,
+        });
+    }
+
+    /// The same as [`Self::range`] for a list of references.
+    fn range_of_nodes(&mut self, range: Range<usize>, nodes: &[&Node]) {
+        let mut cursor = range.start;
+        for node in nodes {
+            let site_range = self.sites[node.site].range.clone();
+            self.push(cursor..site_range.start);
+            self.switch(node);
+            cursor = site_range.end;
+        }
+        self.push(cursor..range.end);
     }
 
     fn arm(&mut self, index: usize, mutant: &Mutant) {
@@ -312,7 +389,16 @@ impl Writer<'_> {
 
 /// The text of a site with the mutant applied. A nested site stays plain.
 pub fn mutated_text(original: &str, site: &Site, mutant: &Mutant) -> String {
+    let text = mutant.text.as_deref().unwrap_or_default();
     match site.shape {
+        Shape::Splice { start, end } => format!(
+            "{}{text}{}",
+            &original[site.range.start..start],
+            &original[end..site.range.end]
+        ),
+        Shape::Block => text.to_owned(),
+        // The writer of an arm writes no mutated text.
+        Shape::ArmGuard { .. } => String::new(),
         Shape::Condition => format!("!({})", &original[site.range.clone()]),
         Shape::Binary { lhs_end, rhs_start } => {
             let lhs = &original[site.range.start..lhs_end];
@@ -366,6 +452,65 @@ mod tests {
             text = text.replace(&format!("0x{:x}_u64", mutant.id), &format!("M{index}"));
         }
         text.replace("crate::__fallow_schema::active()", "ID")
+    }
+
+    /// Renders the sites of the rebuild operators in `source`, each one enabled.
+    fn render_rewrites(source: &str) -> (String, Vec<Site>) {
+        let Ok(found) =
+            crate::mutation::rewrites::find_rewrites(source, Edition::Edition2021, "src/lib.rs")
+        else {
+            panic!("the source parses");
+        };
+        let sites = crate::mutation::rewrites::schema_sites(&found.rewrites);
+        let enabled = all_ids(&sites);
+        let out = render(source, &sites, &enabled, false, Mode::Schema);
+        (readable(&out.text, &sites), sites)
+    }
+
+    #[test]
+    fn an_arithmetic_operator_becomes_a_switch_of_its_expression() {
+        let (text, _) = render_rewrites("fn f(a: u8) -> u8 { a + 1 }");
+        assert!(
+            text.contains("_ => ({ (match ID { M2 => (a - 1), _ => (a + 1) }) })"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_return_value_switch_keeps_the_body_a_block() {
+        let (text, _) = render_rewrites("fn f(a: u8) -> Option<u8> { Some(a) }");
+        assert_eq!(
+            text,
+            "fn f(a: u8) -> Option<u8> { (match ID { M0 => ({ None }), M1 => ({ Some(0) }), \
+             M2 => ({ Some(1) }), _ => ({ Some(a) }) }) }"
+        );
+    }
+
+    #[test]
+    fn a_deleted_arm_gets_a_guard_and_keeps_its_own_guard() {
+        let (text, _) =
+            render_rewrites("fn f(a: u8) -> u8 { match a { 1 => 2, x if x > 3 => 4, _ => 5 } }");
+        assert!(text.contains("1 if ID != M"), "{text}");
+        assert!(text.contains(" => 2,"), "{text}");
+        // The guard of the second arm keeps its own switch of the match guard.
+        assert!(text.contains("x if ID != M"), "{text}");
+        assert!(text.contains(" && ((match ID { M"), "{text}");
+        assert!(text.contains("_ => (x > 3) })) => 4"), "{text}");
+    }
+
+    #[test]
+    fn a_unary_operator_switch_holds_the_operand() {
+        let (text, _) = render_rewrites("fn f(a: i8) -> i8 { -a }");
+        assert!(
+            text.contains("(match ID { M3 => (a), _ => (-a) })"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_rebuild_mutant_in_a_constant_context_has_no_schema_site() {
+        let (_, sites) = render_rewrites("const fn f(a: u8) -> u8 { a + 1 }");
+        assert!(sites.is_empty());
     }
 
     #[test]

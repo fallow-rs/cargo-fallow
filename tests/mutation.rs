@@ -123,6 +123,90 @@ mod tests {
 }
 ";
 
+const MIXED: &str = r#"
+pub fn add(a: u32, b: u32) -> u32 {
+    a + b
+}
+
+pub fn join(a: String, b: &str) -> String {
+    a + b
+}
+
+pub fn kind(a: u8) -> u8 {
+    match a {
+        1 => 10,
+        _ => 20,
+    }
+}
+
+pub const fn twice(a: u32) -> u32 {
+    a * 2
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn they_work() {
+        assert_eq!(super::add(2, 3), 5);
+        assert_eq!(super::join("a".to_owned(), "b"), "ab");
+        assert_eq!(super::kind(1), 10);
+        assert_eq!(super::kind(2), 20);
+        assert_eq!(super::twice(2), 4);
+    }
+}
+"#;
+
+/// A run of both tiers puts the operators that are not type-safe by construction
+/// into the schema. A mutant that breaks the schema runs as a rebuild, and a mutant
+/// in a constant context stays a rebuild.
+#[test]
+fn rebuild_operators_run_in_the_schema_and_fall_back_to_a_rebuild() {
+    let run = run(&[("src/lib.rs", MIXED)], &[]);
+    let report = &run.report;
+    assert_eq!(run.code, Some(0), "{}", run.stderr);
+    let on = |operator: &str, line: u64| -> Vec<&Value> {
+        run.mutants()
+            .iter()
+            .filter(|m| m["operator"] == operator && m["line"] == line)
+            .collect()
+    };
+    let has = |mutants: &[&Value], tier: &str, status: &str| {
+        !mutants.is_empty()
+            && mutants
+                .iter()
+                .all(|m| m["tier"] == tier && m["status"] == status)
+    };
+    // `u32 - u32` compiles, and the test sees it.
+    assert!(
+        has(&on("arithmetic-operator", 3), "schema", "killed"),
+        "{report}"
+    );
+    // `String - &str` does not compile, so the mutant leaves the schema.
+    let join = on("arithmetic-operator", 7);
+    assert!(has(&join, "rebuild", "compile_error"), "{report}");
+    assert!(
+        join.iter().all(|m| m["removed_from_schema"] == true),
+        "{report}"
+    );
+    // The new guard of the arm acts as a deleted arm.
+    assert!(
+        has(&on("deleted-match-arm", 12), "schema", "killed"),
+        "{report}"
+    );
+    // A switch cannot run in a `const fn`.
+    assert!(
+        has(&on("arithmetic-operator", 18), "rebuild", "killed"),
+        "{report}"
+    );
+    for line in [2, 6, 10] {
+        assert!(
+            has(&on("return-value", line), "schema", "killed"),
+            "{report}"
+        );
+    }
+    assert_eq!(report["summary"]["survived"], 0, "{report}");
+}
+
 #[test]
 fn schema_mutants_are_killed_or_survive() {
     let run = run(&[("src/lib.rs", CHECK)], &["--tier", "schema"]);
@@ -739,7 +823,9 @@ fn no_run_compiles_and_reports_pending_mutants() {
         "{report}"
     );
     assert!(
-        run.mutants().iter().any(|m| m["tier"] == "rebuild"),
+        run.mutants()
+            .iter()
+            .any(|m| m["operator"] == "return-value"),
         "{report}"
     );
     assert_eq!(report["schema"]["status"], "compiled", "{report}");

@@ -207,8 +207,25 @@ result. An unknown id exits 2. An id changes when the text of its code changes.
 
 | Tier | Operators | How it runs |
 | --- | --- | --- |
-| `schema` | `relational-operator`, `logical-operator`, `negate-condition` | All mutants go into one build. A runtime switch selects one mutant in each test process, so a mutant costs no compile. The removal loop removes a mutant that breaks the build, and that mutant then runs in a rebuild. |
-| `rebuild` | `arithmetic-operator`, `unary-operator`, `return-value`, `deleted-match-arm`, `match-guard` | Each mutant gets its own rebuild of one reused scratch copy, because these operators are not type-safe by construction. |
+| `schema` | Each operator outside a constant context in a run of both tiers, else the type-safe operators | All mutants go into one build. A runtime switch selects one mutant in each test process, so a mutant costs no compile. The removal loop removes a mutant that breaks the build, and that mutant then runs in a rebuild. |
+| `rebuild` | A mutant in a constant context, a deleted arm with a `let` guard, and each mutant that the removal loop removed | Each mutant gets its own rebuild of one reused scratch copy. The rebuild builds only the test binaries of the selected tests. |
+
+`relational-operator`, `logical-operator` and `negate-condition` are type-safe by
+construction. `arithmetic-operator`, `unary-operator`, `return-value`,
+`deleted-match-arm` and `match-guard` are not: `a + b` can be a type with no `Sub`.
+In a run of both tiers, such a mutant also goes into the schema. When it breaks the
+build, the removal loop finds it through the compiler error and moves it to the
+rebuild tier, where it gets the status `compile_error`. `--tier schema` keeps only
+the type-safe operators, and `--tier rebuild` and `--no-schema` run the other
+operators as rebuilds. A switch has these forms:
+
+- An operator or a match guard: a `match` on the active mutant around the expression.
+- A return value: the same `match` as the whole body of the function.
+- A deleted arm: a new guard on the arm that is false when the mutant is active, so
+  the value goes on to the next arm.
+
+A switch reads a value at run time, and a constant context cannot. So a mutant in a
+`const fn` or in a `const` item stays in the rebuild tier.
 
 ### Status
 

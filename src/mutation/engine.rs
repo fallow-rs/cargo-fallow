@@ -34,7 +34,9 @@ use crate::mutation::report::{
     Baseline, ErrorSummary, MapSource, MutantRow, RebuildInfo, RemovedMutant, SchemaInfo,
     SchemaStatus, SelectionInfo, StopReason, WorkspaceTests,
 };
-use crate::mutation::rewrites::{FileRewrites, Rewrite, apply, find_rewrites, render_probe};
+use crate::mutation::rewrites::{
+    FileRewrites, Rewrite, apply, find_rewrites, render_probe, schema_sites,
+};
 use crate::mutation::run::{Options, file_selected, millis};
 use crate::mutation::schema::Mode;
 use crate::mutation::schema_build::{SchemaWriter, read_by_build};
@@ -265,6 +267,34 @@ pub struct Engine<'a> {
     /// A normal test run holds this lock for reading. A second look at a kill holds
     /// it for writing, so no other test of this run can cause the failure.
     pub alone: RwLock<()>,
+}
+
+/// Adds the rebuild mutants with a schema form to the schema sites of each file.
+/// Such a mutant then runs in the schema build. When it breaks that build, the
+/// removal loop moves it back to the rebuild tier.
+pub fn move_into_schema(files: &mut [CrateFile]) {
+    for file in files {
+        let Ok(found) = find_rewrites(&file.original, file.edition, &file.path) else {
+            continue;
+        };
+        file.found.sites.extend(schema_sites(&found.rewrites));
+        // Outer sites first. At one range, a site of a rebuild operator is the
+        // outer one, and the order of the other sites stays.
+        file.found.sites.sort_by_key(|site| {
+            (
+                site.range.start,
+                std::cmp::Reverse(site.range.end),
+                site.origin.is_none(),
+            )
+        });
+    }
+}
+
+/// Removes the rebuild mutants that [`move_into_schema`] put into the schema.
+pub fn keep_rebuild_only(rewrites: &mut [FileRewrites]) {
+    for file in rewrites {
+        file.rewrites.retain(|rewrite| rewrite.schema.is_none());
+    }
 }
 
 /// The rebuild mutants of each file.
@@ -854,6 +884,9 @@ impl Engine<'_> {
         }
         let mut outside = 0;
         let mut all = rewrites_of(self.files);
+        if self.options.schema_takes_rebuild_operators() {
+            keep_rebuild_only(&mut all);
+        }
         for (file, found) in self.files.iter().zip(&mut all) {
             if !file_selected(&self.options.files, &file.path) {
                 found.rewrites.clear();
@@ -1029,10 +1062,18 @@ impl Engine<'_> {
                 .map(|(file, _, _)| file.path.clone())
                 .unwrap_or_default(),
             line: found.map_or(0, |(file, site, _)| {
-                file.original[..site.range.start].matches('\n').count() + 1
+                file.original[..site.report_range().start]
+                    .matches('\n')
+                    .count()
+                    + 1
             }),
             replacement: found
-                .map(|(_, _, mutant)| mutant.replacement.to_owned())
+                .map(|(_, _, mutant)| {
+                    mutant
+                        .text
+                        .clone()
+                        .unwrap_or_else(|| mutant.replacement.to_owned())
+                })
                 .unwrap_or_default(),
             round: removal.round,
             how: removal.how,

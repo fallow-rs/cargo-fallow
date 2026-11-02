@@ -1,7 +1,9 @@
 //! Finds the mutation sites of one source file.
 //!
-//! The operators are type-safe by construction, because each replacement
-//! uses the same trait or the same `bool` operands as the original. The module
+//! The operators of this walk are type-safe by construction, because each
+//! replacement uses the same trait or the same `bool` operands as the original.
+//! The schema also holds the sites of the other operators, from
+//! [`crate::mutation::rewrites::schema_sites`]. The module
 //! skips each place where a runtime switch cannot compile or where a mutant has
 //! no use: constant contexts, patterns, attributes and test code. The parser
 //! leaves macro bodies and macro arguments as token trees, so they contain no
@@ -28,6 +30,26 @@ pub enum Shape {
     },
     /// The condition of an `if` or a `while`. The mutant negates it.
     Condition,
+    /// An expression where each mutant replaces the original range `start..end`
+    /// with its text. A rebuild operator gets this shape when its mutant is an
+    /// expression of the same kind: an arithmetic operator, a unary operator or a
+    /// match guard.
+    Splice {
+        /// The first original byte that the mutant replaces.
+        start: usize,
+        /// The original byte after the last byte that the mutant replaces.
+        end: usize,
+    },
+    /// The body block of a function. Each mutant replaces the whole block.
+    Block,
+    /// A match arm. The mutant deletes the arm: the arm gets a guard that is false
+    /// when the mutant is active, so the value goes on to the next arm.
+    ArmGuard {
+        /// The original offset where the pattern ends.
+        pattern_end: usize,
+        /// The original range of the condition of the guard of the arm.
+        guard: Option<(usize, usize)>,
+    },
 }
 
 /// One mutant of a site.
@@ -39,6 +61,9 @@ pub struct Mutant {
     pub replacement: &'static str,
     /// The operator name of the report.
     pub operator: &'static str,
+    /// The replacement text of a mutant of a rebuild operator. It replaces the
+    /// range [`Site::origin`].
+    pub text: Option<String>,
 }
 
 /// The replacement text of a negated condition.
@@ -56,6 +81,16 @@ pub struct Site {
     /// True when a `cfg` attribute other than `cfg(test)` is on an enclosing
     /// item. Then the build can skip the site, and no compile checks it.
     pub under_cfg: bool,
+    /// The original range that a mutant of a rebuild operator replaces. The report,
+    /// the line data and `--in-diff` use this range.
+    pub origin: Option<Range<usize>>,
+}
+
+impl Site {
+    /// The range that the report and the line data use.
+    pub fn report_range(&self) -> &Range<usize> {
+        self.origin.as_ref().unwrap_or(&self.range)
+    }
 }
 
 /// The number of operators that the walk leaves out, by reason.
@@ -334,6 +369,7 @@ impl Walk<'_> {
                         }),
                         replacement,
                         operator,
+                        text: None,
                     }
                 })
                 .collect();
@@ -349,6 +385,7 @@ impl Walk<'_> {
                     }),
                 mutants,
                 under_cfg: site.under_cfg,
+                origin: None,
             });
         }
         self.found

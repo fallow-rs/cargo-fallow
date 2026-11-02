@@ -1,10 +1,11 @@
-//! Finds the rebuild-tier mutants of one source file.
+//! Finds the mutants of the operators that are not type-safe by construction.
 //!
-//! These operators are not type-safe by construction. `a + b` can be a type
-//! with no `Sub`, a replaced body can have the wrong type, and a deleted arm can
-//! leave a match without an arm for a value. One of them in a schema would break
-//! the build of the whole crate. So each one runs in its own rebuild, and a
-//! mutant that does not compile gets the status `compile_error`.
+//! `a + b` can be a type with no `Sub`, a replaced body can have the wrong
+//! type, and a deleted arm can leave a match without an arm for a value. Each
+//! mutant outside a constant context also gets a schema form. Such a mutant
+//! goes into the schema, and the removal loop moves it to a rebuild when it
+//! breaks the build. In a rebuild, a mutant that does not compile gets the
+//! status `compile_error`.
 
 use std::collections::BTreeMap;
 use std::fmt::Write;
@@ -16,7 +17,8 @@ use ra_ap_syntax::{AstNode, SourceFile, SyntaxKind, SyntaxNode, SyntaxToken};
 use crate::mutation::id::{IdInput, mutant_id};
 use crate::mutation::schema::PROBE_PREFIX;
 use crate::mutation::sites::{
-    OffsetMap, attr_context, has_chain_let, in_constant_context, range_of, scope_of,
+    Mutant, OffsetMap, Shape, Site, attr_context, has_chain_let, in_constant_context, range_of,
+    scope_of,
 };
 use crate::parse::{Edition, ParseOutcome, with_parsed};
 
@@ -29,7 +31,7 @@ pub enum ProbeSpot {
     AfterBrace(usize),
 }
 
-/// One rebuild-tier mutant: one splice of the original text.
+/// One mutant of these operators: one splice of the original text.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rewrite {
     /// The stable id.
@@ -46,6 +48,17 @@ pub struct Rewrite {
     pub constant: bool,
     /// The place of the probe.
     pub probe: ProbeSpot,
+    /// The schema site of the mutant, or `None` when the mutant needs a rebuild.
+    pub schema: Option<SchemaForm>,
+}
+
+/// The place of a rebuild mutant in the schema.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SchemaForm {
+    /// The original range of the switch.
+    pub range: Range<usize>,
+    /// The shape of the switch.
+    pub shape: Shape,
 }
 
 /// The result of the walk over one file.
@@ -96,6 +109,8 @@ struct Part<'a> {
     replacement: String,
     under_cfg: bool,
     probe: ProbeSpot,
+    /// The range of the switch and its shape, in normalized offsets.
+    schema: Option<(Range<usize>, Shape)>,
 }
 
 impl Walk<'_> {
@@ -132,6 +147,7 @@ impl Walk<'_> {
                 replacement: replacement.to_owned(),
                 under_cfg,
                 probe: ProbeSpot::Wrap(range_of(binary.syntax())),
+                schema: Some((range_of(binary.syntax()), splice(&token_range(&token)))),
             });
         }
     }
@@ -157,6 +173,7 @@ impl Walk<'_> {
             replacement: String::new(),
             under_cfg,
             probe: ProbeSpot::Wrap(range_of(prefix.syntax())),
+            schema: Some((range_of(prefix.syntax()), splice(&token_range(&token)))),
         });
     }
 
@@ -203,6 +220,7 @@ impl Walk<'_> {
                 replacement: format!("{{ {value} }}"),
                 under_cfg,
                 probe: ProbeSpot::AfterBrace(range.start + 1),
+                schema: Some((range.clone(), Shape::Block)),
             });
         }
     }
@@ -231,6 +249,7 @@ impl Walk<'_> {
                 replacement: String::new(),
                 under_cfg,
                 probe: ProbeSpot::Wrap(range_of(expr.syntax())),
+                schema: arm_guard_form(arm),
             });
         }
     }
@@ -255,6 +274,10 @@ impl Walk<'_> {
                 replacement: replacement.to_owned(),
                 under_cfg,
                 probe: ProbeSpot::Wrap(range_of(expr.syntax())),
+                schema: Some((
+                    range_of(condition.syntax()),
+                    splice(&range_of(condition.syntax())),
+                )),
             });
         }
     }
@@ -289,6 +312,27 @@ impl Walk<'_> {
             ProbeSpot::Wrap(range) => ProbeSpot::Wrap(map(range)),
             ProbeSpot::AfterBrace(offset) => ProbeSpot::AfterBrace(self.offsets.original(offset)),
         };
+        // A switch reads a runtime value, and a constant context cannot.
+        let schema = part
+            .schema
+            .filter(|_| !self.constant)
+            .map(|(range, shape)| {
+                let at = |offset: usize| self.offsets.original(offset);
+                SchemaForm {
+                    range: map(range),
+                    shape: match shape {
+                        Shape::Splice { start, end } => Shape::Splice {
+                            start: at(start),
+                            end: at(end),
+                        },
+                        Shape::ArmGuard { pattern_end, guard } => Shape::ArmGuard {
+                            pattern_end: at(pattern_end),
+                            guard: guard.map(|(start, end)| (at(start), at(end))),
+                        },
+                        other => other,
+                    },
+                }
+            });
         self.found.rewrites.push(Rewrite {
             id,
             operator: part.operator,
@@ -297,6 +341,7 @@ impl Walk<'_> {
             under_cfg: part.under_cfg,
             constant: self.constant,
             probe,
+            schema,
         });
     }
 }
@@ -317,6 +362,37 @@ fn allowed(node: &SyntaxNode) -> Option<bool> {
         return None;
     }
     attr_context(node)
+}
+
+const fn splice(range: &Range<usize>) -> Shape {
+    Shape::Splice {
+        start: range.start,
+        end: range.end,
+    }
+}
+
+/// The schema form of a deleted arm: a new guard after the pattern. A guard with
+/// `let` has bindings, and the new guard cannot join it.
+fn arm_guard_form(arm: &ast::MatchArm) -> Option<(Range<usize>, Shape)> {
+    let pattern = arm.pat()?;
+    let guard = match arm.guard() {
+        Some(guard) => {
+            let condition = guard.condition()?;
+            if has_chain_let(&condition) {
+                return None;
+            }
+            let range = range_of(condition.syntax());
+            Some((range.start, range.end))
+        }
+        None => None,
+    };
+    Some((
+        range_of(arm.syntax()),
+        Shape::ArmGuard {
+            pattern_end: range_of(pattern.syntax()).end,
+            guard,
+        },
+    ))
 }
 
 fn token_range(token: &SyntaxToken) -> Range<usize> {
@@ -484,6 +560,39 @@ fn is_catch_all(arm: &ast::MatchArm) -> bool {
             .is_some_and(|name| name.text().chars().next().is_some_and(char::is_lowercase)),
         _ => false,
     }
+}
+
+/// The schema sites of the rewrites with a schema form. The rewrites of one
+/// switch share one site, in the order of the rewrites.
+pub fn schema_sites(rewrites: &[Rewrite]) -> Vec<Site> {
+    let mut sites: Vec<Site> = Vec::new();
+    for rewrite in rewrites {
+        let Some(form) = &rewrite.schema else {
+            continue;
+        };
+        let mutant = Mutant {
+            id: rewrite.id,
+            replacement: "",
+            operator: rewrite.operator,
+            text: Some(rewrite.replacement.clone()),
+        };
+        let same = sites.iter_mut().find(|site| {
+            site.range == form.range
+                && site.shape == form.shape
+                && site.origin.as_ref() == Some(&rewrite.range)
+        });
+        match same {
+            Some(site) => site.mutants.push(mutant),
+            None => sites.push(Site {
+                range: form.range.clone(),
+                shape: form.shape,
+                mutants: vec![mutant],
+                under_cfg: rewrite.under_cfg,
+                origin: Some(rewrite.range.clone()),
+            }),
+        }
+    }
+    sites
 }
 
 /// Applies one mutant to the original text.

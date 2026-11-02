@@ -128,7 +128,7 @@ impl Changed {
                 ..
             } = file;
             found.sites.retain(|site| {
-                let keep = self.touches(path, lines_of(original, &site.range));
+                let keep = self.touches(path, lines_of(original, site.report_range()));
                 if !keep {
                     removed += site.mutants.len();
                 }

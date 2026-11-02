@@ -10,7 +10,6 @@ use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
 
-use crate::mutation::schema::CrateRoot;
 use crate::mutation::sites::{FileSites, ModuleDecl, find_sites};
 use crate::parse::Edition;
 
@@ -34,8 +33,8 @@ pub struct CrateFile {
     pub edition: Edition,
     /// The sites and the other parse results.
     pub found: FileSites,
-    /// The helper position, when the file is a target root.
-    pub root: Option<CrateRoot>,
+    /// True when the file is a target root, which holds the helper.
+    pub is_root: bool,
     /// True when a `cfg` attribute is on a module declaration of the file.
     pub under_cfg: bool,
 }
@@ -127,15 +126,12 @@ fn load_file(workspace: &Path, next: &Pending) -> Result<CrateFile, String> {
         .map_err(|err| format!("cannot read the file: {err}"))?;
     let found = find_sites(&original, next.edition, &next.path)
         .map_err(|outcome| format!("the parse failed: {outcome:?}"))?;
-    let root = next.is_root.then_some(CrateRoot {
-        after_inner_attrs: found.after_inner_attrs,
-    });
     Ok(CrateFile {
         path: next.path.clone(),
         original,
         edition: next.edition,
         found,
-        root,
+        is_root: next.is_root,
         under_cfg: next.under_cfg,
     })
 }

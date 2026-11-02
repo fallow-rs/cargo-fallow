@@ -108,7 +108,7 @@ pub fn with_parsed<T: Send>(
     edition: Edition,
     visit: impl FnOnce(&SourceFile, &str) -> T + Send,
 ) -> Result<T, ParseOutcome> {
-    let source = normalize_line_endings(source);
+    let source = normalize_line_endings(strip_byte_order_mark(source));
     let Some(stack) = stack_need(source.len()) else {
         return Err(ParseOutcome::TooDeep);
     };
@@ -117,6 +117,12 @@ pub fn with_parsed<T: Send>(
     }
     run_with_stack(stack, || parse_and_visit(&source, edition, visit))
         .and_then(std::convert::identity)
+}
+
+/// Removes a byte order mark at the start of the text. rustc removes it before it
+/// lexes a file, and the parser reports it as an error.
+pub fn strip_byte_order_mark(source: &str) -> &str {
+    source.strip_prefix('\u{feff}').unwrap_or(source)
 }
 
 /// Replaces each CRLF with LF. rustc does this before it lexes a file. The

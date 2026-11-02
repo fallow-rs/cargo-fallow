@@ -58,28 +58,32 @@ impl Rendered {
     }
 }
 
-/// The crate-root additions of a file.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CrateRoot {
-    /// The original offset after the last inner attribute.
-    pub after_inner_attrs: usize,
-}
-
-/// The lints that a switch can start in a crate with `#![deny(warnings)]`.
-///
-/// Each switch has parentheses, because a `match` at the start of a statement
-/// ends that statement. A mutant such as `x >= 0` on an unsigned `x` is a
-/// comparison that the compiler can see through.
-const LINT_LEVELS: &str = "#![allow(unused_parens, unused_comparisons)]";
-
 /// The call that reads the active mutant. `crate::` works in each edition.
 const ACTIVE_CALL: &str = "crate::__fallow_schema::active()";
 
-/// The helper. The environment variable holds a hexadecimal mutant id.
+/// The file descriptor that holds the record of the active mutant.
+pub const MUTANT_FD: u32 = 9;
+
+/// The first bytes of the record of the active mutant.
+pub const RECORD_PREFIX: &str = "fallow-mutant:";
+
+/// The record of a mutant: the prefix and 16 hexadecimal digits.
+pub fn mutant_record(mutant: u64) -> String {
+    format!("{RECORD_PREFIX}{mutant:016x}")
+}
+
+/// The helper. The runner opens a file that holds the mutant id on a fixed file
+/// descriptor, and each child process inherits the descriptor.
+///
+/// A value from the environment is not enough: a test can clear the environment,
+/// so the mutant is silently off, and `env::var` allocates, so a test that counts
+/// allocations fails, and a site in a global allocator waits for itself. This read
+/// allocates nothing and needs no unsafe code. A descriptor that is not a file of
+/// the right size is no mutant, so a read cannot block on another pipe.
 ///
 /// The helper takes each name from an `extern crate` item in its own module:
 /// that works in a `#![no_std]` crate and in a crate with
-/// `#![no_implicit_prelude]`. A value that does not parse stops the process:
+/// `#![no_implicit_prelude]`. A record that does not parse stops the process:
 /// a silent fallback to 0 runs the baseline, and that reports the mutant as a
 /// survivor.
 const HELPER: &str = r#"
@@ -87,10 +91,55 @@ const HELPER: &str = r#"
 #[allow(dead_code, missing_docs, unreachable_pub, unused_extern_crates, unused_qualifications)]
 mod __fallow_schema {
     extern crate std as fallow_std;
-    static ACTIVE: self::fallow_std::sync::OnceLock<u64> = self::fallow_std::sync::OnceLock::new();
+    use self::fallow_std::sync::atomic::{AtomicU64, Ordering};
+    const UNREAD: u64 = u64::MAX;
+    static ACTIVE: AtomicU64 = AtomicU64::new(UNREAD);
     #[inline]
     pub(crate) fn active() -> u64 {
-        *ACTIVE.get_or_init(|| match self::fallow_std::env::var("FALLOW_MUTANT") {
+        let known = ACTIVE.load(Ordering::Relaxed);
+        if known != UNREAD {
+            return known;
+        }
+        let read = read_active();
+        ACTIVE.store(read, Ordering::Relaxed);
+        read
+    }
+    #[cfg(unix)]
+    fn read_active() -> u64 {
+        const PREFIX: &[u8] = b"fallow-mutant:";
+        const SIZE: usize = 30;
+        const PATH: &str = "/dev/fd/9";
+        match self::fallow_std::fs::metadata(PATH) {
+            self::fallow_std::result::Result::Ok(data) => {
+                if !data.is_file() || data.len() != SIZE as u64 {
+                    return 0;
+                }
+            }
+            self::fallow_std::result::Result::Err(_) => return 0,
+        }
+        let file = match self::fallow_std::fs::File::open(PATH) {
+            self::fallow_std::result::Result::Ok(file) => file,
+            self::fallow_std::result::Result::Err(_) => invalid(),
+        };
+        let mut bytes = [0_u8; SIZE];
+        let read = self::fallow_std::os::unix::fs::FileExt::read_exact_at(&file, &mut bytes, 0);
+        if read.is_err() {
+            invalid();
+        }
+        if bytes[..PREFIX.len()] != *PREFIX {
+            return 0;
+        }
+        match self::fallow_std::str::from_utf8(&bytes[PREFIX.len()..]) {
+            self::fallow_std::result::Result::Ok(text) => match u64::from_str_radix(text, 16) {
+                self::fallow_std::result::Result::Ok(id) => id,
+                self::fallow_std::result::Result::Err(_) => invalid(),
+            },
+            self::fallow_std::result::Result::Err(_) => invalid(),
+        }
+    }
+    #[cfg(not(unix))]
+    fn read_active() -> u64 {
+        match self::fallow_std::env::var("FALLOW_MUTANT") {
             self::fallow_std::result::Result::Ok(value) => {
                 match u64::from_str_radix(&value, 16) {
                     self::fallow_std::result::Result::Ok(id) => id,
@@ -99,10 +148,10 @@ mod __fallow_schema {
             }
             self::fallow_std::result::Result::Err(self::fallow_std::env::VarError::NotPresent) => 0,
             self::fallow_std::result::Result::Err(_) => invalid(),
-        })
+        }
     }
     fn invalid() -> ! {
-        self::fallow_std::eprintln!("cargo-fallow: FALLOW_MUTANT is not a hexadecimal mutant id");
+        self::fallow_std::eprintln!("cargo-fallow: the record of the active mutant is not valid");
         self::fallow_std::process::abort()
     }
 }
@@ -124,13 +173,14 @@ pub enum Mode {
 pub const PROBE_PREFIX: &str = "__fallow_probe_";
 
 /// Writes the file with the mutants in `enabled`. A site with no enabled mutant
-/// stays plain text. Pass `root` for a crate root file when any mutant of the
-/// crate is enabled.
+/// stays plain text. Pass `is_root` for a crate root file when any mutant of the
+/// crate is enabled. The helper goes at the end of the file, so the first line of
+/// the file stays the first line, also when that line is a shebang.
 pub fn render(
     original: &str,
     sites: &[Site],
     enabled: &BTreeSet<u64>,
-    root: Option<CrateRoot>,
+    is_root: bool,
     mode: Mode,
 ) -> Rendered {
     let tree = build_tree(sites, enabled);
@@ -141,13 +191,8 @@ pub fn render(
         enabled,
         out: Rendered::default(),
     };
-    let start = root.map_or(0, |root| {
-        writer.push(0..root.after_inner_attrs);
-        writer.out.text.push_str(LINT_LEVELS);
-        root.after_inner_attrs
-    });
-    writer.range(start..original.len(), &tree);
-    if root.is_some() {
+    writer.range(0..original.len(), &tree);
+    if is_root {
         writer.out.text.push_str(HELPER);
     }
     writer.out
@@ -304,7 +349,7 @@ mod tests {
         let found = parse(source);
         let enabled = all_ids(&found.sites);
         (
-            render(source, &found.sites, &enabled, None, Mode::Schema),
+            render(source, &found.sites, &enabled, false, Mode::Schema),
             found.sites,
         )
     }
@@ -404,7 +449,7 @@ mod tests {
             source,
             &found.sites,
             &all_ids(&found.sites),
-            None,
+            false,
             Mode::Probe,
         );
         assert!(
@@ -419,7 +464,7 @@ mod tests {
     fn disabled_site_stays_plain_text() {
         let source = "fn f() -> bool { 1 == 2 }";
         let found = parse(source);
-        let out = render(source, &found.sites, &BTreeSet::new(), None, Mode::Schema);
+        let out = render(source, &found.sites, &BTreeSet::new(), false, Mode::Schema);
         assert_eq!(out.text, source);
         assert!(out.regions.is_empty());
     }
@@ -429,7 +474,7 @@ mod tests {
         let source = "fn f(a: bool) -> bool { a == a && a }";
         let found = parse(source);
         let inner: BTreeSet<u64> = [found.sites[1].mutants[0].id].into();
-        let out = render(source, &found.sites, &inner, None, Mode::Schema);
+        let out = render(source, &found.sites, &inner, false, Mode::Schema);
         assert_eq!(
             readable(&out.text, &found.sites),
             "fn f(a: bool) -> bool { (match ID { M1 => (a != a), _ => (a == a) }) && a }"
@@ -444,28 +489,33 @@ mod tests {
     }
 
     #[test]
-    fn crate_root_gets_the_lint_levels_on_the_same_line_and_the_helper() {
-        let source = "//! Docs.\n#![deny(warnings)]\nfn f() -> bool { 1 == 2 }";
+    fn crate_root_keeps_its_first_lines_and_gets_the_helper_at_the_end() {
+        let source = "#!/usr/bin/env tool\n#![forbid(unused_parens)]\nfn f() -> bool { 1 == 2 }";
         let found = parse(source);
-        let root = CrateRoot {
-            after_inner_attrs: found.after_inner_attrs,
-        };
         let out = render(
             source,
             &found.sites,
             &all_ids(&found.sites),
-            Some(root),
+            true,
             Mode::Schema,
         );
         assert!(
-            out.text.starts_with(
-                "//! Docs.\n#![deny(warnings)]#![allow(unused_parens, unused_comparisons)]\nfn f()"
-            ),
+            out.text
+                .starts_with("#!/usr/bin/env tool\n#![forbid(unused_parens)]\nfn f()"),
             "{}",
             out.text
         );
         assert!(out.text.contains("mod __fallow_schema"));
         assert!(out.text.contains("extern crate std as fallow_std;"));
+    }
+
+    #[test]
+    fn the_record_has_the_size_that_the_helper_reads() {
+        let record = mutant_record(0xfa);
+        assert_eq!(record, "fallow-mutant:00000000000000fa");
+        assert!(HELPER.contains(&format!("const SIZE: usize = {};", record.len())));
+        assert!(HELPER.contains(&format!("b\"{RECORD_PREFIX}\"")));
+        assert!(HELPER.contains(&format!("\"/dev/fd/{MUTANT_FD}\"")));
     }
 
     #[test]

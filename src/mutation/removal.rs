@@ -209,8 +209,8 @@ pub fn render_all(files: &[CrateFile], enabled: &BTreeSet<u64>, mode: Mode) -> V
     files
         .iter()
         .map(|file| {
-            let root = file.root.filter(|_| any);
-            render(&file.original, &file.found.sites, enabled, root, mode)
+            let is_root = file.is_root && any;
+            render(&file.original, &file.found.sites, enabled, is_root, mode)
         })
         .collect()
 }
@@ -421,7 +421,6 @@ mod tests {
     use std::fmt::Write;
 
     use super::*;
-    use crate::mutation::schema::CrateRoot;
     use crate::mutation::sites::find_sites;
     use crate::parse::Edition;
 
@@ -431,15 +430,12 @@ mod tests {
         let Ok(found) = find_sites(source, Edition::Edition2021, PATH) else {
             panic!("the source parses");
         };
-        let root = Some(CrateRoot {
-            after_inner_attrs: found.after_inner_attrs,
-        });
         vec![CrateFile {
             path: PATH.to_owned(),
             original: source.to_owned(),
             edition: Edition::Edition2021,
             found,
-            root,
+            is_root: true,
             under_cfg: false,
         }]
     }

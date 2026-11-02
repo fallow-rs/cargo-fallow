@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::mutation::coverage::Objects;
 use crate::mutation::guard::{Guard, Scope};
-use crate::mutation::process::{Exit, cargo_with_flags, run_to_files};
+use crate::mutation::process::{Exit, cargo_with_flags, run_to_files, with_active_mutant};
 use crate::mutation::status::{Status, Verdict};
 
 /// The exit code of nextest when tests ran and one failed.
@@ -328,9 +328,9 @@ pub fn run_nextest(
     if let Some(profile) = &spec.profile_file {
         command.env("LLVM_PROFILE_FILE", profile);
     }
-    if let Some(mutant) = spec.mutant {
-        command.env("FALLOW_MUTANT", format!("{mutant:x}"));
-    }
+    // This run builds nothing, and a test that starts cargo gets a plain compiler.
+    command.env("RUSTC_WRAPPER", "");
+    let command = activate(command, tree, spec)?;
     let out = tree.logs.join(format!("{}-nextest.json", spec.label));
     let err = tree.logs.join(format!("{}-nextest.err", spec.label));
     let start = Instant::now();
@@ -346,6 +346,15 @@ pub fn run_nextest(
         remove_logs(&[out, err]);
     }
     Ok((exit, suite))
+}
+
+/// Selects the mutant of `spec` in `command`.
+fn activate(command: Command, tree: TestTree<'_>, spec: &RunSpec) -> io::Result<Command> {
+    let Some(mutant) = spec.mutant else {
+        return Ok(command);
+    };
+    let record = tree.logs.join(format!("{}.active", spec.label));
+    with_active_mutant(command, &record, mutant)
 }
 
 /// The filter that leaves out `exclude`, with the binary part of each name
@@ -498,9 +507,7 @@ pub fn run_doctests(tree: TestTree<'_>, spec: &RunSpec) -> io::Result<(Exit, Sui
         "--test-threads",
         &spec.jobs.to_string(),
     ]);
-    if let Some(mutant) = spec.mutant {
-        command.env("FALLOW_MUTANT", format!("{mutant:x}"));
-    }
+    let command = activate(command, tree, spec)?;
     let out = tree.logs.join(format!("{}-doc.out", spec.label));
     let err = tree.logs.join(format!("{}-doc.err", spec.label));
     let start = Instant::now();

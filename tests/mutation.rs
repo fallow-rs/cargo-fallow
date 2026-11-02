@@ -704,7 +704,7 @@ mod tests {
     #[test]
     fn state() {
         assert!(super::f(1));
-        if std::env::var("FALLOW_MUTANT").is_err() {
+        if !std::path::Path::new("/dev/fd/9").exists() {
             return;
         }
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/seen");
@@ -755,31 +755,38 @@ fn a_time_budget_leaves_the_rest_pending() {
 }
 
 #[test]
-fn an_invalid_mutant_id_aborts_the_test_process() {
+fn an_invalid_mutant_record_aborts_the_test_process() {
     let run = run(&[("src/lib.rs", CHECK)], &["--tier", "schema", "--no-run"]);
     assert_eq!(run.code, Some(0), "{}", run.stderr);
     let schema = run.work.path().join("run/schema");
     let target = run.work.path().join("run/target-schema");
+    let record = run.work.path().join("record");
     let test = |value: &str| {
-        Process::new("cargo")
-            .args(["test", "--lib", "--quiet", "--", "--nocapture"])
+        fs::write(&record, value).expect("write the record");
+        Process::new("sh")
+            .args(["-c", "exec 9<\"$1\"; shift; exec \"$@\"", "sh"])
+            .arg(&record)
+            .args(["cargo", "test", "--lib", "--quiet", "--", "--nocapture"])
             .current_dir(&schema)
             .env("MBX_DISABLE", "1")
             .env("CARGO_TARGET_DIR", &target)
-            .env("FALLOW_MUTANT", value)
             .output()
             .expect("cargo runs")
     };
-    for value in ["not-hex", "0xfa60e87874a36367", ""] {
-        let output = test(value);
-        assert!(!output.status.success(), "{value}");
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            stderr.contains("FALLOW_MUTANT is not a hexadecimal"),
-            "{value}: {stderr}"
-        );
-    }
-    assert!(test("0").status.success(), "id 0 is no mutant");
+    let output = test("fallow-mutant:not-hexadecimal!");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("the record of the active mutant is not valid"),
+        "{stderr}"
+    );
+    assert!(
+        test("fallow-mutant:0000000000000000").status.success(),
+        "id 0 is no mutant"
+    );
+    // Another file on this descriptor is no record of the tool.
+    assert!(test("another file with 30 bytes!!!!").status.success());
+    assert!(test("short").status.success());
 }
 
 #[test]
@@ -862,7 +869,7 @@ pub fn f(x: u8) -> bool {
 mod tests {
     #[test]
     fn slow() {
-        if std::env::var("FALLOW_MUTANT").is_ok() {
+        if std::path::Path::new("/dev/fd/9").exists() {
             let path = concat!(env!("CARGO_MANIFEST_DIR"), "/started");
             std::fs::write(path, std::process::id().to_string()).expect("write");
             std::thread::sleep(std::time::Duration::from_secs(120));

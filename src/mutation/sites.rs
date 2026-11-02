@@ -14,7 +14,7 @@ use ra_ap_syntax::ast::{self, HasAttrs, HasName};
 use ra_ap_syntax::{AstNode, NodeOrToken, SourceFile, SyntaxKind, SyntaxNode, SyntaxToken};
 
 use crate::mutation::id::{IdInput, mutant_id};
-use crate::parse::{Edition, ParseOutcome, with_parsed};
+use crate::parse::{Edition, ParseOutcome, strip_byte_order_mark, with_parsed};
 
 /// The shape of a mutation site.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,8 +80,6 @@ pub struct FileSites {
     pub skipped: Skipped,
     /// The modules that the file declares with `mod name;`.
     pub modules: Vec<ModuleDecl>,
-    /// The original offset after the last inner attribute of the file.
-    pub after_inner_attrs: usize,
 }
 
 /// A `mod name;` declaration.
@@ -118,9 +116,11 @@ pub fn find_sites(
     })
 }
 
-/// Maps an offset in the text with LF line endings to an offset in the
-/// original source.
+/// Maps an offset in the normalized text to an offset in the original source.
+/// The normalized text has no byte order mark and has LF line endings.
 pub struct OffsetMap {
+    /// The length of the byte order mark of the original source.
+    mark: usize,
     /// The normalized offset of the line feed of each CRLF.
     crlf: Vec<usize>,
 }
@@ -128,17 +128,19 @@ pub struct OffsetMap {
 impl OffsetMap {
     /// Reads the line endings of the original source.
     pub fn new(original: &str) -> Self {
+        let mark = original.len() - strip_byte_order_mark(original).len();
         let crlf = original
             .match_indices("\r\n")
             .enumerate()
-            .map(|(removed, (offset, _))| offset - removed)
+            .map(|(removed, (offset, _))| offset - removed - mark)
             .collect();
-        Self { crlf }
+        Self { mark, crlf }
     }
 
     /// The original offset of a normalized offset.
     pub fn original(&self, normalized: usize) -> usize {
         normalized
+            + self.mark
             + self
                 .crlf
                 .partition_point(|&line_feed| line_feed < normalized)
@@ -163,14 +165,6 @@ struct Walk<'a> {
 
 impl Walk<'_> {
     fn file(&mut self, file: &SourceFile) {
-        if let Some(end) = file
-            .attrs()
-            .filter(|attr| attr.excl_token().is_some())
-            .map(|attr| usize::from(attr.syntax().text_range().end()))
-            .max()
-        {
-            self.found.after_inner_attrs = self.offsets.original(end);
-        }
         for element in file.syntax().descendants_with_tokens() {
             match element {
                 NodeOrToken::Node(node) => self.node(&node),
@@ -841,6 +835,13 @@ mod tests {
     }
 
     #[test]
+    fn a_byte_order_mark_moves_each_offset() {
+        let source = "\u{feff}fn f() -> bool {\r\n    1 == 2\r\n}\r\n";
+        let sites = file(source).sites;
+        assert_eq!(&source[sites[0].range.clone()], "1 == 2");
+    }
+
+    #[test]
     fn crlf_and_lf_give_the_same_ids() {
         let lf = file("fn f(a: u8) -> bool {\n    a\n    == 1\n}\n");
         let crlf = file("fn f(a: u8) -> bool {\r\n    a\r\n    == 1\r\n}\r\n");
@@ -879,22 +880,6 @@ mod tests {
                 ("z", false, Some("x/y.rs"), 0),
                 ("nested", false, None, 1),
             ]
-        );
-    }
-
-    #[test]
-    fn insertion_point_follows_the_last_inner_attribute() {
-        let source = "//! Docs.\n#![no_std]\n#![deny(warnings)]\n\nfn f() {}\n";
-        assert_eq!(&source[file(source).after_inner_attrs..], "\n\nfn f() {}\n");
-        assert_eq!(file("fn f() {}").after_inner_attrs, 0);
-    }
-
-    #[test]
-    fn insertion_point_maps_back_with_crlf() {
-        let source = "#![no_std]\r\n#![deny(warnings)]\r\nfn f() {}\r\n";
-        assert_eq!(
-            &source[file(source).after_inner_attrs..],
-            "\r\nfn f() {}\r\n"
         );
     }
 }

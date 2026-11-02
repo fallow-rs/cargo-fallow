@@ -15,11 +15,18 @@ use std::time::{Duration, Instant};
 
 use crate::mutation::guard::{Guard, KillReason, Scope};
 use crate::mutation::probe::{Row, system_probe};
+#[cfg(unix)]
+use crate::mutation::schema::{MUTANT_FD, mutant_record};
 
 /// The time between two checks of a running child.
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
 
-/// The compiler flag that keeps each lint at the warning level.
+/// The compiler flags of each build. The first flag keeps each lint at the warning
+/// level. A switch has parentheses and can hold a comparison that the compiler can
+/// see through, so the other flags keep those warnings out of the build output.
+const BUILD_FLAGS: &str = "--cap-lints=warn -Aunused_parens -Aunused_comparisons";
+/// The flag that keeps each lint of a doctest build at the warning level.
+#[cfg(unix)]
 const CAP_LINTS: &str = "--cap-lints=warn";
 
 /// How a child process ended.
@@ -35,8 +42,8 @@ pub enum Exit {
 
 /// A `cargo` command that runs in `dir` and builds into `target_dir`.
 ///
-/// The environment makes two builds with the same command comparable: no
-/// compiler wrapper, a fixed job count, and no active mutant. A mutant often
+/// The environment makes two builds with the same command comparable: the tool's
+/// own compiler wrapper, a fixed job count, and no active mutant. A mutant often
 /// starts a lint, for example an unused variable. In a crate with
 /// `deny(warnings)` that says nothing about the mutant, so lints stay warnings.
 pub fn cargo(dir: &Path, target_dir: &Path, jobs: usize) -> Command {
@@ -45,22 +52,108 @@ pub fn cargo(dir: &Path, target_dir: &Path, jobs: usize) -> Command {
 
 /// The same command with more compiler flags for each crate of the build.
 pub fn cargo_with_flags(dir: &Path, target_dir: &Path, jobs: usize, extra: &str) -> Command {
-    let flags = format!("{CAP_LINTS} {extra}");
-    let flags = flags.trim_end();
+    let flags = format!("{BUILD_FLAGS} {extra}");
     let mut command = new_command("cargo");
     command
         .current_dir(dir)
         .env("CARGO_TARGET_DIR", target_dir)
         .env("CARGO_BUILD_JOBS", jobs.to_string())
-        .env("RUSTC_WRAPPER", "")
         .env_remove("FALLOW_MUTANT");
-    // RUSTFLAGS replaces the flags of the Cargo config, so it gets an addition.
-    // Without it, the config variable joins the flags of the Cargo config.
+    add_compiler_flags(&mut command, target_dir, flags.trim_end());
+    command
+}
+
+/// Adds compiler flags through a small wrapper of the compiler.
+///
+/// cargo takes its flags from one source only: `CARGO_ENCODED_RUSTFLAGS`, else
+/// `RUSTFLAGS`, else the `[target]` keys of the config, else `build.rustflags`. So
+/// an environment variable can replace the flags of the project, or the project can
+/// replace the flags of this tool. A wrapper does neither. The flags of the tool go
+/// first, so `--cap-lints` of cargo for a registry package stays in force. A wrapper
+/// of the user does not run: a compile cache only adds doubt to a comparison.
+#[cfg(unix)]
+fn add_compiler_flags(command: &mut Command, target_dir: &Path, flags: &str) {
+    let rustc = target_dir.with_extension("rustc.sh");
+    let rustdoc = target_dir.with_extension("rustdoc.sh");
+    let real_rustdoc = std::env::var("RUSTDOC").unwrap_or_else(|_| "rustdoc".to_owned());
+    // A failed write gives a clear error from cargo at the first build.
+    let _ = write_wrapper(
+        &rustc,
+        &format!("rustc=\"$1\"\nshift\nexec \"$rustc\" {flags} \"$@\"\n"),
+    );
+    // A doctest build reads the lint levels of the crate too, and the switch can
+    // start a lint that the crate forbids. This cap has no other flags: the flags
+    // of a coverage build do not belong in the doctests.
+    let _ = write_wrapper(
+        &rustdoc,
+        &format!("exec '{real_rustdoc}' {CAP_LINTS} \"$@\"\n"),
+    );
+    command.env("RUSTC_WRAPPER", rustc).env("RUSTDOC", rustdoc);
+}
+
+#[cfg(unix)]
+fn write_wrapper(path: &Path, body: &str) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    if path.exists() {
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    // A second call has the same text, because the name comes from the target
+    // folder of the build. A rename keeps a half file out of each call.
+    let temporary = path.with_extension(format!("{}.tmp", std::process::id()));
+    std::fs::write(&temporary, format!("#!/bin/sh\n{body}"))?;
+    std::fs::set_permissions(&temporary, std::fs::Permissions::from_mode(0o755))?;
+    std::fs::rename(&temporary, path)
+}
+
+/// A system with no `sh` has no wrapper. There `RUSTFLAGS` replaces the flags of
+/// the Cargo config, so it gets an addition. Without it, the config variable joins
+/// the flags of the Cargo config.
+#[cfg(not(unix))]
+fn add_compiler_flags(command: &mut Command, _target_dir: &Path, flags: &str) {
+    command.env("RUSTC_WRAPPER", "");
     match std::env::var("RUSTFLAGS") {
         Ok(own) => command.env("RUSTFLAGS", format!("{own} {flags}")),
         Err(_) => command.env("CARGO_BUILD_RUSTFLAGS", flags),
     };
-    command
+}
+
+/// Gives `command` the record of the active mutant.
+///
+/// On Unix a small shell opens the file on [`MUTANT_FD`] and then runs the command.
+/// The process id stays the same. Each child inherits the descriptor, also a child
+/// with an empty environment. Other systems read an environment variable.
+pub fn with_active_mutant(command: Command, record: &Path, mutant: u64) -> io::Result<Command> {
+    #[cfg(unix)]
+    {
+        std::fs::write(record, mutant_record(mutant))?;
+        let script = format!("exec {MUTANT_FD}<\"$1\"; shift; exec \"$@\"");
+        let mut shell = new_command("sh");
+        shell
+            .args(["-c", &script, "sh"])
+            .arg(record)
+            .arg(command.get_program())
+            .args(command.get_args());
+        if let Some(dir) = command.get_current_dir() {
+            shell.current_dir(dir);
+        }
+        for (key, value) in command.get_envs() {
+            match value {
+                Some(value) => shell.env(key, value),
+                None => shell.env_remove(key),
+            };
+        }
+        Ok(shell)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = record;
+        let mut command = command;
+        command.env("FALLOW_MUTANT", format!("{mutant:x}"));
+        Ok(command)
+    }
 }
 
 /// The one place in the mutation module that creates a process.

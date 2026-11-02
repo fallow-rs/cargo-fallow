@@ -1,10 +1,11 @@
 //! Reads the process table and the memory data of the operating system.
 //!
 //! macOS has no stable-Rust API for the footprint without unsafe code, so the
-//! probe reads `top`. `top` counts compressed pages, and RSS does not. RSS let a
-//! mutant fill the machine on 2026-10-28, so a limit never uses it. `top` costs
-//! about one core for 0.7 s (measured), so the guard reads RSS from `ps` first,
-//! and only reads `top` when a process is a candidate.
+//! probe reads the `footprint` tool. The footprint counts compressed pages, and
+//! RSS does not. RSS let a mutant fill the machine on 2026-10-28, so a limit
+//! never uses it. `footprint` reads only the given processes and costs about
+//! 20 ms of CPU. `top` reads each process and costs about one second of CPU
+//! (measured), so it is only the fallback. The guard reads RSS from `ps` first.
 //!
 //! Linux reads `/proc`: the footprint is RSS plus swap, and the free memory comes
 //! from the cgroup when it has a limit, else from `/proc/meminfo`.
@@ -65,16 +66,7 @@ impl Probe for MacProbe {
     }
 
     fn footprints(&self, pids: &[u32]) -> io::Result<BTreeMap<u32, u64>> {
-        let mut command = new_command("top");
-        command.args(["-l", "1", "-stats", "pid,mem"]);
-        for pid in pids {
-            command.arg("-pid").arg(pid.to_string());
-        }
-        let output = command.output()?;
-        if !output.status.success() {
-            return Err(io::Error::other("top failed"));
-        }
-        Ok(parse_top(&String::from_utf8_lossy(&output.stdout)))
+        footprint_tool(pids).map_or_else(|| top_footprints(pids), Ok)
     }
 
     fn free_percent(&self) -> Option<u32> {
@@ -84,6 +76,65 @@ impl Probe for MacProbe {
             .ok()?;
         String::from_utf8_lossy(&output.stdout).trim().parse().ok()
     }
+}
+
+/// Reads the footprints through `footprint`. It reads only the given processes,
+/// so it costs about 20 ms of CPU, and `top` costs about one second. Returns
+/// `None` when the tool is missing or fails in another way, so that `top` reads
+/// the values. A process that ended has no row.
+fn footprint_tool(pids: &[u32]) -> Option<BTreeMap<u32, u64>> {
+    let mut command = new_command(FOOTPRINT);
+    command.args(["-f", "bytes"]);
+    for pid in pids {
+        command.arg("-p").arg(pid.to_string());
+    }
+    let output = command.output().ok()?;
+    let rows = parse_footprint(&String::from_utf8_lossy(&output.stdout));
+    if output.status.success() && !rows.is_empty() {
+        return Some(rows);
+    }
+    // The tool fails when each process ended before the read.
+    let all_ended = String::from_utf8_lossy(&output.stderr).contains(NO_PROCESS);
+    all_ended.then(BTreeMap::new)
+}
+
+/// The footprint tool of macOS.
+const FOOTPRINT: &str = "/usr/bin/footprint";
+/// The message of `footprint` when no given process exists.
+const NO_PROCESS: &str = "Unable to find any processes";
+
+/// Reads the footprints with `top`.
+fn top_footprints(pids: &[u32]) -> io::Result<BTreeMap<u32, u64>> {
+    let mut command = new_command("top");
+    command.args(["-l", "1", "-stats", "pid,mem"]);
+    for pid in pids {
+        command.arg("-pid").arg(pid.to_string());
+    }
+    let output = command.output()?;
+    if !output.status.success() {
+        return Err(io::Error::other("top failed"));
+    }
+    Ok(parse_top(&String::from_utf8_lossy(&output.stdout)))
+}
+
+/// Reads the header line of each process in the text of `footprint -f bytes`,
+/// for example `sleep [42]: 64-bit    Footprint: 1032432 B (16384 bytes per page)`.
+/// The value is in KiB. A name can hold brackets, so the pid comes from the last
+/// bracket pair before the colon.
+fn parse_footprint(text: &str) -> BTreeMap<u32, u64> {
+    text.lines()
+        .filter_map(|line| {
+            let (head, rest) = line.split_once("]: ")?;
+            let pid = head.rsplit_once('[')?.1.parse().ok()?;
+            let value = rest.split_once("Footprint: ")?.1;
+            let (bytes, unit) = value.split_once(' ')?;
+            if !unit.starts_with("B ") && unit != "B" {
+                return None;
+            }
+            let bytes: u64 = bytes.parse().ok()?;
+            Some((pid, bytes / 1024))
+        })
+        .collect()
 }
 
 /// Reads `pid ppid rss` lines. A line with another shape does not count.
@@ -271,6 +322,24 @@ mod tests {
         assert_eq!(rows.get(&8), Some(&(2 * 1024 * 1024 * 1024)));
         assert_eq!(rows.get(&9), Some(&2));
         assert_eq!(rows.len(), 5);
+    }
+
+    /// The text is the shape of `footprint -f bytes -p 59509 -p 1` on macOS 27.
+    #[test]
+    fn footprint_headers_are_read_and_other_lines_do_not_count() {
+        let text = "footprint: Unable to find pid for process matching '99999'\n\
+            ======\n\
+            sleep [59509]: 64-bit    Footprint: 1032432 B (16384 bytes per page)\n\
+            ======\n\
+            \x20     Dirty  Clean\n\
+            \x20  1032432 B  0 B  10  Untagged\n\
+            Shared with sleep [59508]:\n\
+            \x20   phys_footprint: 1032432 B\n\
+            a [b] [1]: 64-bit (translated)    Footprint: 2048 B (4096 bytes per page)\n";
+        let rows = parse_footprint(text);
+        assert_eq!(rows.get(&59509), Some(&1008));
+        assert_eq!(rows.get(&1), Some(&2));
+        assert_eq!(rows.len(), 2);
     }
 
     #[test]

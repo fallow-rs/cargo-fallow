@@ -11,8 +11,8 @@
 //! - It kills the trees when it cannot read the memory data, so a failure of the
 //!   guard does not leave a mutant without a limit.
 //!
-//! A read of the footprint through `top` takes about 0.7 s, and a mutant can write
-//! more than 5 GiB in each second (both measured). So the second thread reads the
+//! A read of the footprint takes up to 0.7 s through the `top` fallback, and a
+//! mutant can write more than 5 GiB in each second (both measured). So the second thread reads the
 //! cheap RSS value often, and it stops a process above the limit until the decision
 //! thread has the footprint. RSS never kills a process: it only stops growth.
 //!
@@ -47,6 +47,9 @@ const ORPHAN_TICK: Duration = Duration::from_secs(1);
 const CANDIDATE_RSS_TICK: Duration = Duration::from_millis(50);
 /// The time between two checks of the decision thread.
 const DECISION_TICK: Duration = Duration::from_millis(100);
+/// The decision thread uses a table of the RSS thread up to this age. An older
+/// table gets a new read.
+const TABLE_AGE: Duration = Duration::from_millis(300);
 /// The longest time between two reads of the footprint of a test tree. A
 /// process with most of its pages compressed has a low RSS, so a candidate
 /// filter alone can miss it.
@@ -239,11 +242,36 @@ impl Registry {
 struct Shared {
     registry: Mutex<Registry>,
     stop: AtomicBool,
+    /// The last table of the RSS thread, with the time of the read.
+    table: Mutex<Option<(Instant, Arc<[Row]>)>>,
 }
 
 impl Shared {
     fn lock(&self) -> MutexGuard<'_, Registry> {
         self.registry.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn keep_table(&self, rows: Vec<Row>) -> Arc<[Row]> {
+        let rows: Arc<[Row]> = Arc::from(rows);
+        *self.table.lock().unwrap_or_else(PoisonError::into_inner) =
+            Some((Instant::now(), Arc::clone(&rows)));
+        rows
+    }
+
+    /// The last table of the RSS thread when it is new enough, else a new read.
+    /// Each read starts `ps`, and `ps` reads each process of the system.
+    fn fresh_table(&self, probe: &dyn Probe) -> io::Result<Arc<[Row]>> {
+        let kept = self
+            .table
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .filter(|(at, _)| at.elapsed() <= TABLE_AGE)
+            .map(|(_, rows)| Arc::clone(rows));
+        match kept {
+            Some(rows) => Ok(rows),
+            None => probe.table().map(|rows| self.keep_table(rows)),
+        }
     }
 }
 
@@ -263,6 +291,7 @@ impl Guard {
             shared: Arc::new(Shared {
                 registry: Mutex::new(Registry::default()),
                 stop: AtomicBool::new(false),
+                table: Mutex::new(None),
             }),
             threads: Vec::new(),
             watchdog: None,
@@ -468,7 +497,7 @@ fn sweep_orphans(shared: &Shared) {
 }
 
 /// Reads RSS often and stops each process that needs a decision. A stopped process
-/// cannot grow while the decision thread waits for `top`.
+/// cannot grow while the decision thread waits for the footprint.
 fn rss_loop(shared: &Shared, probe: &dyn Probe, limits: Limits) {
     let mut blind = 0;
     let mut last_sweep = Instant::now();
@@ -482,6 +511,7 @@ fn rss_loop(shared: &Shared, probe: &dyn Probe, limits: Limits) {
                 sweep_orphans(shared);
             }
             if let Ok(rows) = probe.table() {
+                let rows = shared.keep_table(rows);
                 blind = 0;
                 let trees = trees_of(&rows, &roots);
                 let (candidate, to_stop) =
@@ -570,7 +600,7 @@ impl WatchState {
             resume_stopped(shared);
             return;
         }
-        let Ok(rows) = probe.table() else {
+        let Ok(rows) = shared.fresh_table(probe) else {
             return self.count_blind(shared, &roots);
         };
         let trees = trees_of(&rows, &roots);
@@ -580,7 +610,7 @@ impl WatchState {
         }
         let pids: Vec<u32> = trees.iter().flat_map(|tree| tree.pids.clone()).collect();
         let read = probe.footprints(&pids);
-        // `top` takes about 0.7 s, so a fast test run can end during the read.
+        // A read can take 0.7 s, so a fast test run can end during the read.
         // Only a tree that ran through the whole read must have a row.
         let live = live_roots(shared, &roots);
         let footprints = match read {
@@ -797,6 +827,7 @@ mod tests {
         footprint: Result<u64, ()>,
         free: u32,
         footprint_reads: AtomicU32,
+        table_reads: AtomicU32,
         /// The time of one read of the footprint. `top` takes about 0.7 s.
         delay: Duration,
         /// True when a read lists no process.
@@ -810,6 +841,7 @@ mod tests {
                 footprint,
                 free,
                 footprint_reads: AtomicU32::new(0),
+                table_reads: AtomicU32::new(0),
                 delay: Duration::ZERO,
                 empty: false,
             })
@@ -818,6 +850,7 @@ mod tests {
 
     impl Probe for FakeProbe {
         fn table(&self) -> io::Result<Vec<Row>> {
+            self.table_reads.fetch_add(1, Ordering::SeqCst);
             // The real table holds the root, so the fake reads it from `ps`.
             let Some(real) = system_probe() else {
                 return Ok(Vec::new());
@@ -932,6 +965,22 @@ mod tests {
         assert_eq!(exit, Exit::TimedOut);
         // One read at the start, and the period is longer than this run.
         assert_eq!(reads.footprint_reads.load(Ordering::SeqCst), 1);
+    }
+
+    /// Each read of the table starts `ps`, and `ps` reads each process of the
+    /// system. The two threads share one read.
+    #[cfg(unix)]
+    #[test]
+    fn the_threads_share_the_reads_of_the_table() {
+        let probe = FakeProbe::new(1, Ok(1), 80);
+        let reads = Arc::clone(&probe);
+        let guard = Guard::with_probe(LIMITS, probe);
+        let exit = sleep_under(&guard, Scope::Tests, Duration::from_millis(2000));
+        assert_eq!(exit, Exit::TimedOut);
+        // The RSS thread reads at most 10 times in 2 s. The decision thread alone
+        // reads up to 20 times.
+        let count = reads.table_reads.load(Ordering::SeqCst);
+        assert!(count <= 12, "{count} reads of the table");
     }
 
     #[cfg(unix)]

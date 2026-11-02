@@ -15,6 +15,8 @@ use std::ops::Range;
 use ra_ap_syntax::ast::{self, HasAttrs, HasName};
 use ra_ap_syntax::{AstNode, NodeOrToken, SourceFile, SyntaxKind, SyntaxNode, SyntaxToken};
 
+use crate::attrs::{AttrClass, attributes_of, path_attribute, plain_name};
+use crate::modules::ModuleDecl;
 use crate::mutation::id::{IdInput, mutant_id};
 use crate::parse::{Edition, ParseOutcome, strip_byte_order_mark, with_parsed};
 
@@ -115,19 +117,6 @@ pub struct FileSites {
     pub skipped: Skipped,
     /// The modules that the file declares with `mod name;`.
     pub modules: Vec<ModuleDecl>,
-}
-
-/// A `mod name;` declaration.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ModuleDecl {
-    /// The module name, without a `r#` prefix.
-    pub name: String,
-    /// The names of the enclosing inline modules, outermost first.
-    pub inline_path: Vec<String>,
-    /// The value of a `#[path]` attribute.
-    pub path_attr: Option<String>,
-    /// True when a `cfg` attribute other than `cfg(test)` is on the module.
-    pub under_cfg: bool,
 }
 
 /// Finds the sites of one file.
@@ -571,136 +560,6 @@ fn in_repeat_length(array: &ast::ArrayExpr, child: Option<&SyntaxNode>) -> bool 
             .exprs()
             .nth(1)
             .is_some_and(|length| length.syntax() == child)
-}
-
-/// The strongest class of the attributes on one node.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AttrClass {
-    Test,
-    Cfg,
-    Other,
-}
-
-fn attributes_of(node: &SyntaxNode) -> AttrClass {
-    let Some(owner) = ast::AnyHasAttrs::cast(node.clone()) else {
-        return AttrClass::Other;
-    };
-    let mut class = AttrClass::Other;
-    for attr in owner.attrs() {
-        match classify(&attr_body(&attr)) {
-            AttrClass::Test => return AttrClass::Test,
-            AttrClass::Cfg => class = AttrClass::Cfg,
-            AttrClass::Other => {}
-        }
-    }
-    class
-}
-
-/// The text between the brackets of an attribute, without whitespace.
-fn attr_body(attr: &ast::Attr) -> String {
-    let text: String = attr
-        .syntax()
-        .text()
-        .to_string()
-        .chars()
-        .filter(|c| !c.is_whitespace())
-        .collect();
-    let body = text
-        .strip_prefix("#!")
-        .or_else(|| text.strip_prefix('#'))
-        .unwrap_or(&text);
-    body.trim_start_matches('[')
-        .trim_end_matches(']')
-        .to_owned()
-}
-
-fn classify(body: &str) -> AttrClass {
-    if let Some(condition) = body.strip_prefix("cfg(") {
-        let condition = condition.strip_suffix(')').unwrap_or(condition);
-        return if only_in_tests(condition) {
-            AttrClass::Test
-        } else {
-            AttrClass::Cfg
-        };
-    }
-    if let Some(inner) = body.strip_prefix("cfg_attr(") {
-        let inner = inner.strip_suffix(')').unwrap_or(inner);
-        let parts = split_list(inner);
-        return match parts.split_first() {
-            Some((condition, attrs))
-                if only_in_tests(condition) && attrs.iter().any(|attr| is_test_attribute(attr)) =>
-            {
-                AttrClass::Test
-            }
-            _ => AttrClass::Other,
-        };
-    }
-    if is_test_attribute(body) {
-        return AttrClass::Test;
-    }
-    AttrClass::Other
-}
-
-/// True for an attribute that makes a test out of a function. The list holds the
-/// test macros of the wider ecosystem, also with a path before the name.
-fn is_test_attribute(body: &str) -> bool {
-    const NAMES: [&str; 5] = ["test", "bench", "rstest", "test_case", "quickcheck"];
-    let name = body.split('(').next().unwrap_or(body);
-    let last = name.rsplit("::").next().unwrap_or(name);
-    NAMES.contains(&last)
-}
-
-/// True when a `cfg` condition with no whitespace can only hold in a test build.
-fn only_in_tests(condition: &str) -> bool {
-    if matches!(condition, "test" | "doctest") {
-        return true;
-    }
-    if let Some(list) = condition
-        .strip_prefix("all(")
-        .and_then(|rest| rest.strip_suffix(')'))
-    {
-        return split_list(list).iter().any(|part| only_in_tests(part));
-    }
-    if let Some(list) = condition
-        .strip_prefix("any(")
-        .and_then(|rest| rest.strip_suffix(')'))
-    {
-        let parts = split_list(list);
-        return !parts.is_empty() && parts.iter().all(|part| only_in_tests(part));
-    }
-    false
-}
-
-/// Splits a comma list at the top level of its parentheses and square brackets.
-fn split_list(text: &str) -> Vec<&str> {
-    let (mut parts, mut depth, mut start) = (Vec::new(), 0_u32, 0);
-    for (at, c) in text.char_indices() {
-        match c {
-            '(' | '[' => depth += 1,
-            ')' | ']' => depth = depth.saturating_sub(1),
-            ',' if depth == 0 => {
-                parts.push(&text[start..at]);
-                start = at + 1;
-            }
-            _ => {}
-        }
-    }
-    if start < text.len() {
-        parts.push(&text[start..]);
-    }
-    parts
-}
-
-fn path_attribute(attr: &ast::Attr) -> Option<String> {
-    let body = attr_body(attr);
-    let value = body.strip_prefix("path=\"")?.strip_suffix('"')?;
-    Some(value.to_owned())
-}
-
-fn plain_name(name: &ast::Name) -> String {
-    let text = name.syntax().text().to_string();
-    text.strip_prefix("r#")
-        .map_or_else(|| text.clone(), str::to_owned)
 }
 
 /// The operator name of a replacement.

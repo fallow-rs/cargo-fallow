@@ -1,0 +1,264 @@
+//! Black-box tests of the experimental `visibility` command.
+//!
+//! Each test writes a small workspace to a temporary directory and checks the
+//! set of findings. A finding is `kind item`, for example
+//! `unnecessary_public util::helper`.
+#![expect(
+    clippy::expect_used,
+    reason = "a test fails loudly when its setup does not work"
+)]
+
+use std::collections::BTreeSet;
+use std::fs;
+use std::path::Path;
+
+use assert_cmd::Command;
+use serde_json::Value;
+use tempfile::TempDir;
+
+/// The manifests of a workspace with three members: the binary `app`, the
+/// library `mid` that `app` uses, and the library `base` that `mid` uses.
+const MANIFESTS: &[(&str, &str)] = &[
+    (
+        "Cargo.toml",
+        "[workspace]\nmembers = [\"app\", \"mid\", \"base\"]\nresolver = \"3\"\n",
+    ),
+    (
+        "app/Cargo.toml",
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n\
+         [dependencies]\nmid = { path = \"../mid\" }\n",
+    ),
+    (
+        "mid/Cargo.toml",
+        "[package]\nname = \"mid\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n\
+         [dependencies]\nbase = { path = \"../base\" }\n",
+    ),
+    (
+        "base/Cargo.toml",
+        "[package]\nname = \"base\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n",
+    ),
+];
+
+/// Writes the workspace with `files` added to the manifests.
+fn workspace(files: &[(&str, &str)]) -> TempDir {
+    let dir = tempfile::tempdir().expect("create a temporary directory");
+    for (path, text) in MANIFESTS.iter().chain(files) {
+        write(dir.path(), path, text);
+    }
+    for default in ["app/src/main.rs", "mid/src/lib.rs", "base/src/lib.rs"] {
+        if !dir.path().join(default).exists() {
+            write(dir.path(), default, "");
+        }
+    }
+    dir
+}
+
+fn write(root: &Path, path: &str, text: &str) {
+    let path = root.join(path);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).expect("create a folder");
+    }
+    fs::write(path, text).expect("write a file");
+}
+
+/// The findings of the run, as `kind item` strings, and the undecided list.
+fn findings(dir: &TempDir, extra: &[&str]) -> (BTreeSet<String>, BTreeSet<String>) {
+    let output = Command::cargo_bin("cargo-fallow")
+        .expect("find the binary")
+        .args([
+            "visibility",
+            "--format",
+            "json",
+            "--quiet",
+            "--manifest-path",
+        ])
+        .arg(dir.path().join("Cargo.toml"))
+        .args(extra)
+        .output()
+        .expect("run the binary");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: Value = serde_json::from_slice(&output.stdout).expect("the output is JSON");
+    let rows = |key: &str| -> BTreeSet<String> {
+        report[key]
+            .as_array()
+            .expect("an array of findings")
+            .iter()
+            .map(|row| {
+                format!(
+                    "{} {}",
+                    row["kind"].as_str().unwrap_or_default(),
+                    row["item"].as_str().unwrap_or_default()
+                )
+            })
+            .collect()
+    };
+    (rows("findings"), rows("undecided"))
+}
+
+fn set(rows: &[&str]) -> BTreeSet<String> {
+    rows.iter().map(|row| (*row).to_owned()).collect()
+}
+
+#[test]
+fn public_items_get_the_finding_that_their_uses_allow() {
+    let dir = workspace(&[
+        ("app/src/main.rs", "fn main() { mid::shared(); }\n"),
+        (
+            "mid/src/lib.rs",
+            "pub fn shared() { local(); }\npub fn local() {}\npub fn unused() {}\n\
+             pub mod inner {\n    pub(crate) fn only_here() {}\n    pub(crate) fn wide() {}\n\
+             fn call() { only_here(); }\n}\nmod other { fn f() { crate::inner::wide(); } }\n",
+        ),
+    ]);
+    let (found, _) = findings(&dir, &[]);
+    assert_eq!(
+        found,
+        set(&[
+            "dead_public inner",
+            "dead_public unused",
+            "unnecessary_public local",
+            "unnecessary_restricted_visibility inner::only_here",
+        ])
+    );
+}
+
+#[test]
+fn method_call_gives_credit_through_a_transitive_reexport() {
+    let dir = workspace(&[
+        (
+            "app/src/main.rs",
+            "fn main() { let value = mid::base::Thing::new(); value.used(); }\n",
+        ),
+        ("mid/src/lib.rs", "pub use base;\n"),
+        (
+            "base/src/lib.rs",
+            "pub struct Thing;\nimpl Thing {\n    pub fn new() -> Self { Self }\n    pub fn used(&self) {}\n}\n",
+        ),
+    ]);
+    let (found, undecided) = findings(&dir, &[]);
+    assert_eq!(found, set(&[]));
+    assert_eq!(undecided, set(&["dead_public Thing::used"]));
+}
+
+#[test]
+fn only_a_local_named_reexport_is_a_candidate() {
+    let dir = workspace(&[
+        ("app/src/main.rs", "fn main() { mid::run(); }\n"),
+        (
+            "mid/src/lib.rs",
+            "mod inner { pub fn run() { crate::helper(); } pub fn helper() {} }\n\
+             pub use base::Outside;\npub use inner::{\n    run,\n    helper,\n};\npub use inner as moved;\n",
+        ),
+        ("base/src/lib.rs", "pub struct Outside;\n"),
+    ]);
+    let (found, _) = findings(&dir, &[]);
+    assert_eq!(found, set(&["unnecessary_public helper"]));
+}
+
+#[test]
+fn a_reexport_finding_is_on_the_line_of_its_name() {
+    let dir = workspace(&[(
+        "mid/src/lib.rs",
+        "mod inner { pub fn first() {} pub fn second() {} }\npub use inner::{\n    first,\n    second,\n};\n",
+    )]);
+    let output = Command::cargo_bin("cargo-fallow")
+        .expect("find the binary")
+        .args([
+            "visibility",
+            "--format",
+            "json",
+            "--quiet",
+            "--manifest-path",
+        ])
+        .arg(dir.path().join("Cargo.toml"))
+        .output()
+        .expect("run the binary");
+    let report: Value = serde_json::from_slice(&output.stdout).expect("the output is JSON");
+    let lines: BTreeSet<(String, u64)> = report["findings"]
+        .as_array()
+        .expect("an array of findings")
+        .iter()
+        .filter(|row| row["item_kind"] == "reexport")
+        .map(|row| {
+            (
+                row["item"].as_str().unwrap_or_default().to_owned(),
+                row["line"].as_u64().unwrap_or_default(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        lines,
+        BTreeSet::from([("first".to_owned(), 3), ("second".to_owned(), 4)])
+    );
+}
+
+#[test]
+fn members_of_a_reexported_type_are_candidates() {
+    let dir = workspace(&[
+        (
+            "app/src/main.rs",
+            "fn main() { let made = mid::Made::new(); made.show(); }\n",
+        ),
+        (
+            "mid/src/lib.rs",
+            "mod hidden {\n    pub struct Made { pub size: u8 }\n    impl Made {\n        \
+             pub fn new() -> Self { Self { size: 0 }.grow() }\n        pub fn grow(self) -> Self { self }\n        \
+             pub fn show(&self) {}\n        pub fn never(&self) {}\n    }\n}\npub use hidden::Made;\n",
+        ),
+    ]);
+    let (found, undecided) = findings(&dir, &[]);
+    assert_eq!(
+        found,
+        set(&[
+            "dead_public hidden::Made::never",
+            "unnecessary_public hidden::Made::grow",
+            "unnecessary_public hidden::Made::size",
+        ])
+    );
+    assert_eq!(
+        undecided,
+        set(&[
+            "dead_public hidden::Made::grow",
+            "dead_public hidden::Made::show"
+        ])
+    );
+}
+
+#[test]
+fn an_excluded_crate_gets_no_findings() {
+    let dir = workspace(&[(
+        "mid/src/lib.rs",
+        "pub fn unused() {}\nmod inner { pub(crate) fn here() {} fn call() { here(); } }\n",
+    )]);
+    let (found, _) = findings(&dir, &[]);
+    assert_eq!(
+        found,
+        set(&[
+            "dead_public unused",
+            "unnecessary_restricted_visibility inner::here",
+        ])
+    );
+    let (found, _) = findings(&dir, &["--exclude-crate", "mid"]);
+    assert_eq!(found, set(&[]));
+}
+
+#[test]
+fn a_restricted_type_in_a_wider_signature_keeps_its_visibility() {
+    let dir = workspace(&[(
+        "mid/src/lib.rs",
+        "mod outer {\n    mod cache {\n        pub(super) struct Span { pub(super) line: u32 }\n        \
+         pub(super) struct Snapshot { pub(super) spans: Vec<Span> }\n        \
+         pub(super) fn make() -> Snapshot { Snapshot { spans: vec![Span { line: 1 }] } }\n    }\n    \
+         fn use_it() -> u32 { cache::make().spans.len() as u32 }\n}\n",
+    )]);
+    let (found, _) = findings(&dir, &[]);
+    assert!(
+        !found.contains("unnecessary_restricted_visibility outer::cache::Span"),
+        "{found:?}"
+    );
+}

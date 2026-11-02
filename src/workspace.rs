@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use cargo_metadata::camino::{Utf8Path, Utf8PathBuf};
-use cargo_metadata::{MetadataCommand, Package, Target as CargoTarget};
+use cargo_metadata::{DependencyKind, MetadataCommand, Package, Target as CargoTarget};
 use serde::Serialize;
 
 use crate::error::{CliError, ErrorCode};
@@ -33,6 +33,40 @@ pub struct Member {
     /// The names of the direct dependencies. They are not part of the report.
     #[serde(skip)]
     pub dependencies: Vec<String>,
+    /// The direct dependencies with their kind and name in code. They are not
+    /// part of the report.
+    #[serde(skip)]
+    pub links: Vec<Link>,
+    /// The names of the features of the package. They are not part of the report.
+    #[serde(skip)]
+    pub features: Vec<String>,
+}
+
+/// The section of `Cargo.toml` that declares a dependency.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkKind {
+    /// `[dependencies]`.
+    Normal,
+    /// `[dev-dependencies]`.
+    Dev,
+    /// `[build-dependencies]`.
+    Build,
+}
+
+/// One direct dependency of a member.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Link {
+    /// The package name of the dependency.
+    pub package: String,
+    /// The `package = "..."` rename: the key in `Cargo.toml`, when it differs
+    /// from the package name.
+    pub rename: Option<String>,
+    /// The section of the dependency.
+    pub kind: LinkKind,
+    /// The `cfg` or target triple of a `[target.'...'.dependencies]` table.
+    pub platform: Option<String>,
+    /// True for an optional dependency, which a feature enables.
+    pub optional: bool,
 }
 
 /// One target of a member.
@@ -46,6 +80,13 @@ pub struct Target {
     pub src_path: String,
     /// The Rust edition of the target.
     pub edition: String,
+    /// The features that the target needs. They are not part of the report.
+    #[serde(skip)]
+    pub required_features: Vec<String>,
+    /// True when rustdoc tests the documentation of the target. It is not part
+    /// of the report.
+    #[serde(skip)]
+    pub doctest: bool,
 }
 
 /// Reads the workspace. Cargo does not resolve dependencies, does not use the
@@ -138,6 +179,22 @@ fn member(root: &Utf8Path, package: &Package) -> Member {
             .iter()
             .map(|dependency| dependency.name.clone())
             .collect(),
+        links: package.dependencies.iter().map(link_of).collect(),
+        features: package.features.keys().cloned().collect(),
+    }
+}
+
+fn link_of(dependency: &cargo_metadata::Dependency) -> Link {
+    Link {
+        package: dependency.name.clone(),
+        rename: dependency.rename.clone(),
+        kind: match dependency.kind {
+            DependencyKind::Development => LinkKind::Dev,
+            DependencyKind::Build => LinkKind::Build,
+            _ => LinkKind::Normal,
+        },
+        platform: dependency.target.as_ref().map(ToString::to_string),
+        optional: dependency.optional,
     }
 }
 
@@ -147,6 +204,8 @@ fn target_of(root: &Utf8Path, target: &CargoTarget) -> Target {
         kind: target.kind.iter().map(ToString::to_string).collect(),
         src_path: relative_path(root, &target.src_path),
         edition: target.edition.as_str().to_owned(),
+        required_features: target.required_features.clone(),
+        doctest: target.doctest,
     }
 }
 

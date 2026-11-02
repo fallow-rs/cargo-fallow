@@ -125,6 +125,7 @@ dependencies = [
  "fallow-report-protocol",
  "ra_ap_parser",
  "ra_ap_syntax",
+ "rustc-hash 2.1.3",
  "serde",
  "serde_json",
  "tempfile",

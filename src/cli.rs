@@ -39,6 +39,23 @@ pub struct Options {
     pub fail_on_parse_error: bool,
 }
 
+/// The options of the experimental `visibility` command.
+#[derive(Debug, Clone)]
+pub struct VisibilityOptions {
+    /// The `Cargo.toml` of the workspace, when the user gave one.
+    pub manifest_path: Option<PathBuf>,
+    /// The output format. SARIF is not supported.
+    pub format: Format,
+    /// True when progress lines stay hidden.
+    pub quiet: bool,
+    /// The production binaries, as `(package, bin)`. Empty means every binary.
+    pub production: Vec<(String, String)>,
+    /// The library crates whose public items are an external API.
+    pub exclude: Vec<String>,
+    /// True when the fields of one struct change visibility as a group.
+    pub uniform_fields: bool,
+}
+
 /// The result of argument parsing.
 #[derive(Debug)]
 pub enum Parsed {
@@ -46,6 +63,8 @@ pub enum Parsed {
     Run(Options),
     /// Run the `mutants` command with these options.
     Mutants(Box<crate::mutation::run::Options>),
+    /// Run the experimental visibility check.
+    Visibility(VisibilityOptions),
     /// Run the hidden watchdog of the memory guard.
     Watchdog {
         /// The file that lists the root of each process tree.
@@ -80,6 +99,10 @@ enum Command {
     Check(CheckArgs),
     /// Run the tests against small changes in the source of one package.
     Mutants(MutantsArgs),
+    /// Report `pub` items that only their own crate uses. This is an experiment
+    /// for the module graph, and its output can change.
+    #[command(hide = true)]
+    Visibility(VisibilityArgs),
     /// Kill the test processes when the parent process dies. The memory guard
     /// starts this command.
     #[command(hide = true, name = "mutation-watchdog")]
@@ -240,6 +263,52 @@ impl From<MutantsArgs> for crate::mutation::run::Options {
 }
 
 #[derive(Debug, Args)]
+struct VisibilityArgs {
+    /// Path to the Cargo.toml of the workspace.
+    #[arg(long, value_name = "PATH")]
+    manifest_path: Option<PathBuf>,
+    /// The output format.
+    #[arg(long, value_enum, default_value_t = Format::Human)]
+    format: Format,
+    /// Hide the progress lines on stderr.
+    #[arg(long)]
+    quiet: bool,
+    /// A production binary as `PACKAGE:BIN`. The flag can repeat. Without the
+    /// flag, every binary of the workspace is a production binary.
+    #[arg(long, value_name = "PACKAGE:BIN", value_parser = parse_production)]
+    production: Vec<(String, String)>,
+    /// A library crate whose public items are an external API. The flag can repeat.
+    #[arg(long, value_name = "CRATE")]
+    exclude_crate: Vec<String>,
+    /// Change the visibility of the fields of one struct as a group, when all
+    /// fields have the same written visibility.
+    #[arg(long)]
+    uniform_fields: bool,
+}
+
+fn parse_production(value: &str) -> Result<(String, String), String> {
+    match value.split_once(':') {
+        Some((package, bin)) if !package.is_empty() && !bin.is_empty() => {
+            Ok((package.to_owned(), bin.to_owned()))
+        }
+        _ => Err(format!("`{value}` is not in the form PACKAGE:BIN")),
+    }
+}
+
+impl From<VisibilityArgs> for VisibilityOptions {
+    fn from(args: VisibilityArgs) -> Self {
+        Self {
+            manifest_path: args.manifest_path,
+            format: args.format,
+            quiet: args.quiet,
+            production: args.production,
+            exclude: args.exclude_crate,
+            uniform_fields: args.uniform_fields,
+        }
+    }
+}
+
+#[derive(Debug, Args)]
 struct CheckArgs {
     /// Path to the Cargo.toml of the workspace.
     #[arg(long, value_name = "PATH")]
@@ -280,6 +349,7 @@ pub fn parse(args: &[OsString]) -> Parsed {
     match Cli::try_parse_from(args) {
         Ok(cli) => match cli.command {
             Some(Command::Mutants(args)) => Parsed::Mutants(Box::new(args.into())),
+            Some(Command::Visibility(args)) => Parsed::Visibility(args.into()),
             Some(Command::MutationWatchdog {
                 roots,
                 sweep,

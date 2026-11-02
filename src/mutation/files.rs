@@ -1,26 +1,18 @@
 //! Finds the source files of a package and copies a source tree.
 //!
-//! The walk starts at each target root and follows `mod name;` declarations,
-//! so a file that no module declares does not add mutants that no compile
-//! checks. A declaration inside a macro call is not visible to the parser. The
-//! report counts each file that the walk does not reach.
+//! The walk in [`crate::modules`] starts at each target root and follows
+//! `mod name;` declarations, so a file that no module declares does not add
+//! mutants that no compile checks. The report counts each file that the walk
+//! does not reach.
 
-use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
-use std::path::{Component, Path, PathBuf};
+use std::path::Path;
 
-use crate::mutation::sites::{FileSites, ModuleDecl, find_sites};
+pub use crate::modules::{SkippedFile, TargetRoot, normalize};
+use crate::modules::{Visit, walk};
+use crate::mutation::sites::{FileSites, find_sites};
 use crate::parse::Edition;
-
-/// A target root of a package.
-#[derive(Debug, Clone)]
-pub struct TargetRoot {
-    /// The root file, relative to the workspace root, with `/` separators.
-    pub path: String,
-    /// The edition of the target.
-    pub edition: Edition,
-}
 
 /// One source file of the package.
 #[derive(Debug, Clone)]
@@ -39,15 +31,6 @@ pub struct CrateFile {
     pub under_cfg: bool,
 }
 
-/// A file that the walk reached but cannot use.
-#[derive(Debug, Clone)]
-pub struct SkippedFile {
-    /// The path relative to the workspace root.
-    pub path: String,
-    /// The reason.
-    pub reason: String,
-}
-
 /// The result of the walk.
 #[derive(Debug, Clone, Default)]
 pub struct Collected {
@@ -61,155 +44,31 @@ pub struct Collected {
 
 /// Walks the module tree of each target.
 pub fn collect(workspace: &Path, targets: &[TargetRoot]) -> Collected {
-    let mut files: BTreeMap<String, CrateFile> = BTreeMap::new();
-    let mut skipped = Vec::new();
-    let mut seen = BTreeSet::new();
-    let mut folders = BTreeSet::new();
-    let mut queue: Vec<Pending> = targets
-        .iter()
-        .map(|target| {
-            if let Some(parent) = Path::new(&target.path).parent() {
-                folders.insert(parent.to_path_buf());
-            }
-            Pending {
-                path: target.path.clone(),
-                edition: target.edition,
-                is_root: true,
-                is_mod_rs: true,
-                under_cfg: false,
-            }
-        })
-        .collect();
-    while let Some(next) = queue.pop() {
-        if !seen.insert(next.path.clone()) {
-            continue;
-        }
-        match load_file(workspace, &next) {
-            Ok(file) => {
-                let dir = child_dir(&next.path, next.is_mod_rs);
-                for module in &file.found.modules {
-                    let child = resolve_module(workspace, &next.path, &dir, module);
-                    queue.extend(child.map(|(path, is_mod_rs)| Pending {
-                        path,
-                        edition: next.edition,
-                        is_root: false,
-                        is_mod_rs,
-                        under_cfg: next.under_cfg || module.under_cfg,
-                    }));
-                }
-                files.insert(file.path.clone(), file);
-            }
-            Err(reason) => skipped.push(SkippedFile {
-                path: next.path,
-                reason,
-            }),
-        }
-    }
-    let unreached = count_unreached(workspace, &folders, &seen);
+    let walked = walk(workspace, targets, |visit| {
+        let file = load_file(workspace, visit)?;
+        let modules = file.found.modules.clone();
+        Ok((file, modules))
+    });
     Collected {
-        files: files.into_values().collect(),
-        skipped,
-        unreached,
+        files: walked.files,
+        skipped: walked.skipped,
+        unreached: walked.unreached,
     }
 }
 
-struct Pending {
-    path: String,
-    edition: Edition,
-    is_root: bool,
-    is_mod_rs: bool,
-    under_cfg: bool,
-}
-
-fn load_file(workspace: &Path, next: &Pending) -> Result<CrateFile, String> {
-    let original = fs::read_to_string(workspace.join(&next.path))
+fn load_file(workspace: &Path, visit: &Visit) -> Result<CrateFile, String> {
+    let original = fs::read_to_string(workspace.join(&visit.path))
         .map_err(|err| format!("cannot read the file: {err}"))?;
-    let found = find_sites(&original, next.edition, &next.path)
+    let found = find_sites(&original, visit.edition, &visit.path)
         .map_err(|outcome| format!("the parse failed: {outcome:?}"))?;
     Ok(CrateFile {
-        path: next.path.clone(),
+        path: visit.path.clone(),
         original,
-        edition: next.edition,
+        edition: visit.edition,
         found,
-        is_root: next.is_root,
-        under_cfg: next.under_cfg,
+        is_root: visit.is_root,
+        under_cfg: visit.under_cfg,
     })
-}
-
-/// The folder of the modules that a file declares: the folder of the file for
-/// a root or a `mod.rs` file, else a subfolder with the file stem.
-fn child_dir(path: &str, is_mod_rs: bool) -> PathBuf {
-    let path = Path::new(path);
-    let parent = path.parent().unwrap_or_else(|| Path::new(""));
-    match (is_mod_rs, path.file_stem()) {
-        (false, Some(stem)) => parent.join(stem),
-        _ => parent.to_path_buf(),
-    }
-}
-
-/// The file of a module declaration, and whether it counts as a `mod.rs` file.
-fn resolve_module(
-    workspace: &Path,
-    declaring_file: &str,
-    dir: &Path,
-    module: &ModuleDecl,
-) -> Option<(String, bool)> {
-    if let Some(attr) = &module.path_attr {
-        let parent = Path::new(declaring_file).parent()?;
-        let path = normalize(&parent.join(attr))?;
-        return workspace.join(&path).is_file().then_some((path, true));
-    }
-    let mut base = dir.to_path_buf();
-    base.extend(&module.inline_path);
-    let flat = normalize(&base.join(format!("{}.rs", module.name)))?;
-    if workspace.join(&flat).is_file() {
-        return Some((flat, false));
-    }
-    let nested = normalize(&base.join(&module.name).join("mod.rs"))?;
-    workspace.join(&nested).is_file().then_some((nested, true))
-}
-
-/// Removes `.` and `..` from a relative path and joins it with `/`. Returns
-/// `None` for a path that leaves the workspace root.
-pub fn normalize(path: &Path) -> Option<String> {
-    let mut parts: Vec<String> = Vec::new();
-    for component in path.components() {
-        match component {
-            Component::Normal(part) => parts.push(part.to_string_lossy().into_owned()),
-            Component::CurDir => {}
-            Component::ParentDir => {
-                parts.pop()?;
-            }
-            Component::RootDir | Component::Prefix(_) => return None,
-        }
-    }
-    Some(parts.join("/"))
-}
-
-fn count_unreached(workspace: &Path, folders: &BTreeSet<PathBuf>, seen: &BTreeSet<String>) -> u32 {
-    let mut all = BTreeSet::new();
-    for folder in folders {
-        list_rust_files(workspace, folder, &mut all);
-    }
-    let unreached = all.iter().filter(|path| !seen.contains(*path)).count();
-    u32::try_from(unreached).unwrap_or(u32::MAX)
-}
-
-fn list_rust_files(workspace: &Path, folder: &Path, into: &mut BTreeSet<String>) {
-    let Ok(entries) = fs::read_dir(workspace.join(folder)) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let relative = folder.join(entry.file_name());
-        let Ok(kind) = entry.file_type() else {
-            continue;
-        };
-        if kind.is_dir() {
-            list_rust_files(workspace, &relative, into);
-        } else if relative.extension().is_some_and(|ext| ext == "rs") {
-            into.extend(normalize(&relative));
-        }
-    }
 }
 
 /// Copies a source tree. The copy leaves out each `.git` folder, the `target`
@@ -263,23 +122,6 @@ fn copy_link(source: &Path, destination: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn normalize_removes_dots_and_refuses_an_escape() {
-        assert_eq!(
-            normalize(Path::new("a/./b/../c.rs")).as_deref(),
-            Some("a/c.rs")
-        );
-        assert_eq!(normalize(Path::new("../c.rs")), None);
-        assert_eq!(normalize(Path::new("/abs/c.rs")), None);
-    }
-
-    #[test]
-    fn child_folder_follows_the_file_kind() {
-        assert_eq!(child_dir("src/lib.rs", true), Path::new("src"));
-        assert_eq!(child_dir("src/a.rs", false), Path::new("src/a"));
-        assert_eq!(child_dir("src/b/mod.rs", true), Path::new("src/b"));
-    }
 
     #[test]
     fn copy_leaves_out_git_and_the_root_target() {

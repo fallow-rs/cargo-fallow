@@ -35,6 +35,7 @@ serde_json = { version = "1", features = ["preserve_order"] }
 # each release. Update both on a fixed schedule, not through Dependabot.
 ra_ap_parser = "=0.0.359"
 ra_ap_syntax = "=0.0.359"
+rustc-hash = "2"
 tempfile = "3"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 

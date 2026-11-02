@@ -8,13 +8,17 @@
 // `.clippy.toml`.
 #![cfg_attr(not(test), deny(clippy::disallowed_methods))]
 
+mod attrs;
 mod cli;
 mod error;
 mod gates;
+mod graph;
+mod modules;
 mod mutation;
 mod parse;
 mod render;
 mod report;
+mod visibility;
 mod workspace;
 
 use std::ffi::OsString;
@@ -36,6 +40,7 @@ pub fn run(args: Vec<OsString>) -> ExitCode {
     let code = match cli::parse(&args) {
         Parsed::Run(options) => run_check(&options),
         Parsed::Mutants(options) => run_mutants(&options),
+        Parsed::Visibility(options) => run_visibility(&options),
         Parsed::Watchdog {
             roots,
             sweep,
@@ -58,6 +63,47 @@ fn run_check(options: &Options) -> u8 {
             EXIT_INVALID_INPUT
         }
     }
+}
+
+/// Runs the experimental `visibility` command and returns the process exit code.
+fn run_visibility(options: &cli::VisibilityOptions) -> u8 {
+    visibility_report(options).unwrap_or_else(|err| {
+        err.emit(options.format);
+        EXIT_INVALID_INPUT
+    })
+}
+
+fn visibility_report(options: &cli::VisibilityOptions) -> Result<u8, CliError> {
+    if options.format == cli::Format::Sarif {
+        return Err(CliError::new(
+            error::ErrorCode::InvalidArgument,
+            "the `visibility` command has no SARIF output",
+        )
+        .with_help("Use `--format human` or `--format json`."));
+    }
+    let progress = render::Progress::new(options.quiet);
+    progress.step("Reading cargo metadata");
+    let workspace = workspace::load(options.manifest_path.as_deref())?;
+    progress.step("Building the module graph");
+    let production = graph::Production {
+        bins: options.production.clone(),
+    };
+    let module_graph = graph::build(&workspace, &production);
+    progress.step("Checking the visibility");
+    let analysis = visibility::analyze(
+        &module_graph,
+        &visibility::Options {
+            exclude: options.exclude.clone(),
+            uniform_fields: options.uniform_fields,
+        },
+    );
+    let report = visibility::report::VisibilityReport::new(&module_graph, &analysis);
+    let text = match options.format {
+        cli::Format::Json => to_json(&report)?,
+        _ => report.human(),
+    };
+    render::write_stdout(text.trim_end()).map_err(|err| CliError::output(&err))?;
+    Ok(EXIT_OK)
 }
 
 /// Runs the `mutants` command and returns the process exit code.

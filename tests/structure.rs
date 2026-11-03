@@ -360,6 +360,47 @@ fn dupes_skip_a_large_data_file_without_a_generator_header_in_time() {
 }
 
 #[test]
+fn a_config_threshold_reports_the_gate_but_fails_only_with_a_gate_flag() {
+    let fixture = Fixture::new();
+    let manifest = fs::read_to_string(fixture.manifest()).expect("read the manifest");
+    fixture.write(
+        "Cargo.toml",
+        &format!(
+            "{manifest}\n[workspace.metadata.fallow.dupes]\nmin-tokens = 30\nthreshold = 0.1\n"
+        ),
+    );
+    let (code, report) = fixture.json(&["dupes"]);
+    let gate = &report["gate_outcomes"]["duplication-threshold"];
+    assert_eq!(code, 0, "{report}");
+    assert_eq!(gate["status"], "fail", "{gate}");
+    assert_eq!(gate["enforced"], false, "{gate}");
+    let (code, report) = fixture.json(&["dupes", "--fail-on-clones"]);
+    assert_eq!(code, 1, "{report}");
+    assert_eq!(
+        report["gate_outcomes"]["duplication-threshold"]["enforced"], false,
+        "--fail-on-clones enforces only the clone gate"
+    );
+    let (code, report) = fixture.json(&["dupes", "--threshold", "0.1"]);
+    assert_eq!(code, 1, "the flag is an explicit gate");
+    assert_eq!(
+        report["gate_outcomes"]["duplication-findings"]["enforced"], false,
+        "the exit comes from the threshold gate"
+    );
+
+    let (code, report) = fixture.json(&["check", "--only", "dupes"]);
+    let gate = &report["gate_outcomes"]["duplication-threshold"];
+    assert_eq!(code, 0, "{report}");
+    assert_eq!(gate["status"], "fail", "{gate}");
+    assert_eq!(gate["enforced"], false, "{gate}");
+    let (code, report) = fixture.json(&["check", "--only", "dupes", "--fail-on-issues"]);
+    assert_eq!(code, 1);
+    assert_eq!(
+        report["gate_outcomes"]["duplication-threshold"]["enforced"], true,
+        "{report}"
+    );
+}
+
+#[test]
 fn dupes_read_their_settings_from_the_table_with_the_command_name() {
     let fixture = Fixture::new();
     let manifest = fs::read_to_string(fixture.manifest()).expect("read the manifest");

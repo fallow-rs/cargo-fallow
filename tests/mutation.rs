@@ -436,9 +436,17 @@ fn the_guard_kills_a_mutant_that_allocates_without_limit() {
     assert!(mutant["duration_ms"].as_u64() < Some(60_000), "{report}");
 }
 
-/// This fixture has no sleep, so it grows as fast as the machine can write. On
-/// 2026-11-01 such a mutant reached 24 GiB before a kill, because the guard waited
-/// for `top`. The cap on the blocks bounds the memory if the guard is broken.
+/// On 2026-11-01 a mutant without a sleep reached 24 GiB before a kill, because
+/// the guard waited for `top`. The unit test
+/// `the_rss_thread_stops_a_process_before_a_slow_read_of_top_ends` checks that
+/// order. This test checks the full path with a fast mutant.
+///
+/// The guard reads RSS each 200 ms. Without a sleep, a mutant writes 8 to 20 GB/s,
+/// so the RSS at the stop measures the memory bandwidth, not the guard: under
+/// load it passed 3 GiB. A sleep of 1 ms for each MiB keeps the rate under about
+/// 1 GB/s, five times the rate of `GROW`. Then a stop at the first table over
+/// the limit stays under 1 GiB, also under load. The cap on the blocks bounds
+/// the memory if the guard is broken.
 #[test]
 fn the_guard_stops_a_fast_mutant_near_the_limit() {
     let lib = r"
@@ -448,6 +456,7 @@ pub fn grow(start: i64) -> usize {
     let mut blocks: Vec<Vec<u8>> = Vec::new();
     while left != 0 && blocks.len() < 6144 {
         blocks.push(vec![1_u8; 1 << 20]);
+        std::thread::sleep(std::time::Duration::from_millis(1));
         left = if left > 0 { left - 1 } else { left + 1 };
     }
     blocks.len()
@@ -476,7 +485,7 @@ fn grow_works() {
         .split_whitespace()
         .find_map(|word| word.parse().ok())
         .unwrap_or_else(|| panic!("{reason}"));
-    assert!(reached < 3072, "{reason}");
+    assert!(reached < 1536, "{reason}");
 }
 
 #[test]

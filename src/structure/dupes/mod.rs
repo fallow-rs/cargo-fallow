@@ -229,15 +229,30 @@ pub fn run(args: &DupesArgs) -> Result<Section, CliError> {
             tokens: Some((settings.mode, settings.ignore_imports)),
         },
     );
-    section(&loaded, &settings, args.fail_on_clones, progress)
+    // `--threshold` is the flag of the threshold gate. A threshold from the
+    // config only reports the gate, the same as each other gate without its flag.
+    let gates = Enforce {
+        clones: args.fail_on_clones,
+        threshold: args.threshold.is_some(),
+    };
+    section(&loaded, &settings, gates, progress)
+}
+
+/// The gates of the check that fail the run.
+#[derive(Debug, Clone, Copy)]
+pub struct Enforce {
+    /// The `duplication-findings` gate.
+    pub clones: bool,
+    /// The `duplication-threshold` gate.
+    pub threshold: bool,
 }
 
 /// Finds the clone groups in `loaded`. The load must have the tokens of
-/// `settings`. `enforced` is true when a clone group fails the run.
+/// `settings`. `enforced` names the gates that fail the run.
 pub fn section(
     loaded: &Loaded,
     settings: &Duplication,
-    enforced: bool,
+    enforced: Enforce,
     progress: Progress,
 ) -> Result<Section, CliError> {
     let files: Vec<&File> = loaded
@@ -272,7 +287,7 @@ pub fn section(
     let mut report = Report::new("dupes", summary, found.groups);
     report.gate_outcomes.insert(
         Gate::DuplicationFindings,
-        count_gate(report.findings.len(), enforced),
+        count_gate(report.findings.len(), enforced.clones),
     );
     if settings.threshold > 0.0 {
         let observed = report.summary.stats.duplication_percentage;
@@ -285,7 +300,7 @@ pub fn section(
             Gate::DuplicationThreshold,
             fallow_report_protocol::GateOutcome::measured(
                 status,
-                true,
+                enforced.threshold,
                 observed,
                 settings.threshold,
             ),
@@ -295,7 +310,7 @@ pub fn section(
     Ok(Section {
         human: human(&report),
         json: to_value(&report)?,
-        sarif: sarif_log(&findings, &report, enforced),
+        sarif: sarif_log(&findings, &report, enforced.clones),
         findings,
         gates: report.gate_outcomes,
     })

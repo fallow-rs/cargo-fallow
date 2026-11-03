@@ -993,6 +993,49 @@ mod tests {
         assert_eq!(guard.kills(), 1);
     }
 
+    /// A read of `top` takes about 0.7 s, and a test process without a sleep can
+    /// grow by GiBs in that time. The RSS thread stops the process at the first
+    /// table over the limit, before the slow read of the footprint ends.
+    #[cfg(unix)]
+    #[test]
+    fn the_rss_thread_stops_a_process_before_a_slow_read_of_top_ends() {
+        let read_time = Duration::from_secs(3);
+        let probe = Arc::new(FakeProbe {
+            rss_kib: OVER,
+            footprint: Ok(OVER),
+            free: AtomicU32::new(80),
+            footprint_reads: AtomicU32::new(0),
+            table_reads: AtomicU32::new(0),
+            free_reads: AtomicU32::new(0),
+            delay: read_time,
+            empty: false,
+        });
+        let guard = Guard::with_probe(LIMITS, probe);
+        let start = Instant::now();
+        let (stopped_after, exit) = thread::scope(|scope| {
+            let run = scope.spawn(|| sleep_under(&guard, Scope::Tests, LONG));
+            let mut stopped_after = None;
+            while stopped_after.is_none() && start.elapsed() < read_time {
+                if !guard.shared.lock().stopped.is_empty() {
+                    stopped_after = Some(start.elapsed());
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+            (stopped_after, run.join())
+        });
+        let Ok(exit) = exit else {
+            panic!("the run thread must not panic");
+        };
+        let Some(stopped_after) = stopped_after else {
+            panic!("no stop before the read of top ended: {exit:?}");
+        };
+        assert!(stopped_after < read_time / 2, "{stopped_after:?}");
+        assert!(
+            matches!(exit, Exit::Killed(KillReason::MemoryLimit { .. })),
+            "{exit:?}"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn the_thread_fails_closed_when_it_cannot_read_a_footprint() {

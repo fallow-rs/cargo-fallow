@@ -395,7 +395,11 @@ fn source_checks(
         part.complexity = Some(complexity::section(&loaded, complexity, enforced)?);
     }
     if let Some(dupes) = &settings.dupes {
-        part.dupes = Some(dupes::section(&loaded, dupes, enforced, progress)?);
+        let gates = dupes::Enforce {
+            clones: enforced,
+            threshold: enforced,
+        };
+        part.dupes = Some(dupes::section(&loaded, dupes, gates, progress)?);
         part.metrics.duplication_percentage = part.dupes.as_ref().and_then(|section| {
             section.json["summary"]["stats"]["duplication_percentage"].as_f64()
         });

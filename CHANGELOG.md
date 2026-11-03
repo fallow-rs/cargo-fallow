@@ -28,3 +28,7 @@ GitHub release. Each release needs a `## [X.Y.Z] - YYYY-MM-DD` section.
 - The JSON `severity` of a finding is now `warn`, not `warning`. The fallow
   JSON output and the shared `GateStatus` use `warn`. SARIF keeps its own
   `warning` level.
+- A `threshold` in `[workspace.metadata.fallow.dupes]` no longer fails the run
+  on its own. The `duplication-threshold` gate fails the run only with its
+  flag, the same as each other gate.
+- `cargo fallow visibility` reports no finding in a generated file.

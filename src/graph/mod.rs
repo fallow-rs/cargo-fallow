@@ -14,7 +14,7 @@ pub mod extract;
 pub mod resolve;
 pub mod tokens;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 use std::thread;
@@ -26,6 +26,7 @@ use crate::graph::extract::{
 };
 use crate::modules::{SkippedFile, TargetRoot, normalize, walk};
 use crate::parse::Edition;
+use crate::structure::source::{has_generated_marker, is_generated};
 use crate::workspace::{LinkKind, Member, Target, Workspace};
 
 /// An index into [`Graph::crates`].
@@ -252,6 +253,9 @@ pub struct Graph {
     pub skipped: Vec<SkippedFile>,
     /// The `.rs` files under the root folders that no declaration reached.
     pub unreached: u32,
+    /// The parsed files with a generator header or an `@generated` comment in
+    /// the first lines. A generator writes their code, so no check reports it.
+    pub generated_files: BTreeSet<String>,
 }
 
 /// The parsed files of one crate.
@@ -266,6 +270,7 @@ struct ParsedFile {
     module_path: Vec<String>,
     under_cfg: bool,
     cfg_off: bool,
+    generated: bool,
     facts: FileFacts,
 }
 
@@ -325,6 +330,10 @@ pub fn build(workspace: &Workspace, production: &Production) -> Graph {
             required_features: target.required_features.clone(),
             doc_externs,
         });
+        let generated = files.files.iter().filter(|file| file.generated);
+        graph
+            .generated_files
+            .extend(generated.map(|file| file.path.clone()));
         add_files(
             &mut graph,
             root,
@@ -395,6 +404,7 @@ fn parse_target(root: &Path, target: &Target) -> CrateFiles {
                 module_path: visit.module_path.clone(),
                 under_cfg: visit.under_cfg,
                 cfg_off: visit.cfg_off,
+                generated: is_generated(&source) || has_generated_marker(&source),
                 facts,
             },
             modules,

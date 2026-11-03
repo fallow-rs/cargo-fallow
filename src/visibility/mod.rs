@@ -132,6 +132,7 @@ pub fn fast_report(
 ) -> report::VisibilityReport {
     let check_options = check_options(options, workspace.root.clone().into_std_path_buf());
     let mut analysis = analyze(graph, &check_options);
+    skip_generated(graph, &mut analysis);
     analysis.retain_kinds(&options.kinds);
     report::VisibilityReport::new(report::Inputs {
         graph,
@@ -175,6 +176,24 @@ pub fn analyze(graph: &Graph, options: &Options) -> Analysis {
     };
     hold_opaque(graph, options, &mut analysis);
     analysis
+}
+
+/// Removes the findings and candidates in a generated file. The generator
+/// writes the visibility, so a change by hand does not last. Call it last: a
+/// re-export finding in a generated file still holds back its target in
+/// [`refine`].
+pub fn skip_generated(graph: &Graph, analysis: &mut Analysis) {
+    if graph.generated_files.is_empty() {
+        return;
+    }
+    let keep = |finding: &Finding| {
+        !graph
+            .generated_files
+            .contains(&graph.items[finding.item].file)
+    };
+    analysis.findings.retain(keep);
+    analysis.undecided.retain(keep);
+    analysis.opaque.retain(keep);
 }
 
 /// How far code that the graph cannot read reaches into a crate.
@@ -981,3 +1000,6 @@ fn keep_field_groups(graph: &Graph, surface: &Surface, findings: &mut Vec<Findin
         finding.kind == FindingKind::DeadPublic || !blocked.contains(&finding.item)
     });
 }
+
+#[cfg(test)]
+mod tests;

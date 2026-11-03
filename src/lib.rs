@@ -99,6 +99,7 @@ fn visibility_report(options: &cli::VisibilityOptions) -> Result<u8, CliError> {
     };
     let summary = visibility::precise::decide(&module_graph, &mut analysis, &run)?;
     visibility::refine(&module_graph, &check_options, &mut analysis);
+    visibility::skip_generated(&module_graph, &mut analysis);
     // A gate must not pass on a part of the decisions.
     if options.fail_on_issues && summary.incomplete() {
         return Err(error::CliError::new(

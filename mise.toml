@@ -11,7 +11,7 @@
 
 [tools]
 # Same major version as each `actions/setup-node` step in the workflows.
-node = "22"
+node = "26"
 
 # Same version as fallow. The CI `typos` job uses the same typos action
 # commit as fallow.

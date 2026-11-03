@@ -12,12 +12,12 @@ keywords = ["cargo", "cargo-subcommand", "static-analysis", "mutation-testing"]
 categories = ["development-tools::cargo-plugins"]
 # Remove at M4 launch.
 publish = false
-exclude = ["tests/fixtures", "fuzz", "experimental"]
+exclude = ["tests/fixtures", "fuzz"]
 
 # The fixtures and the fuzz crate have their own `[workspace]` tables. This
 # table keeps their manifests out of the root workspace.
 [workspace]
-exclude = ["tests/fixtures", "fuzz", "experimental"]
+exclude = ["tests/fixtures", "fuzz"]
 
 # The package installs only `cargo-fallow`. It never installs a binary named
 # `fallow`, because that name belongs to the JavaScript CLI.

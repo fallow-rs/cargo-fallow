@@ -30,10 +30,9 @@ cargo metadata -> workspace model -> gates -> report -> render
 - `src/attrs.rs` reads attributes and names from the syntax tree.
 - `src/graph/` holds the workspace module graph: crates, modules, items,
   imports and references, and the name resolution in `resolve.rs`.
-- `src/visibility/` holds the hidden, experimental `visibility` command of the
-  M2 gap measurement. Its output can change without a version step.
-- `experimental/precise/` is a separate crate with its own lockfile. It is the
-  `--precise` prototype on the `ra_ap_*` crates, and the build does not use it.
+- `src/visibility/` holds the `visibility` command. `precise/` holds
+  `--precise` mode: a worker process on the `ra_ap_*` crates, behind the
+  `precise` Cargo feature. Keep each `ra_ap_*` crate on one version.
 - `src/mutation/` holds the `mutants` command. `src/mutation/mod.rs` lists its
   parts. A mutated binary runs only through `process::run_to_files`, under a time
   limit and the memory guard.

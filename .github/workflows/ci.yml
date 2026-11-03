@@ -129,6 +129,32 @@ jobs:
       - name: Check for uncommitted changes
         run: git diff --exit-code
 
+  # The `precise` feature adds rust-analyzer as a library. The default jobs do
+  # not build it. `--precise` needs the standard library source and the
+  # proc-macro server of the toolchain, which the `rustc` component ships.
+  precise:
+    name: Precise mode
+    runs-on: ubuntu-26.04
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+        with:
+          components: clippy, rust-src
+          cache-key: precise
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
+        with:
+          tool: cargo-nextest
+      - run: cargo clippy --all-targets --locked --features precise -- -D warnings
+      - name: Run the visibility tests
+        run: cargo nextest run --profile ci --locked --features precise -E 'binary(visibility) | test(/precise/)'
+      - name: Check for uncommitted changes
+        run: git diff --exit-code
+
   doc:
     name: Documentation
     runs-on: ubuntu-26.04

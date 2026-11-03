@@ -7,8 +7,9 @@ with `ra_ap_syntax`, the parser of rust-analyzer. It runs on stable Rust and nee
 ## Status
 
 Pre-release. The `check` command reads the workspace and reports two gates. The
-`mutants` command runs mutation tests on one package. The JSON shapes can change
-before the first release.
+`mutants` command runs mutation tests on one package. The `visibility` command
+reports items whose visibility can be smaller. The JSON shapes can change before
+the first release.
 
 ## Install
 
@@ -381,6 +382,94 @@ The `gaps` part of the report counts the code that a run does not cover:
 - A test that closes each inherited file descriptor, or a system with no `/dev/fd`,
   turns the schema switch off. Then a mutant can survive. `--no-schema` checks that.
 
+## Visibility
+
+`cargo fallow visibility` reports items whose visibility is larger than their
+uses need. The model is closed-world: the workspace is the only user of its
+libraries, unless you exclude a library with `--exclude-crate`.
+
+| Kind | Meaning | Change |
+| --- | --- | --- |
+| `dead_public` | A `pub` item that no code reaches. | `pub` to `pub(crate)`. Then the compiler shows the dead code. |
+| `unnecessary_public` | A `pub` item that only its own crate uses. | `pub` to `pub(crate)`. |
+| `unnecessary_restricted_visibility` | A `pub(crate)`, `pub(super)` or `pub(in path)` item that only its own module and its child modules use. | Remove the keyword. |
+
+```bash
+cargo fallow visibility
+cargo fallow visibility --format json --quiet --kind dead-public
+cargo fallow visibility --production my-cli:my-cli --exclude-crate my_api --fail-on-issues
+cargo fallow visibility --precise
+```
+
+| Flag | Meaning |
+| --- | --- |
+| `--production <PACKAGE:BIN>` | A production binary. The flag can repeat. Without it, each binary is a production binary. Tests, benches, examples and doctests are other roots: an item that only they use has `test_only: true`. |
+| `--exclude-crate <CRATE>` | A library whose public items are an external API. The flag can repeat. |
+| `--uniform-fields` | The fields of one struct with one written visibility change as a group. |
+| `--kind <KIND>` | Report only this kind: `dead-public`, `unnecessary-public` or `unnecessary-restricted-visibility`. The flag can repeat. |
+| `--fail-on-issues` | Exit 1 when the run has a finding. |
+| `--precise` | Decide the undecided candidates with rust-analyzer. See below. |
+
+The check uses syntax and the module graph of the workspace. When the syntax
+cannot decide, the check gives credit and does not report. Credit goes to:
+
+- a method call or a field access: each item with that name, because the type
+  of the receiver is unknown,
+- a name in macro tokens, in an attribute or in a documentation code block,
+- items of trait impls, `#[macro_export]` macros and proc-macro entry points,
+- items under an attribute macro, for example the fields of a
+  `#[napi(object)]` struct,
+- items under `allow(dead_code)` or `expect(dead_code)`, also when the
+  attribute is on an enclosing item, module or file,
+- items behind a glob re-export.
+
+The check does not evaluate `cfg`: each branch counts as code.
+
+### Output
+
+The JSON report has `schema_version`, `version`, `kind` (`visibility`),
+`language`, `mode` (`fast` or `precise`), `total_issues`, `summary`,
+`gate_outcomes`, `precise`, `graph`, `crates`, `findings` and `undecided`.
+
+Each finding has an `actions` array with one action of type
+`change-visibility`. It gives the written keyword (`from`), the new keyword
+(`to`, an empty text for private) and the `range` of the keyword. An enum
+variant has no keyword, so its action has the type `remove-item`.
+`auto_fixable` is false: a change can need a change in other code, for
+example in a `pub use`.
+
+`undecided` lists the candidates that only an untyped credit keeps. They are
+not findings. `--format sarif` gives one result for each finding, with the
+level `error` when `--fail-on-issues` is on. The gate is
+`visibility-findings`.
+
+### Precise mode
+
+`--precise` decides only the undecided candidates: method calls on a type that
+the syntax cannot know, and names in macro output. A worker process loads the
+workspace into rust-analyzer, runs the build scripts and the proc-macros, and
+finds the uses of each candidate with name resolution and type inference.
+
+Precise mode needs a build with the `precise` feature. The feature adds about
+150 crates to the build.
+
+```bash
+cargo install --path . --locked --features precise
+```
+
+The proc-macro server comes from the sysroot of the active toolchain, and the
+standard library source comes from the `rust-src` component.
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--precise-timeout <SECONDS>` | 1200 | The time limit of the worker. |
+| `--precise-memory-limit <MIB>` | 8192 | The memory guard stops the worker above this footprint. |
+| `--precise-file-limit <KIB>` | 512 | The largest file that the search reads with name resolution. A candidate whose name is in a larger file stays undecided. |
+
+When a limit stops the worker, the decisions that it made stay, and the other
+candidates stay undecided. `precise.status` gives the reason, and a warning
+goes to stderr.
+
 ## Output formats
 
 This section describes `check`. [Output](#output) describes `mutants`.
@@ -415,7 +504,7 @@ other formats, the error goes to stderr.
 | Code | Meaning |
 | --- | --- |
 | `0` | No enforced gate failed. |
-| `1` | An enforced gate failed. For `mutants`, a survivor with `--fail-on-survivors`. |
+| `1` | An enforced gate failed. For `mutants`, a survivor with `--fail-on-survivors`. For `visibility`, a finding with `--fail-on-issues`. |
 | `2` | The input was not valid, or the run could not complete. |
 
 Each command uses these codes and the same error document.

@@ -1,4 +1,4 @@
-//! Black-box tests of the experimental `visibility` command.
+//! Black-box tests of the `visibility` command.
 //!
 //! Each test writes a small workspace to a temporary directory and checks the
 //! set of findings. A finding is `kind item`, for example

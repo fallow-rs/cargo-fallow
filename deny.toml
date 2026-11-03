@@ -21,6 +21,12 @@ allow = [
 ]
 confidence-threshold = 0.8
 
+# The `precise` feature pulls in this crate through rust-analyzer. Its license
+# is Apache-2.0 with the LLVM exception, which only adds permissions.
+[[licenses.exceptions]]
+crate = "rustc_apfloat"
+allow = ["Apache-2.0 WITH LLVM-exception"]
+
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"

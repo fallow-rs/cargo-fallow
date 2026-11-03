@@ -146,23 +146,25 @@ pub struct Penalties {
 }
 
 impl Penalties {
-    /// The check of each penalty, in the order of [`Penalties::values`].
-    const CHECKS: [&'static str; 6] = [
-        "visibility",
-        "complexity",
-        "size",
+    /// The check of each penalty, in the order of [`Penalties::values`]. The
+    /// order is the run order of `check`, so `missing_checks` has the order of
+    /// the `checks` array of the report.
+    pub const CHECKS: [&'static str; 6] = [
         "deps",
+        "visibility",
         "boundaries",
+        "size",
+        "complexity",
         "dupes",
     ];
 
     fn values(&self) -> [Option<f64>; 6] {
         [
-            self.dead_public,
-            self.complexity,
-            self.unit_size,
             self.unused_deps,
+            self.dead_public,
             self.boundary_violations,
+            self.unit_size,
+            self.complexity,
             self.duplication,
         ]
     }
@@ -444,8 +446,36 @@ mod tests {
         assert_eq!(health.as_ref().map(|h| h.grade), Some(None));
         assert_eq!(
             health.map(|h| h.missing_checks),
-            Some(vec!["visibility", "complexity", "size", "boundaries", "dupes"])
+            Some(vec![
+                "visibility",
+                "boundaries",
+                "size",
+                "complexity",
+                "dupes"
+            ])
         );
+    }
+
+    #[test]
+    fn the_penalty_checks_are_check_names_in_run_order() {
+        let names: Vec<&str> = crate::check::CheckName::ALL
+            .iter()
+            .map(|name| name.as_str())
+            .filter(|name| Penalties::CHECKS.contains(name))
+            .collect();
+        assert_eq!(names, Penalties::CHECKS);
+    }
+
+    #[test]
+    fn a_check_that_ran_with_zero_inputs_keeps_the_score() {
+        let metrics = Metrics {
+            size_functions: Some(0),
+            large_functions: Some(0),
+            declared_dependencies: Some(0),
+            unused_deps: Some(0),
+            ..all_checks()
+        };
+        assert_eq!(score(metrics).and_then(|h| h.score), Some(100.0));
     }
 
     #[test]

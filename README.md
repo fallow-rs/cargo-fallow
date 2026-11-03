@@ -94,16 +94,17 @@ dependencies instead. Rust functions are longer than JavaScript functions, so
 the `unit_size` weight is 0.2, not 0.5. [`docs/health-score.md`](docs/health-score.md)
 has the corpus data for this weight. Each input is rounded to one decimal before its weight,
 and each penalty after it. A check that did not run gives no penalty, and its key is not in
-`penalties`. The `metrics` object holds the inputs.
-
-The score and the grade need all six checks. A run without one of them, for
-example `--only deps,visibility`, has no `score` and no `grade`. Its
-`missing_checks` array names the checks that the run did not include, and the
-human output says `Health (rust): no score.` The penalties of the checks that
-ran stay in the report. A function counts when no
+`penalties`. The `metrics` object holds the inputs. A function counts when no
 `exclude` list of `size` or `complexity` names its file. The `pub` items of a
 crate in `exclude-crates` of `visibility` do not count. `formula_version` is
 `2`. A change of a weight, a cap or an input increments it.
+
+The score and the grade need all six checks. A run without one of them, for
+example `--only deps,visibility`, has no `score` and no `grade`. Its
+`missing_checks` array names the checks that the run did not include, in the
+order of `checks`, and the human output says `Health (rust): no score.` The
+penalties of the checks that ran stay in the report. A run without a check
+that has a penalty, for example `--only parse`, has no `health` object.
 
 ## Mutation testing
 
@@ -716,7 +717,8 @@ This section describes `check`. [Output](#output) describes `mutants`.
   stdout. Progress lines go to stderr.
 - `json`: the report on stdout. The report has `schema_version` (2),
   `version`, `kind`, `language`, `workspace`, `checks`, `total_issues`,
-  `health`, `findings`, `gate_outcomes` and `sections`. `sections` holds the
+  `health`, `findings`, `gate_outcomes` and `sections`. `health` has no
+  `score` and no `grade` when `health.missing_checks` names a check. `sections` holds the
   JSON report of each check that ran, keyed by check name. Each section is the
   same as the output of the command of the same name. `findings` holds the
   findings of each check in one shape: `id`, `check`, `rule`, `severity`,

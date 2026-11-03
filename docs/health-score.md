@@ -83,6 +83,10 @@ From version 2, the score and the grade need all six checks:
 - The penalties and the metrics of the checks that ran stay in the report.
 - The human output says `Health (rust): no score. The run did not include
   <checks>.`
+- A run without a check that has a penalty, for example `--only parse`, has no
+  `health` object.
+- A check that ran with zero inputs, for example a workspace without
+  dependencies, gives a penalty of 0 and keeps the score.
 
 ## Repeat the measurement
 

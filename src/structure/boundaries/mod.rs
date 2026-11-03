@@ -25,17 +25,20 @@ use ra_ap_syntax::{SyntaxKind, SyntaxNode};
 use serde::Serialize;
 
 use crate::error::{CliError, ErrorCode};
+use crate::finding::{self as shared, Category, Draft, Impact, Location, Severity};
+use crate::gates::RustGateName as Gate;
 use crate::gates::parse_edition;
 use crate::modules::{ModuleDecl, TargetRoot, walk};
 use crate::parse::{Edition, with_parsed};
 use crate::render::{Progress, warn};
+use crate::section::{Section, to_value};
+use crate::structure::BoundariesArgs;
 use crate::structure::config::{
     self, CrateRule, DependencyKind, Matching, ModuleRule, SourceRule, matches_prefix,
 };
-use crate::structure::report::{Action, Gate, Report, count_gate, gates_text, plural};
-use crate::structure::sarif::{self, Item, Place};
+use crate::structure::report::{Action, Report, count_gate, gates_text, plural, shared_actions};
+use crate::structure::sarif;
 use crate::structure::source::is_space_or_comment;
-use crate::structure::{BoundariesArgs, Output};
 use crate::workspace::{self, LinkKind, Member, Workspace};
 
 /// The `deny` value that names each workspace package.
@@ -106,26 +109,36 @@ pub struct Summary {
     pub source_files: usize,
 }
 
-pub fn run(args: &BoundariesArgs) -> Result<Output, CliError> {
+pub fn run(args: &BoundariesArgs) -> Result<Section, CliError> {
     let progress = Progress::new(args.common.quiet);
     progress.step("Reading cargo metadata");
     let workspace = workspace::load(args.common.manifest_path.as_deref())?;
-    let settings: config::Boundaries = config::section(&workspace, "boundaries")?;
-    let resolver = Names::new(&workspace, &settings.groups)?;
+    section(&workspace, args.fail_on_violations, progress)
+}
+
+/// Checks the rules of the workspace. `enforced` is true when a violation
+/// fails the run.
+pub fn section(
+    workspace: &Workspace,
+    enforced: bool,
+    progress: Progress,
+) -> Result<Section, CliError> {
+    let settings: config::Boundaries = config::section(workspace, "boundaries")?;
+    let resolver = Names::new(workspace, &settings.groups)?;
     progress.step("Checking the boundary rules");
-    let edges = edges(&workspace);
+    let edges = edges(workspace);
     let mut findings = Vec::new();
     for rule in &settings.crates {
-        findings.extend(crate_rule(&workspace, &edges, rule, &resolver)?);
+        findings.extend(crate_rule(workspace, &edges, rule, &resolver)?);
     }
     let mut source_files = 0;
     for rule in &settings.sources {
-        let (found, read) = source_rule(&workspace, rule)?;
+        let (found, read) = source_rule(workspace, rule)?;
         findings.extend(found);
         source_files += read;
     }
     for rule in &settings.modules {
-        findings.extend(module_rule(&workspace, rule)?);
+        findings.extend(module_rule(workspace, rule)?);
     }
     findings.sort_by(|a, b| {
         (&a.rule, &a.path, a.line, a.col, &a.to, &a.pattern)
@@ -141,15 +154,41 @@ pub fn run(args: &BoundariesArgs) -> Result<Output, CliError> {
     let mut report = Report::new("boundaries", summary, findings);
     report.gate_outcomes.insert(
         Gate::BoundaryViolations,
-        count_gate(report.findings.len(), args.fail_on_violations),
+        count_gate(report.findings.len(), enforced),
     );
-    Ok(Output {
+    let findings = shared_findings(&report);
+    Ok(Section {
         human: human(&report),
-        json: serde_json::to_value(&report)
-            .map_err(|err| CliError::output(&std::io::Error::other(err)))?,
-        sarif: sarif_log(&report, args.fail_on_violations),
-        fails: report.fails_run(),
+        json: to_value(&report)?,
+        sarif: sarif_log(&report, &findings, enforced),
+        findings,
+        gates: report.gate_outcomes,
     })
+}
+
+/// The findings in the shared shape. The id uses the rule, the file, the
+/// position and the denied target.
+fn shared_findings(report: &Report<Summary, Finding>) -> Vec<shared::Finding> {
+    report
+        .findings
+        .iter()
+        .map(|finding| {
+            let line = finding.line.to_string();
+            let col = finding.col.to_string();
+            let pattern = finding.pattern.as_deref().unwrap_or_default();
+            shared::Finding::new(Draft {
+                check: "boundaries",
+                rule: &finding.rule,
+                severity: Severity::Warning,
+                message: finding.message.clone(),
+                location: Location::at(finding.path.clone(), finding.line, finding.col),
+                identity: &[&finding.path, &line, &col, &finding.to, pattern],
+                category: Category::BugRisk,
+                impact: Impact::Major,
+            })
+            .with_actions(shared_actions(&finding.actions))
+        })
+        .collect()
 }
 
 /// The names of packages and groups.
@@ -858,7 +897,11 @@ fn human(report: &Report<Summary, Finding>) -> String {
     text
 }
 
-fn sarif_log(report: &Report<Summary, Finding>, enforced: bool) -> serde_json::Value {
+fn sarif_log(
+    report: &Report<Summary, Finding>,
+    findings: &[shared::Finding],
+    enforced: bool,
+) -> serde_json::Value {
     let rules: BTreeMap<String, String> = report
         .findings
         .iter()
@@ -871,23 +914,12 @@ fn sarif_log(report: &Report<Summary, Finding>, enforced: bool) -> serde_json::V
             (finding.rule.clone(), text.to_owned())
         })
         .collect();
-    let items: Vec<Item> = report
-        .findings
-        .iter()
-        .map(|finding| Item {
-            rule: finding.rule.clone(),
-            level: sarif::level(enforced),
-            message: finding.message.clone(),
-            place: Place {
-                path: finding.path.clone(),
-                line: finding.line,
-                column: finding.col,
-                end_line: None,
-            },
-            related: Vec::new(),
-        })
-        .collect();
-    sarif::log(&rules, &items, &report.gate_outcomes)
+    sarif::log(
+        &rules,
+        findings,
+        sarif::level(enforced),
+        &report.gate_outcomes,
+    )
 }
 
 #[cfg(test)]

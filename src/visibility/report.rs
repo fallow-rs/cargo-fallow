@@ -278,11 +278,6 @@ impl VisibilityReport {
         }
     }
 
-    /// True when an enforced gate failed.
-    pub fn fails_run(&self) -> bool {
-        self.gate_outcomes.values().any(GateOutcome::fails_run)
-    }
-
     /// The report as text for a person.
     pub fn human(&self) -> String {
         let mut text = String::new();
@@ -354,6 +349,59 @@ impl VisibilityReport {
             );
         }
         text
+    }
+
+    /// The findings in the shared shape. The id uses the crate, the item path
+    /// and the item kind, not the line.
+    pub fn shared_findings(&self) -> Vec<crate::finding::Finding> {
+        use crate::finding::{
+            Action as Step, Category, Draft, Finding, Impact, Location, Severity,
+        };
+        self.findings
+            .iter()
+            .map(|finding| {
+                let category = if finding.kind == "dead_public" {
+                    Category::BugRisk
+                } else {
+                    Category::Clarity
+                };
+                Finding::new(Draft {
+                    check: KIND,
+                    rule: finding.kind,
+                    severity: Severity::Warning,
+                    message: message(finding),
+                    location: Location {
+                        path: finding.file.clone(),
+                        line: Some(finding.line),
+                        column: Some(finding.column),
+                        end_line: Some(finding.end_line),
+                    },
+                    identity: &[&finding.krate, &finding.item, finding.item_kind],
+                    category,
+                    impact: Impact::Minor,
+                })
+                .with_actions(
+                    finding
+                        .actions
+                        .iter()
+                        .map(|action| {
+                            Step::new(action.kind, action.auto_fixable, action.description)
+                        })
+                        .collect(),
+                )
+            })
+            .collect()
+    }
+
+    /// The section of the report.
+    pub fn section(&self) -> Result<crate::section::Section, crate::error::CliError> {
+        Ok(crate::section::Section {
+            human: self.human(),
+            json: crate::section::to_value(self)?,
+            sarif: self.sarif(),
+            findings: self.shared_findings(),
+            gates: self.gate_outcomes.clone(),
+        })
     }
 
     /// The report as a SARIF log. Each finding is a result. The level is

@@ -106,12 +106,50 @@ fn check(fixture: &Fixture, extra: &[&str]) -> Run {
 }
 
 fn assert_ok_report(report: &Value) {
-    assert_eq!(report["schema_version"], 1);
+    assert_eq!(report["schema_version"], 2);
     assert_eq!(report["kind"], "check");
     assert_eq!(report["language"], "rust");
     assert_eq!(report["version"], env!("CARGO_PKG_VERSION"));
-    assert_eq!(report["total_issues"], 0);
-    assert_eq!(report["findings"], Value::Array(Vec::new()));
+    assert_eq!(
+        report["checks"],
+        serde_json::json!([
+            "parse",
+            "deps",
+            "visibility",
+            "boundaries",
+            "size",
+            "complexity",
+            "dupes"
+        ])
+    );
+    // The fixture has one `pub` function that no code reaches.
+    assert_eq!(report["total_issues"], 1);
+    let finding = &report["findings"][0];
+    assert_eq!(finding["check"], "visibility");
+    assert_eq!(finding["rule"], "dead_public");
+    assert_eq!(finding["location"]["path"], "crates/alpha-lib/src/lib.rs");
+    assert_eq!(finding["id"].as_str().map(str::len), Some(16));
+    assert_eq!(report["health"]["language"], "rust");
+    assert_eq!(report["health"]["penalties"]["dead_public"], 15.0);
+    assert_eq!(report["health"]["score"], 85.0);
+    assert_eq!(report["health"]["grade"], "A");
+    let sections: Vec<&String> = report["sections"]
+        .as_object()
+        .expect("sections is an object")
+        .keys()
+        .collect();
+    assert_eq!(
+        sections,
+        [
+            "deps",
+            "visibility",
+            "boundaries",
+            "size",
+            "complexity",
+            "dupes"
+        ]
+    );
+    assert_eq!(report["sections"]["visibility"]["kind"], "visibility");
 
     let members = report["workspace"]["members"]
         .as_array()
@@ -156,10 +194,13 @@ fn assert_ok_report(report: &Value) {
 
     let gate = &report["gate_outcomes"]["error-severity-findings"];
     assert_eq!(gate["status"], "pass");
-    assert_eq!(gate["enforced"], true);
+    assert_eq!(gate["enforced"], false);
     assert_eq!(gate["observed"], 0.0);
     assert_eq!(gate["threshold_label"], "error");
     assert_eq!(report["gate_outcomes"]["parse-error"]["status"], "pass");
+    let visibility = &report["gate_outcomes"]["visibility-findings"];
+    assert_eq!(visibility["status"], "fail");
+    assert_eq!(visibility["enforced"], false);
 }
 
 #[test]
@@ -214,14 +255,23 @@ fn human_summary_and_progress() {
         "{}",
         loud.stdout
     );
-    assert!(loud.stdout.contains("No issues found"), "{}", loud.stdout);
+    assert!(loud.stdout.contains("1 issue\n"), "{}", loud.stdout);
+    assert!(
+        loud.stdout.contains("Health (rust): 85.0 (A)"),
+        "{}",
+        loud.stdout
+    );
+    assert!(loud.stdout.contains("\n== dupes ==\n"), "{}", loud.stdout);
+    // One gate block for the run, not one for each check.
+    assert_eq!(loud.stdout.matches("Gates:").count(), 1, "{}", loud.stdout);
     assert!(
         loud.stdout.contains("error-severity-findings: pass"),
         "{}",
         loud.stdout
     );
     assert!(
-        loud.stderr.contains("Reading cargo metadata"),
+        loud.stderr
+            .contains("Resolving the workspace with cargo metadata"),
         "{}",
         loud.stderr
     );
@@ -247,10 +297,211 @@ fn sarif_log_for_a_clean_workspace() {
     let run = &log["runs"][0];
     assert_eq!(run["tool"]["driver"]["name"], "cargo-fallow");
     assert_eq!(run["tool"]["driver"]["version"], env!("CARGO_PKG_VERSION"));
-    assert_eq!(run["tool"]["driver"]["rules"], Value::Array(Vec::new()));
-    assert_eq!(run["results"], Value::Array(Vec::new()));
+    assert_eq!(run["tool"]["driver"]["rules"][0]["id"], "dead_public");
+    assert_eq!(run["results"].as_array().map(Vec::len), Some(1));
+    assert_eq!(run["results"][0]["level"], "warning");
     assert_eq!(run["invocations"][0]["executionSuccessful"], true);
-    assert!(run["invocations"][0]["toolExecutionNotifications"].is_null());
+    let notes = &run["invocations"][0]["toolExecutionNotifications"];
+    assert_eq!(notes[0]["descriptor"]["id"], "visibility-findings");
+}
+
+#[test]
+fn fail_on_issues_enforces_the_gate_of_each_check_that_ran() {
+    let fixture = Fixture::new("ws-ok");
+    let result = check(
+        &fixture,
+        &["--format", "json", "--quiet", "--fail-on-issues"],
+    );
+    assert_eq!(result.code, 1, "{}", result.stderr);
+    let gates = result.json()["gate_outcomes"].clone();
+    for name in [
+        "boundary-violations",
+        "duplication-findings",
+        "error-severity-findings",
+        "health-findings",
+        "parse-error",
+        "visibility-findings",
+    ] {
+        assert_eq!(gates[name]["enforced"], true, "{name}");
+    }
+    // `size` has no old version to compare with in a `check` run.
+    assert_eq!(gates["file-growth"]["status"], "skipped");
+}
+
+#[test]
+fn skip_leaves_a_check_and_its_gate_out() {
+    let fixture = Fixture::new("ws-ok");
+    let result = check(
+        &fixture,
+        &[
+            "--format",
+            "json",
+            "--quiet",
+            "--fail-on-issues",
+            "--skip",
+            "visibility",
+        ],
+    );
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    let report = result.json();
+    assert!(report["gate_outcomes"]["visibility-findings"].is_null());
+    assert!(report["sections"]["visibility"].is_null());
+    assert_eq!(report["total_issues"], 0);
+    assert!(report["health"]["penalties"]["dead_public"].is_null());
+}
+
+#[test]
+fn only_runs_the_named_checks() {
+    let fixture = Fixture::new("ws-ok");
+    let result = check(
+        &fixture,
+        &["--format", "json", "--quiet", "--only", "parse,dupes"],
+    );
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    let report = result.json();
+    assert_eq!(report["checks"], serde_json::json!(["parse", "dupes"]));
+    let gates: Vec<&String> = report["gate_outcomes"]
+        .as_object()
+        .expect("gate_outcomes is an object")
+        .keys()
+        .collect();
+    assert_eq!(gates, ["duplication-findings", "parse-error"]);
+    assert_eq!(
+        report["health"]["penalties"],
+        serde_json::json!({ "duplication": 0.0 })
+    );
+}
+
+#[test]
+fn only_and_skip_that_leave_no_check_exit_2() {
+    let fixture = Fixture::new("ws-ok");
+    let result = check(
+        &fixture,
+        &[
+            "--format",
+            "json",
+            "--quiet",
+            "--skip",
+            "parse,deps,visibility,boundaries,size,complexity,dupes",
+        ],
+    );
+    assert_json_error(&result, "CARGO_FALLOW_INVALID_ARGUMENT");
+}
+
+/// The JSON report and the SARIF results of `check`, and of each single
+/// command, on one fixture.
+fn assert_combined_equals_single(fixture: &str) {
+    let fixture = Fixture::new(fixture);
+    let combined = check(&fixture, &["--format", "json", "--quiet"]).json();
+    let sarif = check(&fixture, &["--format", "sarif", "--quiet"]).json();
+    let issues = check(&fixture, &["--format", "codeclimate", "--quiet"]).json();
+    let manifest = fixture.manifest();
+    let manifest = manifest.to_str().expect("the path is UTF-8");
+    let mut single_results = Vec::new();
+    for name in [
+        "deps",
+        "visibility",
+        "boundaries",
+        "size",
+        "complexity",
+        "dupes",
+    ] {
+        let args = |format: &'static str| {
+            [
+                name,
+                "--manifest-path",
+                manifest,
+                "--format",
+                format,
+                "--quiet",
+            ]
+        };
+        let single = run(cargo_fallow(), &args("json"));
+        assert_eq!(combined["sections"][name], single.json(), "{name}");
+        let log = run(cargo_fallow(), &args("sarif")).json();
+        single_results.extend(
+            log["runs"][0]["results"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default(),
+        );
+    }
+    assert_eq!(sarif["runs"][0]["results"], Value::Array(single_results));
+    let total = combined["total_issues"].as_u64().map(|n| n as usize);
+    assert_eq!(issues.as_array().map(Vec::len), total);
+    let mut fingerprints: Vec<&str> = issues
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|issue| issue["fingerprint"].as_str())
+        .collect();
+    fingerprints.sort_unstable();
+    fingerprints.dedup();
+    assert_eq!(
+        Some(fingerprints.len()),
+        total,
+        "each fingerprint is unique"
+    );
+}
+
+#[test]
+fn combined_report_equals_the_single_commands() {
+    assert_combined_equals_single("ws-ok");
+    assert_combined_equals_single("ws-structure");
+}
+
+#[test]
+fn codeclimate_report_has_one_issue_for_each_finding_with_a_stable_fingerprint() {
+    let fixture = Fixture::new("ws-ok");
+    let first = check(&fixture, &["--format", "codeclimate", "--quiet"]);
+    assert_eq!(first.code, 0, "{}", first.stderr);
+    let issues = first.json();
+    assert_eq!(issues.as_array().map(Vec::len), Some(1));
+    let issue = &issues[0];
+    assert_eq!(issue["type"], "issue");
+    assert_eq!(issue["check_name"], "fallow/dead-public");
+    assert_eq!(issue["categories"], serde_json::json!(["Bug Risk"]));
+    assert_eq!(issue["severity"], "minor");
+    assert_eq!(issue["location"]["path"], "crates/alpha-lib/src/lib.rs");
+    assert_eq!(issue["location"]["lines"]["begin"], 4);
+    let json = check(&fixture, &["--format", "json", "--quiet"]).json();
+    assert_eq!(issue["fingerprint"], json["findings"][0]["id"]);
+    let second = check(&fixture, &["--format", "codeclimate", "--quiet"]);
+    assert_eq!(first.stdout, second.stdout);
+}
+
+#[test]
+fn each_single_command_writes_codeclimate() {
+    let fixture = Fixture::new("ws-ok");
+    let manifest = fixture.manifest();
+    let manifest = manifest.to_str().expect("the path is UTF-8");
+    for name in [
+        "deps",
+        "visibility",
+        "boundaries",
+        "size",
+        "complexity",
+        "dupes",
+    ] {
+        let result = run(
+            cargo_fallow(),
+            &[
+                name,
+                "--manifest-path",
+                manifest,
+                "--format",
+                "codeclimate",
+                "--quiet",
+            ],
+        );
+        assert_eq!(result.code, 0, "{name}: {}", result.stderr);
+        let expected = usize::from(name == "visibility");
+        assert_eq!(
+            result.json().as_array().map(Vec::len),
+            Some(expected),
+            "{name}"
+        );
+    }
 }
 
 #[test]

@@ -64,7 +64,24 @@ pub fn run(options: &Options) -> Result<DepsReport, CliError> {
     progress.step("Building the module graph");
     let module_graph = graph::build(&workspace, &Production::default());
     progress.step("Checking the dependencies");
-    let analysis = analyze::analyze(&workspace, &metadata, &module_graph);
+    Ok(report(
+        &workspace,
+        &metadata,
+        &module_graph,
+        options.fail_on_issues,
+    ))
+}
+
+/// Checks the dependencies of a resolved workspace. The graph can have any
+/// production selection: the rules do not read it. `enforced` is true when an
+/// `error` finding fails the run.
+pub fn report(
+    workspace: &workspace::Workspace,
+    metadata: &cargo_metadata::Metadata,
+    module_graph: &graph::Graph,
+    enforced: bool,
+) -> DepsReport {
+    let analysis = analyze::analyze(workspace, metadata, module_graph);
     for skipped in &analysis.skipped {
         render::warn(&format!(
             "the `deps` command does not judge the package `{}`: {}",
@@ -81,16 +98,22 @@ pub fn run(options: &Options) -> Result<DepsReport, CliError> {
     } else {
         GateStatus::Fail
     };
-    let gate = GateOutcome::counted(
-        status,
-        options.fail_on_issues,
-        errors as f64,
-        ERROR_SEVERITY,
-    );
-    Ok(DepsReport::new(
+    let gate = GateOutcome::counted(status, enforced, errors as f64, ERROR_SEVERITY);
+    DepsReport::new(
         workspace.members.len(),
         analysis.findings,
         analysis.skipped,
         gate,
-    ))
+    )
+}
+
+/// The section of a report.
+pub fn section(report: &DepsReport) -> Result<crate::section::Section, CliError> {
+    Ok(crate::section::Section {
+        human: render::deps::human(report),
+        json: crate::section::to_value(report)?,
+        sarif: render::deps::sarif(report),
+        findings: render::deps::findings(report),
+        gates: report.gate_outcomes.clone(),
+    })
 }

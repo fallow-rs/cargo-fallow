@@ -18,14 +18,17 @@ use fallow_report_protocol::{GateOutcome, GateStatus};
 use serde::Serialize;
 
 use crate::error::{CliError, ErrorCode};
+use crate::finding::{self as shared, Category, Draft, Impact, Location, Severity};
+use crate::gates::RustGateName as Gate;
 use crate::render::Progress;
+use crate::section::{Section, to_value};
+use crate::structure::SizeArgs;
 use crate::structure::config::{self, matches_prefix};
 use crate::structure::git::{self, Change, Changes};
-use crate::structure::report::{Action, Gate, Report, count_gate, gates_text, plural};
-use crate::structure::sarif::{self, Item, Place};
-use crate::structure::source::{self, Needs, Skipped, count_lines, is_generated};
-use crate::structure::{Output, SizeArgs};
-use crate::workspace;
+use crate::structure::report::{Action, Report, count_gate, gates_text, plural, shared_actions};
+use crate::structure::sarif;
+use crate::structure::source::{self, Loaded, Needs, Skipped, count_lines, is_generated};
+use crate::workspace::{self, Workspace};
 
 /// The folders whose files the growth rule skips.
 const SKIPPED_FOLDERS: [&str; 4] = ["tests", "test", "snapshots", "__snapshots__"];
@@ -127,7 +130,7 @@ pub struct Summary {
     pub skipped_files: Vec<Skipped>,
 }
 
-pub fn run(args: &SizeArgs) -> Result<Output, CliError> {
+pub fn run(args: &SizeArgs) -> Result<Section, CliError> {
     if args.fail_on_growth && args.base.is_none() && !args.staged {
         return Err(CliError::new(
             ErrorCode::InvalidArgument,
@@ -153,6 +156,40 @@ pub fn run(args: &SizeArgs) -> Result<Output, CliError> {
             tokens: None,
         },
     );
+    section(&Inputs {
+        workspace: &workspace,
+        loaded: &loaded,
+        settings: &settings,
+        changes: changes.as_ref(),
+        enforced: args.fail_on_growth,
+    })
+}
+
+/// The inputs of one size check.
+pub struct Inputs<'a> {
+    /// The workspace.
+    pub workspace: &'a Workspace,
+    /// The source files, with their functions.
+    pub loaded: &'a Loaded,
+    /// The settings.
+    pub settings: &'a config::Size,
+    /// The changes for the growth rule, or `None` without an old version.
+    pub changes: Option<&'a Changes>,
+    /// True when a growth finding fails the run.
+    pub enforced: bool,
+}
+
+/// Measures the files and functions, and applies the growth rule to the
+/// changes.
+pub fn section(inputs: &Inputs<'_>) -> Result<Section, CliError> {
+    let Inputs {
+        workspace,
+        loaded,
+        settings,
+        changes,
+        enforced,
+    } = *inputs;
+    let root = workspace.root.as_std_path();
     let mut large_files: Vec<LargeFile> = loaded
         .files
         .iter()
@@ -186,8 +223,8 @@ pub fn run(args: &SizeArgs) -> Result<Output, CliError> {
             .cmp(&a.line_count)
             .then_with(|| (&a.path, a.line).cmp(&(&b.path, b.line)))
     });
-    let (findings, checked) = match &changes {
-        Some(changes) => growth(root, changes, &settings)?,
+    let (findings, checked) = match changes {
+        Some(changes) => growth(root, changes, settings)?,
         None => (Vec::new(), 0),
     };
     let mut skipped_files = loaded.skipped_files();
@@ -205,7 +242,7 @@ pub fn run(args: &SizeArgs) -> Result<Output, CliError> {
     let summary = Summary {
         max_file_lines: settings.max_file_lines,
         max_function_lines: settings.max_function_lines,
-        compared_with: changes.as_ref().map(|changes| changes.label.clone()),
+        compared_with: changes.map(|changes| changes.label.clone()),
         checked_changes: checked,
         files: loaded.files.len(),
         large_files,
@@ -214,18 +251,47 @@ pub fn run(args: &SizeArgs) -> Result<Output, CliError> {
     };
     let mut report = Report::new("size", summary, findings);
     let outcome = if changes.is_some() {
-        count_gate(report.findings.len(), args.fail_on_growth)
+        count_gate(report.findings.len(), enforced)
     } else {
         GateOutcome::new(GateStatus::Skipped, false)
     };
     report.gate_outcomes.insert(Gate::FileGrowth, outcome);
-    Ok(Output {
+    let findings = shared_findings(&report);
+    Ok(Section {
         human: human(&report),
-        json: serde_json::to_value(&report)
-            .map_err(|err| CliError::output(&std::io::Error::other(err)))?,
-        sarif: sarif_log(&report, args.fail_on_growth),
-        fails: report.fails_run(),
+        json: to_value(&report)?,
+        sarif: sarif_log(&report, &findings, enforced),
+        findings,
+        gates: report.gate_outcomes,
     })
+}
+
+const fn rule(kind: Kind) -> &'static str {
+    match kind {
+        Kind::GrownFile => "grown-file",
+        Kind::NewLargeFile => "new-large-file",
+    }
+}
+
+/// The findings in the shared shape. The id uses the rule and the file.
+fn shared_findings(report: &Report<Summary, Finding>) -> Vec<shared::Finding> {
+    report
+        .findings
+        .iter()
+        .map(|finding| {
+            shared::Finding::new(Draft {
+                check: "size",
+                rule: rule(finding.kind),
+                severity: Severity::Warning,
+                message: finding.message.clone(),
+                location: Location::at(finding.path.clone(), 1, 1),
+                identity: &[&finding.path],
+                category: Category::Complexity,
+                impact: Impact::Minor,
+            })
+            .with_actions(shared_actions(&finding.actions))
+        })
+        .collect()
 }
 
 /// The growth findings and the number of checked changes. The rule reads an
@@ -378,7 +444,11 @@ fn hotspots(text: &mut String, title: &str, lines: impl ExactSizeIterator<Item =
     }
 }
 
-fn sarif_log(report: &Report<Summary, Finding>, enforced: bool) -> serde_json::Value {
+fn sarif_log(
+    report: &Report<Summary, Finding>,
+    findings: &[shared::Finding],
+    enforced: bool,
+) -> serde_json::Value {
     let rules = BTreeMap::from([
         (
             "grown-file".to_owned(),
@@ -389,27 +459,12 @@ fn sarif_log(report: &Report<Summary, Finding>, enforced: bool) -> serde_json::V
             "A new file is over the line limit.".to_owned(),
         ),
     ]);
-    let items: Vec<Item> = report
-        .findings
-        .iter()
-        .map(|finding| Item {
-            rule: match finding.kind {
-                Kind::GrownFile => "grown-file",
-                Kind::NewLargeFile => "new-large-file",
-            }
-            .to_owned(),
-            level: sarif::level(enforced),
-            message: finding.message.clone(),
-            place: Place {
-                path: finding.path.clone(),
-                line: 1,
-                column: 1,
-                end_line: None,
-            },
-            related: Vec::new(),
-        })
-        .collect();
-    sarif::log(&rules, &items, &report.gate_outcomes)
+    sarif::log(
+        &rules,
+        findings,
+        sarif::level(enforced),
+        &report.gate_outcomes,
+    )
 }
 
 #[cfg(test)]

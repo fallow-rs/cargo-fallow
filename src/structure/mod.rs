@@ -6,24 +6,22 @@
 //! root `[workspace.metadata.fallow]` in [`config`]. [`source`] walks the module
 //! tree once and parses each file once through the bounded parse.
 
-mod boundaries;
-mod complexity;
+pub mod boundaries;
+pub mod complexity;
 pub mod config;
-mod dupes;
+pub mod dupes;
 mod git;
 mod report;
 mod sarif;
-mod size;
-mod source;
+pub mod size;
+pub mod source;
 
 use std::path::PathBuf;
 
 use clap::{Args, Subcommand};
-use fallow_report_protocol::exit_code::{EXIT_GATE_FAILED, EXIT_INVALID_INPUT, EXIT_OK};
+use fallow_report_protocol::exit_code::EXIT_INVALID_INPUT;
 
 use crate::cli::Format;
-use crate::error::CliError;
-use crate::render;
 
 /// The structure subcommands.
 #[derive(Debug, Subcommand)]
@@ -142,39 +140,10 @@ pub fn run(command: &Command) -> u8 {
         Command::Complexity(args) => complexity::run(args),
         Command::Dupes(args) => dupes::run(args),
     };
-    match result.and_then(|output| write(&output, common.format)) {
-        Ok(fails) => {
-            if fails {
-                EXIT_GATE_FAILED
-            } else {
-                EXIT_OK
-            }
-        }
-        Err(err) => {
+    result
+        .and_then(|section| section.write(common.format))
+        .unwrap_or_else(|err| {
             err.emit(common.format);
             EXIT_INVALID_INPUT
-        }
-    }
-}
-
-/// The three forms of one report, and the gate verdict.
-struct Output {
-    human: String,
-    json: serde_json::Value,
-    sarif: serde_json::Value,
-    fails: bool,
-}
-
-fn write(output: &Output, format: Format) -> Result<bool, CliError> {
-    let text = match format {
-        Format::Human => output.human.clone(),
-        Format::Json => pretty(&output.json)?,
-        Format::Sarif => pretty(&output.sarif)?,
-    };
-    render::write_stdout(text.trim_end()).map_err(|err| CliError::output(&err))?;
-    Ok(output.fails)
-}
-
-fn pretty(value: &serde_json::Value) -> Result<String, CliError> {
-    serde_json::to_string_pretty(value).map_err(|err| CliError::output(&std::io::Error::other(err)))
+        })
 }

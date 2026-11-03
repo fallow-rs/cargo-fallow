@@ -105,6 +105,12 @@ These fallow gates do not apply now:
 - Mutation testing on this crate: `cargo fallow mutants` exists, and M1 adds the
   CI job. `--fail-on-survivors` is the gate of that job.
 
+## Releases
+
+`docs/release-procedure.md` describes the release workflow, the package
+checks and the one-time steps before the first release. Only the owner
+releases.
+
 ## Developer Certificate of Origin
 
 cargo-fallow uses the

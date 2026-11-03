@@ -1,0 +1,353 @@
+name: Release
+
+# A push of a `v*` tag is a release. A manual run is a dry run: it checks the
+# package with `cargo publish --dry-run` and builds the binaries, but it
+# publishes nothing. A manual run with `dry-run` set to false publishes only
+# when it runs on a tag ref, so a run on a branch is always a dry run. The
+# owner steps before the first release are in docs/release-procedure.md.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: Check the package and build the binaries, but publish nothing
+        required: false
+        default: true
+        type: boolean
+
+run-name: ${{ (github.ref_type == 'tag' && (github.event_name == 'push' || inputs.dry-run == false)) && format('Release {0}', github.ref_name) || format('Release dry run on {0}', github.ref_name) }}
+
+# A release has the group `release`, so two releases never run at the same
+# time. Each dry run has a group of its own, so a dry run never queues a
+# release or cancels a release that waits.
+concurrency:
+  group: ${{ (github.ref_type == 'tag' && (github.event_name == 'push' || inputs.dry-run == false)) && 'release' || format('release-dry-run-{0}', github.run_id) }}
+  cancel-in-progress: false
+
+# Deny all permissions by default, grant per job as needed.
+permissions: {}
+
+env:
+  CARGO_TERM_COLOR: always
+  # The one switch between a dry run and a release. Each publication job reads
+  # it through the `publish` output of the `plan` job.
+  PUBLISH: ${{ github.ref_type == 'tag' && (github.event_name == 'push' || inputs.dry-run == false) }}
+
+jobs:
+  plan:
+    name: Plan and check the package
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      publish: ${{ steps.mode.outputs.publish }}
+      version: ${{ steps.mode.outputs.version }}
+    steps:
+      # A full clone, so the release check can see whether main holds the tag.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: release-plan
+          save-if: 'false'
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '26'
+          package-manager-cache: false
+
+      - name: Read the version and the mode
+        id: mode
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(cargo metadata --no-deps --format-version 1 --locked | jq -r '.packages[] | select(.name == "cargo-fallow") | .version')"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "publish=${PUBLISH}" >> "$GITHUB_OUTPUT"
+          echo "cargo-fallow ${version}, publish: ${PUBLISH}" >> "$GITHUB_STEP_SUMMARY"
+
+      # Only a release runs these checks. A dry run on a branch has a
+      # development version and `publish = false`.
+      - name: Check the release tag, the manifest and the branch
+        if: ${{ steps.mode.outputs.publish == 'true' }}
+        shell: bash
+        env:
+          VERSION: ${{ steps.mode.outputs.version }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ "$TAG_NAME" != "v${VERSION}" ]; then
+            echo "::error::The tag ${TAG_NAME} does not match the package version ${VERSION}"
+            exit 1
+          fi
+          # `publish = false` gives an empty list in the metadata.
+          publish_field="$(cargo metadata --no-deps --format-version 1 --locked | jq -c '.packages[] | select(.name == "cargo-fallow") | .publish')"
+          if [ "$publish_field" != "null" ]; then
+            echo "::error::Cargo.toml still has 'publish = false'. Remove it in the release commit."
+            exit 1
+          fi
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::The tag ${TAG_NAME} points to a commit that is not on main"
+            exit 1
+          fi
+
+      - name: Write the release notes from the CHANGELOG
+        shell: bash
+        env:
+          VERSION: ${{ steps.mode.outputs.version }}
+          PUBLISH_MODE: ${{ steps.mode.outputs.publish }}
+        run: |
+          set -euo pipefail
+          mkdir -p notes
+          if [ "$PUBLISH_MODE" = "true" ]; then
+            node scripts/release-notes.mjs "$VERSION" > notes/release-notes.md
+          else
+            node scripts/release-notes.mjs "$VERSION" --allow-unreleased > notes/release-notes.md
+          fi
+          cat notes/release-notes.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the release notes
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: release-notes
+          path: notes/release-notes.md
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Check the package file list
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo package --list --locked > package-list.txt
+          node scripts/check-package.mjs < package-list.txt
+
+      # `cargo publish --dry-run` refuses a package with `publish = false`. A
+      # dry run removes that line in the checkout of this job only, and the
+      # repository keeps it. `--allow-dirty` accepts that one change. A release
+      # never edits the manifest: the check above requires that the line is
+      # already gone.
+      - name: Publish dry run
+        shell: bash
+        env:
+          PUBLISH_MODE: ${{ steps.mode.outputs.publish }}
+        run: |
+          set -euo pipefail
+          if [ "$PUBLISH_MODE" = "true" ]; then
+            cargo publish --dry-run --locked
+          else
+            sed -i '/^publish = false$/d' Cargo.toml
+            git diff --stat -- Cargo.toml
+            cargo publish --dry-run --locked --allow-dirty
+            git checkout -- Cargo.toml
+          fi
+
+  build:
+    name: Build (${{ matrix.target }})
+    needs: plan
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The Linux binaries link musl statically, so they run on each glibc
+          # version. The crate has no C code, so the build needs no musl-gcc.
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-26.04
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04-arm
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # A cache scope of its own. A cache from a pull request build must not
+      # reach a release binary.
+      - uses: ./.github/actions/setup-rust
+        with:
+          targets: ${{ matrix.target }}
+          cache-key: release-build-${{ matrix.target }}
+          save-if: 'false'
+
+      - name: Build the binary
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: cargo build --release --locked --target "$TARGET"
+
+      - name: Package the binary and its checksum
+        id: archive
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          name="cargo-fallow-${VERSION}-${TARGET}"
+          mkdir -p "dist/${name}"
+          cp LICENSE README.md CHANGELOG.md "dist/${name}/"
+          if [ "${RUNNER_OS}" = "Windows" ]; then
+            cp "target/${TARGET}/release/cargo-fallow.exe" "dist/${name}/"
+            (cd dist && 7z a -tzip "${name}.zip" "${name}" > /dev/null)
+            archive="${name}.zip"
+          else
+            cp "target/${TARGET}/release/cargo-fallow" "dist/${name}/"
+            tar -C dist -czf "dist/${name}.tar.gz" "${name}"
+            archive="${name}.tar.gz"
+          fi
+          cd dist
+          if command -v sha256sum > /dev/null 2>&1; then
+            sha256sum "$archive" > "${archive}.sha256"
+          else
+            shasum -a 256 "$archive" > "${archive}.sha256"
+          fi
+          cat "${archive}.sha256"
+          echo "archive=${archive}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the archive
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: binary-${{ matrix.target }}
+          path: |
+            dist/${{ steps.archive.outputs.archive }}
+            dist/${{ steps.archive.outputs.archive }}.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  # Every job below publishes, so each one runs only for a release. Each one
+  # that holds a credential runs in the `release` environment. Its deployment
+  # rule admits `v*` tags only, so a copy of this workflow on a branch gets no
+  # OIDC token that the crates.io trusted publisher accepts.
+  attest:
+    name: Attest build provenance
+    needs: [plan, build]
+    if: ${{ needs.plan.outputs.publish == 'true' }}
+    environment: release
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Download the archives
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          path: dist
+          pattern: binary-*
+          merge-multiple: true
+
+      - name: Attest the archives
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.zip
+
+  publish-crate:
+    name: Publish to crates.io
+    needs: [plan, build, attest]
+    if: ${{ needs.plan.outputs.publish == 'true' }}
+    environment: release
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # A cache scope of its own, so no other job can change the package.
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: release-publish
+          save-if: 'false'
+
+      # Trusted publishing: crates.io trusts the OIDC token of this workflow in
+      # the `release` environment and returns a token that expires soon.
+      - name: Authenticate to crates.io
+        id: crates_io_auth
+        uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1.0.5
+
+      # `--no-verify` skips the verify build. That build would run the build
+      # scripts of each dependency with the token in the environment. The
+      # `plan` job already ran the same verify build without a token.
+      - name: Publish the crate
+        shell: bash
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.crates_io_auth.outputs.token }}
+        run: |
+          set -uo pipefail
+          if out=$(cargo publish --locked --no-verify 2>&1); then
+            printf '%s\n' "$out"
+            exit 0
+          fi
+          printf '%s\n' "$out"
+          # A run again after a partial failure finds the version published.
+          if printf '%s' "$out" | grep -qiE 'cargo-fallow.* already exists on crates\.io index|version .* is already uploaded'; then
+            echo "::notice::cargo-fallow is already published, skipping"
+            exit 0
+          fi
+          exit 1
+
+  github-release:
+    name: Create the GitHub release
+    needs: [plan, attest, publish-crate]
+    if: ${{ needs.plan.outputs.publish == 'true' }}
+    environment: release
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Download the archives
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          path: dist
+          pattern: binary-*
+          merge-multiple: true
+
+      - name: Download the release notes
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: release-notes
+          path: notes
+
+      - name: Create the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          cd dist
+          cat ./*.sha256 > SHA256SUMS
+          # A run again after a partial failure finds the release. It then
+          # replaces the assets and keeps the release.
+          if gh release view "$TAG_NAME" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release upload "$TAG_NAME" --repo "$GITHUB_REPOSITORY" --clobber \
+              ./*.tar.gz ./*.zip ./*.sha256 SHA256SUMS
+            exit 0
+          fi
+          gh release create "$TAG_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --title "cargo-fallow ${TAG_NAME}" \
+            --notes-file ../notes/release-notes.md \
+            ./*.tar.gz ./*.zip ./*.sha256 SHA256SUMS

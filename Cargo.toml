@@ -7,12 +7,17 @@ rust-version = "1.98"
 license = "MIT"
 description = "Codebase analysis for Rust workspaces, as a Cargo subcommand"
 repository = "https://github.com/fallow-rs/cargo-fallow"
+documentation = "https://github.com/fallow-rs/cargo-fallow#readme"
 readme = "README.md"
 keywords = ["cargo", "cargo-subcommand", "static-analysis", "mutation-testing"]
 categories = ["development-tools::cargo-plugins"]
-# Remove at M4 launch.
+# The owner removes this line in the 0.1.0 release commit. See
+# docs/release-procedure.md. The release workflow refuses a real publish while
+# the line is here.
 publish = false
-exclude = ["tests/fixtures", "fuzz"]
+# The package holds the source, the manifest, the lock file, the license, the
+# README and the CHANGELOG only. scripts/check-package.mjs checks the list.
+include = ["/src/**/*.rs", "/LICENSE", "/README.md", "/CHANGELOG.md"]
 
 # The fixtures and the fuzz crate have their own `[workspace]` tables. This
 # table keeps their manifests out of the root workspace.
@@ -181,6 +186,15 @@ codegen-units = 1
 strip = "symbols"
 opt-level = 3
 panic = "unwind"
+
+# A release-like build for the parse stack tests in CI: the same optimization
+# and no debug assertions, so `src/parse.rs` uses its release stack values.
+# LTO and one codegen unit only make the build slower.
+[profile.ci-release]
+inherits = "release"
+lto = false
+codegen-units = 16
+strip = "none"
 
 # Optimize heavy deps for size, not in the hot path. The same as fallow.
 [profile.release.package.clap_builder]

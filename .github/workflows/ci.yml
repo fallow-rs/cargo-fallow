@@ -85,6 +85,11 @@ jobs:
         run: cargo nextest run --profile ci --locked
       - name: Run doctests
         run: cargo test --doc --locked
+      # src/parse.rs sizes the parse stack with other values in a release
+      # build. This profile has the release optimization and no debug
+      # assertions, so these tests check the release values on Linux and macOS.
+      - name: Run the parse stack tests in a release-like build
+        run: cargo test --profile ci-release --locked --lib -- parse::tests the_walk_of_a_deep_tree
       - name: Upload test report
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
@@ -152,6 +157,42 @@ jobs:
       - run: cargo clippy --all-targets --locked --features precise -- -D warnings
       - name: Run the visibility tests
         run: cargo nextest run --profile ci --locked --features precise -E 'binary(visibility) | test(/precise/)'
+      - name: Check for uncommitted changes
+        run: git diff --exit-code
+
+  # The crate package: the file list, a build of the package with the
+  # `precise` feature, and `cargo publish --dry-run`. See
+  # docs/release-procedure.md.
+  package:
+    name: Package
+    runs-on: ubuntu-26.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: package
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '26'
+          package-manager-cache: false
+      - name: Check the package file list
+        run: |
+          cargo package --list --locked > package-list.txt
+          node scripts/check-package.mjs < package-list.txt
+      - name: Build the package with the precise feature
+        run: cargo package --locked --features precise
+      # `cargo publish --dry-run` refuses `publish = false`. The step removes
+      # the line in this checkout only and restores it after the dry run.
+      - name: Publish dry run
+        run: |
+          sed -i '/^publish = false$/d' Cargo.toml
+          cargo publish --dry-run --locked --allow-dirty
+          git checkout -- Cargo.toml
       - name: Check for uncommitted changes
         run: git diff --exit-code
 
@@ -331,7 +372,7 @@ jobs:
   ci-ok:
     name: CI
     if: always()
-    needs: [fmt, clippy, test, windows, doc, typos, scripts, audit, deny, shear, zizmor, msrv]
+    needs: [fmt, clippy, test, windows, package, doc, typos, scripts, audit, deny, shear, zizmor, msrv]
     runs-on: ubuntu-26.04
     timeout-minutes: 5
     permissions: {}

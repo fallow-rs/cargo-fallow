@@ -134,6 +134,10 @@ pub struct Finding {
     /// `misplaced-dependency` finding has them.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub used_by: Vec<&'static str>,
+    /// True when `[dev-dependencies]` declares the same package. It is not
+    /// part of the report.
+    #[serde(skip)]
+    pub in_dev: bool,
     /// The next steps. No step can be applied automatically.
     pub actions: Vec<Action>,
 }

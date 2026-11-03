@@ -436,6 +436,8 @@ The check stays silent where the code can use a dependency without a name:
 - A package with `trybuild`, `macrotest`, `ui_test` or `compiletest_rs` in
   `[dev-dependencies]` gets no dev-dependency findings. These harnesses build
   test files that no target declares.
+- When code uses `X_derive` or `X_macros`, the crate `X` is in use too,
+  because the macro output names it (`serde_derive` and `serde`).
 - Every `cfg` branch counts, so a `[target.'cfg(..)'.dependencies]` entry that
   `#[cfg(..)]` code uses is in use.
 

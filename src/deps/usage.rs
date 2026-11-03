@@ -82,6 +82,13 @@ impl PackageUsage {
     /// The contexts that use `name`, with each `include!` context that can use it.
     pub fn contexts(&self, name: &str) -> BTreeSet<Context> {
         let mut contexts = self.names.get(name).cloned().unwrap_or_default();
+        // The output of a derive or macro crate names its runtime crate, for
+        // example `serde_derive` output names `serde`.
+        for suffix in MACRO_SUFFIXES {
+            if let Some(used) = self.names.get(&format!("{name}{suffix}")) {
+                contexts.extend(used.iter().copied());
+            }
+        }
         let generated = self
             .generated
             .as_ref()
@@ -92,6 +99,9 @@ impl PackageUsage {
         contexts
     }
 }
+
+/// The suffixes of a macro crate whose output uses the crate without the suffix.
+const MACRO_SUFFIXES: [&str; 2] = ["_derive", "_macros"];
 
 /// The usage of each package, keyed by package name. `root` is the
 /// workspace root, for the files of the build scripts.

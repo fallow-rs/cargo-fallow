@@ -343,6 +343,9 @@ fn package_findings(metadata: &Metadata, package: &Package, used: &PackageUsage)
             (entry.dependency.name != entry.key).then(|| entry.dependency.name.clone());
         found.optional = entry.dependency.optional;
         found.used_by = used_by;
+        found.in_dev = declared.iter().any(|other| {
+            other.section == Section::Dev && other.dependency.name == entry.dependency.name
+        });
         findings.push(found);
     }
     findings
@@ -474,6 +477,7 @@ fn finding(
         package_name: None,
         optional: false,
         used_by: Vec::new(),
+        in_dev: false,
         actions: Vec::new(),
     }
 }
@@ -522,6 +526,10 @@ fn actions(finding: &Finding) -> Vec<Action> {
     let key = &finding.dependency;
     let table = table_name(finding);
     let (kind, description) = match finding.rule {
+        Rule::MisplacedDependency if finding.in_dev => (
+            "remove-dependency",
+            format!("Remove `{key}` from {table}. [dev-dependencies] has it already."),
+        ),
         Rule::MisplacedDependency => (
             "move-to-dev-dependencies",
             format!("Move `{key}` from {table} to [dev-dependencies]."),

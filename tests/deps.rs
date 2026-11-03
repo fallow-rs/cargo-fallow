@@ -229,6 +229,30 @@ fn dependency_that_only_tests_use_moves_to_dev_dependencies() {
 }
 
 #[test]
+fn misplaced_dependency_that_dev_already_has_is_removed_not_moved() {
+    let deps = format!(
+        "[dependencies]\n{}\n[dev-dependencies]\n{}",
+        path_dep("alpha"),
+        path_dep("alpha")
+    );
+    let dir = workspace(
+        &deps,
+        &[("app/tests/it.rs", "#[test]\nfn t() { alpha::f(); }\n")],
+    );
+    let (_, report) = run(&dir, &[]);
+    assert_eq!(
+        findings(&report),
+        set(&["misplaced-dependency app dependencies alpha"])
+    );
+    let action = &report["findings"][0]["actions"][0];
+    assert_eq!(action["type"], "remove-dependency");
+    assert_eq!(
+        action["description"],
+        "Remove `alpha` from [dependencies]. [dev-dependencies] has it already."
+    );
+}
+
+#[test]
 fn test_module_in_its_own_file_counts_as_test_code() {
     let deps = format!("[dependencies]\n{}", path_dep("alpha"));
     let dir = workspace(
@@ -311,6 +335,35 @@ fn names_in_macro_tokens_attributes_and_doctests_count() {
     assert_eq!(
         findings(&report),
         set(&["misplaced-dependency app dependencies epsilon"])
+    );
+}
+
+#[test]
+fn derive_crate_gives_credit_to_its_runtime_crate() {
+    let deps = format!(
+        "[dev-dependencies]\nalpha_derive = {{ path = \"../libs/alpha_derive\" }}\n{}{}",
+        path_dep("alpha"),
+        path_dep("beta")
+    );
+    let dir = workspace(
+        &deps,
+        &[
+            (
+                "app/tests/it.rs",
+                "use alpha_derive::Thing;\n#[derive(Thing)]\nstruct S;\n",
+            ),
+            (
+                "libs/alpha_derive/Cargo.toml",
+                "[package]\nname = \"alpha_derive\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\
+                 publish = false\n",
+            ),
+            ("libs/alpha_derive/src/lib.rs", "pub fn f() {}\n"),
+        ],
+    );
+    let (_, report) = run(&dir, &[]);
+    assert_eq!(
+        findings(&report),
+        set(&["unused-dev-dependency app dev-dependencies beta"])
     );
 }
 

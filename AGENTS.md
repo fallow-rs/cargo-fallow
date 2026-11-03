@@ -30,6 +30,8 @@ cargo metadata -> workspace model -> gates -> report -> render
 - `src/attrs.rs` reads attributes and names from the syntax tree.
 - `src/graph/` holds the workspace module graph: crates, modules, items,
   imports and references, and the name resolution in `resolve.rs`.
+- `src/deps/` holds the `deps` command: the unused dependency rules on top of
+  the module graph and `cargo metadata` with the resolve.
 - `src/visibility/` holds the hidden, experimental `visibility` command of the
   M2 gap measurement. Its output can change without a version step.
 - `src/structure/` holds the `boundaries`, `size`, `complexity` and `dupes`

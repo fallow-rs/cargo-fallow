@@ -1,5 +1,7 @@
-//! The workspace model, built from `cargo metadata --no-deps`.
+//! The workspace model, built from `cargo metadata`.
 
+use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 
 use cargo_metadata::camino::{Utf8Path, Utf8PathBuf};
@@ -95,8 +97,91 @@ pub struct Target {
 /// Reads the workspace. Cargo does not resolve dependencies, does not use the
 /// network and does not write `Cargo.lock`.
 pub fn load(manifest_path: Option<&Path>) -> Result<Workspace, CliError> {
+    metadata(manifest_path, None).map(|metadata| model(&metadata))
+}
+
+/// Reads the workspace and resolves the dependencies with all features on.
+/// Cargo can use the network. `cargo_flags` go to `cargo metadata`, for
+/// example `--offline`. `Cargo.lock` stays as it was before the call: the
+/// function removes a new lock file and writes back the old bytes of a
+/// changed one. The raw metadata has the library names and the `links` keys
+/// of the dependencies.
+pub fn load_resolved(
+    manifest_path: Option<&Path>,
+    cargo_flags: &[String],
+) -> Result<(Workspace, cargo_metadata::Metadata), CliError> {
+    let root = metadata(manifest_path, None)?.workspace_root;
+    let lock = LockGuard::new(root.join(LOCK_FILE).into_std_path_buf())?;
+    let resolved = metadata(manifest_path, Some(cargo_flags));
+    lock.restore()?;
+    let metadata = resolved?;
+    Ok((model(&metadata), metadata))
+}
+
+/// The name of the lock file in the workspace root.
+const LOCK_FILE: &str = "Cargo.lock";
+
+/// The bytes of the lock file before a call that can write it.
+struct LockGuard {
+    path: PathBuf,
+    before: Option<Vec<u8>>,
+}
+
+impl LockGuard {
+    fn new(path: PathBuf) -> Result<Self, CliError> {
+        let before = match fs::read(&path) {
+            Ok(bytes) => Some(bytes),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => None,
+            Err(err) => return Err(lock_error("read", &path, &err)),
+        };
+        Ok(Self { path, before })
+    }
+
+    /// Puts the lock file back in its state before the call.
+    fn restore(self) -> Result<(), CliError> {
+        let after = match fs::read(&self.path) {
+            Ok(bytes) => Some(bytes),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => None,
+            Err(err) => return Err(lock_error("read", &self.path, &err)),
+        };
+        if after == self.before {
+            return Ok(());
+        }
+        match &self.before {
+            Some(bytes) => {
+                fs::write(&self.path, bytes).map_err(|err| lock_error("restore", &self.path, &err))
+            }
+            None => {
+                fs::remove_file(&self.path).map_err(|err| lock_error("remove", &self.path, &err))
+            }
+        }
+    }
+}
+
+fn lock_error(action: &str, path: &Path, err: &io::Error) -> CliError {
+    CliError::new(
+        ErrorCode::MetadataFailed,
+        format!("cannot {action} `{}`: {err}", path.display()),
+    )
+}
+
+/// Runs `cargo metadata`. `resolve` is `None` for a run without the
+/// dependencies, or the extra flags for a run that resolves them with all
+/// features on.
+fn metadata(
+    manifest_path: Option<&Path>,
+    resolve: Option<&[String]>,
+) -> Result<cargo_metadata::Metadata, CliError> {
     let mut command = MetadataCommand::new();
-    command.no_deps();
+    match resolve {
+        Some(flags) => {
+            command.features(cargo_metadata::CargoOpt::AllFeatures);
+            command.other_options(flags.to_vec());
+        }
+        None => {
+            command.no_deps();
+        }
+    }
     if let Some(path) = manifest_path {
         check_manifest(path)?;
         command.manifest_path(path);
@@ -105,7 +190,13 @@ pub fn load(manifest_path: Option<&Path>) -> Result<Workspace, CliError> {
         clippy::disallowed_methods,
         reason = "the workspace loader is the one module that spawns a process: `cargo metadata`"
     )]
-    let metadata = command.exec().map_err(|err| metadata_error(&err))?;
+    let metadata = command
+        .exec()
+        .map_err(|err| metadata_error(&err, resolve.is_some()))?;
+    Ok(metadata)
+}
+
+fn model(metadata: &cargo_metadata::Metadata) -> Workspace {
     let root = metadata.workspace_root.clone();
     let mut members: Vec<Member> = metadata
         .workspace_packages()
@@ -117,12 +208,12 @@ pub fn load(manifest_path: Option<&Path>) -> Result<Workspace, CliError> {
             .cmp(&b.name)
             .then_with(|| a.manifest_path.cmp(&b.manifest_path))
     });
-    Ok(Workspace {
+    Workspace {
         root,
-        target_dir: metadata.target_directory,
+        target_dir: metadata.target_directory.clone(),
         members,
-        metadata: metadata.workspace_metadata,
-    })
+        metadata: metadata.workspace_metadata.clone(),
+    }
 }
 
 fn check_manifest(path: &Path) -> Result<(), CliError> {
@@ -136,7 +227,7 @@ fn check_manifest(path: &Path) -> Result<(), CliError> {
     .with_help("Pass the path to a Cargo.toml file with --manifest-path."))
 }
 
-fn metadata_error(err: &cargo_metadata::Error) -> CliError {
+fn metadata_error(err: &cargo_metadata::Error, resolve: bool) -> CliError {
     let message = match err {
         cargo_metadata::Error::CargoMetadata { stderr } => {
             first_cargo_error(stderr).unwrap_or_else(|| err.to_string())
@@ -147,7 +238,13 @@ fn metadata_error(err: &cargo_metadata::Error) -> CliError {
         ErrorCode::MetadataFailed,
         format!("cargo metadata failed: {message}"),
     )
-    .with_help("Run `cargo metadata --no-deps` in the workspace to see the full error.")
+    .with_help(if resolve {
+        "The command resolves the dependencies with all features on, so a feature \
+         that needs an unavailable dependency fails it. Run `cargo metadata \
+         --all-features --format-version 1` in the workspace to see the full error."
+    } else {
+        "Run `cargo metadata --no-deps` in the workspace to see the full error."
+    })
 }
 
 /// The first error line of the cargo stderr, with its location when cargo

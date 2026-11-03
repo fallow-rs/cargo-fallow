@@ -21,8 +21,8 @@ use std::thread;
 
 use crate::gates::parse_edition;
 use crate::graph::extract::{
-    Binding, FileFacts, ItemFlags, ItemKind, Origin, RawRef, RefKind, Vis, doc_refs_of_markdown,
-    extract,
+    Binding, CodeInclude, FileFacts, ItemFlags, ItemKind, Origin, RawRef, RefKind, Vis,
+    doc_refs_of_markdown, extract,
 };
 use crate::modules::{SkippedFile, TargetRoot, normalize, walk};
 use crate::parse::Edition;
@@ -526,6 +526,14 @@ fn add_files(graph: &mut Graph, root: &Path, krate: CrateId, files: CrateFiles, 
             });
         }
         let mut refs = file.facts.refs;
+        let mut budget = MAX_INCLUDED_FILES;
+        refs.extend(included_code(
+            root,
+            &mut vec![file.path.clone()],
+            file.facts.code_includes,
+            edition,
+            &mut budget,
+        ));
         if doctest {
             refs.extend(included_docs(
                 root,
@@ -584,6 +592,87 @@ fn module_id(
     });
     by_path.insert(path.to_vec(), id);
     id
+}
+
+/// The maximum number of `include!` files that the graph reads for one file.
+/// A file over this budget keeps the `include` reference at the call.
+const MAX_INCLUDED_FILES: u32 = 64;
+
+/// The maximum depth of nested `include!` files.
+const MAX_INCLUDE_DEPTH: usize = 8;
+
+/// The references of the files that `include!("path")` reads. The code of the
+/// file is part of the module of the call, so each reference gets the inline
+/// modules, the owner and the test state of the call. An import of the file
+/// becomes a path reference, because the graph does not add the items of the
+/// file. `chain` holds the file of the call and the files that include it.
+/// When the file cannot be read or parsed, is on the chain, is too deep or is
+/// over the budget, the `include` reference at the call stays.
+fn included_code(
+    root: &Path,
+    chain: &mut Vec<String>,
+    includes: Vec<CodeInclude>,
+    edition: Edition,
+    budget: &mut u32,
+) -> Vec<RawRef> {
+    let Some(file) = chain.last().cloned() else {
+        return Vec::new();
+    };
+    let folder = Path::new(&file).parent().unwrap_or_else(|| Path::new(""));
+    let mut refs = Vec::new();
+    for include in includes {
+        let path = normalize(&folder.join(&include.path)).filter(|path| {
+            !chain.contains(path) && chain.len() <= MAX_INCLUDE_DEPTH && *budget > 0
+        });
+        let facts = path.as_ref().and_then(|path| {
+            *budget -= 1;
+            let source = fs::read_to_string(root.join(path)).ok()?;
+            extract(&source, edition).ok()
+        });
+        let (Some(path), Some(facts)) = (path, facts) else {
+            refs.push(include.site);
+            continue;
+        };
+        let site = include.site;
+        let at_site = |inline: Vec<String>, kind: RefKind, origin: Origin, test_only: bool| {
+            let mut full = site.inline.clone();
+            full.extend(inline);
+            RawRef {
+                inline: full,
+                owner: site.owner,
+                kind,
+                origin,
+                test_only: test_only || site.test_only,
+            }
+        };
+        for import in facts.uses {
+            let kind = RefKind::Path {
+                segments: import.path,
+                global: import.global,
+            };
+            refs.push(at_site(import.inline, kind, Origin::Body, false));
+        }
+        for raw in facts.refs {
+            refs.push(at_site(raw.inline, raw.kind, raw.origin, raw.test_only));
+        }
+        let nested = facts
+            .code_includes
+            .into_iter()
+            .map(|nested| CodeInclude {
+                path: nested.path,
+                site: at_site(
+                    nested.site.inline,
+                    nested.site.kind,
+                    nested.site.origin,
+                    nested.site.test_only,
+                ),
+            })
+            .collect();
+        chain.push(path);
+        refs.extend(included_code(root, chain, nested, edition, budget));
+        chain.pop();
+    }
+    refs
 }
 
 fn included_docs(root: &Path, file: &str, includes: &[String], edition: Edition) -> Vec<RawRef> {

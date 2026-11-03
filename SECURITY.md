@@ -27,7 +27,8 @@ The crate root uses `#![cfg_attr(not(test), deny(clippy::disallowed_methods))]` 
 Each release archive has an Ed25519 signature (`<archive>.sig`) next to its
 SHA-256 file (`<archive>.sha256`). The release workflow signs each archive
 with the `ED25519_BINARY_SIGNING_PRIVATE_KEY` secret of the `release`
-environment. The key pair is the key pair of the fallow binaries.
+environment. The key pair belongs to cargo-fallow only.
+The fallow binaries use a different key pair.
 
 The GitHub Action installer (`action/scripts/install.sh`) checks the
 signature with the public key in `action/scripts/verify-signature.mjs`, then

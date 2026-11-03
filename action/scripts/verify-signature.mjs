@@ -2,8 +2,8 @@
 // script before the SHA-256 check. Exit 0: the signature is good. Exit 1: the
 // signature is bad, missing or unreadable.
 //
-// The public key is the key of the fallow repo (npm/fallow/scripts/
-// verify-binary.js). The key is in this file, so a change to the network path,
+// The public key belongs to cargo-fallow only. The fallow repo has its own key
+// pair, so a leak of one key does not affect the other product. The key is in this file, so a change to the network path,
 // to the release or to the environment cannot change it. The tests in
 // action/tests/run.sh use a copy of this file with a test key.
 //
@@ -12,8 +12,8 @@
 import { readFileSync } from "node:fs";
 import { createPublicKey, verify } from "node:crypto";
 
-/** The 32-byte Ed25519 public key of the fallow release signatures, in base64. */
-const EMBEDDED_PUBLIC_KEY = "g05v13Mz5u7fd5NHxxCstAPS2CNNVZ9e18h+VSreC9E=";
+/** The 32-byte Ed25519 public key of the cargo-fallow release signatures, in base64. */
+const EMBEDDED_PUBLIC_KEY = "AkUBBjL/jJEZYBAJvHfjqlo0O3PNUMorszc5+LOzziM=";
 /** The SPKI DER prefix of an Ed25519 public key (RFC 8410). */
 const SPKI_HEADER = Buffer.from([
   0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,

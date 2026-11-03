@@ -1,7 +1,7 @@
 // Signs a release archive with Ed25519, the same model as the fallow repo.
 //
 // ED25519_BINARY_SIGNING_PRIVATE_KEY holds the 32-byte Ed25519 seed in
-// base64, not a PKCS8 document. The fallow repo uses the same secret format.
+// base64, not a PKCS8 document. The fallow repo uses the same secret format, with its own key.
 //
 // Usage: node sign-binary.mjs <input-file> <output-sig>
 

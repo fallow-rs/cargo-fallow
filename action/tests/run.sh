@@ -473,7 +473,7 @@ process.stdout.write(spki.subarray(-32).toString("base64"));' "$1"
 sign_with() {
   ED25519_BINARY_SIGNING_PRIVATE_KEY="$1" node "$SIGN" "$DIST/$ASSET" "$DIST/$ASSET.sig" > /dev/null
 }
-RELEASE_KEY="g05v13Mz5u7fd5NHxxCstAPS2CNNVZ9e18h+VSreC9E="
+RELEASE_KEY="AkUBBjL/jJEZYBAJvHfjqlo0O3PNUMorszc5+LOzziM="
 download() {
   INSTALL_SH="$WORK/test-action/scripts/install.sh" run_install INPUT_INSTALL="$1" \
     ACTION_PATH="$RELEASED" CARGO_FALLOW_DRY_RUN=0 CARGO_FALLOW_RELEASE_URL="file://$WORK/dist"

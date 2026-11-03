@@ -29,7 +29,8 @@ A release does these steps in this order:
 4. The `sign` job writes an Ed25519 signature `<archive>.sig` for each
    archive with the `ED25519_BINARY_SIGNING_PRIVATE_KEY` secret. Then it checks
    each signature with the public key in `action/scripts/verify-signature.mjs`.
-   The key pair is the key pair of the fallow repo.
+   The key pair belongs to cargo-fallow only. The fallow repo has its own
+   key pair.
 5. The `publish-crate` job publishes the crate to crates.io with trusted
    publishing. It gets a short-lived token through OIDC. The repository has no
    crates.io token.
@@ -100,9 +101,9 @@ In the repository settings, open **Environments** and create `release`:
 - **Required reviewers**: add yourself. Each release then waits for your
   approval before the credential jobs start. GitHub asks once for each of the
   four jobs `attest`, `sign`, `publish-crate` and `github-release`.
-- Add one secret, `ED25519_BINARY_SIGNING_PRIVATE_KEY`, with the same value
-  as the secret of the same name in the `fallow-rs/fallow` repository: the
-  32-byte Ed25519 seed in base64. The `sign` job fails without it. Trusted
+- Add one secret, `ED25519_BINARY_SIGNING_PRIVATE_KEY`, with the private
+  key of the cargo-fallow pair: the 32-byte Ed25519 seed in base64. Do not
+  use the key of the `fallow-rs/fallow` repository. The `sign` job fails without it. Trusted
   publishing needs no crates.io secret.
 
 Also add a tag ruleset for `v*` that lets only the owner create, update or

@@ -31,8 +31,9 @@ environment. The key pair is the key pair of the fallow binaries.
 
 The GitHub Action installer (`action/scripts/install.sh`) checks the
 signature with the public key in `action/scripts/verify-signature.mjs`, then
-the SHA-256. It fails closed: a bad or missing signature stops the job, and
-the installer does not fall back to a source build. To check an archive by
+the SHA-256, then the version of the unpacked binary. It fails closed: a bad
+or missing signature, a checksum mismatch or another version stops the job,
+and the installer does not fall back to a source build. To check an archive by
 hand, run `node action/scripts/verify-signature.mjs <archive> <archive>.sig`.
 
 Each archive also has a build provenance attestation. Run

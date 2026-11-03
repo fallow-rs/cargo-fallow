@@ -398,7 +398,7 @@ run_install() {
   OUT="$(env -i PATH="$BASE_PATH" HOME="$case_dir" RUNNER_TEMP="$case_dir" \
     GITHUB_OUTPUT="$case_dir/outputs" GITHUB_PATH="$case_dir/path" \
     RUNNER_OS=Linux RUNNER_ARCH=X64 ACTION_PATH="$SOURCE" CARGO_FALLOW_DRY_RUN=1 "$@" \
-    bash "$SCRIPTS/install.sh" 2>&1)"
+    bash "${INSTALL_SH:-$SCRIPTS/install.sh}" 2>&1)"
   CODE=$?
   OUTPUTS="$(cat "$case_dir/outputs")"
   INSTALL_CASE="$case_dir"
@@ -439,8 +439,8 @@ run_install INPUT_INSTALL=npm
 assert_contains "$OUT" "Invalid 'install' input" "an unknown method explains the failure"
 
 # A real download from a file URL, with good and bad signatures and checksums.
-# The names are those of .github/workflows/release.yml. The test key pair
-# replaces the release key through CARGO_FALLOW_SIGNING_PUBLIC_KEY.
+# The names are those of .github/workflows/release.yml. A copy of the action
+# scripts holds the public key of a test key pair instead of the release key.
 sha256() {
   if command -v sha256sum > /dev/null 2>&1; then sha256sum "$1" | awk '{ print $1 }'; else shasum -a 256 "$1" | awk '{ print $1 }'; fi
 }
@@ -448,9 +448,12 @@ NAME="cargo-fallow-0.3.1-x86_64-unknown-linux-musl"
 ASSET="$NAME.tar.gz"
 DIST="$WORK/dist/v0.3.1"
 mkdir -p "$DIST" "$WORK/pack/$NAME"
-printf '#!/bin/sh\necho "cargo-fallow 0.3.1"\n' > "$WORK/pack/$NAME/cargo-fallow"
-chmod +x "$WORK/pack/$NAME/cargo-fallow"
-(cd "$WORK/pack" && tar -czf "$DIST/$ASSET" "$NAME")
+pack() {
+  printf '#!/bin/sh\necho "cargo-fallow %s"\n' "$1" > "$WORK/pack/$NAME/cargo-fallow"
+  chmod +x "$WORK/pack/$NAME/cargo-fallow"
+  (cd "$WORK/pack" && tar -czf "$DIST/$ASSET" "$NAME")
+}
+pack 0.3.1
 write_checksum() {
   printf '%s  %s\n' "$(sha256 "$DIST/$ASSET")" "$ASSET" > "$DIST/$ASSET.sha256"
 }
@@ -470,16 +473,23 @@ process.stdout.write(spki.subarray(-32).toString("base64"));' "$1"
 sign_with() {
   ED25519_BINARY_SIGNING_PRIVATE_KEY="$1" node "$SIGN" "$DIST/$ASSET" "$DIST/$ASSET.sig" > /dev/null
 }
+RELEASE_KEY="g05v13Mz5u7fd5NHxxCstAPS2CNNVZ9e18h+VSreC9E="
 download() {
-  run_install INPUT_INSTALL="$1" ACTION_PATH="$RELEASED" CARGO_FALLOW_DRY_RUN=0 \
-    CARGO_FALLOW_RELEASE_URL="file://$WORK/dist" CARGO_FALLOW_SIGNING_PUBLIC_KEY="$TEST_PUBLIC_KEY"
+  INSTALL_SH="$WORK/test-action/scripts/install.sh" run_install INPUT_INSTALL="$1" \
+    ACTION_PATH="$RELEASED" CARGO_FALLOW_DRY_RUN=0 CARGO_FALLOW_RELEASE_URL="file://$WORK/dist"
 }
 if command -v curl > /dev/null 2>&1 && command -v node > /dev/null 2>&1; then
   TEST_PUBLIC_KEY="$(public_key_of "$TEST_SEED")"
+  mkdir -p "$WORK/test-action"
+  cp -R "$SCRIPTS" "$WORK/test-action/scripts"
+  sed "s|$RELEASE_KEY|$TEST_PUBLIC_KEY|" "$VERIFY" > "$WORK/test-action/scripts/verify-signature.mjs"
+  assert_not_contains "$(cat "$WORK/test-action/scripts/verify-signature.mjs")" "$RELEASE_KEY" "test copy: the test key replaces the release key"
   sign_with "$TEST_SEED"
   node "$VERIFY" "$DIST/$ASSET" "$DIST/$ASSET.sig" > /dev/null 2>&1
   assert_equals "$?" "1" "verify-signature: the release key rejects a signature of another key"
-  CARGO_FALLOW_SIGNING_PUBLIC_KEY="$TEST_PUBLIC_KEY" node "$VERIFY" "$DIST/$ASSET" "$DIST/$ASSET.sig"
+  CARGO_FALLOW_SIGNING_PUBLIC_KEY="$TEST_PUBLIC_KEY" node "$VERIFY" "$DIST/$ASSET" "$DIST/$ASSET.sig" > /dev/null 2>&1
+  assert_equals "$?" "1" "verify-signature: no variable replaces the release key"
+  node "$WORK/test-action/scripts/verify-signature.mjs" "$DIST/$ASSET" "$DIST/$ASSET.sig"
   assert_equals "$?" "0" "verify-signature: the signer and the verifier agree"
   download release
   assert_equals "$CODE" "0" "release download: a good signature and checksum install"
@@ -497,7 +507,17 @@ if command -v curl > /dev/null 2>&1 && command -v node > /dev/null 2>&1; then
   download release
   assert_equals "$CODE" "1" "release download: a changed archive with a new checksum fails the signature"
   assert_contains "$OUT" "signature of $ASSET is not valid" "release download: the signature finds a replaced archive"
-  (cd "$WORK/pack" && tar -czf "$DIST/$ASSET" "$NAME")
+  pack 0.3.1
+  write_checksum
+
+  pack 0.2.0
+  write_checksum
+  sign_with "$TEST_SEED"
+  download auto
+  assert_equals "$CODE" "1" "release download: a signed archive of another version fails, also for auto"
+  assert_contains "$OUT" "The binary in $ASSET has version 0.2.0, not 0.3.1." "release download: the failure names both versions"
+  assert_not_contains "$OUT" "Building cargo-fallow from the source" "release download: another version does not fall back"
+  pack 0.3.1
   write_checksum
 
   rm -f "$DIST/$ASSET.sig"

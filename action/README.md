@@ -153,6 +153,9 @@ The action checks the signature before it checks the checksum:
   fails this check.
 - The checksum file comes from the same release as the archive, so it finds a
   damaged download.
+- The signature does not name the version. After the unpack, the action runs
+  `cargo-fallow --version` and stops the job when the version is not the
+  requested version. An older signed archive cannot replace a newer one.
 - A bad signature, a missing `.sig` file or a checksum mismatch stops the job.
   `auto` does not fall back to a source build after such a failure.
 - The check needs `node`, which each GitHub-hosted runner has. On a runner

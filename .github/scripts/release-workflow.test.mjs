@@ -85,7 +85,7 @@ test("a release checks the tag, the manifest and the branch before it publishes"
   assert.match(plan, /\.publish'\)"\n\s+if \[ "\$publish_field" != "null" \]/u);
   assert.match(plan, /git merge-base --is-ancestor "\$GITHUB_SHA" origin\/main/u);
   assert.match(plan, /node scripts\/release-notes\.mjs "\$VERSION" > notes/u);
-  assert.match(job("publish-crate"), /^ {4}needs: \[plan, build, attest\]$/mu);
+  assert.match(job("publish-crate"), /^ {4}needs: \[plan, build, attest, sign\]$/mu);
   assert.match(job("github-release"), /^ {4}needs: \[plan, attest, sign, publish-crate\]$/mu);
   assert.match(job("attest"), /^ {4}needs: \[plan, build\]$/mu);
 });

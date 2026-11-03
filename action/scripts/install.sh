@@ -15,8 +15,7 @@ set -euo pipefail
 #   source of the action ref)
 # Optional env: INPUT_VERSION, RUNNER_OS, RUNNER_ARCH, RUNNER_TEMP,
 #   GITHUB_PATH, GITHUB_OUTPUT, CARGO_FALLOW_RELEASE_URL,
-#   CARGO_FALLOW_DRY_RUN (1: print the install commands and do not run them),
-#   CARGO_FALLOW_SIGNING_PUBLIC_KEY (tests only, see verify-signature.mjs)
+#   CARGO_FALLOW_DRY_RUN (1: print the install commands and do not run them)
 
 : "${ACTION_PATH:=${GITHUB_ACTION_PATH:?the action path is unknown}}"
 : "${INPUT_VERSION:=}" "${RUNNER_OS:=}" "${RUNNER_ARCH:=}"
@@ -84,10 +83,10 @@ sha256_of() {
 
 # Download, check and unpack one release archive. The names are those of
 # .github/workflows/release.yml. Returns 1 when the release has no binary for
-# this runner, so `auto` can try the next method. A bad or missing signature
-# or checksum stops the job.
+# this runner, so `auto` can try the next method. A bad or missing signature,
+# a checksum mismatch or a binary of another version stops the job.
 install_release() {
-  local version="$1" target asset url work expected actual binary
+  local version="$1" target asset url work expected actual binary found
   if [ -z "$version" ]; then
     echo "The action ref has no released version, so it has no release binary."
     return 1
@@ -142,6 +141,13 @@ install_release() {
   # The function runs in a condition, so `set -e` is off here.
   cp "$binary" "$BIN_DIR/" || fail "Could not copy ${binary} to ${BIN_DIR}."
   chmod +x "$BIN_DIR/$(basename "$binary")" || fail "Could not make the binary executable."
+  # The signature does not name the version. An older signed archive must not
+  # replace the requested version.
+  found="$("$BIN_DIR/$(basename "$binary")" --version 2> /dev/null | awk '{ print $2; exit }')"
+  if [ "$found" != "$version" ]; then
+    rm -f "$BIN_DIR/$(basename "$binary")"
+    fail "The binary in ${asset} has version ${found:-unknown}, not ${version}."
+  fi
   return 0
 }
 

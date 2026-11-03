@@ -315,7 +315,7 @@ jobs:
 
   publish-crate:
     name: Publish to crates.io
-    needs: [plan, build, attest]
+    needs: [plan, build, attest, sign]
     if: ${{ needs.plan.outputs.publish == 'true' }}
     environment: release
     runs-on: ubuntu-26.04

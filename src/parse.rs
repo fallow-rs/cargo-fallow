@@ -194,18 +194,15 @@ fn nests_too_deep(source: &str, edition: Edition) -> bool {
 /// starts again at each `;`, `{` and `}`.
 fn scan_depth(source: &str, edition: Edition) -> Option<u32> {
     let tokens = LexedStr::new(edition, source);
-    let (mut brackets, mut angles, mut prefix_run) = (0_u32, 0_u32, 0_u32);
+    let (mut angles, mut prefix_run) = (0_u32, 0_u32);
     let mut chains = Chains::default();
     let mut depth = Depth::default();
     for index in 0..tokens.len() {
         let kind = tokens.kind(index);
-        match kind {
-            SyntaxKind::L_PAREN | SyntaxKind::L_BRACK | SyntaxKind::L_CURLY => brackets += 1,
-            SyntaxKind::R_PAREN | SyntaxKind::R_BRACK | SyntaxKind::R_CURLY => {
-                brackets = brackets.saturating_sub(1);
-            }
-            _ => {}
-        }
+        depth.step(kind);
+        // The open levels of `depth` are the bracket count. A closer of
+        // another kind closes no level, the same as in the parser.
+        let brackets = u32::try_from(depth.open.len()).unwrap_or(u32::MAX);
         match kind {
             SyntaxKind::L_ANGLE => angles += 1,
             SyntaxKind::R_ANGLE => angles = angles.saturating_sub(1),
@@ -222,7 +219,6 @@ fn scan_depth(source: &str, edition: Edition) -> Option<u32> {
         if brackets.max(angles).max(prefix_run) > MAX_NESTING || chains.step(kind) > MAX_CHAIN {
             return None;
         }
-        depth.step(kind);
     }
     Some(depth.deepest)
 }
@@ -250,9 +246,9 @@ fn scan_depth(source: &str, edition: Edition) -> Option<u32> {
 /// a comparison.
 #[derive(Default)]
 struct Depth {
-    /// The count of each open bracket level. The current level is not in the
-    /// list.
-    open: Vec<Run>,
+    /// The closer and the count of each open bracket level. The current level
+    /// is not in the list.
+    open: Vec<(SyntaxKind, Run)>,
     /// The sum of the token counts in `open`.
     below: u32,
     /// The count of the current level.
@@ -292,14 +288,23 @@ impl Depth {
         match kind {
             SyntaxKind::L_PAREN | SyntaxKind::L_BRACK | SyntaxKind::L_CURLY => {
                 self.below = self.below.saturating_add(self.current.tokens);
-                self.open.push(std::mem::take(&mut self.current));
+                let closer = match kind {
+                    SyntaxKind::L_PAREN => SyntaxKind::R_PAREN,
+                    SyntaxKind::L_BRACK => SyntaxKind::R_BRACK,
+                    _ => SyntaxKind::R_CURLY,
+                };
+                self.open.push((closer, std::mem::take(&mut self.current)));
             }
+            // The parser does not close a level at a closer of another kind,
+            // as in `{]`. It keeps the level open, so the count does too.
             SyntaxKind::R_PAREN | SyntaxKind::R_BRACK | SyntaxKind::R_CURLY => {
-                if let Some(parent) = self.open.pop() {
+                if self.open.last().is_some_and(|(closer, _)| *closer == kind)
+                    && let Some((_, parent)) = self.open.pop()
+                {
                     self.below = self.below.saturating_sub(parent.tokens);
                     self.current = parent;
+                    self.after_curly = kind == SyntaxKind::R_CURLY;
                 }
-                self.after_curly = kind == SyntaxKind::R_CURLY;
             }
             SyntaxKind::SEMICOLON => self.current = Run::default(),
             SyntaxKind::COMMA
@@ -746,6 +751,22 @@ mod tests {
         let source = format!("fn f(x: u8) -> u8 {{ match x {{ {arms} _ => 0 }} }}");
         let depth = scan_depth(&source, EDITION).unwrap_or(u32::MAX);
         assert!(depth < 64, "{depth}");
+    }
+
+    #[test]
+    fn mismatched_closers_do_not_overflow_the_stack() {
+        // The parser keeps a level open at a closer of another kind, so the
+        // scan must keep it open too.
+        for unit in [
+            "{]", "{)", "(]", "(}", "[)", "[}", "{];", "{)a ", "{],", "{]}a ", "(],", "[);",
+        ] {
+            let source = format!("fn f() {{ {} }}", unit.repeat(50_000));
+            let outcome = parse_source(&source, EDITION);
+            assert!(
+                matches!(outcome, ParseOutcome::TooDeep | ParseOutcome::Failed { .. }),
+                "{unit}: {outcome:?}"
+            );
+        }
     }
 
     #[test]

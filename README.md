@@ -4,6 +4,9 @@
 analyzes a Cargo workspace. It uses `cargo metadata` and syntactic analysis
 with `ra_ap_syntax`, the parser of rust-analyzer. It runs on stable Rust and needs no nightly toolchain.
 
+Do not run `cargo install fallow` for Rust. That crate installs fallow for
+TypeScript and JavaScript. Install `cargo-fallow`, then run `cargo fallow`.
+
 ## Status
 
 Pre-release. The `check` command runs the static checks in one run and writes

@@ -335,7 +335,7 @@ jobs:
       # fallow passes `--config .github/zizmor.yml` for its release and
       # Dependabot workflows. This repository has no such workflow, and
       # zizmor 1.26.1 reports no finding here, so it needs no config file.
-      - run: uvx zizmor@1.26.1 --min-confidence medium --format plain .github/
+      - run: uvx zizmor@1.26.1 --min-confidence medium --format plain .github/ action.yml
 
   msrv:
     name: MSRV (1.98)

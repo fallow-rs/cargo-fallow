@@ -5,40 +5,12 @@ use std::collections::BTreeMap;
 use fallow_report_protocol::{GateOutcome, GateStatus};
 use serde::Serialize;
 
+use crate::gates::RustGateName as Gate;
 use crate::report::TOOL_VERSION;
 
 /// The version of the report shape of the structure checks. A change that
 /// removes a member or changes its type increments it.
 pub const SCHEMA_VERSION: u32 = 1;
-
-/// The gates of the structure checks, as they appear in `gate_outcomes`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum Gate {
-    /// `boundaries --fail-on-violations`: a rule found a violation.
-    BoundaryViolations,
-    /// `dupes --fail-on-clones`: the run found a clone group.
-    DuplicationFindings,
-    /// `dupes --threshold`: the duplicated lines are over the percentage.
-    DuplicationThreshold,
-    /// `size --fail-on-growth`: a file over the line limit grew.
-    FileGrowth,
-    /// `complexity --fail-on-complexity`: a function is over a limit.
-    HealthFindings,
-}
-
-impl Gate {
-    /// The wire spelling of the name.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::BoundaryViolations => "boundary-violations",
-            Self::DuplicationFindings => "duplication-findings",
-            Self::DuplicationThreshold => "duplication-threshold",
-            Self::FileGrowth => "file-growth",
-            Self::HealthFindings => "health-findings",
-        }
-    }
-}
 
 /// The report of one structure check. The field order is the wire order.
 #[derive(Debug, Clone, Serialize)]
@@ -74,11 +46,6 @@ impl<S, F> Report<S, F> {
             findings,
             gate_outcomes: BTreeMap::new(),
         }
-    }
-
-    /// True when one outcome fails the run.
-    pub fn fails_run(&self) -> bool {
-        self.gate_outcomes.values().any(GateOutcome::fails_run)
     }
 }
 
@@ -122,6 +89,18 @@ impl Action {
             placement: Some(placement),
         }
     }
+}
+
+/// The steps in the shared finding shape.
+pub fn shared_actions(actions: &[Action]) -> Vec<crate::finding::Action> {
+    actions
+        .iter()
+        .map(|action| crate::finding::Action {
+            kind: action.kind.to_owned(),
+            auto_fixable: action.auto_fixable,
+            description: action.description.clone(),
+        })
+        .collect()
 }
 
 /// The outcome of a gate that counts findings and fails on one or more.
@@ -175,42 +154,4 @@ pub fn gates_text(outcomes: &BTreeMap<Gate, GateOutcome>) -> String {
         text.push_str(&gate_line(*gate, outcome));
     }
     text
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn gate_names_match_serde() {
-        for gate in [
-            Gate::BoundaryViolations,
-            Gate::DuplicationFindings,
-            Gate::DuplicationThreshold,
-            Gate::FileGrowth,
-            Gate::HealthFindings,
-        ] {
-            assert_eq!(
-                serde_json::to_value(gate).unwrap_or_default(),
-                gate.as_str()
-            );
-        }
-    }
-
-    #[test]
-    fn only_an_enforced_failure_fails_the_report() {
-        let mut report: Report<(), ()> = Report::new("size", (), Vec::new());
-        report
-            .gate_outcomes
-            .insert(Gate::FileGrowth, count_gate(2, false));
-        assert!(!report.fails_run());
-        report
-            .gate_outcomes
-            .insert(Gate::FileGrowth, count_gate(2, true));
-        assert!(report.fails_run());
-        report
-            .gate_outcomes
-            .insert(Gate::FileGrowth, count_gate(0, true));
-        assert!(!report.fails_run());
-    }
 }

@@ -506,11 +506,6 @@ pub struct Report {
 }
 
 impl Report {
-    /// True when an enforced gate failed.
-    pub fn fails_run(&self) -> bool {
-        self.gate_outcomes.values().any(GateOutcome::fails_run)
-    }
-
     /// True when the gate is enforced, found no survivor, and the machine stopped
     /// the run. The gate then has no verdict that a person chose to accept, so the
     /// run is an execution error.

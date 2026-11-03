@@ -2,23 +2,34 @@
 
 pub mod deps;
 mod human;
-mod json;
 pub mod mutants;
 mod sarif;
 
+use std::collections::BTreeMap;
 use std::io::{self, Write};
 
-use crate::cli::Format;
-use crate::report::CheckReport;
+use fallow_report_protocol::{GateFile, GateOutcome};
 
-/// Writes the report to stdout in the given format.
-pub fn write_report(report: &CheckReport, format: Format) -> io::Result<()> {
-    let text = match format {
-        Format::Human => human::render(report),
-        Format::Json => json::render(report)?,
-        Format::Sarif => sarif::render(report)?,
-    };
-    write_stdout(&text)
+use crate::gates::RustGateName;
+
+/// The human gate block of the parse gate, with the files that do not parse.
+pub fn parse_human(gates: &BTreeMap<RustGateName, GateOutcome>) -> String {
+    human::gates_block(gates)
+}
+
+/// The SARIF log of the parse gate.
+pub fn parse_sarif(gates: &BTreeMap<RustGateName, GateOutcome>) -> serde_json::Value {
+    sarif::gate_log(gates)
+}
+
+/// The message of a file that does not parse.
+pub const fn parse_message(file: &GateFile) -> &'static str {
+    sarif::file_message(RustGateName::ParseError, file)
+}
+
+/// The empty SARIF log of a run with no result.
+pub fn empty_sarif() -> serde_json::Value {
+    sarif::document(&[], &[], &[])
 }
 
 /// The gate outcome as one line for a person, for the reports of other commands.

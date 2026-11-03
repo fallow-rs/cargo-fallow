@@ -1,9 +1,9 @@
 //! The gates of a `check` run.
 //!
-//! The gate names use the same spelling as `GateName` in fallow. The two
-//! lists stay equal by convention until the protocol crate owns the names.
-//! `surviving-mutants` is the one exception: the JavaScript tool has no gate on
-//! mutation results.
+//! [`RustGateName`] holds the name of each gate of each command. The gate names
+//! use the same spelling as `GateName` in fallow. The two lists stay equal by
+//! convention until the protocol crate owns the names. `surviving-mutants` is
+//! the one exception: the JavaScript tool has no gate on mutation results.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -11,19 +11,25 @@ use std::fs;
 use fallow_report_protocol::{GateFile, GateFileReason, GateOutcome, GateStatus};
 use serde::Serialize;
 
-use crate::cli::Options;
 use crate::parse::{Edition, ParseOutcome, parse_source};
 use crate::workspace::{self, Workspace};
-
-/// The rule severity that `error-severity-findings` counts.
-const ERROR_SEVERITY: &str = "error";
 
 /// The name of a gate, as it appears in `gate_outcomes`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum RustGateName {
+    /// `boundaries`: a rule found a violation.
+    BoundaryViolations,
+    /// `dupes`: the run found a clone group.
+    DuplicationFindings,
+    /// `dupes --threshold`: the duplicated lines are over the percentage.
+    DuplicationThreshold,
     /// Fails when the run has a finding with the `error` severity.
     ErrorSeverityFindings,
+    /// `size --base` or `size --staged`: a file over the line limit grew.
+    FileGrowth,
+    /// `complexity`: a function is over a limit.
+    HealthFindings,
     /// Fails when a target root file does not parse.
     ParseError,
     /// Fails when a mutant survived the tests of a `mutants` run.
@@ -32,39 +38,50 @@ pub enum RustGateName {
     VisibilityFindings,
 }
 
-/// The gate outcomes of one run, sorted by gate name.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct GateOutcomes(BTreeMap<RustGateName, GateOutcome>);
-
-impl GateOutcomes {
-    /// Sets the outcome of one gate.
-    pub fn insert(&mut self, name: RustGateName, outcome: GateOutcome) {
-        self.0.insert(name, outcome);
-    }
-
-    /// True when one outcome fails the run.
-    pub fn fails_run(&self) -> bool {
-        self.0.values().any(GateOutcome::fails_run)
-    }
-
-    /// The outcomes, or `None` when no gate reported.
-    pub fn into_option(self) -> Option<BTreeMap<RustGateName, GateOutcome>> {
-        if self.0.is_empty() {
-            None
-        } else {
-            Some(self.0)
-        }
-    }
-}
-
 impl RustGateName {
+    /// Every gate name, in wire order.
+    #[cfg(test)]
+    pub const ALL: [Self; 9] = [
+        Self::BoundaryViolations,
+        Self::DuplicationFindings,
+        Self::DuplicationThreshold,
+        Self::ErrorSeverityFindings,
+        Self::FileGrowth,
+        Self::HealthFindings,
+        Self::ParseError,
+        Self::SurvivingMutants,
+        Self::VisibilityFindings,
+    ];
+
     /// The wire spelling of the name.
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::BoundaryViolations => "boundary-violations",
+            Self::DuplicationFindings => "duplication-findings",
+            Self::DuplicationThreshold => "duplication-threshold",
+            Self::FileGrowth => "file-growth",
+            Self::HealthFindings => "health-findings",
             Self::ErrorSeverityFindings => "error-severity-findings",
             Self::ParseError => "parse-error",
             Self::SurvivingMutants => "surviving-mutants",
             Self::VisibilityFindings => "visibility-findings",
+        }
+    }
+
+    /// One sentence that tells what a failure of the gate means.
+    pub const fn description(self) -> &'static str {
+        match self {
+            Self::BoundaryViolations => "A boundary rule found a violation.",
+            Self::DuplicationFindings => "The run found a clone group.",
+            Self::DuplicationThreshold => {
+                "The duplicated lines are over the percentage of all lines."
+            }
+            Self::ErrorSeverityFindings => "The run has a finding with the error severity.",
+            Self::FileGrowth => "A file over the line limit grew.",
+            Self::HealthFindings => "A function is over a complexity limit.",
+            Self::ParseError => "A target root file does not parse.",
+            Self::SurvivingMutants => "A mutant survived: each test passed with the change.",
+            Self::VisibilityFindings => "An item has a larger visibility than its uses need.",
         }
     }
 }
@@ -72,8 +89,8 @@ impl RustGateName {
 /// The gate outcomes of a run and the target root files that no gate judged.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Evaluation {
-    /// The gate outcomes.
-    pub outcomes: GateOutcomes,
+    /// The gate outcomes, keyed by gate name.
+    pub outcomes: BTreeMap<RustGateName, GateOutcome>,
     /// The target root files that could not be read, sorted by path.
     pub unreadable: Vec<UnreadableFile>,
 }
@@ -91,18 +108,12 @@ pub struct UnreadableFile {
     pub error: String,
 }
 
-/// Computes every gate for the workspace.
-pub fn evaluate(workspace: &Workspace, options: &Options) -> Evaluation {
-    let mut outcomes = GateOutcomes::default();
-    // M0 has no checks, so no finding has the `error` severity.
-    outcomes.insert(
-        RustGateName::ErrorSeverityFindings,
-        GateOutcome::counted(GateStatus::Pass, true, 0.0, ERROR_SEVERITY),
-    );
-    let (parse_outcome, unreadable) = parse_error(workspace, options.fail_on_parse_error);
-    outcomes.insert(RustGateName::ParseError, parse_outcome);
+/// Computes the `parse-error` gate for the workspace. `enforced` is true when
+/// a target root file that does not parse fails the run.
+pub fn evaluate(workspace: &Workspace, enforced: bool) -> Evaluation {
+    let (parse_outcome, unreadable) = parse_error(workspace, enforced);
     Evaluation {
-        outcomes,
+        outcomes: BTreeMap::from([(RustGateName::ParseError, parse_outcome)]),
         unreadable,
     }
 }
@@ -188,41 +199,6 @@ fn gate_file(path: &str, parsed: ParseOutcome) -> Option<GateFile> {
 mod tests {
     use super::*;
 
-    fn failing(enforced: bool) -> GateOutcome {
-        GateOutcome::new(GateStatus::Fail, enforced)
-    }
-
-    #[test]
-    fn empty_outcomes_do_not_fail_and_give_none() {
-        let outcomes = GateOutcomes::default();
-        assert!(!outcomes.fails_run());
-        assert!(outcomes.into_option().is_none());
-    }
-
-    #[test]
-    fn only_an_enforced_failure_fails_the_run() {
-        let mut outcomes = GateOutcomes::default();
-        outcomes.insert(RustGateName::ParseError, failing(false));
-        assert!(!outcomes.fails_run());
-        outcomes.insert(RustGateName::ErrorSeverityFindings, failing(true));
-        assert!(outcomes.fails_run());
-    }
-
-    #[test]
-    fn insert_replaces_and_into_option_keeps_name_order() {
-        let mut outcomes = GateOutcomes::default();
-        outcomes.insert(RustGateName::ParseError, failing(true));
-        outcomes.insert(
-            RustGateName::ParseError,
-            GateOutcome::new(GateStatus::Pass, true),
-        );
-        outcomes.insert(RustGateName::ErrorSeverityFindings, failing(false));
-        assert!(!outcomes.fails_run());
-        let map = outcomes.into_option().unwrap_or_default();
-        let names: Vec<&str> = map.keys().map(|name| name.as_str()).collect();
-        assert_eq!(names, ["error-severity-findings", "parse-error"]);
-    }
-
     #[test]
     fn gate_file_follows_the_contract_for_each_parse_result() {
         assert_eq!(gate_file("a.rs", ParseOutcome::Parsed), None);
@@ -265,13 +241,15 @@ mod tests {
     }
 
     #[test]
-    fn wire_names_match_serde() {
-        for name in [
-            RustGateName::ErrorSeverityFindings,
-            RustGateName::ParseError,
-        ] {
+    fn wire_names_match_serde_and_keep_the_wire_order() {
+        for name in RustGateName::ALL {
             let wire = serde_json::to_value(name).unwrap_or_default();
             assert_eq!(wire, name.as_str());
         }
+        let names: Vec<&str> = RustGateName::ALL.iter().map(|name| name.as_str()).collect();
+        let mut sorted = names.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(names, sorted);
     }
 }

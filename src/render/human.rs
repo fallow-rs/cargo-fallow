@@ -2,24 +2,16 @@
 
 use std::fmt::Write;
 
+use std::collections::BTreeMap;
+
 use fallow_report_protocol::{GateFileReason, GateOutcome, GateStatus};
 
-use crate::report::CheckReport;
+use crate::gates::RustGateName;
 
-/// The report as a short summary.
-pub fn render(report: &CheckReport) -> String {
-    let members = report.workspace.members.len();
-    let targets = report.target_count();
-    let mut text = format!(
-        "cargo fallow check: {members} {}, {targets} {}\n",
-        plural(members, "member", "members"),
-        plural(targets, "target", "targets"),
-    );
-    if report.total_issues == 0 {
-        text.push_str("No issues found\n");
-    }
-    text.push_str("Gates:");
-    for (name, outcome) in report.gate_outcomes.iter().flatten() {
+/// The gate block of a `check` run, with the files of each gate.
+pub fn gates_block(gates: &BTreeMap<RustGateName, GateOutcome>) -> String {
+    let mut text = String::from("Gates:");
+    for (name, outcome) in gates {
         // Writing to a String does not fail.
         let _ = write!(text, "\n  {}: {}", name.as_str(), gate_line(outcome));
         for file in &outcome.files {
@@ -59,9 +51,6 @@ mod tests {
     use fallow_report_protocol::GateFile;
 
     use super::*;
-    use crate::gates::{GateOutcomes, RustGateName};
-    use crate::report::CheckReport;
-    use crate::workspace::Workspace;
 
     #[test]
     fn too_deep_file_names_its_reason() {
@@ -71,18 +60,11 @@ mod tests {
             panicked: true,
             reason: (path == "b.rs").then_some(GateFileReason::NestingTooDeep),
         });
-        let mut outcomes = GateOutcomes::default();
-        outcomes.insert(
+        let gates = BTreeMap::from([(
             RustGateName::ParseError,
             GateOutcome::with_files(GateStatus::Fail, true, files.to_vec()),
-        );
-        let workspace = Workspace {
-            root: "/w".into(),
-            target_dir: "/w/target".into(),
-            members: Vec::new(),
-            metadata: serde_json::Value::Null,
-        };
-        let text = render(&CheckReport::new(workspace, outcomes));
+        )]);
+        let text = gates_block(&gates);
         assert!(
             text.ends_with("\n    a.rs\n    b.rs (nests too deep to parse)"),
             "{text}"

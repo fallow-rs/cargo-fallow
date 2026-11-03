@@ -237,11 +237,6 @@ impl DepsReport {
             gate_outcomes,
         }
     }
-
-    /// True when an enforced gate failed.
-    pub fn fails_run(&self) -> bool {
-        self.gate_outcomes.values().any(GateOutcome::fails_run)
-    }
 }
 
 #[cfg(test)]

@@ -45,13 +45,16 @@ use serde::Serialize;
 use xxhash_rust::xxh3::xxh3_64;
 
 use crate::error::{CliError, ErrorCode};
+use crate::finding::{self as shared, Category, Draft, Impact, Location, Severity};
+use crate::gates::RustGateName as Gate;
 use crate::render::Progress;
+use crate::section::{Section, to_value};
+use crate::structure::DupesArgs;
 pub use crate::structure::config::Mode;
 use crate::structure::config::{self, Duplication, matches_prefix};
-use crate::structure::report::{Action, Gate, Report, count_gate, gates_text, plural};
-use crate::structure::sarif::{self, Item};
-use crate::structure::source::{self, File, Needs, Skipped};
-use crate::structure::{DupesArgs, Output};
+use crate::structure::report::{Action, Report, count_gate, gates_text, plural, shared_actions};
+use crate::structure::sarif;
+use crate::structure::source::{self, File, Loaded, Needs, Skipped};
 use crate::workspace;
 
 /// The comment kind that suppresses a clone instance.
@@ -201,7 +204,7 @@ pub struct Summary {
     pub skipped_files: Vec<Skipped>,
 }
 
-pub fn run(args: &DupesArgs) -> Result<Output, CliError> {
+pub fn run(args: &DupesArgs) -> Result<Section, CliError> {
     let progress = Progress::new(args.common.quiet);
     progress.step("Reading cargo metadata");
     let workspace = workspace::load(args.common.manifest_path.as_deref())?;
@@ -226,6 +229,17 @@ pub fn run(args: &DupesArgs) -> Result<Output, CliError> {
             tokens: Some((settings.mode, settings.ignore_imports)),
         },
     );
+    section(&loaded, &settings, args.fail_on_clones, progress)
+}
+
+/// Finds the clone groups in `loaded`. The load must have the tokens of
+/// `settings`. `enforced` is true when a clone group fails the run.
+pub fn section(
+    loaded: &Loaded,
+    settings: &Duplication,
+    enforced: bool,
+    progress: Progress,
+) -> Result<Section, CliError> {
     let files: Vec<&File> = loaded
         .files
         .iter()
@@ -233,7 +247,7 @@ pub fn run(args: &DupesArgs) -> Result<Output, CliError> {
         .collect();
     progress.step("Finding clones");
     let limits = Limits::default();
-    let found = detect(&files, &settings, &limits).map_err(|TimedOut| {
+    let found = detect(&files, settings, &limits).map_err(|TimedOut| {
         CliError::new(
             ErrorCode::TimedOut,
             format!(
@@ -258,7 +272,7 @@ pub fn run(args: &DupesArgs) -> Result<Output, CliError> {
     let mut report = Report::new("dupes", summary, found.groups);
     report.gate_outcomes.insert(
         Gate::DuplicationFindings,
-        count_gate(report.findings.len(), args.fail_on_clones),
+        count_gate(report.findings.len(), enforced),
     );
     if settings.threshold > 0.0 {
         let observed = report.summary.stats.duplication_percentage;
@@ -277,14 +291,63 @@ pub fn run(args: &DupesArgs) -> Result<Output, CliError> {
             ),
         );
     }
-    let enforced = args.fail_on_clones;
-    Ok(Output {
+    let findings = shared_findings(&report);
+    Ok(Section {
         human: human(&report),
-        json: serde_json::to_value(&report)
-            .map_err(|err| CliError::output(&std::io::Error::other(err)))?,
-        sarif: sarif_log(&report, enforced),
-        fails: report.fails_run(),
+        json: to_value(&report)?,
+        sarif: sarif_log(&findings, &report, enforced),
+        findings,
+        gates: report.gate_outcomes,
     })
+}
+
+fn place(instance: &Instance) -> Location {
+    Location {
+        path: instance.file.clone(),
+        line: Some(instance.start_line),
+        column: Some(instance.start_col),
+        end_line: Some(instance.end_line),
+    }
+}
+
+/// The findings in the shared shape: one for each place of each clone group,
+/// the same as the SARIF results. The id uses the group fingerprint, the file
+/// and the first line of the place.
+fn shared_findings(report: &Report<Summary, CloneGroup>) -> Vec<shared::Finding> {
+    report
+        .findings
+        .iter()
+        .flat_map(|group| {
+            group.instances.iter().map(move |instance| {
+                let line = instance.start_line.to_string();
+                shared::Finding::new(Draft {
+                    check: "dupes",
+                    rule: "code-duplication",
+                    severity: Severity::Warning,
+                    message: format!(
+                        "Clone {}: {} lines, {} tokens, {} instances.",
+                        group.fingerprint,
+                        group.line_count,
+                        group.token_count,
+                        group.instances.len()
+                    ),
+                    location: place(instance),
+                    identity: &[&group.fingerprint, &instance.file, &line],
+                    category: Category::Duplication,
+                    impact: Impact::Minor,
+                })
+                .with_related(
+                    group
+                        .instances
+                        .iter()
+                        .filter(|other| *other != instance)
+                        .map(place)
+                        .collect(),
+                )
+                .with_actions(shared_actions(&group.actions))
+            })
+        })
+        .collect()
 }
 
 /// The result of a clone search.
@@ -895,42 +958,21 @@ fn human(report: &Report<Summary, CloneGroup>) -> String {
     text
 }
 
-fn sarif_log(report: &Report<Summary, CloneGroup>, enforced: bool) -> serde_json::Value {
+fn sarif_log(
+    findings: &[shared::Finding],
+    report: &Report<Summary, CloneGroup>,
+    enforced: bool,
+) -> serde_json::Value {
     let rules = BTreeMap::from([(
         "code-duplication".to_owned(),
         "A block of code has a copy in the workspace.".to_owned(),
     )]);
-    let place = |instance: &Instance| sarif::Place {
-        path: instance.file.clone(),
-        line: instance.start_line,
-        column: instance.start_col,
-        end_line: Some(instance.end_line),
-    };
-    let items: Vec<Item> = report
-        .findings
-        .iter()
-        .flat_map(|group| {
-            group.instances.iter().map(move |instance| Item {
-                rule: "code-duplication".to_owned(),
-                level: sarif::level(enforced),
-                message: format!(
-                    "Clone {}: {} lines, {} tokens, {} instances.",
-                    group.fingerprint,
-                    group.line_count,
-                    group.token_count,
-                    group.instances.len()
-                ),
-                place: place(instance),
-                related: group
-                    .instances
-                    .iter()
-                    .filter(|other| *other != instance)
-                    .map(place)
-                    .collect(),
-            })
-        })
-        .collect();
-    sarif::log(&rules, &items, &report.gate_outcomes)
+    sarif::log(
+        &rules,
+        findings,
+        sarif::level(enforced),
+        &report.gate_outcomes,
+    )
 }
 
 #[cfg(test)]

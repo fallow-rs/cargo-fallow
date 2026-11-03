@@ -31,12 +31,15 @@ use ra_ap_syntax::{AstNode, NodeOrToken, SyntaxKind, SyntaxNode};
 use serde::Serialize;
 
 use crate::error::CliError;
+use crate::finding::{self as shared, Category, Draft, Impact, Location};
+use crate::gates::RustGateName as Gate;
 use crate::render::Progress;
+use crate::section::{Section, to_value};
+use crate::structure::ComplexityArgs;
 use crate::structure::config::{self, matches_prefix};
-use crate::structure::report::{Action, Gate, Report, count_gate, gates_text, plural};
-use crate::structure::sarif::{self, Item, Place};
-use crate::structure::source::{self, LineIndex, Needs, Skipped, is_space_or_comment};
-use crate::structure::{ComplexityArgs, Output};
+use crate::structure::report::{Action, Report, count_gate, gates_text, plural, shared_actions};
+use crate::structure::sarif;
+use crate::structure::source::{self, LineIndex, Loaded, Needs, Skipped, is_space_or_comment};
 use crate::workspace;
 
 /// The comment kind that suppresses a complexity finding.
@@ -467,7 +470,7 @@ pub struct Summary {
     pub skipped_files: Vec<Skipped>,
 }
 
-pub fn run(args: &ComplexityArgs) -> Result<Output, CliError> {
+pub fn run(args: &ComplexityArgs) -> Result<Section, CliError> {
     let progress = Progress::new(args.common.quiet);
     progress.step("Reading cargo metadata");
     let workspace = workspace::load(args.common.manifest_path.as_deref())?;
@@ -486,6 +489,16 @@ pub fn run(args: &ComplexityArgs) -> Result<Output, CliError> {
             tokens: None,
         },
     );
+    section(&loaded, &settings, args.fail_on_complexity)
+}
+
+/// Measures each function of `loaded`. `enforced` is true when a function over
+/// a limit fails the run.
+pub fn section(
+    loaded: &Loaded,
+    settings: &config::Complexity,
+    enforced: bool,
+) -> Result<Section, CliError> {
     let mut findings = Vec::new();
     let (mut count, mut suppressed) = (0, 0);
     for file in loaded
@@ -495,7 +508,7 @@ pub fn run(args: &ComplexityArgs) -> Result<Output, CliError> {
     {
         count += file.functions.len();
         for function in &file.functions {
-            let Some(finding) = finding(&file.path, function, &settings) else {
+            let Some(finding) = finding(&file.path, function, settings) else {
                 continue;
             };
             if file.suppressed(
@@ -528,15 +541,58 @@ pub fn run(args: &ComplexityArgs) -> Result<Output, CliError> {
     let mut report = Report::new("complexity", summary, findings);
     report.gate_outcomes.insert(
         Gate::HealthFindings,
-        count_gate(report.findings.len(), args.fail_on_complexity),
+        count_gate(report.findings.len(), enforced),
     );
-    Ok(Output {
+    let findings = shared_findings(&report);
+    Ok(Section {
         human: human(&report),
-        json: serde_json::to_value(&report)
-            .map_err(|err| CliError::output(&std::io::Error::other(err)))?,
-        sarif: sarif_log(&report, args.fail_on_complexity),
-        fails: report.fails_run(),
+        json: to_value(&report)?,
+        sarif: sarif_log(&findings, &report, enforced),
+        findings,
+        gates: report.gate_outcomes,
     })
+}
+
+/// The CodeClimate severity of a band, the same as in fallow.
+const fn impact(severity: Severity) -> Impact {
+    match severity {
+        Severity::Moderate => Impact::Minor,
+        Severity::High => Impact::Major,
+        Severity::Critical => Impact::Critical,
+    }
+}
+
+/// The findings in the shared shape. The id uses the file, the function name
+/// and its place among the functions of the same name in the file, not the
+/// line.
+fn shared_findings(report: &Report<Summary, Finding>) -> Vec<shared::Finding> {
+    let keys: Vec<((&str, &str), u32)> = report
+        .findings
+        .iter()
+        .map(|finding| ((finding.path.as_str(), finding.name.as_str()), finding.line))
+        .collect();
+    report
+        .findings
+        .iter()
+        .zip(shared::occurrences(&keys))
+        .map(|(finding, index)| {
+            let index = index.to_string();
+            shared::Finding::new(Draft {
+                check: "complexity",
+                rule: "complexity",
+                severity: shared::Severity::Warning,
+                message: format!(
+                    "`{}` has cyclomatic complexity {} and cognitive complexity {}.",
+                    finding.name, finding.cyclomatic, finding.cognitive
+                ),
+                location: Location::at(finding.path.clone(), finding.line, finding.col),
+                identity: &[&finding.path, &finding.name, &index],
+                category: Category::Complexity,
+                impact: impact(finding.severity),
+            })
+            .with_actions(shared_actions(&finding.actions))
+        })
+        .collect()
 }
 
 fn finding(path: &str, function: &Function, settings: &config::Complexity) -> Option<Finding> {
@@ -614,31 +670,21 @@ const fn severity_label(severity: Severity) -> &'static str {
     }
 }
 
-fn sarif_log(report: &Report<Summary, Finding>, enforced: bool) -> serde_json::Value {
+fn sarif_log(
+    findings: &[shared::Finding],
+    report: &Report<Summary, Finding>,
+    enforced: bool,
+) -> serde_json::Value {
     let rules = BTreeMap::from([(
         "complexity".to_owned(),
         "A function is over the cyclomatic or the cognitive complexity limit.".to_owned(),
     )]);
-    let items: Vec<Item> = report
-        .findings
-        .iter()
-        .map(|finding| Item {
-            rule: "complexity".to_owned(),
-            level: sarif::level(enforced),
-            message: format!(
-                "`{}` has cyclomatic complexity {} and cognitive complexity {}.",
-                finding.name, finding.cyclomatic, finding.cognitive
-            ),
-            place: Place {
-                path: finding.path.clone(),
-                line: finding.line,
-                column: finding.col,
-                end_line: None,
-            },
-            related: Vec::new(),
-        })
-        .collect();
-    sarif::log(&rules, &items, &report.gate_outcomes)
+    sarif::log(
+        &rules,
+        findings,
+        sarif::level(enforced),
+        &report.gate_outcomes,
+    )
 }
 
 #[cfg(test)]

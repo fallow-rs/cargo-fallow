@@ -24,19 +24,8 @@ pub enum Format {
     Json,
     /// A SARIF 2.1.0 log.
     Sarif,
-}
-
-/// The options of one `check` run.
-#[derive(Debug, Clone)]
-pub struct Options {
-    /// The `Cargo.toml` of the workspace, when the user gave one.
-    pub manifest_path: Option<PathBuf>,
-    /// The output format.
-    pub format: Format,
-    /// True when progress lines stay hidden.
-    pub quiet: bool,
-    /// True when a target root file that does not parse fails the run.
-    pub fail_on_parse_error: bool,
+    /// A CodeClimate report: a JSON array of issues, for GitLab code quality.
+    Codeclimate,
 }
 
 /// The options of the `visibility` command.
@@ -66,7 +55,7 @@ pub struct VisibilityOptions {
 #[derive(Debug)]
 pub enum Parsed {
     /// Run `check` with these options.
-    Run(Options),
+    Run(crate::check::Options),
     /// Run the `mutants` command with these options.
     Mutants(Box<crate::mutation::run::Options>),
     /// Run the visibility check.
@@ -107,7 +96,15 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Analyze the workspace. This is the default command.
+    /// Run the static checks in one run: parse, deps, visibility, boundaries,
+    /// size, complexity and dupes. This is the default command.
+    ///
+    /// The run reads the workspace once and writes one report with a section
+    /// for each check. Each check keeps its own gate. `mutants` and `visibility
+    /// --precise` are separate commands, because they build and run the tests or
+    /// rust-analyzer and take minutes. The `deps` check resolves the
+    /// dependencies with `cargo metadata`, so Cargo can use the network: use
+    /// `--offline`, `--locked`, `--frozen` or `--skip deps`.
     Check(CheckArgs),
     /// Run the tests against small changes in the source of one package.
     Mutants(MutantsArgs),
@@ -414,15 +411,7 @@ struct DepsArgs {
 
 impl From<DepsArgs> for crate::deps::Options {
     fn from(args: DepsArgs) -> Self {
-        let cargo_flags = [
-            (args.locked, "--locked"),
-            (args.offline, "--offline"),
-            (args.frozen, "--frozen"),
-        ]
-        .into_iter()
-        .filter(|(on, _)| *on)
-        .map(|(_, flag)| flag.to_owned())
-        .collect();
+        let cargo_flags = cargo_flags(args.locked, args.offline, args.frozen);
         Self {
             manifest_path: args.manifest_path,
             format: args.format,
@@ -444,18 +433,61 @@ struct CheckArgs {
     /// Hide the progress lines on stderr.
     #[arg(long)]
     quiet: bool,
+    /// Run only these checks. The flag takes a list with commas and can repeat.
+    #[arg(
+        long,
+        value_enum,
+        value_name = "CHECK",
+        value_delimiter = ',',
+        conflicts_with = "skip"
+    )]
+    only: Vec<crate::check::CheckName>,
+    /// Do not run these checks. The flag takes a list with commas and can repeat.
+    #[arg(long, value_enum, value_name = "CHECK", value_delimiter = ',')]
+    skip: Vec<crate::check::CheckName>,
+    /// Exit 1 when the gate of a check that ran fails: parse-error,
+    /// error-severity-findings (deps), visibility-findings, boundary-violations,
+    /// health-findings (complexity) and duplication-findings (dupes).
+    #[arg(long)]
+    fail_on_issues: bool,
     /// Exit 1 when a target root file does not parse.
     #[arg(long)]
     fail_on_parse_error: bool,
+    /// Give `--locked` to the `cargo metadata` call of the deps check.
+    #[arg(long)]
+    locked: bool,
+    /// Give `--offline` to the `cargo metadata` call of the deps check.
+    #[arg(long)]
+    offline: bool,
+    /// Give `--frozen` to the `cargo metadata` call of the deps check.
+    #[arg(long)]
+    frozen: bool,
 }
 
-impl From<CheckArgs> for Options {
+/// The `cargo metadata` flags that are on.
+fn cargo_flags(locked: bool, offline: bool, frozen: bool) -> Vec<String> {
+    [
+        (locked, "--locked"),
+        (offline, "--offline"),
+        (frozen, "--frozen"),
+    ]
+    .into_iter()
+    .filter(|(on, _)| *on)
+    .map(|(_, flag)| flag.to_owned())
+    .collect()
+}
+
+impl From<CheckArgs> for crate::check::Options {
     fn from(args: CheckArgs) -> Self {
         Self {
             manifest_path: args.manifest_path,
             format: args.format,
             quiet: args.quiet,
+            only: args.only,
+            skip: args.skip,
+            fail_on_issues: args.fail_on_issues,
             fail_on_parse_error: args.fail_on_parse_error,
+            cargo_flags: cargo_flags(args.locked, args.offline, args.frozen),
         }
     }
 }

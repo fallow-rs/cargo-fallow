@@ -1,0 +1,284 @@
+{
+  "schema_version": 1,
+  "version": "0.0.0",
+  "kind": "mutants",
+  "language": "rust",
+  "package": "action-mutants",
+  "package_version": "0.1.0",
+  "total_issues": 1,
+  "summary": {
+    "total": 6,
+    "killed": 2,
+    "survived": 1,
+    "timeout": 0,
+    "flaky": 0,
+    "no_coverage": 3,
+    "compile_error": 0,
+    "runtime_error": 0,
+    "pending": 0,
+    "score": 66.66666666666667
+  },
+  "gate_outcomes": {
+    "surviving-mutants": {
+      "status": "fail",
+      "enforced": false,
+      "observed": 1.0,
+      "threshold": 0.0,
+      "files": [
+        {
+          "path": "src/lib.rs",
+          "error_count": 1,
+          "panicked": false
+        }
+      ]
+    }
+  },
+  "stopped_by": null,
+  "elapsed_ms": 7891,
+  "baseline": {
+    "clean": {
+      "nextest": {
+        "status": "completed",
+        "pass": 1,
+        "fail": 0,
+        "ignored": 0,
+        "elapsed_ms": 245
+      },
+      "doc": {
+        "status": "completed",
+        "pass": 0,
+        "fail": 0,
+        "ignored": 0,
+        "elapsed_ms": 172
+      }
+    },
+    "schema": {
+      "nextest": {
+        "status": "completed",
+        "pass": 1,
+        "fail": 0,
+        "ignored": 0,
+        "elapsed_ms": 256
+      },
+      "doc": {
+        "status": "completed",
+        "pass": 0,
+        "fail": 0,
+        "ignored": 0,
+        "elapsed_ms": 232
+      }
+    },
+    "failures": [],
+    "regressions": [],
+    "tests_pass_with_schema": true,
+    "timeout_ms": {
+      "schema_nextest": 20000,
+      "schema_doc": 20000,
+      "rebuild_nextest": 20000,
+      "rebuild_doc": 20000
+    }
+  },
+  "schema": {
+    "status": "compiled",
+    "moved_to_rebuild": 0,
+    "rounds": 1,
+    "source_bytes": 190,
+    "schema_bytes": 4472,
+    "candidates": 6,
+    "kept": 6,
+    "kept_under_cfg": 0,
+    "kept_compile_checked": 6,
+    "probe_verified": true,
+    "removed": [],
+    "round_log": [
+      {
+        "round": 1,
+        "phase": "full",
+        "mutants": 6,
+        "errors": 0,
+        "success": true
+      }
+    ],
+    "last_errors": []
+  },
+  "rebuild": {
+    "candidates": 0,
+    "unknown_return_types": 0,
+    "probe_verified": true
+  },
+  "gaps": {
+    "files": 1,
+    "files_skipped": [],
+    "unreached_src_files": 0,
+    "macro_tokens": 0,
+    "const_context": 0,
+    "let_chain": 0,
+    "test_code": 0,
+    "features": "default",
+    "doctests": true,
+    "untested_dependents": []
+  },
+  "selection": {
+    "enabled": true,
+    "map": "built",
+    "map_ms": 1884,
+    "tests_mapped": 1,
+    "tests_unmapped": [],
+    "tests_fail_alone": [],
+    "mutants_without_line_data": 0,
+    "resumed": 0,
+    "tests_run": 6,
+    "doctests_run": 0
+  },
+  "workspace_tests": null,
+  "guard": {
+    "enabled": true,
+    "memory_limit_mib": 4096,
+    "low_memory_percent": 25,
+    "kills": 0,
+    "jobs": 2
+  },
+  "mutants": [
+    {
+      "id": "6ad04d2500ebd995",
+      "tier": "schema",
+      "operator": "return-value",
+      "file": "src/lib.rs",
+      "line": 1,
+      "column": 31,
+      "original": "{ a == 2 }",
+      "replacement": "{ true }",
+      "status": "survived",
+      "retried": true,
+      "removed_from_schema": false,
+      "under_cfg": false,
+      "duration_ms": 324,
+      "tests_run": 2,
+      "doctests_run": 0,
+      "actions": [
+        {
+          "type": "inspect-mutant",
+          "auto_fixable": false,
+          "description": "Each test passed with this change. Inspect the change and the tests that execute it.",
+          "command": "cargo fallow mutants --package action-mutants --inspect 6ad04d2500ebd995"
+        }
+      ]
+    },
+    {
+      "id": "74998b35a50dfe9a",
+      "tier": "schema",
+      "operator": "return-value",
+      "file": "src/lib.rs",
+      "line": 1,
+      "column": 31,
+      "original": "{ a == 2 }",
+      "replacement": "{ false }",
+      "status": "killed",
+      "killed_by": "action-mutants::action_mutants tests::two",
+      "retried": true,
+      "removed_from_schema": false,
+      "under_cfg": false,
+      "duration_ms": 520,
+      "tests_run": 2,
+      "doctests_run": 0,
+      "actions": []
+    },
+    {
+      "id": "a1a69c43cc7bb99f",
+      "tier": "schema",
+      "operator": "relational-operator",
+      "file": "src/lib.rs",
+      "line": 2,
+      "column": 7,
+      "original": "a == 2",
+      "replacement": "!=",
+      "status": "killed",
+      "killed_by": "action-mutants::action_mutants tests::two",
+      "retried": true,
+      "removed_from_schema": false,
+      "under_cfg": false,
+      "duration_ms": 423,
+      "tests_run": 2,
+      "doctests_run": 0,
+      "actions": []
+    },
+    {
+      "id": "d970b299113b14dd",
+      "tier": "schema",
+      "operator": "return-value",
+      "file": "src/lib.rs",
+      "line": 5,
+      "column": 35,
+      "original": "{ a + b }",
+      "replacement": "{ 0 }",
+      "status": "no_coverage",
+      "reason": "no test executes this line",
+      "retried": false,
+      "removed_from_schema": false,
+      "under_cfg": false,
+      "duration_ms": 0,
+      "tests_run": 0,
+      "doctests_run": 0,
+      "actions": [
+        {
+          "type": "inspect-mutant",
+          "auto_fixable": false,
+          "description": "No test can see this change. Inspect the change and the coverage of its lines.",
+          "command": "cargo fallow mutants --package action-mutants --inspect d970b299113b14dd"
+        }
+      ]
+    },
+    {
+      "id": "1b407bc018cd0dcb",
+      "tier": "schema",
+      "operator": "return-value",
+      "file": "src/lib.rs",
+      "line": 5,
+      "column": 35,
+      "original": "{ a + b }",
+      "replacement": "{ 1 }",
+      "status": "no_coverage",
+      "reason": "no test executes this line",
+      "retried": false,
+      "removed_from_schema": false,
+      "under_cfg": false,
+      "duration_ms": 0,
+      "tests_run": 0,
+      "doctests_run": 0,
+      "actions": [
+        {
+          "type": "inspect-mutant",
+          "auto_fixable": false,
+          "description": "No test can see this change. Inspect the change and the coverage of its lines.",
+          "command": "cargo fallow mutants --package action-mutants --inspect 1b407bc018cd0dcb"
+        }
+      ]
+    },
+    {
+      "id": "7e79ee9056603562",
+      "tier": "schema",
+      "operator": "arithmetic-operator",
+      "file": "src/lib.rs",
+      "line": 6,
+      "column": 7,
+      "original": "+",
+      "replacement": "-",
+      "status": "no_coverage",
+      "reason": "no test executes this line",
+      "retried": false,
+      "removed_from_schema": false,
+      "under_cfg": false,
+      "duration_ms": 0,
+      "tests_run": 0,
+      "doctests_run": 0,
+      "actions": [
+        {
+          "type": "inspect-mutant",
+          "auto_fixable": false,
+          "description": "No test can see this change. Inspect the change and the coverage of its lines.",
+          "command": "cargo fallow mutants --package action-mutants --inspect 7e79ee9056603562"
+        }
+      ]
+    }
+  ]
+}

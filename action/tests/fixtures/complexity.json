@@ -1,0 +1,104 @@
+{
+  "schema_version": 1,
+  "version": "0.0.0",
+  "kind": "complexity",
+  "language": "rust",
+  "summary": {
+    "files": 77,
+    "functions": 2850,
+    "max_cyclomatic": 20,
+    "max_cognitive": 15,
+    "suppressed": 0,
+    "generated_files": 0,
+    "skipped_files": []
+  },
+  "total_issues": 3,
+  "findings": [
+    {
+      "path": "src/deps/manifest.rs",
+      "name": "entries",
+      "line": 70,
+      "col": 8,
+      "cyclomatic": 20,
+      "cognitive": 35,
+      "line_count": 60,
+      "param_count": 1,
+      "exceeded": "cognitive",
+      "severity": "high",
+      "actions": [
+        {
+          "type": "refactor-function",
+          "auto_fixable": false,
+          "description": "Split `entries` into smaller functions (cyclomatic 20, cognitive 35)"
+        },
+        {
+          "type": "suppress-line",
+          "auto_fixable": false,
+          "description": "Suppress with an inline comment",
+          "comment": "// fallow-ignore-next-line complexity",
+          "placement": "above-function-declaration"
+        }
+      ]
+    },
+    {
+      "path": "src/visibility/mod.rs",
+      "name": "decide",
+      "line": 456,
+      "col": 4,
+      "cyclomatic": 28,
+      "cognitive": 31,
+      "line_count": 91,
+      "param_count": 5,
+      "exceeded": "both",
+      "severity": "high",
+      "actions": [
+        {
+          "type": "refactor-function",
+          "auto_fixable": false,
+          "description": "Split `decide` into smaller functions (cyclomatic 28, cognitive 31)"
+        },
+        {
+          "type": "suppress-line",
+          "auto_fixable": false,
+          "description": "Suppress with an inline comment",
+          "comment": "// fallow-ignore-next-line complexity",
+          "placement": "above-function-declaration"
+        }
+      ]
+    },
+    {
+      "path": "src/visibility/mod.rs",
+      "name": "Surface::grow",
+      "line": 320,
+      "col": 8,
+      "cyclomatic": 17,
+      "cognitive": 30,
+      "line_count": 52,
+      "param_count": 3,
+      "exceeded": "cognitive",
+      "severity": "high",
+      "actions": [
+        {
+          "type": "refactor-function",
+          "auto_fixable": false,
+          "description": "Split `Surface::grow` into smaller functions (cyclomatic 17, cognitive 30)"
+        },
+        {
+          "type": "suppress-line",
+          "auto_fixable": false,
+          "description": "Suppress with an inline comment",
+          "comment": "// fallow-ignore-next-line complexity",
+          "placement": "above-function-declaration"
+        }
+      ]
+    }
+  ],
+  "gate_outcomes": {
+    "health-findings": {
+      "status": "fail",
+      "enforced": false,
+      "observed": 3,
+      "threshold": 0.0
+    }
+  }
+}

@@ -9,16 +9,20 @@
 #![cfg_attr(not(test), deny(clippy::disallowed_methods))]
 
 mod attrs;
+mod check;
 mod cli;
 mod deps;
 mod error;
+mod finding;
 mod gates;
 mod graph;
+mod health;
 mod modules;
 mod mutation;
 mod parse;
 mod render;
 mod report;
+mod section;
 mod structure;
 mod visibility;
 mod workspace;
@@ -27,9 +31,9 @@ use std::ffi::OsString;
 use std::io;
 use std::process::ExitCode;
 
-use fallow_report_protocol::exit_code::{EXIT_GATE_FAILED, EXIT_INVALID_INPUT, EXIT_OK};
+use fallow_report_protocol::exit_code::{EXIT_INVALID_INPUT, EXIT_OK};
 
-use crate::cli::{Options, Parsed};
+use crate::cli::Parsed;
 use crate::error::CliError;
 
 /// Runs the CLI with the process arguments and returns the exit code.
@@ -40,7 +44,7 @@ use crate::error::CliError;
 pub fn run(args: Vec<OsString>) -> ExitCode {
     let args = cli::strip_cargo_subcommand(args);
     let code = match cli::parse(&args) {
-        Parsed::Run(options) => run_check(&options),
+        Parsed::Run(options) => check::run(&options),
         Parsed::Mutants(options) => run_mutants(&options),
         Parsed::Deps(options) => run_deps(&options),
         Parsed::Visibility(options) => run_visibility(&options),
@@ -57,17 +61,6 @@ pub fn run(args: Vec<OsString>) -> ExitCode {
         Parsed::Exit(code) => code,
     };
     ExitCode::from(code)
-}
-
-/// Runs `check` and returns the process exit code.
-fn run_check(options: &Options) -> u8 {
-    match check(options) {
-        Ok(code) => code,
-        Err(err) => {
-            err.emit(options.format);
-            EXIT_INVALID_INPUT
-        }
-    }
 }
 
 /// Runs the `visibility` command and returns the process exit code.
@@ -89,44 +82,41 @@ fn visibility_report(options: &cli::VisibilityOptions) -> Result<u8, CliError> {
     };
     let module_graph = graph::build(&workspace, &production);
     progress.step("Checking the visibility");
-    let check_options = visibility::Options {
-        exclude: options.exclude.clone(),
-        uniform_fields: options.uniform_fields,
-        root: workspace.root.clone().into_std_path_buf(),
+    let Some(limits) = options.precise else {
+        return visibility::fast_report(&module_graph, options, &workspace)
+            .section()?
+            .write(options.format);
     };
+    let check_options =
+        visibility::check_options(options, workspace.root.clone().into_std_path_buf());
     let mut analysis = visibility::analyze(&module_graph, &check_options);
-    let precise = match options.precise {
-        Some(limits) => {
-            progress.step("Deciding the undecided candidates with rust-analyzer");
-            let run = visibility::precise::Run {
-                manifest: workspace.root.join("Cargo.toml").into_std_path_buf(),
-                root: workspace.root.as_std_path(),
-                target_dir: workspace.target_dir.as_std_path(),
-                limits,
-            };
-            let summary = visibility::precise::decide(&module_graph, &mut analysis, &run)?;
-            visibility::refine(&module_graph, &check_options, &mut analysis);
-            // A gate must not pass on a part of the decisions.
-            if options.fail_on_issues && summary.incomplete() {
-                return Err(error::CliError::new(
-                    error::ErrorCode::PreciseFailed,
-                    format!(
-                        "`--precise` did not decide each candidate. {}",
-                        summary.human_line()
-                    ),
-                )
-                .with_help(
-                    "Raise `--precise-timeout` or `--precise-memory-limit`, or run without \
-                     `--precise`.",
-                ));
-            }
-            if summary.left > 0 {
-                render::warn(&summary.human_line());
-            }
-            Some(summary)
-        }
-        None => None,
+    progress.step("Deciding the undecided candidates with rust-analyzer");
+    let run = visibility::precise::Run {
+        manifest: workspace.root.join("Cargo.toml").into_std_path_buf(),
+        root: workspace.root.as_std_path(),
+        target_dir: workspace.target_dir.as_std_path(),
+        limits,
     };
+    let summary = visibility::precise::decide(&module_graph, &mut analysis, &run)?;
+    visibility::refine(&module_graph, &check_options, &mut analysis);
+    // A gate must not pass on a part of the decisions.
+    if options.fail_on_issues && summary.incomplete() {
+        return Err(error::CliError::new(
+            error::ErrorCode::PreciseFailed,
+            format!(
+                "`--precise` did not decide each candidate. {}",
+                summary.human_line()
+            ),
+        )
+        .with_help(
+            "Raise `--precise-timeout` or `--precise-memory-limit`, or run without \
+             `--precise`.",
+        ));
+    }
+    if summary.left > 0 {
+        render::warn(&summary.human_line());
+    }
+    let precise = Some(summary);
     analysis.retain_kinds(&options.kinds);
     let report = visibility::report::VisibilityReport::new(visibility::report::Inputs {
         graph: &module_graph,
@@ -134,17 +124,7 @@ fn visibility_report(options: &cli::VisibilityOptions) -> Result<u8, CliError> {
         precise,
         enforced: options.fail_on_issues,
     });
-    let text = match options.format {
-        cli::Format::Json => to_json(&report)?,
-        cli::Format::Sarif => to_json(&report.sarif())?,
-        cli::Format::Human => report.human(),
-    };
-    render::write_stdout(text.trim_end()).map_err(|err| CliError::output(&err))?;
-    Ok(if report.fails_run() {
-        EXIT_GATE_FAILED
-    } else {
-        EXIT_OK
-    })
+    report.section()?.write(options.format)
 }
 
 /// Runs the `deps` command and returns the process exit code.
@@ -156,18 +136,7 @@ fn run_deps(options: &deps::Options) -> u8 {
 }
 
 fn deps_report(options: &deps::Options) -> Result<u8, CliError> {
-    let report = deps::run(options)?;
-    let text = match options.format {
-        cli::Format::Human => render::deps::human(&report),
-        cli::Format::Json => to_json(&report)?,
-        cli::Format::Sarif => render::deps::sarif(&report).map_err(|err| CliError::output(&err))?,
-    };
-    render::write_stdout(text.trim_end()).map_err(|err| CliError::output(&err))?;
-    Ok(if report.fails_run() {
-        EXIT_GATE_FAILED
-    } else {
-        EXIT_OK
-    })
+    deps::section(&deps::run(options)?)?.write(options.format)
 }
 
 /// Runs the `mutants` command and returns the process exit code.
@@ -192,26 +161,17 @@ fn mutants_report(options: &mutation::run::Options) -> Result<u8, CliError> {
         )
         .with_help("Run the command again with more free memory. The journal keeps the results."));
     }
-    let text = match options.format {
-        cli::Format::Human => render::mutants::human(&report),
-        cli::Format::Json => to_json(&report)?,
-        cli::Format::Sarif => {
-            render::mutants::sarif(&report).map_err(|err| CliError::output(&err))?
-        }
-    };
-    render::write_stdout(text.trim_end()).map_err(|err| CliError::output(&err))?;
-    Ok(if report.fails_run() {
-        EXIT_GATE_FAILED
-    } else {
-        EXIT_OK
-    })
+    render::mutants::report_section(&report)?.write(options.format)
 }
 
 fn inspect_report(options: &mutation::run::Options, id: &str) -> Result<u8, CliError> {
-    if options.format == cli::Format::Sarif {
+    if matches!(
+        options.format,
+        cli::Format::Sarif | cli::Format::Codeclimate
+    ) {
         return Err(CliError::new(
             error::ErrorCode::InvalidArgument,
-            "`--inspect` has no SARIF output",
+            "`--inspect` has no SARIF or CodeClimate output",
         )
         .with_help("Use `--format human` or `--format json`."));
     }
@@ -226,25 +186,4 @@ fn inspect_report(options: &mutation::run::Options, id: &str) -> Result<u8, CliE
 
 fn to_json(value: &impl serde::Serialize) -> Result<String, CliError> {
     serde_json::to_string_pretty(value).map_err(|err| CliError::output(&io::Error::other(err)))
-}
-
-fn check(options: &Options) -> Result<u8, CliError> {
-    let progress = render::Progress::new(options.quiet);
-    progress.step("Reading cargo metadata");
-    let workspace = workspace::load(options.manifest_path.as_deref())?;
-    progress.step("Parsing target root files");
-    let gates::Evaluation {
-        outcomes,
-        unreadable,
-    } = gates::evaluate(&workspace, options);
-    for file in &unreadable {
-        render::warn(&format!(
-            "cannot read `{}`, so the parse-error gate does not judge it: {}",
-            file.path, file.error
-        ));
-    }
-    let fails = outcomes.fails_run();
-    let report = report::CheckReport::new(workspace, outcomes);
-    render::write_report(&report, options.format).map_err(|err| CliError::output(&err))?;
-    Ok(if fails { EXIT_GATE_FAILED } else { EXIT_OK })
 }

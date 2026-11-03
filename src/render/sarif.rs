@@ -5,55 +5,43 @@
 //! execution notification. A failed gate is not a tool failure, so
 //! `executionSuccessful` stays true.
 
-use std::io;
+use std::collections::BTreeMap;
 
 use fallow_report_protocol::{GateFile, GateFileReason, GateOutcome, GateStatus};
 use serde_json::{Value, json};
 
 use crate::gates::RustGateName;
-use crate::report::{CheckReport, TOOL_VERSION};
+use crate::report::TOOL_VERSION;
 
 const SARIF_SCHEMA: &str = "https://json.schemastore.org/sarif-2.1.0.json";
 const SARIF_VERSION: &str = "2.1.0";
 const TOOL_NAME: &str = "cargo-fallow";
 const INFORMATION_URI: &str = "https://github.com/fallow-rs/cargo-fallow";
 
-/// The report as a SARIF log.
-pub fn render(report: &CheckReport) -> io::Result<String> {
-    serde_json::to_string_pretty(&log(report)).map_err(io::Error::other)
-}
-
-fn log(report: &CheckReport) -> Value {
-    let flagged: Vec<(RustGateName, &GateOutcome, &'static str)> = report
-        .gate_outcomes
+/// The SARIF log of the gates of a `check` run. Each file of a failed gate
+/// is a result.
+pub fn gate_log(gates: &BTreeMap<RustGateName, GateOutcome>) -> Value {
+    let flagged: Vec<(RustGateName, &GateOutcome, &'static str)> = gates
         .iter()
-        .flatten()
         .filter_map(|(name, outcome)| level(outcome).map(|level| (*name, outcome, level)))
         .collect();
-
-    // `Finding` has no values in M0. The empty match makes the compiler ask
-    // for a SARIF result when the first finding type arrives.
-    let mut results: Vec<Value> = report
-        .findings
-        .clone()
-        .into_iter()
-        .map(|finding| match finding {})
-        .collect();
-    results.extend(flagged.iter().flat_map(|(name, outcome, level)| {
-        outcome.files.iter().map(move |file| {
-            json!({
-                "ruleId": name.as_str(),
-                "level": level,
-                "message": { "text": file_message(*name, file) },
-                "locations": [{
-                    "physicalLocation": {
-                        "artifactLocation": { "uri": file.path }
-                    }
-                }],
+    let results: Vec<Value> = flagged
+        .iter()
+        .flat_map(|(name, outcome, level)| {
+            outcome.files.iter().map(move |file| {
+                json!({
+                    "ruleId": name.as_str(),
+                    "level": level,
+                    "message": { "text": file_message(*name, file) },
+                    "locations": [{
+                        "physicalLocation": {
+                            "artifactLocation": { "uri": file.path }
+                        }
+                    }],
+                })
             })
         })
-    }));
-
+        .collect();
     let rules: Vec<Value> = flagged
         .iter()
         .filter(|(_, outcome, _)| !outcome.files.is_empty())
@@ -64,7 +52,6 @@ fn log(report: &CheckReport) -> Value {
             })
         })
         .collect();
-
     document(&rules, &flagged, &results)
 }
 
@@ -132,7 +119,7 @@ fn notification(name: RustGateName, outcome: &GateOutcome, level: &str) -> Value
     })
 }
 
-const fn file_message(name: RustGateName, file: &GateFile) -> &'static str {
+pub(super) const fn file_message(name: RustGateName, file: &GateFile) -> &'static str {
     match (name, file.reason) {
         (RustGateName::ParseError, Some(GateFileReason::NestingTooDeep)) => {
             "The file nests too deep to parse."
@@ -145,16 +132,20 @@ const fn file_message(name: RustGateName, file: &GateFile) -> &'static str {
         (RustGateName::VisibilityFindings, _) => {
             "The file has an item whose visibility can be smaller."
         }
+        // The structure gates count findings and list no gate files.
+        (
+            RustGateName::BoundaryViolations
+            | RustGateName::DuplicationFindings
+            | RustGateName::DuplicationThreshold
+            | RustGateName::FileGrowth
+            | RustGateName::HealthFindings,
+            _,
+        ) => "The file has a finding of the gate.",
     }
 }
 
 pub(super) const fn rule_description(name: RustGateName) -> &'static str {
-    match name {
-        RustGateName::ParseError => "A target root file does not parse.",
-        RustGateName::ErrorSeverityFindings => "The run has a finding with the error severity.",
-        RustGateName::SurvivingMutants => "A mutant survived: each test passed with the change.",
-        RustGateName::VisibilityFindings => "An item has a larger visibility than its uses need.",
-    }
+    name.description()
 }
 
 #[cfg(test)]

@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "cargo-fallow",
+          "version": "0.0.0",
+          "informationUri": "https://github.com/fallow-rs/cargo-fallow",
+          "rules": [
+            {
+              "id": "code-duplication",
+              "shortDescription": {
+                "text": "A block of code has a copy in the workspace."
+              }
+            }
+          ]
+        }
+      },
+      "invocations": [
+        {
+          "executionSuccessful": true,
+          "toolExecutionNotifications": [
+            {
+              "level": "warning",
+              "message": {
+                "text": "The `duplication-findings` gate failed (not enforced)."
+              },
+              "descriptor": {
+                "id": "duplication-findings"
+              }
+            }
+          ]
+        }
+      ],
+      "results": [
+        {
+          "ruleId": "code-duplication",
+          "level": "warning",
+          "message": {
+            "text": "Clone dup:d4b96e54: 22 lines, 133 tokens, 2 instances."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/cli.rs"
+                },
+                "region": {
+                  "startLine": 47,
+                  "startColumn": 1,
+                  "endLine": 68
+                }
+              }
+            }
+          ],
+          "relatedLocations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/structure.rs"
+                },
+                "region": {
+                  "startLine": 110,
+                  "startColumn": 1,
+                  "endLine": 128
+                }
+              },
+              "id": 0
+            }
+          ]
+        },
+        {
+          "ruleId": "code-duplication",
+          "level": "warning",
+          "message": {
+            "text": "Clone dup:d4b96e54: 22 lines, 133 tokens, 2 instances."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/structure.rs"
+                },
+                "region": {
+                  "startLine": 110,
+                  "startColumn": 1,
+                  "endLine": 128
+                }
+              }
+            }
+          ],
+          "relatedLocations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/cli.rs"
+                },
+                "region": {
+                  "startLine": 47,
+                  "startColumn": 1,
+                  "endLine": 68
+                }
+              },
+              "id": 0
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

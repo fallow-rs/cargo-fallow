@@ -2,7 +2,6 @@
 
 use std::collections::BTreeMap;
 use std::fmt::Write;
-use std::io;
 
 use fallow_report_protocol::GateOutcome;
 use serde_json::{Value, json};
@@ -196,7 +195,7 @@ fn section(out: &mut String, rows: &[MutantRow], status: Status, title: &str) {
 
 /// The report as a SARIF log. Each survivor is a result at its line. The log gives no
 /// column: the report counts bytes, and a SARIF column counts UTF-16 units.
-pub fn sarif(report: &Report) -> io::Result<String> {
+pub fn sarif(report: &Report) -> Value {
     let flagged: Vec<(RustGateName, &GateOutcome, &'static str)> = report
         .gate_outcomes
         .iter()
@@ -234,7 +233,46 @@ pub fn sarif(report: &Report) -> io::Result<String> {
             "shortDescription": { "text": rule_description(name) },
         })]
     };
-    serde_json::to_string_pretty(&document(&rules, &flagged, &results)).map_err(io::Error::other)
+    document(&rules, &flagged, &results)
+}
+
+/// The survivors in the shared finding shape. The id is the hash of the mutant
+/// id, which stays the same while the source of the mutant stays the same.
+pub fn findings(report: &Report) -> Vec<crate::finding::Finding> {
+    use crate::finding::{Category, Draft, Finding, Impact, Location, Severity};
+    report
+        .mutants
+        .iter()
+        .filter(|row| row.status == Status::Survived)
+        .map(|row| {
+            Finding::new(Draft {
+                check: "mutants",
+                rule: "surviving-mutant",
+                severity: Severity::Warning,
+                message: survivor_message(row),
+                location: Location {
+                    path: row.file.clone(),
+                    line: u32::try_from(row.line).ok(),
+                    column: None,
+                    end_line: None,
+                },
+                identity: &[&row.id],
+                category: Category::BugRisk,
+                impact: Impact::Major,
+            })
+        })
+        .collect()
+}
+
+/// The section of a report.
+pub fn report_section(report: &Report) -> Result<crate::section::Section, crate::error::CliError> {
+    Ok(crate::section::Section {
+        human: human(report),
+        json: crate::section::to_value(report)?,
+        sarif: sarif(report),
+        findings: findings(report),
+        gates: report.gate_outcomes.clone(),
+    })
 }
 
 /// The inspect report for a person.

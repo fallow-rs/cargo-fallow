@@ -115,6 +115,32 @@ impl Analysis {
     }
 }
 
+/// The options of the analysis for the resolved command options.
+pub fn check_options(options: &crate::cli::VisibilityOptions, root: PathBuf) -> Options {
+    Options {
+        exclude: options.exclude.clone(),
+        uniform_fields: options.uniform_fields,
+        root,
+    }
+}
+
+/// The report of a fast-mode run with the resolved command options.
+pub fn fast_report(
+    graph: &Graph,
+    options: &crate::cli::VisibilityOptions,
+    workspace: &crate::workspace::Workspace,
+) -> report::VisibilityReport {
+    let check_options = check_options(options, workspace.root.clone().into_std_path_buf());
+    let mut analysis = analyze(graph, &check_options);
+    analysis.retain_kinds(&options.kinds);
+    report::VisibilityReport::new(report::Inputs {
+        graph,
+        analysis: &analysis,
+        precise: None,
+        enforced: options.fail_on_issues,
+    })
+}
+
 /// Runs the check.
 pub fn analyze(graph: &Graph, options: &Options) -> Analysis {
     let resolver = Resolver::new(graph);

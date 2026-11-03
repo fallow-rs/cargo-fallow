@@ -563,13 +563,20 @@ const fn impact(severity: Severity) -> Impact {
 }
 
 /// The findings in the shared shape. The id uses the file, the function name
-/// and its line.
+/// and its place among the functions of the same name in the file, not the
+/// line.
 fn shared_findings(report: &Report<Summary, Finding>) -> Vec<shared::Finding> {
+    let keys: Vec<((&str, &str), u32)> = report
+        .findings
+        .iter()
+        .map(|finding| ((finding.path.as_str(), finding.name.as_str()), finding.line))
+        .collect();
     report
         .findings
         .iter()
-        .map(|finding| {
-            let line = finding.line.to_string();
+        .zip(shared::occurrences(&keys))
+        .map(|(finding, index)| {
+            let index = index.to_string();
             shared::Finding::new(Draft {
                 check: "complexity",
                 rule: "complexity",
@@ -579,7 +586,7 @@ fn shared_findings(report: &Report<Summary, Finding>) -> Vec<shared::Finding> {
                     finding.name, finding.cyclomatic, finding.cognitive
                 ),
                 location: Location::at(finding.path.clone(), finding.line, finding.col),
-                identity: &[&finding.path, &finding.name, &line],
+                identity: &[&finding.path, &finding.name, &index],
                 category: Category::Complexity,
                 impact: impact(finding.severity),
             })

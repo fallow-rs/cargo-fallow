@@ -217,6 +217,21 @@ impl Finding {
     }
 }
 
+/// The place of each key among the entries with the same key, in line order.
+/// An id that uses a name plus this index stays the same when a line above the
+/// entry changes, and stays unique when two entries share a name.
+pub fn occurrences<K: Ord + Clone>(entries: &[(K, u32)]) -> Vec<usize> {
+    entries
+        .iter()
+        .map(|(key, line)| {
+            entries
+                .iter()
+                .filter(|(other, other_line)| other == key && other_line < line)
+                .count()
+        })
+        .collect()
+}
+
 /// FNV-1a 64 over the parts, with [`PART_SEPARATOR`] after each part, as 16
 /// lowercase hex digits. The same hash as the CodeClimate fingerprints of
 /// fallow.
@@ -277,6 +292,12 @@ mod tests {
             category: Category::BugRisk,
             impact: Impact::Major,
         }
+    }
+
+    #[test]
+    fn occurrences_count_the_earlier_lines_of_the_same_key() {
+        let entries = [("a", 9), ("b", 1), ("a", 3), ("a", 5)];
+        assert_eq!(occurrences(&entries), [2, 0, 0, 1]);
     }
 
     #[test]

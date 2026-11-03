@@ -167,14 +167,28 @@ pub fn section(
 }
 
 /// The findings in the shared shape. The id uses the rule, the file, the
-/// position and the denied target.
+/// denied target and the place among the same violations in the file, not the
+/// line.
 fn shared_findings(report: &Report<Summary, Finding>) -> Vec<shared::Finding> {
-    report
+    let keys: Vec<(_, u32)> = report
         .findings
         .iter()
         .map(|finding| {
-            let line = finding.line.to_string();
-            let col = finding.col.to_string();
+            let key = (
+                finding.rule.as_str(),
+                finding.path.as_str(),
+                finding.to.as_str(),
+                finding.pattern.as_deref().unwrap_or_default(),
+            );
+            (key, finding.line)
+        })
+        .collect();
+    report
+        .findings
+        .iter()
+        .zip(shared::occurrences(&keys))
+        .map(|(finding, index)| {
+            let index = index.to_string();
             let pattern = finding.pattern.as_deref().unwrap_or_default();
             shared::Finding::new(Draft {
                 check: "boundaries",
@@ -182,7 +196,7 @@ fn shared_findings(report: &Report<Summary, Finding>) -> Vec<shared::Finding> {
                 severity: Severity::Warning,
                 message: finding.message.clone(),
                 location: Location::at(finding.path.clone(), finding.line, finding.col),
-                identity: &[&finding.path, &line, &col, &finding.to, pattern],
+                identity: &[&finding.path, &finding.to, pattern, &index],
                 category: Category::BugRisk,
                 impact: Impact::Major,
             })

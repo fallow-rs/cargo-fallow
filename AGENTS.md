@@ -20,9 +20,15 @@ cargo metadata -> workspace model -> gates -> report -> render
 - `src/lib.rs` holds the modules and the one public function, `run`.
 - `src/main.rs` is a thin binary that calls `run`.
 - `src/workspace.rs` reads `cargo metadata --no-deps` and builds the model.
-- `src/gates.rs` computes the gate outcomes.
-- `src/report.rs` holds the report shape.
-- `src/render/` writes the human, JSON and SARIF output, also for `mutants`.
+- `src/check/` holds the `check` command: the static checks in one run and
+  the combined report.
+- `src/gates.rs` holds the name of each gate, and computes the parse gate.
+- `src/finding.rs` holds the shared finding shape and the CodeClimate output.
+- `src/section.rs` holds the output of one check in each format.
+- `src/health.rs` computes the health score of the Rust code.
+- `src/report.rs` holds the report versions.
+- `src/render/` writes the human and SARIF output of `deps`, `mutants` and the
+  parse gate.
 - `src/error.rs` holds the CLI errors and their codes.
 - `src/parse.rs` holds the bounded parse. Each parse goes through this module.
 - `src/modules.rs` holds the module walk from `mod` declarations. The

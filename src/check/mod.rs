@@ -25,6 +25,7 @@ use crate::graph::{self, Graph, extract::Vis};
 use crate::health::{self, CRITICAL_CYCLOMATIC, LARGE_FUNCTION_LINES, Metrics};
 use crate::render::{self, Progress};
 use crate::section::Section;
+use crate::structure::complexity::Function;
 use crate::structure::config::{self, matches_prefix};
 use crate::structure::source::{self, Loaded, Needs};
 use crate::structure::{boundaries, complexity, dupes, size};
@@ -230,12 +231,12 @@ pub fn execute(options: &Options) -> Result<report::CheckReport, CliError> {
         });
         let source_thread = needs_source
             .then(|| scope.spawn(|| source_checks(&workspace, &settings, enforced, progress)));
-        let boundaries = runs(CheckName::Boundaries)
-            .then(|| boundaries::section(&workspace, enforced, progress))
-            .transpose();
+        let boundaries_thread = runs(CheckName::Boundaries)
+            .then(|| scope.spawn(|| boundaries::section(&workspace, enforced, progress)));
         let graph_part = join(graph_thread)?;
         let source_part = join(source_thread)?;
-        Ok::<_, CliError>((graph_part, source_part, boundaries?))
+        let boundaries = join(boundaries_thread)?;
+        Ok::<_, CliError>((graph_part, source_part, boundaries))
     })?;
     let graph_part = graph_part.unwrap_or_default();
     let source_part = source_part.unwrap_or_default();
@@ -244,6 +245,13 @@ pub fn execute(options: &Options) -> Result<report::CheckReport, CliError> {
     metrics.public_items = graph_part.public_items;
     metrics.dead_public = graph_part.dead_public;
     metrics.unused_deps = graph_part.unused_deps;
+    metrics.declared_dependencies = graph_part.unused_deps.map(|_| {
+        workspace
+            .members
+            .iter()
+            .map(|member| member.links.len())
+            .sum()
+    });
     metrics.boundary_violations = boundaries.as_ref().map(|section| section.findings.len());
     let parts = [
         (CheckName::Deps, graph_part.deps),
@@ -323,6 +331,8 @@ fn graph_checks(
                 .findings
                 .iter()
                 .filter(|finding| finding.severity == deps::report::Severity::Error)
+                // The denominator counts member dependencies only.
+                .filter(|finding| finding.rule != deps::report::Rule::UnusedWorkspaceDependency)
                 .count(),
         );
         part.deps = Some(deps::section(&report)?);
@@ -393,41 +403,35 @@ fn source_checks(
     Ok(part)
 }
 
-/// The function counts of the health score. A function counts when the
-/// `exclude` list of no check that ran names its file.
+/// The function counts of the health score. Each count leaves out the files
+/// that the `exclude` list of its own check names.
 fn function_metrics(loaded: &Loaded, settings: &SourceSettings) -> Metrics {
-    let excluded = |path: &str| {
-        settings
-            .size
-            .as_ref()
-            .is_some_and(|size| matches_prefix(path, &size.exclude))
-            || settings
-                .complexity
-                .as_ref()
-                .is_some_and(|complexity| matches_prefix(path, &complexity.exclude))
+    let count = |exclude: &[String], keep: &dyn Fn(&Function) -> bool| -> (usize, usize) {
+        let functions = loaded
+            .files
+            .iter()
+            .filter(|file| !matches_prefix(&file.path, exclude))
+            .flat_map(|file| &file.functions);
+        functions.fold((0, 0), |(all, kept), function| {
+            (all + 1, kept + usize::from(keep(function)))
+        })
     };
-    let functions: Vec<_> = loaded
-        .files
-        .iter()
-        .filter(|file| !excluded(&file.path))
-        .flat_map(|file| &file.functions)
-        .collect();
-    let measured = settings.size.is_some() || settings.complexity.is_some();
+    let complexity = settings.complexity.as_ref().map(|complexity| {
+        count(&complexity.exclude, &|function| {
+            function.cyclomatic >= CRITICAL_CYCLOMATIC
+        })
+    });
+    let size = settings.size.as_ref().map(|size| {
+        count(&size.exclude, &|function| {
+            function.line_count() > LARGE_FUNCTION_LINES
+        })
+    });
     Metrics {
         total_files: loaded.files.len(),
-        functions: measured.then_some(functions.len()),
-        critical_functions: settings.complexity.as_ref().map(|_| {
-            functions
-                .iter()
-                .filter(|function| function.cyclomatic >= CRITICAL_CYCLOMATIC)
-                .count()
-        }),
-        large_functions: settings.size.as_ref().map(|_| {
-            functions
-                .iter()
-                .filter(|function| function.line_count() > LARGE_FUNCTION_LINES)
-                .count()
-        }),
+        complexity_functions: complexity.map(|(all, _)| all),
+        critical_functions: complexity.map(|(_, kept)| kept),
+        size_functions: size.map(|(all, _)| all),
+        large_functions: size.map(|(_, kept)| kept),
         ..Metrics::default()
     }
 }

@@ -834,3 +834,58 @@ fn package_never_installs_a_binary_named_fallow() {
         .collect();
     assert_eq!(bins, ["cargo-fallow"]);
 }
+
+const COMPLEX_MANIFEST: &str = "[package]\nname = \"single\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n[workspace]\n\n[workspace.metadata.fallow.complexity]\nmax-cyclomatic = 1\n";
+const COMPLEX_FN: &str = "pub fn f(a: u8) -> u8 { if a == 0 { 1 } else { 2 } }\n";
+
+fn complexity_ids(source: &str) -> Vec<String> {
+    let fixture = Fixture::package(&[
+        ("Cargo.toml", COMPLEX_MANIFEST.as_bytes()),
+        ("src/lib.rs", source.as_bytes()),
+    ]);
+    let report = check(
+        &fixture,
+        &["--format", "json", "--quiet", "--only", "complexity"],
+    )
+    .json();
+    report["findings"]
+        .as_array()
+        .expect("findings is an array")
+        .iter()
+        .map(|finding| finding["id"].as_str().expect("id is a string").to_owned())
+        .collect()
+}
+
+#[test]
+fn a_finding_id_stays_when_a_line_above_changes() {
+    let before = complexity_ids(COMPLEX_FN);
+    let after = complexity_ids(&format!("// a new comment\n\n{COMPLEX_FN}"));
+    assert_eq!(before.len(), 1);
+    assert_eq!(before, after);
+    // Two functions with one name in one file keep two ids.
+    let twice = complexity_ids(&format!(
+        "mod a {{ {COMPLEX_FN} }}\nmod b {{ {COMPLEX_FN} }}\n"
+    ));
+    assert_eq!(twice.len(), 2);
+    assert_ne!(twice[0], twice[1]);
+}
+
+#[test]
+fn an_unused_workspace_dependency_does_not_count_against_member_dependencies() {
+    let manifest = "[package]\nname = \"single\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n[workspace]\n\n[workspace.dependencies]\nnothing-uses-this = \"1\"\n";
+    let fixture = Fixture::package(&[
+        ("Cargo.toml", manifest.as_bytes()),
+        ("src/lib.rs", b"pub fn f() {}\n"),
+    ]);
+    let report = check(
+        &fixture,
+        &["--format", "json", "--quiet", "--offline", "--only", "deps"],
+    )
+    .json();
+    let finding = &report["sections"]["deps"]["findings"][0];
+    assert_eq!(finding["rule"], "unused-workspace-dependency");
+    let health = &report["health"];
+    assert_eq!(health["metrics"]["unused_deps"], 0);
+    assert_eq!(health["metrics"]["declared_dependencies"], 0);
+    assert_eq!(health["penalties"]["unused_deps"], 0.0);
+}

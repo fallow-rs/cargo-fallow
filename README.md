@@ -6,10 +6,10 @@ with `ra_ap_syntax`, the parser of rust-analyzer. It runs on stable Rust and nee
 
 ## Status
 
-Pre-release. The `check` command reads the workspace and reports two gates. The
-`mutants` command runs mutation tests on one package. The `visibility` command
-reports items whose visibility can be smaller. The JSON shapes can change before
-the first release.
+Pre-release. The `check` command runs the static checks in one run and writes
+one report with a health score. The `mutants` command runs mutation tests on
+one package. Each check also has its own command. The JSON shapes can change
+before the first release.
 
 ## Install
 
@@ -30,21 +30,69 @@ named `fallow`. That name belongs to the JavaScript CLI.
 cargo fallow                      # same as `cargo fallow check`
 cargo fallow check --format json --quiet
 cargo fallow check --manifest-path path/to/Cargo.toml
-cargo fallow check --fail-on-parse-error
+cargo fallow check --fail-on-issues
+cargo fallow check --only deps,visibility
+cargo fallow check --skip dupes --format codeclimate > gl-code-quality.json
 ```
 
 You can also run the binary directly: `cargo-fallow check`.
 
+`cargo fallow check` runs the static checks in one run: `parse`, `deps`,
+`visibility` (fast mode), `boundaries`, `size`, `complexity` and `dupes`. The
+run reads `cargo metadata` once, builds the module graph once and parses each
+source file once for the structure checks. Each check gives the same result as
+its own command, and keeps its own gate. `mutants` and `visibility --precise`
+are not part of the run, because they build and run the tests or rust-analyzer
+and take minutes. Run them as separate commands.
+
 | Flag | Meaning |
 | --- | --- |
 | `--manifest-path <PATH>` | The `Cargo.toml` of the workspace. The default is the manifest that Cargo finds from the current directory. |
-| `--format human\|json\|sarif` | The output format. The default is `human`. |
+| `--format human\|json\|sarif\|codeclimate` | The output format. The default is `human`. |
 | `--quiet` | Hide the progress lines on stderr. |
-| `--fail-on-parse-error` | Exit 1 when a target root file does not parse. |
+| `--only <CHECK>,...` | Run only these checks. |
+| `--skip <CHECK>,...` | Do not run these checks. |
+| `--fail-on-issues` | Enforce the gate of each check that ran. |
+| `--fail-on-parse-error` | Enforce only the `parse-error` gate. |
+| `--locked`, `--offline`, `--frozen` | Give the flag to the `cargo metadata` call of `deps`. |
 
-`cargo fallow` runs `cargo metadata --no-deps`. It does not resolve
-dependencies, it does not use the network and it does not write `Cargo.lock`.
+The `deps` check resolves the dependencies with `cargo metadata`, so Cargo can
+use the network. `Cargo.lock` stays as it was before the run. Use `--offline`,
+or `--skip deps` for a run that does not resolve the dependencies.
 
+The configuration of each check is the same as for its command, in
+`[workspace.metadata.fallow.<check>]`. A `check` run has no flag that changes
+a limit: change the table instead. The `size` check has no old version to
+compare with in a `check` run, so its `file-growth` gate is `skipped`. Use
+`cargo fallow size --base <REF>` for the growth rule.
+
+### Health score
+
+The report has a health score for the Rust code. The model is the health score
+of the JavaScript CLI: the score starts at 100, each penalty subtracts points,
+the score is rounded to one decimal and clamped to 0 to 100. The grade comes
+from the whole number: `A` from 85, `B` from 70, `C` from 55, `D` from 40, else
+`F`. The score has `language: "rust"`. The tool never writes one score for more
+than one language.
+
+| Penalty | Check | Input | Points | Cap |
+| --- | --- | --- | --- | --- |
+| `dead_public` | `visibility` | `dead_public` findings per `pub` item, in percent | percent x 0.2 | 15 |
+| `complexity` | `complexity` | functions with cyclomatic complexity of 50 or more, in percent | percent x 4 | 20 |
+| `unit_size` | `size` | functions over 60 lines, per 1000 functions | per mille x 0.5 | 10 |
+| `unused_deps` | `deps` | `error` findings, per dependency entry of the members, in percent | percent x 0.5 | 25 |
+| `boundary_violations` | `boundaries` | violations, per source file, in percent | percent x 0.5 | 25 |
+| `duplication` | `dupes` | duplicated lines, in percent | percent - 5 | 10 |
+
+The JavaScript CLI counts unused dependencies per 1000 files. A Rust workspace
+has fewer and larger files, so that rate gives the full penalty for two unused
+dependencies in 30 files. The Rust formula counts them against the declared
+dependencies instead. Each input is rounded to one decimal before its weight,
+and each penalty after it. A check that did not run gives no penalty, and its key is not in
+`penalties`. The `metrics` object holds the inputs. A function counts when no
+`exclude` list of `size` or `complexity` names its file. The `pub` items of a
+crate in `exclude-crates` of `visibility` do not count. `formula_version` is
+`1`. A change of a weight, a cap or an input increments it.
 
 ## Mutation testing
 
@@ -68,7 +116,7 @@ cargo fallow mutants --inspect 04658712a47ab204
 | `--in-diff <REF>` | Run only the mutants on changed lines. See [Changed code](#changed-code). |
 | `--file <PATH>` | Put mutants only in this file or folder, by the path from the workspace root. The flag can repeat. A value that matches no file is an error. |
 | `--test-workspace` | Run each mutant that the tests of the package do not detect against the tests of each workspace member. |
-| `--format human\|json\|sarif` | The output format. The default is `human`. `--inspect` has no SARIF form. |
+| `--format human\|json\|sarif\|codeclimate` | The output format. The default is `human`. `--inspect` has no SARIF or CodeClimate form. |
 | `--quiet` | Hide the progress lines on stderr. |
 | `--jobs <N>` | The test processes that run at the same time. |
 | `--max-mutants <N>` | Run at most this many mutants. The other mutants stay `pending`. |
@@ -397,7 +445,7 @@ cargo fallow deps --fail-on-issues --format sarif --quiet
 | Flag | Meaning |
 | --- | --- |
 | `--manifest-path <PATH>` | The `Cargo.toml` of the workspace. |
-| `--format human\|json\|sarif` | The output format. The default is `human`. |
+| `--format human\|json\|sarif\|codeclimate` | The output format. The default is `human`. |
 | `--quiet` | Hide the progress lines on stderr. |
 | `--fail-on-issues` | Exit 1 when a finding has the `error` severity. |
 | `--locked` | Give `--locked` to `cargo metadata`. |
@@ -609,17 +657,32 @@ same in each run on the same input.
 
 This section describes `check`. [Output](#output) describes `mutants`.
 
-- `human`: a short summary on stdout. Progress lines go to stderr.
-- `json`: the report on stdout. The report has `schema_version`, `version`,
-  `kind`, `language`, `workspace`, `total_issues`, `findings` and
-  `gate_outcomes`.
-- `sarif`: a SARIF 2.1.0 log on stdout. Each file of a failed gate is a
-  result, and each failed gate is a tool execution notification. The level
-  is `error` for an enforced failure and `warning` for other failures.
+- `human`: the score, then the text of each check, then one gate block, on
+  stdout. Progress lines go to stderr.
+- `json`: the report on stdout. The report has `schema_version` (2),
+  `version`, `kind`, `language`, `workspace`, `checks`, `total_issues`,
+  `health`, `findings`, `gate_outcomes` and `sections`. `sections` holds the
+  JSON report of each check that ran, keyed by check name. Each section is the
+  same as the output of the command of the same name. `findings` holds the
+  findings of each check in one shape: `id`, `check`, `rule`, `severity`,
+  `message`, `location`, `related_locations` and `actions`.
+- `sarif`: a SARIF 2.1.0 log on stdout, with one run. The results, the rules
+  and the gate notifications are those of the SARIF log of each check.
+- `codeclimate`: a JSON array with one CodeClimate issue for each finding, for
+  the code quality report of GitLab. Each command has this format.
 
-The gates of `check` are `error-severity-findings` and `parse-error`. They use the same
-names as the gates of the JavaScript CLI. A gate fails the run when its
-`status` is `fail` and `enforced` is `true`.
+A finding `id` and a CodeClimate `fingerprint` are the same value: 16 hex
+digits of an FNV-1a hash of the check, the rule and the identity of the
+finding. The identity uses names where a name is unique, for example the
+dependency key, or the crate and the item path, so an edit above a finding does
+not change its id. The hash is the same as in the JavaScript CLI.
+
+The gates of `check` are the gates of the checks that ran: `parse-error`,
+`error-severity-findings` (deps), `visibility-findings`, `boundary-violations`,
+`file-growth` (size), `health-findings` (complexity), `duplication-findings`
+and `duplication-threshold` (dupes). They use the same names as the gates of
+the JavaScript CLI. A gate fails the run when its `status` is `fail` and
+`enforced` is `true`.
 
 The tool parses each target root file on a thread with a stack that is sized
 from the file length, so deep nesting cannot crash the run. A file that needs
@@ -637,7 +700,7 @@ other formats, the error goes to stderr.
 ## Structure checks
 
 Four commands check the structure of the workspace. Each command has the
-`--manifest-path`, `--format human|json|sarif` and `--quiet` flags, and its own
+`--manifest-path`, `--format human|json|sarif|codeclimate` and `--quiet` flags, and its own
 gate. A gate is in the report each time, but it fails the run only with its flag.
 
 | Command | Reports | Gate flag | Gate |

@@ -13,9 +13,15 @@
 //! | `dead_public` | `dead_public` findings per `pub` item, in percent | `pct * 0.2` | 15 |
 //! | `complexity` | functions with cyclomatic complexity of 50 or more, in percent | `pct * 4` | 20 |
 //! | `unit_size` | functions over 60 lines, per 1000 functions | `per_mille * 0.5` | 10 |
-//! | `unused_deps` | `error` findings of `deps`, per 1000 source files | `per_k * 0.5` | 25 |
-//! | `boundary_violations` | boundary violations, per 1000 source files | `per_k * 0.5` | 25 |
+//! | `unused_deps` | `error` findings of `deps`, per declared dependency, in percent | `pct * 0.5` | 25 |
+//! | `boundary_violations` | boundary violations, per source file, in percent | `pct * 0.5` | 25 |
 //! | `duplication` | duplicated lines, in percent | `pct - 5` | 10 |
+//!
+//! Fallow for JavaScript counts unused dependencies and cycles per 1000
+//! files. A Rust workspace has fewer and larger files, so the same rate gives
+//! a full penalty for two unused dependencies in 30 files. The Rust formula
+//! counts an unused member dependency against the dependency entries of the
+//! members, and a boundary violation against the files, in percent.
 
 use serde::Serialize;
 
@@ -71,13 +77,17 @@ const GRADES: [(u32, &str); 4] = [(85, "A"), (70, "B"), (55, "C"), (40, "D")];
 pub struct Metrics {
     /// The source files that the module walk reached.
     pub total_files: usize,
-    /// The functions and closures.
+    /// The functions and closures outside the `exclude` list of `complexity`.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub functions: Option<usize>,
-    /// The functions with cyclomatic complexity of [`CRITICAL_CYCLOMATIC`] or more.
+    pub complexity_functions: Option<usize>,
+    /// Of those, the functions with cyclomatic complexity of
+    /// [`CRITICAL_CYCLOMATIC`] or more.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub critical_functions: Option<usize>,
-    /// The functions over [`LARGE_FUNCTION_LINES`] lines.
+    /// The functions and closures outside the `exclude` list of `size`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size_functions: Option<usize>,
+    /// Of those, the functions over [`LARGE_FUNCTION_LINES`] lines.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub large_functions: Option<usize>,
     /// The `pub` items in the module graph.
@@ -86,7 +96,12 @@ pub struct Metrics {
     /// The `dead_public` findings.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dead_public: Option<usize>,
-    /// The `error` findings of `deps`.
+    /// The dependency entries in the `Cargo.toml` of the members.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub declared_dependencies: Option<usize>,
+    /// The `error` findings of `deps` on a member dependency. An unused
+    /// `[workspace.dependencies]` entry is not a member dependency, so it
+    /// does not count.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unused_deps: Option<usize>,
     /// The boundary violations.
@@ -171,22 +186,18 @@ pub fn score(metrics: Metrics) -> Option<HealthScore> {
 
 fn penalties(metrics: &Metrics) -> Penalties {
     let files = metrics.total_files;
-    let functions = metrics.functions.unwrap_or(0);
     Penalties {
         dead_public: pair(metrics.dead_public, metrics.public_items)
             .map(|(dead, items)| weighted(&DEAD_PUBLIC, percent(dead, items))),
-        complexity: metrics
-            .critical_functions
-            .map(|count| weighted(&COMPLEXITY, percent(count, functions))),
-        unit_size: metrics
-            .large_functions
-            .map(|count| weighted(&UNIT_SIZE, per_mille(count, functions))),
-        unused_deps: metrics
-            .unused_deps
-            .map(|count| weighted(&UNUSED_DEPS, per_mille(count, files))),
+        complexity: pair(metrics.critical_functions, metrics.complexity_functions)
+            .map(|(count, functions)| weighted(&COMPLEXITY, percent(count, functions))),
+        unit_size: pair(metrics.large_functions, metrics.size_functions)
+            .map(|(count, functions)| weighted(&UNIT_SIZE, per_mille(count, functions))),
+        unused_deps: pair(metrics.unused_deps, metrics.declared_dependencies)
+            .map(|(count, declared)| weighted(&UNUSED_DEPS, percent(count, declared))),
         boundary_violations: metrics
             .boundary_violations
-            .map(|count| weighted(&BOUNDARY_VIOLATIONS, per_mille(count, files))),
+            .map(|count| weighted(&BOUNDARY_VIOLATIONS, percent(count, files))),
         duplication: metrics
             .duplication_percentage
             .map(|pct| round1((pct - DUPLICATION_ALLOWANCE).clamp(0.0, DUPLICATION_CAP))),
@@ -247,11 +258,13 @@ mod tests {
     fn all_checks() -> Metrics {
         Metrics {
             total_files: 200,
-            functions: Some(1000),
+            complexity_functions: Some(1000),
+            size_functions: Some(1000),
             critical_functions: Some(0),
             large_functions: Some(0),
             public_items: Some(500),
             dead_public: Some(0),
+            declared_dependencies: Some(100),
             unused_deps: Some(0),
             boundary_violations: Some(0),
             duplication_percentage: Some(0.0),
@@ -299,16 +312,16 @@ mod tests {
     }
 
     /// 50 of 500 pub items are dead (10 %), 10 of 1000 functions are critical
-    /// (1 %), 30 of 1000 functions are large (30 per mille), 2 unused
-    /// dependencies and 1 violation in 200 files (10 and 5 per 1000 files),
+    /// (1 %), 30 of 1000 functions are large (30 per mille), 10 of 100
+    /// dependencies are unused (10 %), 10 violations in 200 files (5 %),
     /// and 7.5 % of the lines are duplicated.
     fn metrics_with_all_penalties() -> Metrics {
         Metrics {
             dead_public: Some(50),
             critical_functions: Some(10),
             large_functions: Some(30),
-            unused_deps: Some(2),
-            boundary_violations: Some(1),
+            unused_deps: Some(10),
+            boundary_violations: Some(10),
             duplication_percentage: Some(7.5),
             ..all_checks()
         }
@@ -318,11 +331,13 @@ mod tests {
     fn each_penalty_stops_at_its_cap_and_the_score_at_zero() {
         let metrics = Metrics {
             total_files: 1,
-            functions: Some(1),
+            complexity_functions: Some(1),
+            size_functions: Some(1),
             critical_functions: Some(1),
             large_functions: Some(1),
             public_items: Some(1),
             dead_public: Some(1),
+            declared_dependencies: Some(1),
             unused_deps: Some(100),
             boundary_violations: Some(100),
             duplication_percentage: Some(100.0),
@@ -348,6 +363,7 @@ mod tests {
     fn a_check_that_did_not_run_has_no_penalty() {
         let metrics = Metrics {
             total_files: 100,
+            declared_dependencies: Some(10),
             unused_deps: Some(1),
             ..Metrics::default()
         };
@@ -366,7 +382,8 @@ mod tests {
     fn zero_inputs_give_no_division_by_zero() {
         let metrics = Metrics {
             total_files: 0,
-            functions: Some(0),
+            complexity_functions: Some(0),
+            size_functions: Some(0),
             public_items: Some(0),
             ..all_checks()
         };

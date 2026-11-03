@@ -344,10 +344,13 @@ fn dupes_skip_a_large_data_file_without_a_generator_header_in_time() {
         skipped[0]["path"], "crates/process/src/table.rs",
         "{skipped}"
     );
+    // A release build skips the file for its token count. A debug build can
+    // need more parse stack than the system gives for this file size, and
+    // then skips the file as too deep. A unit test covers the token budget.
     assert!(
-        skipped[0]["reason"]
-            .as_str()
-            .is_some_and(|reason| reason.contains("tokens")),
+        skipped[0]["reason"].as_str().is_some_and(|reason| {
+            reason.contains("tokens") || reason.contains("nests too deep")
+        }),
         "{skipped}"
     );
     assert!(

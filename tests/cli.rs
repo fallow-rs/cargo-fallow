@@ -384,6 +384,42 @@ fn only_runs_the_named_checks() {
 }
 
 #[test]
+fn a_partial_run_has_no_score_and_names_the_missing_checks() {
+    let fixture = Fixture::new("ws-ok");
+    let report = check(
+        &fixture,
+        &[
+            "--format",
+            "json",
+            "--quiet",
+            "--offline",
+            "--only",
+            "deps,visibility",
+        ],
+    )
+    .json();
+    let health = &report["health"];
+    assert!(health["score"].is_null(), "{health}");
+    assert!(health["grade"].is_null(), "{health}");
+    assert_eq!(
+        health["missing_checks"],
+        serde_json::json!(["complexity", "size", "boundaries", "dupes"])
+    );
+    assert_eq!(health["penalties"]["dead_public"], 15.0);
+    let human = check(
+        &fixture,
+        &["--quiet", "--offline", "--only", "deps,visibility"],
+    )
+    .stdout;
+    assert!(
+        human.contains(
+            "Health (rust): no score. The run did not include complexity, size, boundaries, dupes."
+        ),
+        "{human}"
+    );
+}
+
+#[test]
 fn only_and_skip_that_leave_no_check_exit_2() {
     let fixture = Fixture::new("ws-ok");
     let result = check(

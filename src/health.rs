@@ -12,7 +12,7 @@
 //! | --- | --- | --- | --- |
 //! | `dead_public` | `dead_public` findings per `pub` item, in percent | `pct * 0.2` | 15 |
 //! | `complexity` | functions with cyclomatic complexity of 50 or more, in percent | `pct * 4` | 20 |
-//! | `unit_size` | functions over 60 lines, per 1000 functions | `per_mille * 0.5` | 10 |
+//! | `unit_size` | functions over 60 lines, per 1000 functions | `per_mille * 0.2` | 10 |
 //! | `unused_deps` | `error` findings of `deps`, per declared dependency, in percent | `pct * 0.5` | 25 |
 //! | `boundary_violations` | boundary violations, per source file, in percent | `pct * 0.5` | 25 |
 //! | `duplication` | duplicated lines, in percent | `pct - 5` | 10 |
@@ -22,12 +22,20 @@
 //! a full penalty for two unused dependencies in 30 files. The Rust formula
 //! counts an unused member dependency against the dependency entries of the
 //! members, and a boundary violation against the files, in percent.
+//!
+//! Rust functions are longer than JavaScript functions. With the JavaScript
+//! weight of 0.5, `unit_size` reached its cap on six of seven corpus
+//! workspaces. The weight 0.2 spreads them from 2.9 to 8.3 points.
+//! `docs/health-score.md` has the data.
+//!
+//! The score and the grade need each check with a penalty. A run without one
+//! of them reports the penalties that it has and names the missing checks.
 
 use serde::Serialize;
 
 /// The version of the Rust formula. A change of a weight, a cap or an input
 /// increments it.
-pub const FORMULA_VERSION: u32 = 1;
+pub const FORMULA_VERSION: u32 = 2;
 /// The score with no penalty.
 const MAX_SCORE: f64 = 100.0;
 /// A function with this cyclomatic complexity or more is critical. The same
@@ -53,8 +61,9 @@ const COMPLEXITY: Rule = Rule {
     weight: 4.0,
     cap: 20.0,
 };
+/// Calibrated on the corpus in `docs/health-score.md`.
 const UNIT_SIZE: Rule = Rule {
-    weight: 0.5,
+    weight: 0.2,
     cap: 10.0,
 };
 const UNUSED_DEPS: Rule = Rule {
@@ -137,6 +146,16 @@ pub struct Penalties {
 }
 
 impl Penalties {
+    /// The check of each penalty, in the order of [`Penalties::values`].
+    const CHECKS: [&'static str; 6] = [
+        "visibility",
+        "complexity",
+        "size",
+        "deps",
+        "boundaries",
+        "dupes",
+    ];
+
     fn values(&self) -> [Option<f64>; 6] {
         [
             self.dead_public,
@@ -156,29 +175,47 @@ pub struct HealthScore {
     pub language: &'static str,
     /// The version of the formula.
     pub formula_version: u32,
-    /// The score, from 0 to 100, with one decimal.
-    pub score: f64,
-    /// `A`, `B`, `C`, `D` or `F`.
-    pub grade: &'static str,
+    /// The score, from 0 to 100, with one decimal. `None` when a check of
+    /// [`HealthScore::missing_checks`] did not run.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub score: Option<f64>,
+    /// `A`, `B`, `C`, `D` or `F`. `None` without a score.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grade: Option<&'static str>,
+    /// The checks with a penalty that the run did not include. A score
+    /// without them reads too high, so the report has no score then.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub missing_checks: Vec<&'static str>,
     /// The points that each penalty subtracts.
     pub penalties: Penalties,
     /// The inputs of the penalties.
     pub metrics: Metrics,
 }
 
-/// Computes the score, or `None` when no check with a penalty ran.
+/// Computes the score, or `None` when no check with a penalty ran. The
+/// score and the grade need each check with a penalty.
 pub fn score(metrics: Metrics) -> Option<HealthScore> {
     let penalties = penalties(&metrics);
-    if penalties.values().iter().all(Option::is_none) {
+    let values = penalties.values();
+    if values.iter().all(Option::is_none) {
         return None;
     }
-    let total: f64 = penalties.values().iter().flatten().sum();
-    let score = round1(MAX_SCORE - total).clamp(0.0, MAX_SCORE);
+    let missing_checks: Vec<&'static str> = values
+        .iter()
+        .zip(Penalties::CHECKS)
+        .filter(|(value, _)| value.is_none())
+        .map(|(_, check)| check)
+        .collect();
+    let score = missing_checks.is_empty().then(|| {
+        let total: f64 = values.iter().flatten().sum();
+        round1(MAX_SCORE - total).clamp(0.0, MAX_SCORE)
+    });
     Some(HealthScore {
         language: "rust",
         formula_version: FORMULA_VERSION,
         score,
-        grade: grade(score),
+        grade: score.map(grade),
+        missing_checks,
         penalties,
         metrics,
     })
@@ -272,14 +309,14 @@ mod tests {
     }
 
     fn total(metrics: Metrics) -> f64 {
-        score(metrics).map_or(-1.0, |score| score.score)
+        score(metrics).and_then(|score| score.score).unwrap_or(-1.0)
     }
 
     #[test]
     fn a_clean_workspace_scores_100_and_gets_an_a() {
         let health = score(all_checks());
-        assert_eq!(health.as_ref().map(|h| h.score), Some(100.0));
-        assert_eq!(health.as_ref().map(|h| h.grade), Some("A"));
+        assert_eq!(health.as_ref().and_then(|h| h.score), Some(100.0));
+        assert_eq!(health.as_ref().and_then(|h| h.grade), Some("A"));
         assert_eq!(health.map(|h| h.language), Some("rust"));
     }
 
@@ -300,15 +337,41 @@ mod tests {
             Some(Penalties {
                 dead_public: Some(2.0),
                 complexity: Some(4.0),
-                // 15 points, over the cap of 10.
-                unit_size: Some(10.0),
+                // 30 per 1000 functions, times 0.2.
+                unit_size: Some(6.0),
                 unused_deps: Some(5.0),
                 boundary_violations: Some(2.5),
                 duplication: Some(2.5),
             })
         );
-        // 100 - (2 + 4 + 10 + 5 + 2.5 + 2.5).
-        assert_eq!(total(metrics_with_all_penalties()), 74.0);
+        // 100 - (2 + 4 + 6 + 5 + 2.5 + 2.5).
+        assert_eq!(total(metrics_with_all_penalties()), 78.0);
+    }
+
+    /// The functions and the functions over 60 lines of the seven corpus
+    /// workspaces in docs/health-score.md. With the weight of formula
+    /// version 1 (0.5), six of the seven reached the cap.
+    #[test]
+    fn unit_size_separates_the_corpus_workspaces() {
+        let corpus = [
+            ("ripgrep", 3296, 48, 2.9),
+            ("fallow", 69264, 1619, 4.7),
+            ("typos", 797, 22, 5.5),
+            ("mdbook", 1077, 30, 5.6),
+            ("gitui", 2676, 94, 7.0),
+            ("taplo", 1111, 46, 8.3),
+            ("git-cliff", 674, 28, 8.3),
+        ];
+        for (name, functions, large, expected) in corpus {
+            let metrics = Metrics {
+                size_functions: Some(functions),
+                large_functions: Some(large),
+                ..all_checks()
+            };
+            let penalty = score(metrics).and_then(|h| h.penalties.unit_size);
+            assert_eq!(penalty, Some(expected), "{name}");
+            assert!(expected < UNIT_SIZE.cap, "{name}");
+        }
     }
 
     /// 50 of 500 pub items are dead (10 %), 10 of 1000 functions are critical
@@ -355,8 +418,8 @@ mod tests {
             })
         );
         // The caps sum to 105, so the clamp gives 0.
-        assert_eq!(health.as_ref().map(|h| h.score), Some(0.0));
-        assert_eq!(health.map(|h| h.grade), Some("F"));
+        assert_eq!(health.as_ref().and_then(|h| h.score), Some(0.0));
+        assert_eq!(health.and_then(|h| h.grade), Some("F"));
     }
 
     #[test]
@@ -375,7 +438,14 @@ mod tests {
                 ..Penalties::default()
             })
         );
-        assert_eq!(health.map(|h| h.score), Some(95.0));
+        // A score without five of its six inputs reads too high, so a partial
+        // run gets no score and no grade, and names the checks that it needs.
+        assert_eq!(health.as_ref().map(|h| h.score), Some(None));
+        assert_eq!(health.as_ref().map(|h| h.grade), Some(None));
+        assert_eq!(
+            health.map(|h| h.missing_checks),
+            Some(vec!["visibility", "complexity", "size", "boundaries", "dupes"])
+        );
     }
 
     #[test]

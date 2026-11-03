@@ -147,11 +147,22 @@ impl CheckReport {
         let names: Vec<&str> = self.checks.iter().map(|name| name.as_str()).collect();
         let _ = writeln!(text, "Checks: {}", names.join(", "));
         if let Some(health) = &self.health {
-            let _ = writeln!(
-                text,
-                "Health (rust): {:.1} ({}), formula version {}",
-                health.score, health.grade, health.formula_version
-            );
+            match (health.score, health.grade) {
+                (Some(score), Some(grade)) => {
+                    let _ = writeln!(
+                        text,
+                        "Health (rust): {score:.1} ({grade}), formula version {}",
+                        health.formula_version
+                    );
+                }
+                _ => {
+                    let _ = writeln!(
+                        text,
+                        "Health (rust): no score. The run did not include {}.",
+                        health.missing_checks.join(", ")
+                    );
+                }
+            }
         }
         if self.total_issues == 0 {
             text.push_str("No issues found\n");

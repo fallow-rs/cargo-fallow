@@ -32,3 +32,10 @@ GitHub release. Each release needs a `## [X.Y.Z] - YYYY-MM-DD` section.
   on its own. The `duplication-threshold` gate fails the run only with its
   flag, the same as each other gate.
 - `cargo fallow visibility` reports no finding in a generated file.
+- The `unit_size` penalty of the health score reached its cap on six of
+  seven corpus workspaces. Its weight is now 0.2, not 0.5, and
+  `formula_version` is 2. `docs/health-score.md` has the data.
+- A `check` run without one of the six checks of the health score, for
+  example with `--only deps,visibility`, no longer reports a high score. The
+  report has no score and no grade, and `health.missing_checks` names the
+  checks that the run did not include.

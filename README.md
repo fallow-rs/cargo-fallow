@@ -82,7 +82,7 @@ than one language.
 | --- | --- | --- | --- | --- |
 | `dead_public` | `visibility` | `dead_public` findings per `pub` item, in percent | percent x 0.2 | 15 |
 | `complexity` | `complexity` | functions with cyclomatic complexity of 50 or more, in percent | percent x 4 | 20 |
-| `unit_size` | `size` | functions over 60 lines, per 1000 functions | per mille x 0.5 | 10 |
+| `unit_size` | `size` | functions over 60 lines, per 1000 functions | per mille x 0.2 | 10 |
 | `unused_deps` | `deps` | `error` findings, per dependency entry of the members, in percent | percent x 0.5 | 25 |
 | `boundary_violations` | `boundaries` | violations, per source file, in percent | percent x 0.5 | 25 |
 | `duplication` | `dupes` | duplicated lines, in percent | percent - 5 | 10 |
@@ -90,12 +90,20 @@ than one language.
 The JavaScript CLI counts unused dependencies per 1000 files. A Rust workspace
 has fewer and larger files, so that rate gives the full penalty for two unused
 dependencies in 30 files. The Rust formula counts them against the declared
-dependencies instead. Each input is rounded to one decimal before its weight,
+dependencies instead. Rust functions are longer than JavaScript functions, so
+the `unit_size` weight is 0.2, not 0.5. [`docs/health-score.md`](docs/health-score.md)
+has the corpus data for this weight. Each input is rounded to one decimal before its weight,
 and each penalty after it. A check that did not run gives no penalty, and its key is not in
-`penalties`. The `metrics` object holds the inputs. A function counts when no
+`penalties`. The `metrics` object holds the inputs.
+
+The score and the grade need all six checks. A run without one of them, for
+example `--only deps,visibility`, has no `score` and no `grade`. Its
+`missing_checks` array names the checks that the run did not include, and the
+human output says `Health (rust): no score.` The penalties of the checks that
+ran stay in the report. A function counts when no
 `exclude` list of `size` or `complexity` names its file. The `pub` items of a
 crate in `exclude-crates` of `visibility` do not count. `formula_version` is
-`1`. A change of a weight, a cap or an input increments it.
+`2`. A change of a weight, a cap or an input increments it.
 
 ## Mutation testing
 

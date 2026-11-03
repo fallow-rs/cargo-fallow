@@ -640,7 +640,7 @@ impl Engine<'_> {
     }
 
     /// The cache folder and the hash of the source, or `None` with `--no-cache`.
-    fn open_cache(&self, package: &Path) -> Result<Option<CachedTree>, CliError> {
+    pub(super) fn open_cache(&self, package: &Path) -> Result<Option<CachedTree>, CliError> {
         if !self.options.cache || self.options.no_run {
             return Ok(None);
         }
@@ -828,7 +828,7 @@ impl Engine<'_> {
     }
 
     /// The rebuild mutants of each file, and the number that `--in-diff` left out.
-    fn find_rewrites(&self) -> (Vec<FileRewrites>, usize) {
+    pub(super) fn find_rewrites(&self) -> (Vec<FileRewrites>, usize) {
         if !self.options.tier.has_rebuild() {
             let empty = self.files.iter().map(|_| FileRewrites::default()).collect();
             return (empty, 0);
@@ -1739,9 +1739,9 @@ struct RunState<'a> {
 }
 
 /// The cache folder with the key of this source.
-struct CachedTree {
-    cache: Cache,
-    key: u64,
+pub(super) struct CachedTree {
+    pub(super) cache: Cache,
+    pub(super) key: u64,
 }
 
 /// How a run gets its map.
@@ -1785,7 +1785,7 @@ fn restore_jobs(
     (keep(schema), keep(rebuild))
 }
 
-fn selection_info(
+pub(super) fn selection_info(
     source: MapSource,
     map_ms: u64,
     selector: Option<&Selector>,
@@ -1865,7 +1865,7 @@ fn tail(text: &str) -> String {
 }
 
 /// The schema tier first, then by position.
-fn sort_rows(rows: &mut [MutantRow]) {
+pub(super) fn sort_rows(rows: &mut [MutantRow]) {
     rows.sort_by(|a, b| {
         (a.tier == Tier::Rebuild, &a.file, a.line, a.column).cmp(&(
             b.tier == Tier::Rebuild,

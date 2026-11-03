@@ -107,6 +107,7 @@ cargo fallow mutants --in-diff main --fail-on-survivors --format sarif --quiet
 cargo fallow mutants --tier schema --format json --quiet
 cargo fallow mutants --max-mutants 200 --time-budget 3600
 cargo fallow mutants --inspect 04658712a47ab204
+cargo fallow mutants --package my-crate --list --format json
 ```
 
 | Flag | Meaning |
@@ -124,6 +125,8 @@ cargo fallow mutants --inspect 04658712a47ab204
 | `--memory-limit <MIB>` | Kill a test process above this footprint. The default is 4096. |
 | `--fail-on-survivors` | Exit 1 when a mutant survives. See [Gate](#gate). |
 | `--inspect <ID>` | Show one mutant and its tests. See [Inspect](#inspect). |
+| `--no-build` | With `--inspect`: read the coverage map only from the cache. Nothing compiles and no test runs. |
+| `--list` | List the mutants, and run nothing. See [List](#list). |
 
 `cargo fallow mutants --help` lists the other flags.
 
@@ -186,7 +189,7 @@ and `files` names each file with its count.
 | `fail` | A mutant survived. With `--fail-on-survivors` the exit code is 1. |
 | `pass` | No mutant survived, and each mutant has a result. |
 | `warn` | No mutant survived, but a mutant is `pending` or has `runtime_error`. |
-| `skipped` | `--no-run` ran no mutant. |
+| `skipped` | `--no-run` or `--list` ran no mutant. |
 
 The gate counts only `survived`. A mutant that no test executes gets `no_coverage`, and
 that status does not fail the gate. Read `summary.no_coverage` to see this code.
@@ -252,6 +255,40 @@ the LLVM tools for that build. The JSON form has `kind` `mutants-inspect`, `muta
 these tests for each mutant. The report has no status: the command does not read an old
 result. An unknown id exits 2. An id changes when the text of its code changes.
 
+`--no-build` reads the map only from the cache, so the command compiles nothing and
+runs no test. A tool that must not start a build uses this flag. When the cache has no
+map for this source, the command exits 2 with the code `CARGO_FALLOW_NO_CACHED_MAP`.
+The `help` field gives the `--inspect` command that builds the map. The key of the map
+includes `Cargo.lock`. A workspace without `Cargo.lock` gets a new lockfile in each
+run, so `--no-build` cannot find its map. Run `cargo generate-lockfile` first.
+
+### List
+
+`--list` lists the mutants of one package and runs nothing: it compiles nothing and
+runs no test. A workspace with more packages needs `--package`. `--in-diff`, `--file`,
+`--tier`, `--no-schema` and `--no-selection` select the mutants as in a run.
+
+The report has the shape of a run report, with `kind` `mutants`:
+
+- Each mutant has the status `pending`, and `actions` is empty.
+- The gate is `skipped`, so the exit code is 0.
+- `schema.candidates` and `rebuild.candidates` count the mutants of each tier.
+- `tier` is the planned tier. A run moves a mutant that breaks the schema build to the
+  rebuild tier.
+- A run can find that no build reads a rebuild mutant, and reports it with
+  `no_coverage`.
+- `selection.map` is `cached` when the cache has a map for this source, else `none`.
+  `cached` means that `--inspect <ID> --no-build` can show the tests of a mutant.
+- The map gives only the `selection` part. `selection.mutants_without_line_data` is
+  always 0, because the list does not compare a mutant with the map.
+
+To find the map, `--list` and `--inspect --no-build` copy the source tree to a
+temporary folder and hash it, as a run does. A large checkout makes this copy slow.
+With `--list`, `--no-cache` or `--no-selection` skips the copy, and `selection.map`
+is then `none`.
+Both modes run `rustc -vV` for the key of the map, and `--in-diff` runs `git`. Neither
+compiles the project.
+
 ### Tiers
 
 | Tier | Operators | How it runs |
@@ -287,7 +324,7 @@ A switch reads a value at run time, and a constant context cannot. So a mutant i
 | `no_coverage` | No test executes the mutant, no build reads it (for example a `cfg` that is off), or the package has no test that passes. `reason` says which. |
 | `compile_error` | The mutant does not compile, or its compile passed the limit: 3 times the clean build, with a minimum of 30 seconds. A mutant in a `const fn` can loop in the compiler. |
 | `runtime_error` | The run has no test result. `reason` says why, for example a kill by the memory guard. |
-| `pending` | The run stopped first: `--time-budget`, `--max-mutants`, `--no-run` or low memory. |
+| `pending` | The run stopped first: `--time-budget`, `--max-mutants`, `--no-run` or low memory. `--list` gives each mutant this status. |
 
 The score is `killed + timeout` over `killed + timeout + survived`.
 

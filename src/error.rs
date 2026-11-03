@@ -29,6 +29,9 @@ pub enum ErrorCode {
     /// `visibility --precise` cannot decide: a part of the load is missing, or
     /// the worker stopped early and the run is a gate.
     PreciseFailed,
+    /// `mutants --inspect --no-build` found no coverage map for this source in
+    /// the cache.
+    NoCachedMap,
 }
 
 impl ErrorCode {
@@ -43,6 +46,7 @@ impl ErrorCode {
             Self::InvalidConfig => "CARGO_FALLOW_INVALID_CONFIG",
             Self::TimedOut => "CARGO_FALLOW_TIMED_OUT",
             Self::PreciseFailed => "CARGO_FALLOW_PRECISE_FAILED",
+            Self::NoCachedMap => "CARGO_FALLOW_NO_CACHED_MAP",
         }
     }
 }

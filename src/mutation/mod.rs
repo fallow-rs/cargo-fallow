@@ -26,7 +26,8 @@
 //!   results for the next run.
 //! - [`status`] holds the status set and the retry rules.
 //! - [`diff`] reads the changed lines of `--in-diff`.
-//! - [`plan`] lists the mutants, [`engine`] runs the stages, [`workdir`] holds the
+//! - [`plan`] lists the mutants, [`list`] gives the modes with no build,
+//!   [`engine`] runs the stages, [`workdir`] holds the
 //!   copies, [`run`] is the entry point, and [`report`] holds the output.
 
 mod cache;
@@ -37,6 +38,7 @@ mod files;
 pub mod guard;
 mod id;
 mod journal;
+mod list;
 mod plan;
 mod probe;
 pub mod process;

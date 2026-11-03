@@ -179,8 +179,20 @@ struct MutantsArgs {
     #[arg(long, value_name = "ID", conflicts_with_all = [
         "in_diff", "fail_on_survivors", "tier", "timeout", "time_budget", "max_mutants",
         "no_retry", "no_doctests", "no_schema", "no_selection", "no_cache", "no_run", "files",
+        "list",
     ])]
     inspect: Option<String>,
+    /// With `--inspect`: read the coverage map only from the cache. The command then
+    /// compiles nothing and runs no test. Exit 2 when the cache has no map.
+    #[arg(long, requires = "inspect")]
+    no_build: bool,
+    /// List the mutants of the package, and run nothing. The command compiles
+    /// nothing and runs no test. Each mutant has the status `pending`.
+    #[arg(long, conflicts_with_all = [
+        "fail_on_survivors", "timeout", "time_budget", "max_mutants", "no_retry",
+        "no_doctests", "no_run", "keep_work_dir", "test_workspace",
+    ])]
+    list: bool,
     /// The mutants to run.
     #[arg(long, value_enum, default_value_t = TierArg::All)]
     tier: TierArg,
@@ -276,6 +288,8 @@ impl From<MutantsArgs> for crate::mutation::run::Options {
             in_diff: args.in_diff,
             fail_on_survivors: args.fail_on_survivors,
             inspect: args.inspect,
+            no_build: args.no_build,
+            list: args.list,
             format: args.format,
             quiet: args.quiet,
         }

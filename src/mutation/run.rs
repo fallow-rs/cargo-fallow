@@ -12,8 +12,8 @@ use crate::gates::RustGateName;
 use crate::gates::parse_edition;
 use crate::mutation::coverage::{CoverageMap, LineTests};
 use crate::mutation::diff::Changed;
-use crate::mutation::engine::Engine;
-use crate::mutation::files::{Collected, CrateFile, TargetRoot, collect};
+use crate::mutation::engine::{Coverage, Engine, Stages};
+use crate::mutation::files::{Collected, CrateFile, TargetRoot, collect, copy_tree};
 use crate::mutation::guard::{Guard, Limits};
 use crate::mutation::plan::{
     Planned, keep_rebuild_only, lines_of, move_into_schema, rebuild_mutants, rewrites_of,
@@ -21,8 +21,8 @@ use crate::mutation::plan::{
 };
 use crate::mutation::report::{
     CoverageState, DiffInfo, FileSkip, Gaps, GuardInfo, INSPECT_KIND, InspectCoverage,
-    InspectReport, InspectedMutant, KIND, LANGUAGE, MutantRow, Report, Summary, actions_for,
-    survivor_gate,
+    InspectReport, InspectedMutant, KIND, LANGUAGE, MapSource, MutantRow, Report, Summary,
+    actions_for, survivor_gate,
 };
 use crate::mutation::workdir::{WorkDirs, prepare_copies};
 use crate::report::{SCHEMA_VERSION, TOOL_VERSION};
@@ -117,6 +117,10 @@ pub struct Options {
     pub fail_on_survivors: bool,
     /// The id of `--inspect`.
     pub inspect: Option<String>,
+    /// True when `--inspect` reads the map only from the cache.
+    pub no_build: bool,
+    /// True when the command only lists the mutants.
+    pub list: bool,
     /// The output format.
     pub format: Format,
     /// True when the progress lines stay hidden.
@@ -149,94 +153,155 @@ pub fn run(options: &Options) -> Result<Report, CliError> {
         workspace.root.as_std_path(),
     )
     .map_err(|err| failure("create the work folder", &err))?;
-    run_in(options, &workspace, member, &dirs, changed.as_ref(), start)
+    let run = Run {
+        options,
+        workspace: &workspace,
+        member,
+        changed: changed.as_ref(),
+        start,
+    };
+    if options.list {
+        run.list(&dirs)
+    } else {
+        run.run_in(&dirs)
+    }
 }
 
-fn run_in(
-    options: &Options,
-    workspace: &Workspace,
-    member: &Member,
-    dirs: &WorkDirs,
-    changed: Option<&Changed>,
+/// The inputs of one run of the command on one package.
+struct Run<'a> {
+    options: &'a Options,
+    workspace: &'a Workspace,
+    member: &'a Member,
+    changed: Option<&'a Changed>,
     start: Instant,
-) -> Result<Report, CliError> {
-    let guard = start_guard(options, dirs)?;
-    let target_dir = workspace.target_dir.as_std_path();
-    prepare_copies(workspace.root.as_std_path(), target_dir, dirs, &guard)
-        .map_err(|err| failure("copy the source tree", &err))?;
-    let mut collected = collect(&dirs.scratch, &target_roots(member));
-    if options.schema_takes_rebuild_operators() {
-        move_into_schema(&mut collected.files);
-    }
-    retain_selected_files(options, &mut collected.files)?;
-    let sites_outside = changed.map_or(0, |changed| {
-        let removed = changed.retain_sites(&mut collected.files);
-        if options.tier.has_schema() {
-            removed
-        } else {
-            0
+}
+
+impl<'a> Run<'a> {
+    /// The source files of the package with the mutants of this run, and the schema
+    /// sites that `--in-diff` left out.
+    fn files(&self, root: &Path) -> Result<(Collected, usize), CliError> {
+        let mut collected = collect(root, &target_roots(self.member));
+        if self.options.schema_takes_rebuild_operators() {
+            move_into_schema(&mut collected.files);
         }
-    });
-    let engine = Engine {
-        options,
-        guard: &guard,
-        dirs,
-        package_dir: package_folder(member),
-        files: &collected.files,
-        start,
-        target_dir: target_dir.to_path_buf(),
-        package: member.name.clone(),
-        changed,
-        select: package_selection(workspace, member),
-        alone: RwLock::new(()),
-    };
-    let (mut rows, stages) = engine.run()?;
-    let inspect = inspect_command(options, &member.name);
-    for row in &mut rows {
-        row.actions = actions_for(row, &inspect);
-    }
-    let summary = Summary::of(&rows);
-    let gate = survivor_gate(&rows, options.no_run, options.fail_on_survivors);
-    Ok(Report {
-        schema_version: SCHEMA_VERSION,
-        version: TOOL_VERSION,
-        kind: KIND,
-        language: LANGUAGE,
-        package: member.name.clone(),
-        package_version: member.version.clone(),
-        total_issues: summary.survived,
-        summary,
-        gate_outcomes: BTreeMap::from([(RustGateName::SurvivingMutants, gate)]),
-        in_diff: changed.map(|changed| DiffInfo {
-            reference: changed.reference.clone(),
-            base: changed.base.clone(),
-            changed_files: changed.file_count(),
-            mutants_outside: sites_outside + stages.rewrites_outside_diff,
-        }),
-        stopped_by: stages.stopped_by,
-        elapsed_ms: millis(start.elapsed()),
-        baseline: stages.baseline,
-        schema: stages.schema,
-        rebuild: stages.rebuild,
-        gaps: Gaps {
-            untested_dependents: if options.test_workspace {
-                Vec::new()
+        retain_selected_files(self.options, &mut collected.files)?;
+        let sites_outside = self.changed.map_or(0, |changed| {
+            let removed = changed.retain_sites(&mut collected.files);
+            if self.options.tier.has_schema() {
+                removed
             } else {
-                dependents_of(workspace, member)
+                0
+            }
+        });
+        Ok((collected, sites_outside))
+    }
+
+    fn engine(&self, guard: &'a Guard, dirs: &'a WorkDirs, files: &'a [CrateFile]) -> Engine<'a> {
+        Engine {
+            options: self.options,
+            guard,
+            dirs,
+            package_dir: package_folder(self.member),
+            files,
+            start: self.start,
+            target_dir: self.workspace.target_dir.as_std_path().to_path_buf(),
+            package: self.member.name.clone(),
+            changed: self.changed,
+            select: package_selection(self.workspace, self.member),
+            alone: RwLock::new(()),
+        }
+    }
+
+    fn run_in(&self, dirs: &WorkDirs) -> Result<Report, CliError> {
+        let guard = start_guard(self.options, dirs)?;
+        let target_dir = self.workspace.target_dir.as_std_path();
+        prepare_copies(self.workspace.root.as_std_path(), target_dir, dirs, &guard)
+            .map_err(|err| failure("copy the source tree", &err))?;
+        let (collected, sites_outside) = self.files(&dirs.scratch)?;
+        let (rows, stages) = self.engine(&guard, dirs, &collected.files).run()?;
+        Ok(self.report(rows, stages, &collected, sites_outside, guard.kills()))
+    }
+
+    /// The report of `--list`. Nothing compiles and no test runs. The command copies
+    /// the source tree only to find the map of this source in the cache.
+    fn list(&self, dirs: &WorkDirs) -> Result<Report, CliError> {
+        let guard = Guard::disabled();
+        if self.options.cache && self.options.selection {
+            copy_scratch(self.workspace, dirs)?;
+        }
+        let (collected, sites_outside) = self.files(self.workspace.root.as_std_path())?;
+        let (rows, stages) = self.engine(&guard, dirs, &collected.files).list()?;
+        Ok(self.report(rows, stages, &collected, sites_outside, 0))
+    }
+
+    fn report(
+        &self,
+        mut rows: Vec<MutantRow>,
+        stages: Stages,
+        collected: &Collected,
+        sites_outside: usize,
+        kills: u32,
+    ) -> Report {
+        let (options, member, changed) = (self.options, self.member, self.changed);
+        let inspect = inspect_command(options, &member.name);
+        for row in &mut rows {
+            row.actions = actions_for(row, &inspect);
+        }
+        let summary = Summary::of(&rows);
+        let no_run = options.no_run || options.list;
+        let gate = survivor_gate(&rows, no_run, options.fail_on_survivors);
+        Report {
+            schema_version: SCHEMA_VERSION,
+            version: TOOL_VERSION,
+            kind: KIND,
+            language: LANGUAGE,
+            package: member.name.clone(),
+            package_version: member.version.clone(),
+            total_issues: summary.survived,
+            summary,
+            gate_outcomes: BTreeMap::from([(RustGateName::SurvivingMutants, gate)]),
+            in_diff: changed.map(|changed| DiffInfo {
+                reference: changed.reference.clone(),
+                base: changed.base.clone(),
+                changed_files: changed.file_count(),
+                mutants_outside: sites_outside + stages.rewrites_outside_diff,
+            }),
+            stopped_by: stages.stopped_by,
+            elapsed_ms: millis(self.start.elapsed()),
+            baseline: stages.baseline,
+            schema: stages.schema,
+            rebuild: stages.rebuild,
+            gaps: Gaps {
+                untested_dependents: if options.test_workspace {
+                    Vec::new()
+                } else {
+                    dependents_of(self.workspace, member)
+                },
+                ..gaps_of(collected, stages.doctests)
             },
-            ..gaps_of(&collected, stages.doctests)
-        },
-        selection: stages.selection,
-        workspace_tests: stages.workspace,
-        guard: GuardInfo {
-            enabled: options.memory_guard,
-            memory_limit_mib: options.memory_limit_mib,
-            low_memory_percent: options.low_memory_percent,
-            kills: guard.kills(),
-            jobs: options.jobs,
-        },
-        mutants: rows,
-    })
+            selection: stages.selection,
+            workspace_tests: stages.workspace,
+            guard: GuardInfo {
+                enabled: options.memory_guard && !options.list,
+                memory_limit_mib: options.memory_limit_mib,
+                low_memory_percent: options.low_memory_percent,
+                kills,
+                jobs: options.jobs,
+            },
+            mutants: rows,
+        }
+    }
+}
+
+/// Copies the source tree into the scratch folder, with no new lockfile. The key of
+/// the map in the cache comes from this copy.
+fn copy_scratch(workspace: &Workspace, dirs: &WorkDirs) -> Result<(), CliError> {
+    copy_tree(
+        workspace.root.as_std_path(),
+        &dirs.scratch,
+        Some(workspace.target_dir.as_std_path()),
+    )
+    .map_err(|err| failure("copy the source tree", &err))
 }
 
 /// The command that inspects one mutant of this package, without the id.
@@ -287,26 +352,24 @@ pub fn inspect(options: &Options, id: &str) -> Result<InspectReport, CliError> {
         workspace.root.as_std_path(),
     )
     .map_err(|err| failure("create the work folder", &err))?;
-    let result = (|| {
-        let guard = start_guard(options, &dirs)?;
-        let target_dir = workspace.target_dir.as_std_path();
-        prepare_copies(workspace.root.as_std_path(), target_dir, &dirs, &guard)
-            .map_err(|err| failure("copy the source tree", &err))?;
-        Engine {
-            options,
-            guard: &guard,
-            dirs: &dirs,
-            package_dir: package_folder(member),
-            files: &files,
-            start,
-            target_dir: target_dir.to_path_buf(),
-            package: member.name.clone(),
-            changed: None,
-            select: package_selection(&workspace, member),
-            alone: RwLock::new(()),
-        }
-        .map_only()
-    })();
+    let run = Run {
+        options,
+        workspace: &workspace,
+        member,
+        changed: None,
+        start,
+    };
+    let result = if options.no_build {
+        run.cached_coverage(&dirs, &files, id)
+    } else {
+        (|| {
+            let guard = start_guard(options, &dirs)?;
+            let target_dir = workspace.target_dir.as_std_path();
+            prepare_copies(workspace.root.as_std_path(), target_dir, &dirs, &guard)
+                .map_err(|err| failure("copy the source tree", &err))?;
+            run.engine(&guard, &dirs, &files).map_only()
+        })()
+    };
     drop(dirs);
     let coverage = result?;
     let file = &files[planned.file];
@@ -328,6 +391,49 @@ pub fn inspect(options: &Options, id: &str) -> Result<InspectReport, CliError> {
             tests_without_data,
         },
     })
+}
+
+impl Run<'_> {
+    /// The map of `--inspect --no-build`: only from the cache. Nothing compiles and
+    /// no test runs, so a missing map is an error.
+    fn cached_coverage(
+        &self,
+        dirs: &WorkDirs,
+        files: &[CrateFile],
+        id: &str,
+    ) -> Result<Coverage, CliError> {
+        copy_scratch(self.workspace, dirs)?;
+        let guard = Guard::disabled();
+        match self.engine(&guard, dirs, files).cached_map()? {
+            Some(map) => Ok(Coverage {
+                map: Some(map),
+                source: MapSource::Cached,
+                map_ms: 0,
+            }),
+            None => Err(self.no_cached_map(id)),
+        }
+    }
+
+    fn no_cached_map(&self, id: &str) -> CliError {
+        let command = format!("{} {id}", inspect_command(self.options, &self.member.name));
+        let mut help =
+            format!("Run `{command}` once to build the map. Then run this command again.");
+        if !self.workspace.root.join("Cargo.lock").exists() {
+            help.push_str(
+                " The workspace has no Cargo.lock, so the key of the map comes from a new \
+                 lockfile, and `--no-build` cannot make one. Run `cargo generate-lockfile` \
+                 first.",
+            );
+        }
+        CliError::new(
+            ErrorCode::NoCachedMap,
+            format!(
+                "the cache has no coverage map for this source of package `{}`",
+                self.member.name
+            ),
+        )
+        .with_help(help)
+    }
 }
 
 /// Finds the member and the mutant of an id in the source tree.

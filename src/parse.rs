@@ -7,7 +7,7 @@
 //! Every parse of workspace source goes through [`parse_source`]. `.clippy.toml`
 //! forbids a direct call of the parser everywhere else.
 //!
-//! [`parse_source`] has two guards:
+//! [`parse_source`] has three guards:
 //!
 //! 1. A token scan refuses a source that nests deeper than [`MAX_NESTING`].
 //!    This limit is far above real code: in 50076 files of crates.io source,
@@ -17,6 +17,12 @@
 //!    length. Other recursive shapes, such as a long `return return` run, pass
 //!    the scan. They can be slow, but they cannot overflow the stack. This is
 //!    the same stack model as `parse_bounded` in fallow.
+//!    A long postfix chain, such as `a.x.x.x` or `a???`, also counts as
+//!    too deep. Its parse time grows with the square of its length.
+//! 3. A tree deeper than [`MAX_TREE_DEPTH`] is too deep. `ra_ap_syntax` drops
+//!    each tree on its own thread with a default stack, and the drop recurses
+//!    once for each level. A long operator chain gives such a tree. The tool
+//!    keeps that tree and never drops it.
 //!
 //! The module uses only `std`, `ra_ap_parser` and `ra_ap_syntax`, so the fuzz
 //! target in `fuzz/` can include it.
@@ -34,6 +40,24 @@ use ra_ap_syntax::SourceFile;
 /// The same limit applies to brackets, to angle brackets and to a run of
 /// prefix operators.
 const MAX_NESTING: u32 = 512;
+
+/// The longest postfix chain that a source can have and still get a parse.
+///
+/// The parse time of a chain of field accesses, `?` operators, path segments
+/// or calls grows with the square of its length: 10000 `.x` take 4 s in a
+/// debug build. Method calls count 2 each (the `.` and the `(`), so a chain of
+/// 1024 calls still parses.
+const MAX_CHAIN: u32 = 2048;
+
+/// The deepest syntax tree that the tool drops.
+///
+/// `ra_ap_syntax` drops each parsed tree on its `ParseNodeDropper` thread,
+/// which has the default stack of 2 MiB. The drop recurses once for each tree
+/// level. A measurement found an overflow at about 4300 levels in a debug
+/// build. A long left chain, such as `1 + 1 + ...` or `a.f().f()...`, passes
+/// the token scan and the parse, but gives one level for each operator. The
+/// deepest shape at [`MAX_NESTING`], 512 nested `Box<`, gives 2566 levels.
+const MAX_TREE_DEPTH: u32 = 3072;
 
 /// Stack bytes reserved for each source byte.
 ///
@@ -81,8 +105,9 @@ pub enum ParseOutcome {
     /// The parser panicked, so it did not finish the file.
     Panicked,
     /// The source was not parsed. It nests deeper than [`MAX_NESTING`], the
-    /// stack that the parse needs is larger than [`MAX_STACK`], or the thread
-    /// with that stack did not start.
+    /// stack that the parse needs is larger than [`MAX_STACK`], the thread
+    /// with that stack did not start, or the tree is deeper than
+    /// [`MAX_TREE_DEPTH`].
     TooDeep,
 }
 
@@ -143,6 +168,7 @@ fn normalize_line_endings(source: &str) -> Cow<'_, str> {
 fn nests_too_deep(source: &str, edition: Edition) -> bool {
     let tokens = LexedStr::new(edition, source);
     let (mut brackets, mut angles, mut prefix_run) = (0_u32, 0_u32, 0_u32);
+    let mut chains = Chains::default();
     for index in 0..tokens.len() {
         let kind = tokens.kind(index);
         match kind {
@@ -165,11 +191,52 @@ fn nests_too_deep(source: &str, edition: Edition) -> bool {
             SyntaxKind::WHITESPACE | SyntaxKind::COMMENT => {}
             _ => prefix_run = 0,
         }
-        if brackets.max(angles).max(prefix_run) > MAX_NESTING {
+        if brackets.max(angles).max(prefix_run) > MAX_NESTING || chains.step(kind) > MAX_CHAIN {
             return true;
         }
     }
     false
+}
+
+/// The postfix chain length at each open bracket level.
+///
+/// A `.`, `?`, `:`, `(` or `[` adds 1 to the chain of its level. A name, a
+/// keyword, a literal or a closing bracket continues the chain. Each other
+/// token ends it. The tokens inside a bracket pair count for the inner level.
+#[derive(Default)]
+struct Chains {
+    /// The chain of each open level. The outer level is not in the list.
+    open: Vec<u32>,
+    /// The chain of the outer level.
+    outer: u32,
+}
+
+impl Chains {
+    /// Reads one token. Returns the chain length of its level.
+    fn step(&mut self, kind: SyntaxKind) -> u32 {
+        let current = self.open.last_mut().unwrap_or(&mut self.outer);
+        match kind {
+            // The lexer gives `::` as two `:` tokens.
+            SyntaxKind::DOT | SyntaxKind::QUESTION | SyntaxKind::COLON => *current += 1,
+            SyntaxKind::L_PAREN | SyntaxKind::L_BRACK => {
+                *current += 1;
+                let length = *current;
+                self.open.push(0);
+                return length;
+            }
+            SyntaxKind::L_CURLY => {
+                *current = 0;
+                self.open.push(0);
+                return 0;
+            }
+            SyntaxKind::R_PAREN | SyntaxKind::R_BRACK | SyntaxKind::R_CURLY => {
+                self.open.pop();
+            }
+            _ if kind.is_trivia() || kind.is_any_identifier() || kind.is_literal() => {}
+            _ => *current = 0,
+        }
+        self.open.last().copied().unwrap_or(self.outer)
+    }
 }
 
 /// The stack that a parse of `source_len` bytes can use, or `None` when that
@@ -215,12 +282,38 @@ fn parse_and_visit<T>(
         reason = "the one parse site; it runs on the sized stack of `with_parsed`"
     )]
     let parsed = SourceFile::parse(source, edition);
+    if tree_depth(&parsed.syntax_node()) > MAX_TREE_DEPTH {
+        // The drop of a tree recurses once for each level, and `ra_ap_syntax`
+        // drops each tree on its own thread with a default stack. So the tool
+        // keeps a tree that is too deep and never drops it.
+        #[expect(
+            clippy::mem_forget,
+            reason = "a drop of this tree overflows the stack of the drop thread"
+        )]
+        std::mem::forget(parsed);
+        return Err(ParseOutcome::TooDeep);
+    }
     match parsed.errors().len() {
         0 => Ok(visit(&parsed.tree(), source)),
         count => Err(ParseOutcome::Failed {
             error_count: u32::try_from(count).unwrap_or(u32::MAX),
         }),
     }
+}
+
+/// The number of nodes on the longest path from `root` to a leaf.
+fn tree_depth(root: &ra_ap_syntax::SyntaxNode) -> u32 {
+    let (mut depth, mut deepest) = (0_u32, 0_u32);
+    for event in root.preorder() {
+        match event {
+            ra_ap_syntax::WalkEvent::Enter(_) => {
+                depth += 1;
+                deepest = deepest.max(depth);
+            }
+            ra_ap_syntax::WalkEvent::Leave(_) => depth -= 1,
+        }
+    }
+    deepest
 }
 
 #[cfg(test)]
@@ -329,6 +422,61 @@ mod tests {
         let source = format!("fn f() {{ {} }}", "return ".repeat(2000));
         assert!(!nests_too_deep(&source, EDITION));
         assert_ne!(parse_source(&source, EDITION), ParseOutcome::Panicked);
+    }
+
+    #[test]
+    fn long_left_chains_give_a_deep_tree_and_are_too_deep() {
+        // The parser reads these chains in a loop, so the scan and the parse
+        // pass. The tree is still one level deeper for each operator.
+        for unit in [" + 1", ".f()", " as u8", "[0]", " = 1"] {
+            let source = format!("fn f() -> u32 {{ 1{} }}", unit.repeat(20_000));
+            assert_eq!(
+                parse_source(&source, EDITION),
+                ParseOutcome::TooDeep,
+                "{unit}"
+            );
+        }
+        let broken = format!("fn f( {{ 1{} }}", " + 1".repeat(20_000));
+        assert_eq!(parse_source(&broken, EDITION), ParseOutcome::TooDeep);
+    }
+
+    #[test]
+    fn long_postfix_chains_are_too_deep_without_a_parse() {
+        // The parse time of these chains grows with the square of the length.
+        for unit in [
+            ".x", "?", ".0", "::x", "(1)", "(1 + 1)", "?.x", ".await", "[a.b]",
+        ] {
+            let source = format!("fn f() {{ a{} }}", unit.repeat(5000));
+            assert!(nests_too_deep(&source, EDITION), "{unit}");
+            assert_eq!(
+                parse_source(&source, EDITION),
+                ParseOutcome::TooDeep,
+                "{unit}"
+            );
+        }
+    }
+
+    #[test]
+    fn real_code_shapes_do_not_count_as_a_long_chain() {
+        let builder = format!(
+            "fn f() {{ b(){} }}",
+            ".arg(\"x\").map(|v| v.len()).field".repeat(400)
+        );
+        assert!(!nests_too_deep(&builder, EDITION));
+        let fields = format!(
+            "fn eq(a: &S, b: &S) -> bool {{ true{} }}",
+            " && a.x.y == b.x.y".repeat(1000)
+        );
+        assert!(!nests_too_deep(&fields, EDITION));
+        assert_eq!(parse_source(&fields, EDITION), ParseOutcome::Parsed);
+        let paths = "use a::b::c::d;\nfn f() { x::y::z(a.b.c) }\n".repeat(2000);
+        assert!(!nests_too_deep(&paths, EDITION));
+    }
+
+    #[test]
+    fn chain_under_the_tree_limit_parses() {
+        let source = format!("fn f() -> u32 {{ 1{} }}", " + 1".repeat(1000));
+        assert_eq!(parse_source(&source, EDITION), ParseOutcome::Parsed);
     }
 
     #[test]

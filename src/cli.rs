@@ -73,6 +73,10 @@ pub enum Parsed {
     Visibility(VisibilityOptions),
     /// Run the hidden worker of `visibility --precise`.
     PreciseWorker(crate::visibility::precise::WorkerArgs),
+    /// Run the unused dependency check.
+    Deps(crate::deps::Options),
+    /// Run one structure check: boundaries, size, complexity or dupes.
+    Structure(Box<crate::structure::Command>),
     /// Run the hidden watchdog of the memory guard.
     Watchdog {
         /// The file that lists the root of each process tree.
@@ -107,12 +111,21 @@ enum Command {
     Check(CheckArgs),
     /// Run the tests against small changes in the source of one package.
     Mutants(MutantsArgs),
+    /// Report dependencies in Cargo.toml that no code uses.
+    ///
+    /// The command resolves the dependencies with `cargo metadata` and all
+    /// features on, so Cargo can use the network. The command keeps
+    /// `Cargo.lock` as it was before the run. Use `--offline`, `--locked` or
+    /// `--frozen` to control the resolution.
+    Deps(DepsArgs),
     /// Report `pub` and `pub(crate)` items that can have a smaller visibility.
     Visibility(VisibilityArgs),
     /// The worker of `visibility --precise`. The `visibility` command starts it
     /// under a time limit and the memory guard.
     #[command(hide = true, name = "visibility-precise-worker")]
     PreciseWorker(crate::visibility::precise::WorkerArgs),
+    #[command(flatten)]
+    Structure(crate::structure::Command),
     /// Kill the test processes when the parent process dies. The memory guard
     /// starts this command.
     #[command(hide = true, name = "mutation-watchdog")]
@@ -374,6 +387,53 @@ impl From<VisibilityArgs> for VisibilityOptions {
 }
 
 #[derive(Debug, Args)]
+struct DepsArgs {
+    /// Path to the Cargo.toml of the workspace.
+    #[arg(long, value_name = "PATH")]
+    manifest_path: Option<PathBuf>,
+    /// The output format.
+    #[arg(long, value_enum, default_value_t = Format::Human)]
+    format: Format,
+    /// Hide the progress lines on stderr.
+    #[arg(long)]
+    quiet: bool,
+    /// Exit 1 when a finding has the `error` severity. A warning does not count.
+    #[arg(long)]
+    fail_on_issues: bool,
+    /// Give `--locked` to `cargo metadata`: fail when `Cargo.lock` must change.
+    #[arg(long)]
+    locked: bool,
+    /// Give `--offline` to `cargo metadata`: do not use the network.
+    #[arg(long)]
+    offline: bool,
+    /// Give `--frozen` to `cargo metadata`: the same as `--locked` and
+    /// `--offline`.
+    #[arg(long)]
+    frozen: bool,
+}
+
+impl From<DepsArgs> for crate::deps::Options {
+    fn from(args: DepsArgs) -> Self {
+        let cargo_flags = [
+            (args.locked, "--locked"),
+            (args.offline, "--offline"),
+            (args.frozen, "--frozen"),
+        ]
+        .into_iter()
+        .filter(|(on, _)| *on)
+        .map(|(_, flag)| flag.to_owned())
+        .collect();
+        Self {
+            manifest_path: args.manifest_path,
+            format: args.format,
+            quiet: args.quiet,
+            fail_on_issues: args.fail_on_issues,
+            cargo_flags,
+        }
+    }
+}
+
+#[derive(Debug, Args)]
 struct CheckArgs {
     /// Path to the Cargo.toml of the workspace.
     #[arg(long, value_name = "PATH")]
@@ -416,6 +476,8 @@ pub fn parse(args: &[OsString]) -> Parsed {
             Some(Command::Mutants(args)) => Parsed::Mutants(Box::new(args.into())),
             Some(Command::Visibility(args)) => Parsed::Visibility(args.into()),
             Some(Command::PreciseWorker(args)) => Parsed::PreciseWorker(args),
+            Some(Command::Deps(args)) => Parsed::Deps(args.into()),
+            Some(Command::Structure(command)) => Parsed::Structure(Box::new(command)),
             Some(Command::MutationWatchdog {
                 roots,
                 sweep,

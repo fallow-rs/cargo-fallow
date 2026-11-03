@@ -1,0 +1,38 @@
+[workspace]
+members = ["crates/app", "crates/core", "crates/process"]
+resolver = "3"
+
+[workspace.metadata.fallow.boundaries.groups]
+leaf = ["process"]
+
+[[workspace.metadata.fallow.boundaries.crates]]
+rule = "process-stays-a-leaf"
+from = ["@leaf"]
+deny = ["*"]
+
+[[workspace.metadata.fallow.boundaries.crates]]
+rule = "core-stays-below-app"
+from = ["core"]
+deny = ["app"]
+kinds = ["normal"]
+
+[[workspace.metadata.fallow.boundaries.sources]]
+rule = "process-tree-in-process"
+paths = ["crates/app/src"]
+deny = ["process_group(0)"]
+owner = "process"
+
+[[workspace.metadata.fallow.boundaries.modules]]
+rule = "render-does-not-run"
+package = "app"
+from = ["crate::render"]
+deny = ["crate::engine"]
+allow = ["crate::engine::shared"]
+
+[workspace.metadata.fallow.size]
+max-file-lines = 40
+max-function-lines = 10
+
+[workspace.metadata.fallow.complexity]
+max-cyclomatic = 5
+max-cognitive = 5

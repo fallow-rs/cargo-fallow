@@ -4,12 +4,13 @@
 //! holds every module, so the `missing_docs` lint checks the public API.
 //! The public API is [`run`] only. The modules are internal.
 
-// Only the workspace loader and the mutation runner spawn a process. See
-// `.clippy.toml`.
+// Only the workspace loader, the mutation runner and the git reader of the
+// structure checks spawn a process. See `.clippy.toml`.
 #![cfg_attr(not(test), deny(clippy::disallowed_methods))]
 
 mod attrs;
 mod cli;
+mod deps;
 mod error;
 mod gates;
 mod graph;
@@ -18,6 +19,7 @@ mod mutation;
 mod parse;
 mod render;
 mod report;
+mod structure;
 mod visibility;
 mod workspace;
 
@@ -40,8 +42,10 @@ pub fn run(args: Vec<OsString>) -> ExitCode {
     let code = match cli::parse(&args) {
         Parsed::Run(options) => run_check(&options),
         Parsed::Mutants(options) => run_mutants(&options),
+        Parsed::Deps(options) => run_deps(&options),
         Parsed::Visibility(options) => run_visibility(&options),
         Parsed::PreciseWorker(args) => visibility::precise::run_worker_command(&args),
+        Parsed::Structure(command) => structure::run(&command),
         Parsed::Watchdog {
             roots,
             sweep,
@@ -118,6 +122,29 @@ fn visibility_report(options: &cli::VisibilityOptions) -> Result<u8, CliError> {
         cli::Format::Json => to_json(&report)?,
         cli::Format::Sarif => to_json(&report.sarif())?,
         cli::Format::Human => report.human(),
+    };
+    render::write_stdout(text.trim_end()).map_err(|err| CliError::output(&err))?;
+    Ok(if report.fails_run() {
+        EXIT_GATE_FAILED
+    } else {
+        EXIT_OK
+    })
+}
+
+/// Runs the `deps` command and returns the process exit code.
+fn run_deps(options: &deps::Options) -> u8 {
+    deps_report(options).unwrap_or_else(|err| {
+        err.emit(options.format);
+        EXIT_INVALID_INPUT
+    })
+}
+
+fn deps_report(options: &deps::Options) -> Result<u8, CliError> {
+    let report = deps::run(options)?;
+    let text = match options.format {
+        cli::Format::Human => render::deps::human(&report),
+        cli::Format::Json => to_json(&report)?,
+        cli::Format::Sarif => render::deps::sarif(&report).map_err(|err| CliError::output(&err))?,
     };
     render::write_stdout(text.trim_end()).map_err(|err| CliError::output(&err))?;
     Ok(if report.fails_run() {

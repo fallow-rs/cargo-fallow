@@ -280,6 +280,19 @@ pub struct FileFacts {
     pub doc_includes: Vec<String>,
     /// True when an inner attribute of the file allows the `dead_code` lint.
     pub allow_dead: bool,
+    /// The `include!("path")` calls with one string literal.
+    pub code_includes: Vec<CodeInclude>,
+}
+
+/// An `include!` call with one string literal: the compiler reads the file
+/// relative to the file of the call.
+#[derive(Debug, Clone)]
+pub struct CodeInclude {
+    /// The path in the string literal.
+    pub path: String,
+    /// The `include` macro reference at the call. The graph uses it when it
+    /// cannot read or parse the file.
+    pub site: RawRef,
 }
 
 /// Reads the facts of one file.
@@ -839,24 +852,38 @@ impl<'a> Walker<'a> {
         let Some(path) = ast::Path::cast(node.clone()) else {
             return;
         };
-        let skip = node.parent().is_some_and(|parent| {
-            matches!(
-                parent.kind(),
+        let parent = node.parent().map(|parent| parent.kind());
+        if matches!(
+            parent,
+            Some(SyntaxKind::PATH_META | SyntaxKind::TOKEN_TREE_META | SyntaxKind::KEY_VALUE_META)
+        ) {
+            self.attribute_path(&path);
+            return;
+        }
+        if matches!(
+            parent,
+            Some(
                 SyntaxKind::PATH
                     | SyntaxKind::USE_TREE
                     | SyntaxKind::VISIBILITY
                     | SyntaxKind::MACRO_CALL
-                    | SyntaxKind::PATH_META
-                    | SyntaxKind::TOKEN_TREE_META
-                    | SyntaxKind::KEY_VALUE_META
             )
-        });
-        if skip {
+        ) {
             return;
         }
         let (segments, global) = self.segments_of(&path);
         if !segments.is_empty() {
             self.add_ref(RefKind::Path { segments, global }, Origin::Body);
+        }
+    }
+
+    /// The path of an attribute, for example `#[tokio::main]`, is a reference
+    /// when it has a crate prefix. A single name needs an import, which is a
+    /// reference already. The attributes of the compiler and its tools are not.
+    fn attribute_path(&mut self, path: &ast::Path) {
+        let (segments, global) = path_segments(path);
+        if segments.len() > 1 && !is_builtin_attribute(&segments.join("::")) {
+            self.add_ref(RefKind::Path { segments, global }, Origin::Attr);
         }
     }
 
@@ -964,6 +991,14 @@ impl<'a> Walker<'a> {
                 self.add_ref(RefKind::Path { segments, global }, Origin::Macro);
             }
             self.add_ref(RefKind::Macro(name.text().to_string()), Origin::Macro);
+            if name.text() == "include"
+                && let Some(file) = call.token_tree().as_ref().and_then(single_string)
+                && let Some(site) = self.facts.refs.pop()
+            {
+                self.facts
+                    .code_includes
+                    .push(CodeInclude { path: file, site });
+            }
         }
         if let Some(tree) = call.token_tree() {
             self.token_refs(tree.syntax(), Origin::Macro);
@@ -1003,15 +1038,33 @@ impl<'a> Walker<'a> {
 
     fn attr_refs(&mut self, owner: &ast::AnyHasAttrs) {
         for attr in owner.attrs() {
-            match attr.meta() {
-                Some(ast::Meta::TokenTreeMeta(meta)) => {
-                    if let Some(tree) = meta.token_tree() {
-                        self.token_refs(tree.syntax(), Origin::Attr);
-                    }
-                }
-                Some(ast::Meta::KeyValueMeta(meta)) => self.key_value(&meta),
-                _ => {}
+            if let Some(meta) = attr.meta() {
+                self.meta_refs(meta);
             }
+        }
+    }
+
+    /// The references of one attribute. The attributes inside `cfg_attr(..)`
+    /// and `unsafe(..)` count, because one `cfg` branch can apply them.
+    fn meta_refs(&mut self, meta: ast::Meta) {
+        match meta {
+            ast::Meta::TokenTreeMeta(meta) => {
+                if let Some(tree) = meta.token_tree() {
+                    self.token_refs(tree.syntax(), Origin::Attr);
+                }
+            }
+            ast::Meta::KeyValueMeta(meta) => self.key_value(&meta),
+            ast::Meta::CfgAttrMeta(meta) => {
+                for inner in meta.metas() {
+                    self.meta_refs(inner);
+                }
+            }
+            ast::Meta::UnsafeMeta(meta) => {
+                if let Some(inner) = meta.meta() {
+                    self.meta_refs(inner);
+                }
+            }
+            ast::Meta::CfgMeta(_) | ast::Meta::PathMeta(_) => {}
         }
     }
 
@@ -1179,6 +1232,26 @@ fn is_builtin_attribute(path: &str) -> bool {
     ];
     let first = path.split("::").next().unwrap_or(path);
     BUILTIN.contains(&first) || matches!(first, "rustfmt" | "clippy" | "rustdoc")
+}
+
+/// The value of a token tree with one string literal and no other token,
+/// for example `("inc.rs")`.
+fn single_string(tree: &ast::TokenTree) -> Option<String> {
+    let mut tokens = tree
+        .syntax()
+        .children_with_tokens()
+        .filter_map(ra_ap_syntax::NodeOrToken::into_token)
+        .filter(|token| {
+            !token.kind().is_trivia()
+                && !matches!(token.kind(), SyntaxKind::L_PAREN | SyntaxKind::R_PAREN)
+        });
+    let token = tokens.next()?;
+    if tokens.next().is_some() || tree.syntax().children().next().is_some() {
+        return None;
+    }
+    let literal = ast::String::cast(token)?;
+    let value = literal.value().ok()?.into_owned();
+    Some(value)
 }
 
 fn string_literals(node: &SyntaxNode) -> Vec<String> {

@@ -416,6 +416,21 @@ fn nesting_over_the_limit_is_too_deep_for_valid_and_invalid_source() {
 }
 
 #[test]
+fn deep_tree_from_an_operator_chain_is_too_deep_and_does_not_abort() {
+    let source = format!("fn f() -> u32 {{ 1{} }}\n", " + 1".repeat(20_000));
+    let fixture = Fixture::package(&[("src/lib.rs", source.as_bytes())]);
+    for _ in 0..2 {
+        let result = check(
+            &fixture,
+            &["--format", "json", "--quiet", "--fail-on-parse-error"],
+        );
+        assert_eq!(result.code, 1, "{}", result.stderr);
+        let gate = &result.json()["gate_outcomes"]["parse-error"];
+        assert_eq!(gate["files"][0]["reason"], "nesting-too-deep", "{gate}");
+    }
+}
+
+#[test]
 fn parser_recovers_and_counts_each_error() {
     let fixture = Fixture::package(&[("src/lib.rs", b"fn a( {}\nfn b( {}\nfn c() {}\n")]);
     let result = check(

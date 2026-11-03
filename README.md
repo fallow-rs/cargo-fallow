@@ -382,6 +382,96 @@ The `gaps` part of the report counts the code that a run does not cover:
 - A test that closes each inherited file descriptor, or a system with no `/dev/fd`,
   turns the schema switch off. Then a mutant can survive. `--no-schema` checks that.
 
+## Unused dependencies
+
+`cargo fallow deps` reports the dependencies in `Cargo.toml` that no code of
+the package uses. It reads the first segment of each path, `use`, `extern
+crate`, macro path and attribute path in each target, also in macro tokens,
+attributes, `cfg_attr` and doc tests.
+
+```bash
+cargo fallow deps
+cargo fallow deps --fail-on-issues --format sarif --quiet
+```
+
+| Flag | Meaning |
+| --- | --- |
+| `--manifest-path <PATH>` | The `Cargo.toml` of the workspace. |
+| `--format human\|json\|sarif` | The output format. The default is `human`. |
+| `--quiet` | Hide the progress lines on stderr. |
+| `--fail-on-issues` | Exit 1 when a finding has the `error` severity. |
+| `--locked` | Give `--locked` to `cargo metadata`. |
+| `--offline` | Give `--offline` to `cargo metadata`. |
+| `--frozen` | Give `--frozen` to `cargo metadata`. |
+
+The command resolves the dependencies: it runs `cargo metadata` with all
+features and without `--no-deps`, so it gets the library name and the `links`
+key of each dependency. Cargo can use the network for this. Use `--offline` or
+`--frozen` to prevent it. The command keeps `Cargo.lock` as it was before the
+run: it removes a lock file that Cargo created and writes back the old bytes
+of a lock file that Cargo changed. All features are on, so a feature that
+needs a dependency that Cargo cannot get fails the run with exit code 2.
+
+| Rule | Severity | Meaning |
+| --- | --- | --- |
+| `unused-dependency` | error | No code of the package uses the `[dependencies]` entry. |
+| `unused-dev-dependency` | error | No test, bench, example, doc test or `cfg(test)` code uses the entry. |
+| `unused-build-dependency` | error | The build script does not use the entry. |
+| `misplaced-dependency` | error | Only tests, benches, examples or doc tests use the `[dependencies]` entry. `used_by` names them. |
+| `unused-workspace-dependency` | error | No member inherits the `[workspace.dependencies]` entry, or each member entry that inherits it is unused. |
+| `unused-optional-dependency` | warning | No code uses the optional dependency. A feature enables it. |
+| `feature-only-dependency` | warning | No code uses the dependency, and a feature sets its features (`dep/feature`). |
+| `redundant-ignore` | warning | An ignore entry hides no finding. |
+
+Each finding has `package`, `manifest_path`, `line`, `section`, `platform`,
+`dependency` (the key in `Cargo.toml`), `package_name` (for a rename) and an
+`actions` array. The tool does not edit `Cargo.toml`, so `auto_fixable` is
+always `false`. Only `error` findings count for the `error-severity-findings`
+gate, and only `--fail-on-issues` enforces it.
+
+The check stays silent where the code can use a dependency without a name:
+
+- A dependency with a `links` key gets no error, because it can link a native
+  library. An optional one gets the warning.
+- `include!("path")` with one string literal adds the code of that file, and
+  the check reads it like the other code. Another `include!`, for example
+  `include!(concat!(env!("OUT_DIR"), "/gen.rs"))`, can add code that the check
+  cannot read. When the package has a build script, that code can use each
+  `name::` in the text of the build script and the runtime crate of an
+  `X-build` or `X-codegen` build dependency. Without a build script, it can
+  use each dependency. A literal path that the check cannot read or parse
+  gets the same credit.
+- A package with a file that does not parse is not judged. The report lists
+  it in `skipped`.
+- A dev-dependency that repeats a normal dependency is not reported. It often
+  turns on more features for the tests.
+- A package with `trybuild`, `macrotest`, `ui_test` or `compiletest_rs` in
+  `[dev-dependencies]` gets no dev-dependency findings. These harnesses build
+  test files that no target declares.
+- When code uses a macro crate `X_derive`, `X_derives`, `X_macro`,
+  `X_macros`, `X_impl`, `X_internal` or `X_attributes`, the crate `X` is in
+  use too, because the macro output names it (`serde_derive` and `serde`).
+  Two pairs with other names are known: `num-derive` gives credit to
+  `num-traits`, and `serde_repr` gives credit to `serde`. For another pair,
+  add the runtime crate to the `ignored` list.
+- Every `cfg` branch counts, so a `[target.'cfg(..)'.dependencies]` entry that
+  `#[cfg(..)]` code uses is in use.
+
+A crate that is in `Cargo.toml` only to turn on a feature of another
+dependency looks unused. Add its name to an ignore list:
+
+```toml
+[package.metadata.fallow.deps]
+ignored = ["chrono"] # unifies the features with a workspace build
+
+[workspace.metadata.fallow.deps]
+ignored = ["getrandom"]
+```
+
+The command also reads `ignored` in `[package.metadata.cargo-shear]` and
+`[workspace.metadata.cargo-shear]`, so a workspace can move from cargo-shear
+without a change. Only the cargo-fallow lists get `redundant-ignore` findings.
+
 ## Visibility
 
 `cargo fallow visibility` reports items whose visibility is larger than their
@@ -502,6 +592,111 @@ judge the file. `--quiet` does not hide the warning.
 With `--format json`, an error goes to stdout as an error document:
 `{ "error": true, "message": "...", "exit_code": 2, "code": "..." }`. In the
 other formats, the error goes to stderr.
+
+## Structure checks
+
+Four commands check the structure of the workspace. Each command has the
+`--manifest-path`, `--format human|json|sarif` and `--quiet` flags, and its own
+gate. A gate is in the report each time, but it fails the run only with its flag.
+
+| Command | Reports | Gate flag | Gate |
+| --- | --- | --- | --- |
+| `cargo fallow boundaries` | Violations of the crate, source and module rules | `--fail-on-violations` | `boundary-violations` |
+| `cargo fallow size` | Files and functions over the line limits, and growth of a large file | `--fail-on-growth`, with `--base <REF>` or `--staged` | `file-growth` |
+| `cargo fallow complexity` | Functions over the cyclomatic or the cognitive limit | `--fail-on-complexity` | `health-findings` |
+| `cargo fallow dupes` | Clone groups on normalized token streams | `--fail-on-clones`, `--threshold <PERCENT>` | `duplication-findings`, `duplication-threshold` |
+
+The configuration is in the root `Cargo.toml`, in one table for each check. The
+name of each table is the name of its command. Cargo
+already parses the manifest, so the tool reads the tables from `cargo metadata`.
+An unknown key is an error with the code `CARGO_FALLOW_INVALID_CONFIG`.
+
+```toml
+[workspace.metadata.fallow.boundaries.groups]
+protocol = ["app-cli", "app-lsp"]
+
+# A package of `from` must not depend on a package of `deny`. `*` is each
+# workspace package. `kinds` limits the Cargo.toml sections.
+[[workspace.metadata.fallow.boundaries.crates]]
+rule = "core-must-not-depend-on-protocol"
+from = ["app-core"]
+deny = ["@protocol"]
+
+# A file below `paths` must not contain a pattern of `deny`. A pattern matches
+# the same tokens, so a comment or a string does not match. Use
+# `match = "text"` to match the plain text.
+[[workspace.metadata.fallow.boundaries.sources]]
+rule = "process-tree-owned-by-process-crate"
+paths = ["crates/cli/src"]
+deny = ["process_group(0)", "libc::waitid"]
+owner = "app-process"
+
+# A module of `from` must not use a module of `deny`. The rule reads `use`
+# items and paths that start with `crate`, `self` or `super`.
+[[workspace.metadata.fallow.boundaries.modules]]
+rule = "render-does-not-run"
+package = "app-cli"
+from = ["crate::render"]
+deny = ["crate::engine"]
+
+[workspace.metadata.fallow.size]
+max-file-lines = 2000     # a file over this must not grow
+max-function-lines = 60
+
+[workspace.metadata.fallow.complexity]
+max-cyclomatic = 20
+max-cognitive = 15
+
+[workspace.metadata.fallow.dupes]
+mode = "mild"             # strict, mild, weak or semantic
+min-tokens = 50
+min-lines = 5
+threshold = 0.0           # 0 means no limit
+```
+
+The `size` growth rule is the rule of `scripts/check-file-size.mjs` in fallow,
+for `.rs` files: a file over the limit must not grow, and a new file must not be
+over it. Test files, test and snapshot folders, and files with a generator header
+are not checked. `--base <REF>` compares HEAD with the merge base, and
+`--staged` compares the index with HEAD.
+
+The complexity and clone models are the models of fallow for JavaScript. A unit
+is a `fn` with a body or a closure. Put `// fallow-ignore-next-line complexity`
+above a function, or `// fallow-ignore-next-line code-duplication` above a
+clone, to suppress it.
+
+The complexity counts have these known differences from other tools:
+
+- Code in a macro call adds nothing. The parser keeps the arguments of a macro
+  call as tokens, so a condition in `assert!(a && b)` or in `vec![...]` is not
+  visible.
+- The `?` operator adds nothing, although it is an early return.
+- `loop` adds 1 to the cyclomatic count and 1 plus the nesting level to the
+  cognitive count, the same as `while` and `for`.
+- The cognitive count of a sequence of logical operators keeps the last
+  operator through a group in parentheses. So `a && (b && c)` adds 1, and
+  `a && (b || c)` adds 2. A sequence ends at an operand with no logical
+  operator in it, so `(a && b) || (c && d)` adds 3. This is the model of
+  fallow for JavaScript.
+
+`skipped_files` in the summary of `size`, `complexity` and `dupes` lists each
+skipped file with its `path` and a `reason`. These limits keep each run bounded:
+
+- The parse refuses a file that nests too deep, has a postfix chain of more than
+  2048 steps (for example `a.x.x` or `a???`), or gives a syntax tree deeper than
+  3072 levels (for example a `1 + 1 + ...` chain). The reason is
+  `the file nests too deep for the parser`.
+- `dupes` skips a file with more than 250000 tokens.
+- In a run of a repeated pattern of up to 4 tokens, such as a data table, `dupes`
+  compares only the first 256 tokens.
+- A clone group keeps at most 128 instances.
+- `dupes` stops with exit code 2 and the code `CARGO_FALLOW_TIMED_OUT` after
+  300 s.
+
+The growth rule of `size` runs git with a clean environment: it removes
+`GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` and the other variables that move
+git to another repository. `--base` must name a commit. A value that starts with
+`-` is an error. A changed path that is not UTF-8 text is in `skipped_files`.
 
 ## Exit codes
 

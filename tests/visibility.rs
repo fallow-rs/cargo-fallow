@@ -9,6 +9,7 @@
 )]
 
 use std::collections::BTreeSet;
+use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
 
@@ -425,4 +426,95 @@ fn an_item_with_an_attribute_macro_gets_credit() {
     )]);
     let (found, _) = findings(&dir, &[]);
     assert_eq!(found, set(&["dead_public plain"]));
+}
+
+/// Layers of glob re-exports form a graph with many paths to each module. A name
+/// that no module defines must not walk each path, and a name at the end must
+/// still resolve.
+#[test]
+fn a_layered_glob_chain_resolves_without_a_walk_of_each_path() {
+    const LAYERS: usize = 14;
+    const WIDTH: usize = 4;
+    let mut lib = String::new();
+    for layer in 0..LAYERS {
+        for slot in 0..WIDTH {
+            writeln!(lib, "pub mod l{layer}_{slot} {{").expect("write to a string");
+            if layer + 1 < LAYERS {
+                for next in 0..WIDTH {
+                    writeln!(lib, "    pub use super::l{}_{next}::*;", layer + 1)
+                        .expect("write to a string");
+                }
+            } else if slot == 0 {
+                lib.push_str("    pub fn leaf() {}\n");
+            }
+            lib.push_str("}\n");
+        }
+    }
+    lib.push_str("pub fn probe() {\n    l0_0::Nope::go();\n}\n");
+    let dir = workspace(&[
+        ("mid/src/lib.rs", lib.as_str()),
+        (
+            "app/src/main.rs",
+            "fn main() {\n    mid::probe();\n    mid::l0_0::leaf();\n}\n",
+        ),
+    ]);
+    let output = Command::cargo_bin("cargo-fallow")
+        .expect("find the binary")
+        .args([
+            "visibility",
+            "--format",
+            "json",
+            "--quiet",
+            "--manifest-path",
+        ])
+        .arg(dir.path().join("Cargo.toml"))
+        .timeout(std::time::Duration::from_secs(20))
+        .output()
+        .expect("run the binary");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "the run did not finish in time"
+    );
+    let report: Value = serde_json::from_slice(&output.stdout).expect("the output is JSON");
+    let text = report["findings"].to_string();
+    assert!(!text.contains("dead_public\",\"item\":\"mid::l"), "{text}");
+    assert!(!text.contains("leaf"), "{text}");
+}
+
+/// Two modules that glob-import each other form a cycle. A lookup of a name that
+/// neither defines must end, and a name in the cycle must resolve.
+#[test]
+fn a_glob_cycle_ends_and_resolves() {
+    let lib = "pub mod a {\n    pub use super::b::*;\n    pub fn in_a() {}\n}\n\
+               pub mod b {\n    pub use super::a::*;\n}\n\
+               pub fn probe() {\n    b::Nope::go();\n    b::in_a();\n}\n";
+    let dir = workspace(&[
+        ("mid/src/lib.rs", lib),
+        ("app/src/main.rs", "fn main() {\n    mid::probe();\n}\n"),
+    ]);
+    let output = Command::cargo_bin("cargo-fallow")
+        .expect("find the binary")
+        .args([
+            "visibility",
+            "--format",
+            "json",
+            "--quiet",
+            "--manifest-path",
+        ])
+        .arg(dir.path().join("Cargo.toml"))
+        .timeout(std::time::Duration::from_secs(20))
+        .output()
+        .expect("run the binary");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "the run did not finish in time"
+    );
+    let report: Value = serde_json::from_slice(&output.stdout).expect("the output is JSON");
+    let text = report["findings"].to_string();
+    assert!(
+        !text.contains("dead_public\",\"item\":\"mid::a::in_a"),
+        "{text}"
+    );
 }

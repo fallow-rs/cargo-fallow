@@ -74,6 +74,9 @@ pub struct Resolver<'g> {
     glob_memo: RefCell<FxHashMap<usize, Vec<Target>>>,
     lookup_memo: RefCell<Vec<FxHashMap<String, Vec<Target>>>>,
     active: RefCell<FxHashSet<usize>>,
+    /// For each lookup at depth 0 that runs now, the modules that its glob walk
+    /// expanded, with the smallest depth. A nested lookup gets its own map.
+    expanded: RefCell<Vec<FxHashMap<ModuleId, usize>>>,
 }
 
 impl<'g> Resolver<'g> {
@@ -134,6 +137,7 @@ impl<'g> Resolver<'g> {
             glob_memo: RefCell::new(FxHashMap::default()),
             lookup_memo: RefCell::new(vec![FxHashMap::default(); graph.modules.len()]),
             active: RefCell::new(FxHashSet::default()),
+            expanded: RefCell::new(Vec::new()),
         }
     }
 
@@ -577,6 +581,30 @@ impl<'g> Resolver<'g> {
         if let Some(found) = self.lookup_memo.borrow()[module].get(name) {
             return found.clone();
         }
+        if depth == 0 {
+            self.expanded.borrow_mut().push(FxHashMap::default());
+            let found = self.lookup_in(module, name, depth);
+            self.expanded.borrow_mut().pop();
+            return found;
+        }
+        // The walk of this query already expanded the module at this depth or
+        // less deep, so its targets are in the result already. Without this stop
+        // a graph of glob layers is walked once for each path.
+        {
+            let mut expanded = self.expanded.borrow_mut();
+            if let Some(seen) = expanded.last_mut() {
+                match seen.get(&module) {
+                    Some(&first) if first <= depth => return Vec::new(),
+                    _ => {
+                        seen.insert(module, depth);
+                    }
+                }
+            }
+        }
+        self.lookup_in(module, name, depth)
+    }
+
+    fn lookup_in(&self, module: ModuleId, name: &str, depth: usize) -> Vec<Target> {
         let mut found: Vec<Target> = self.declared[module]
             .get(name)
             .into_iter()

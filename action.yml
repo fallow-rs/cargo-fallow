@@ -28,7 +28,7 @@ inputs:
     required: false
     default: 'human'
   fail-on-issues:
-    description: 'Fail the job when the gate of the command fails. The action gives the gate flag of the command: --fail-on-issues (check, deps, files, visibility), --fail-on-violations (boundaries), --fail-on-growth (size), --fail-on-complexity (complexity), --fail-on-clones (dupes) or --fail-on-survivors (mutants). An execution error (exit code 2) always fails the job.'
+    description: 'Fail the job when the gate of the command fails. The action gives --fail-on-issues to the command. An execution error (exit code 2) always fails the job.'
     required: false
     default: 'true'
   args:

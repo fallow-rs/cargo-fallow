@@ -181,7 +181,11 @@ struct MutantsArgs {
     #[arg(long, value_name = "REF")]
     in_diff: Option<String>,
     /// Exit 1 when a mutant survives. A mutant with `no_coverage` does not count.
-    #[arg(long)]
+    #[arg(
+        long,
+        visible_alias = "fail-on-issues",
+        overrides_with = "fail_on_survivors"
+    )]
     fail_on_survivors: bool,
     /// Show one mutant and the tests that execute it. This runs no mutant. It builds
     /// the coverage map when the cache has no map for this source.
@@ -620,5 +624,31 @@ mod tests {
         assert_eq!(options.format, Format::Sarif);
         assert!(options.quiet);
         assert!(!options.fail_on_parse_error);
+    }
+
+    #[test]
+    fn fail_on_issues_is_the_survivor_gate_of_mutants() {
+        let Parsed::Mutants(options) = parse(&os(&["cargo-fallow", "mutants", "--fail-on-issues"]))
+        else {
+            panic!("the arguments are valid");
+        };
+        assert!(options.fail_on_survivors);
+        let Parsed::Mutants(options) = parse(&os(&[
+            "cargo-fallow",
+            "mutants",
+            "--fail-on-survivors",
+            "--fail-on-issues",
+        ])) else {
+            panic!("the two gate flags are valid together");
+        };
+        assert!(options.fail_on_survivors);
+        for conflict in [&["--list"][..], &["--inspect", "x"]] {
+            let mut args = vec!["cargo-fallow", "mutants", "--fail-on-issues"];
+            args.extend_from_slice(conflict);
+            assert!(
+                matches!(parse(&os(&args)), Parsed::Exit(EXIT_INVALID_INPUT)),
+                "{conflict:?}"
+            );
+        }
     }
 }

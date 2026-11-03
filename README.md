@@ -4,6 +4,9 @@
 analyzes a Cargo workspace. It uses `cargo metadata` and syntactic analysis
 with `ra_ap_syntax`, the parser of rust-analyzer. It runs on stable Rust and needs no nightly toolchain.
 
+Do not run `cargo install fallow` for Rust. That crate installs fallow for
+TypeScript and JavaScript. Install `cargo-fallow`, then run `cargo fallow`.
+
 ## Status
 
 Pre-release. The `check` command runs the static checks in one run and writes
@@ -135,7 +138,7 @@ cargo fallow mutants --package my-crate --list --format json
 | `--max-mutants <N>` | Run at most this many mutants. The other mutants stay `pending`. |
 | `--timeout <SECONDS>` | The time limit of each mutant run. |
 | `--memory-limit <MIB>` | Kill a test process above this footprint. The default is 4096. |
-| `--fail-on-survivors` | Exit 1 when a mutant survives. See [Gate](#gate). |
+| `--fail-on-survivors` | Exit 1 when a mutant survives. `--fail-on-issues` is the same flag. See [Gate](#gate). |
 | `--inspect <ID>` | Show one mutant and its tests. See [Inspect](#inspect). |
 | `--no-build` | With `--inspect`: read the coverage map only from the cache. Nothing compiles and no test runs. |
 | `--list` | List the mutants, and run nothing. See [List](#list). |
@@ -817,13 +820,17 @@ other formats, the error goes to stderr.
 Four commands check the structure of the workspace. Each command has the
 `--manifest-path`, `--format human|json|sarif|codeclimate` and `--quiet` flags, and its own
 gate. A gate is in the report each time, but it fails the run only with its flag.
+Each command accepts `--fail-on-issues` as its gate flag. The older flag of
+each command is the same flag. `size` has no growth gate without `--base` or
+`--staged`, so `size --fail-on-issues` alone exits 0. `size --fail-on-growth`
+alone exits 2, because that flag asks for the growth gate.
 
 | Command | Reports | Gate flag | Gate |
 | --- | --- | --- | --- |
-| `cargo fallow boundaries` | Violations of the crate, source and module rules | `--fail-on-violations` | `boundary-violations` |
-| `cargo fallow size` | Files and functions over the line limits, and growth of a large file | `--fail-on-growth`, with `--base <REF>` or `--staged` | `file-growth` |
-| `cargo fallow complexity` | Functions over the cyclomatic or the cognitive limit | `--fail-on-complexity` | `health-findings` |
-| `cargo fallow dupes` | Clone groups on normalized token streams | `--fail-on-clones`, `--threshold <PERCENT>` | `duplication-findings`, `duplication-threshold` |
+| `cargo fallow boundaries` | Violations of the crate, source and module rules | `--fail-on-issues` or `--fail-on-violations` | `boundary-violations` |
+| `cargo fallow size` | Files and functions over the line limits, and growth of a large file | `--fail-on-issues` or `--fail-on-growth`. The gate needs `--base <REF>` or `--staged` | `file-growth` |
+| `cargo fallow complexity` | Functions over the cyclomatic or the cognitive limit | `--fail-on-issues` or `--fail-on-complexity` | `health-findings` |
+| `cargo fallow dupes` | Clone groups on normalized token streams | `--fail-on-issues` or `--fail-on-clones`, and `--threshold <PERCENT>` | `duplication-findings`, `duplication-threshold` |
 
 The configuration is in the root `Cargo.toml`, in one table for each check. The
 name of each table is the name of its command. Cargo
@@ -939,7 +946,7 @@ outputs.
 | Code | Meaning |
 | --- | --- |
 | `0` | No enforced gate failed. |
-| `1` | An enforced gate failed. For `mutants`, a survivor with `--fail-on-survivors`. For `visibility`, a finding with `--fail-on-issues`. |
+| `1` | An enforced gate failed. For `mutants`, a survivor with `--fail-on-issues` or `--fail-on-survivors`. For `visibility`, a finding with `--fail-on-issues`. |
 | `2` | The input was not valid, or the run could not complete. |
 
 Each command uses these codes and the same error document.

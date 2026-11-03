@@ -675,3 +675,70 @@ fn each_structure_command_writes_human_output_with_its_gate() {
         assert!(run.stdout.contains(gate), "{}", run.stdout);
     }
 }
+
+#[test]
+fn fail_on_issues_is_the_gate_flag_of_each_structure_command() {
+    let fixture = Fixture::new();
+    for args in [
+        &["boundaries", "--fail-on-issues"][..],
+        &["complexity", "--fail-on-issues"],
+        &["dupes", "--min-tokens", "30", "--fail-on-issues"],
+    ] {
+        let (code, report) = fixture.json(args);
+        assert_eq!(code, 1, "{args:?}: {report:#}");
+        let enforced = report["gate_outcomes"]
+            .as_object()
+            .expect("gate outcomes")
+            .values()
+            .any(|gate| gate["enforced"] == true);
+        assert!(enforced, "{args:?}: {report:#}");
+    }
+    // The old flag and the new flag together are one gate, not a usage error.
+    for args in [
+        &["boundaries", "--fail-on-violations", "--fail-on-issues"][..],
+        &["complexity", "--fail-on-complexity", "--fail-on-issues"],
+        &[
+            "dupes",
+            "--min-tokens",
+            "30",
+            "--fail-on-clones",
+            "--fail-on-issues",
+        ],
+    ] {
+        let (code, _) = fixture.json(args);
+        assert_eq!(code, 1, "{args:?}");
+    }
+}
+
+#[test]
+fn size_fail_on_issues_gates_growth_and_needs_no_base() {
+    let fixture = committed();
+    let (code, report) = fixture.json(&["size", "--fail-on-issues"]);
+    assert_eq!(code, 0, "{report:#}");
+    let gate = &report["gate_outcomes"]["file-growth"];
+    assert_eq!(gate["status"], "skipped", "{report:#}");
+
+    fixture.git(&["checkout", "--quiet", "-b", "topic"]);
+    let core = fs::read_to_string(fixture.root().join("crates/core/src/lib.rs")).expect("read");
+    fixture.write(
+        "crates/core/src/lib.rs",
+        &format!("{core}\npub fn more() {{}}\n"),
+    );
+    fixture.git(&["commit", "--quiet", "--all", "-m", "grow"]);
+    let (code, report) = fixture.json(&["size", "--base", "main", "--fail-on-issues"]);
+    assert_eq!(code, 1, "{report:#}");
+    assert_eq!(report["gate_outcomes"]["file-growth"]["enforced"], true);
+    fixture.write("crates/app/src/big.rs", &"// x\n".repeat(41));
+    fixture.git(&["add", "--all"]);
+    let (code, report) = fixture.json(&["size", "--staged", "--fail-on-issues"]);
+    assert_eq!(code, 1, "{report:#}");
+    assert_eq!(strings(&report, "kind"), ["new-large-file"]);
+    let (code, _) = fixture.json(&[
+        "size",
+        "--base",
+        "main",
+        "--fail-on-growth",
+        "--fail-on-issues",
+    ]);
+    assert_eq!(code, 1);
+}

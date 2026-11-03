@@ -23,6 +23,9 @@ GitHub release. Each release needs a `## [X.Y.Z] - YYYY-MM-DD` section.
 - `cargo fallow files` reports each `.rs` file in a target folder that no
   target compiles, with the rule `unused-file` and the gate `unused-files`.
   `check` runs it by default.
+- `boundaries`, `size`, `complexity`, `dupes` and `mutants` accept
+  `--fail-on-issues` as their gate flag. The older gate flags stay. The GitHub
+  Action now gives `--fail-on-issues` to each command.
 
 ### Fixed
 

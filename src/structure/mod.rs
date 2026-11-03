@@ -58,7 +58,11 @@ pub struct BoundariesArgs {
     #[command(flatten)]
     common: CommonArgs,
     /// Exit 1 when a rule finds a violation.
-    #[arg(long)]
+    #[arg(
+        long,
+        visible_alias = "fail-on-issues",
+        overrides_with = "fail_on_violations"
+    )]
     fail_on_violations: bool,
 }
 
@@ -75,8 +79,13 @@ pub struct SizeArgs {
     #[arg(long)]
     staged: bool,
     /// Exit 1 when a file over the line limit grew, or a new file is over it.
+    /// This flag needs `--base` or `--staged`.
     #[arg(long)]
     fail_on_growth: bool,
+    /// Exit 1 when the growth gate fails. Without `--base` or `--staged` the run
+    /// has no growth gate, so this flag changes nothing.
+    #[arg(long)]
+    fail_on_issues: bool,
 }
 
 /// The flags of `complexity`.
@@ -93,7 +102,11 @@ pub struct ComplexityArgs {
     #[arg(long, value_name = "N")]
     max_cognitive: Option<u32>,
     /// Exit 1 when a function is over a limit.
-    #[arg(long)]
+    #[arg(
+        long,
+        visible_alias = "fail-on-issues",
+        overrides_with = "fail_on_complexity"
+    )]
     fail_on_complexity: bool,
 }
 
@@ -116,7 +129,11 @@ pub struct DupesArgs {
     #[arg(long, value_name = "PERCENT")]
     threshold: Option<f64>,
     /// Exit 1 when the run finds a clone group.
-    #[arg(long)]
+    #[arg(
+        long,
+        visible_alias = "fail-on-issues",
+        overrides_with = "fail_on_clones"
+    )]
     fail_on_clones: bool,
 }
 

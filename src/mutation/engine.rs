@@ -1527,10 +1527,20 @@ impl Engine<'_> {
                 1
             };
             let retry = self.shared_pass(run, factor)?;
-            done.verdict = merge_retry(done.verdict, retry.verdict);
+            let mut second = Done {
+                tests_run: retry.tests_run,
+                doctests_run: retry.doctests_run,
+                ..Done::of(retry.verdict.clone())
+            };
+            // A failure in the retry can also come from another test process, so it
+            // gets the same second look as a kill in the first run.
+            if second.verdict.status == Status::Killed {
+                self.confirm_kill(run, state, &retry, &mut second)?;
+            }
+            done.verdict = merge_retry(done.verdict, second.verdict);
             done.retried = true;
-            done.tests_run += retry.tests_run;
-            done.doctests_run += retry.doctests_run;
+            done.tests_run += second.tests_run;
+            done.doctests_run += second.doctests_run;
             done.elapsed = start.elapsed();
         }
         if picked.empty && done.verdict.status == Status::Survived {

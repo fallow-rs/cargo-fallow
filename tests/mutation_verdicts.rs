@@ -537,6 +537,96 @@ fn fails_once() {
     assert_eq!(first["retried"], true, "{}", run.report);
 }
 
+/// A library whose test fails only in the second run with the mutant. That run is
+/// the retry of a survivor, and its failure does not repeat, as a failure from
+/// overlap with another test process.
+const FAILS_IN_THE_RETRY: &str = r#"
+pub fn f(a: u8) -> u8 {
+    if a > 10 { 1 } else { 0 }
+}
+#[test]
+fn fails_in_the_second_mutant_run() {
+    if (f(6), f(10), f(11)) == (0, 0, 1) {
+        return;
+    }
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/mutant-runs");
+    let runs: u32 = std::fs::read_to_string(path).ok().and_then(|t| t.parse().ok()).unwrap_or(0) + 1;
+    std::fs::write(path, runs.to_string()).unwrap();
+    assert!(runs != 2);
+}
+"#;
+
+/// A failed retry of a survivor gets the same second look as a kill. The failure
+/// does not repeat with no other test process, so the mutant survives.
+#[test]
+fn a_retry_failure_that_does_not_repeat_alone_keeps_a_survivor() {
+    for tier in ["schema", "rebuild"] {
+        let run = run(
+            &[("src/lib.rs", FAILS_IN_THE_RETRY)],
+            &[
+                "--tier",
+                tier,
+                "--no-selection",
+                "-j",
+                "2",
+                "--max-mutants",
+                "1",
+            ],
+        );
+        let mutant = &run.mutants()[0];
+        assert_eq!(mutant["status"], "survived", "{tier}: {}", run.report);
+        assert_eq!(mutant["retried"], true, "{tier}: {}", run.report);
+        assert_eq!(
+            mutant["reason"],
+            "a test failed next to another test, and each test passed one at a time",
+            "{tier}: {}",
+            run.report
+        );
+    }
+}
+
+/// A failed retry of a timeout gets the same second look as a kill. The failure
+/// does not repeat, so the mutant is no kill.
+#[test]
+fn a_retry_failure_of_a_timeout_that_does_not_repeat_is_no_kill() {
+    let lib = r#"
+pub fn f(a: u8) -> u8 {
+    if a > 10 { 1 } else { 0 }
+}
+#[test]
+fn slow_then_fails() {
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    if (f(6), f(10), f(11)) == (0, 0, 1) {
+        return;
+    }
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/mutant-runs");
+    let runs: u32 = std::fs::read_to_string(path).ok().and_then(|t| t.parse().ok()).unwrap_or(0) + 1;
+    std::fs::write(path, runs.to_string()).unwrap();
+    if runs == 1 {
+        std::thread::sleep(std::time::Duration::from_secs(30));
+    }
+    assert!(runs != 2);
+}
+"#;
+    let run = run(
+        &[("src/lib.rs", lib)],
+        &[
+            "--tier",
+            "schema",
+            "--no-selection",
+            "-j",
+            "2",
+            "--max-mutants",
+            "1",
+            "--timeout",
+            "4",
+        ],
+    );
+    let mutant = &run.mutants()[0];
+    assert_eq!(mutant["retried"], true, "{}", run.report);
+    assert_ne!(mutant["status"], "killed", "{}", run.report);
+}
+
 /// A real kill stays a kill, also with a second run.
 #[test]
 fn a_kill_that_repeats_stays_a_kill_with_the_same_test() {

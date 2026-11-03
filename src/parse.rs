@@ -13,12 +13,14 @@
 //!    This limit is far above real code: in 50076 files of crates.io source,
 //!    the deepest brackets are 45 levels, the deepest angle brackets 64
 //!    levels, and the longest prefix operator run 7 tokens.
-//! 2. The parse runs on a new thread with a stack sized from the source
-//!    length. Other recursive shapes, such as a long `return return` run, pass
-//!    the scan. They can be slow, but they cannot overflow the stack. This is
-//!    the same stack model as `parse_bounded` in fallow.
-//!    A long postfix chain, such as `a.x.x.x` or `a???`, also counts as
-//!    too deep. Its parse time grows with the square of its length.
+//! 2. The parse runs on a new thread with a stack sized from the depth that
+//!    the token scan finds, not from the source length. A 2 MB file of flat
+//!    items gets a small stack, and a deep source gets a large one. Other
+//!    recursive shapes, such as a long `return return` run, pass the nesting
+//!    limit. They can be slow, but the depth counts them, so they cannot
+//!    overflow the stack. A long postfix chain, such as `a.x.x.x` or `a???`,
+//!    also counts as too deep. Its parse time grows with the square of its
+//!    length.
 //! 3. A tree deeper than [`MAX_TREE_DEPTH`] is too deep. `ra_ap_syntax` drops
 //!    each tree on its own thread with a default stack, and the drop recurses
 //!    once for each level. A long operator chain gives such a tree. The tool
@@ -59,33 +61,54 @@ const MAX_CHAIN: u32 = 2048;
 /// deepest shape at [`MAX_NESTING`], 512 nested `Box<`, gives 2566 levels.
 const MAX_TREE_DEPTH: u32 = 3072;
 
-/// Stack bytes reserved for each source byte.
+/// Stack bytes reserved for each level of the scan depth (see [`Depth`]).
 ///
-/// A measurement with `ra_ap_syntax` 0.0.359 found the most expensive shape in
-/// nested `{`. It uses about 1.2 KiB of stack for each source byte in a release
-/// build. The values below add a margin. A debug build has much larger frames.
-/// AddressSanitizer pads every frame, so the fuzz build reserves 8 times the
-/// debug value.
-const STACK_PER_SOURCE_BYTE: usize = if cfg!(fuzzing) {
-    8 * 48 * 1024
+/// Method: for each recursive shape, a binary search finds the smallest thread
+/// stack, in 4 KiB steps, on which `SourceFile::parse` and the tree depth walk
+/// finish. Each try runs in a child process, because a stack overflow aborts
+/// the process. The cost of one level is the difference of the smallest stacks
+/// at two sizes of the shape (128 and 512 levels, or 500 and 2000 for a run),
+/// divided by the difference of their scan depths. The shapes are nested `{`,
+/// `(`, `[`, `Box<`, `HashMap<u8, `, `-`, `&`, `if`, `match`, `for S {} in`,
+/// `else if`, and runs of `return`, `a =`, `|a, b|`, `fn() ->` and `a @`.
+///
+/// Result with `ra_ap_syntax` 0.0.358 and Rust 1.99. Nested `{` is the most
+/// expensive shape on each platform:
+///
+/// | Build   | macOS arm64 | Linux x86_64 |
+/// |---------|-------------|--------------|
+/// | release | 1152 bytes  | 992 bytes    |
+/// | debug   | 4437 bytes  | 4096 bytes   |
+///
+/// The values below add a margin of more than 3 times. AddressSanitizer pads
+/// every frame, so the fuzz build reserves 8 times the debug value.
+const STACK_PER_LEVEL: usize = if cfg!(fuzzing) {
+    8 * 16 * 1024
 } else if cfg!(debug_assertions) {
-    48 * 1024
+    16 * 1024
 } else {
     4 * 1024
 };
 
-/// Stack for the frames around the parse and for the thread start.
-const BASE_STACK: usize = 1 << 20;
+/// Stack for the frames around the parse, for the thread start and for the
+/// visit.
+///
+/// A visit can recurse once for each tree level, up to [`MAX_TREE_DEPTH`].
+/// The same value in each build leaves about 5 KiB for each tree level. The
+/// stack is a reservation, so the unused part costs no memory.
+const BASE_STACK: usize = if cfg!(fuzzing) { 64 << 20 } else { 16 << 20 };
 
 /// The largest stack that a parse asks for.
 ///
 /// The stack is a reservation: a parse touches only the pages that its depth
-/// uses. A larger need is refused, and the source counts as too deep. In a
-/// 64-bit release build, only a source over 16 MiB reaches the cap.
+/// uses. A larger need is refused, and the source counts as too deep. Linux
+/// can refuse a reservation of many GiB, so the cap stays at 1 GiB. A release
+/// build reaches the cap at a scan depth of about 260000, a debug build at
+/// about 65000.
 const MAX_STACK: usize = if cfg!(target_pointer_width = "64") {
-    64 << 30
-} else {
     1 << 30
+} else {
+    256 << 20
 };
 
 /// The stack size is a multiple of this value. Some platforms refuse a stack
@@ -105,7 +128,7 @@ pub enum ParseOutcome {
     /// The parser panicked, so it did not finish the file.
     Panicked,
     /// The source was not parsed. It nests deeper than [`MAX_NESTING`], the
-    /// stack that the parse needs is larger than [`MAX_STACK`], the thread
+    /// stack for its scan depth is larger than [`MAX_STACK`], the thread
     /// with that stack did not start, or the tree is deeper than
     /// [`MAX_TREE_DEPTH`].
     TooDeep,
@@ -134,12 +157,9 @@ pub fn with_parsed<T: Send>(
     visit: impl FnOnce(&SourceFile, &str) -> T + Send,
 ) -> Result<T, ParseOutcome> {
     let source = normalize_line_endings(strip_byte_order_mark(source));
-    let Some(stack) = stack_need(source.len()) else {
+    let Some(stack) = scan_depth(&source, edition).and_then(stack_need) else {
         return Err(ParseOutcome::TooDeep);
     };
-    if nests_too_deep(&source, edition) {
-        return Err(ParseOutcome::TooDeep);
-    }
     run_with_stack(stack, || parse_and_visit(&source, edition, visit))
         .and_then(std::convert::identity)
 }
@@ -161,14 +181,22 @@ fn normalize_line_endings(source: &str) -> Cow<'_, str> {
 }
 
 /// Returns true when the tokens of `source` nest deeper than [`MAX_NESTING`].
+#[cfg(test)]
+fn nests_too_deep(source: &str, edition: Edition) -> bool {
+    scan_depth(source, edition).is_none()
+}
+
+/// Returns the scan depth of `source` (see [`Depth`]), or `None` when the
+/// tokens nest deeper than [`MAX_NESTING`] or chain longer than [`MAX_CHAIN`].
 ///
 /// The scan reads tokens, so a bracket in a string or a comment does not count.
 /// A `<` can be a comparison with no matching `>`, so the angle bracket count
 /// starts again at each `;`, `{` and `}`.
-fn nests_too_deep(source: &str, edition: Edition) -> bool {
+fn scan_depth(source: &str, edition: Edition) -> Option<u32> {
     let tokens = LexedStr::new(edition, source);
     let (mut brackets, mut angles, mut prefix_run) = (0_u32, 0_u32, 0_u32);
     let mut chains = Chains::default();
+    let mut depth = Depth::default();
     for index in 0..tokens.len() {
         let kind = tokens.kind(index);
         match kind {
@@ -192,10 +220,125 @@ fn nests_too_deep(source: &str, edition: Edition) -> bool {
             _ => prefix_run = 0,
         }
         if brackets.max(angles).max(prefix_run) > MAX_NESTING || chains.step(kind) > MAX_CHAIN {
-            return true;
+            return None;
         }
+        depth.step(kind);
     }
-    false
+    Some(depth.deepest)
+}
+
+/// An upper bound of the parser recursion, counted in tokens.
+///
+/// The parser recurses for a bracket and for each construct that does not end
+/// before the next token, such as `return`, `=`, a closure head or a prefix
+/// operator. It goes back to a loop at a `;`, at a `,` of a list and after the
+/// `}` of a statement or an item. So the scan depth counts each token since the
+/// last of these points, plus the same count of each open bracket level. A long
+/// file of flat items has a small depth, and each recursive shape adds at least
+/// one level for each token.
+///
+/// Some counts are larger than the real recursion. A `,` does not end the count
+/// while a `<` of the same bracket level is open, or inside closure parameters,
+/// because the parser can still be in a nested `<` or closure there. A `}` does
+/// not end the count when the next token can continue an expression, such as
+/// `else`, `.` or an operator.
+///
+/// Each bracket level has its own `<` count, so a `;` or a `{}` inside a
+/// generic argument, as in `Foo<[u8; 1], Foo<...>>`, does not clear the count
+/// of the level around it. The `>` of `->` closes no `<`. A `=>` ends a match
+/// arm pattern, so it clears the `<` count of its level: an open `<` there is
+/// a comparison.
+#[derive(Default)]
+struct Depth {
+    /// The count of each open bracket level. The current level is not in the
+    /// list.
+    open: Vec<Run>,
+    /// The sum of the token counts in `open`.
+    below: u32,
+    /// The count of the current level.
+    current: Run,
+    /// The last token closed a `{`.
+    after_curly: bool,
+    /// The last token that is not trivia.
+    previous: Option<SyntaxKind>,
+    /// The largest depth so far.
+    deepest: u32,
+}
+
+/// The tokens of one level since the last point where the parser loops.
+#[derive(Default, Clone, Copy)]
+struct Run {
+    tokens: u32,
+    /// The `|` tokens. An odd count can be inside closure parameters.
+    pipes: u32,
+    /// The `<` tokens that no `>` closed yet.
+    angles: u32,
+}
+
+impl Depth {
+    /// Reads one token.
+    fn step(&mut self, kind: SyntaxKind) {
+        if kind.is_trivia() {
+            return;
+        }
+        let previous = self.previous.replace(kind);
+        if std::mem::take(&mut self.after_curly)
+            && self.current.angles == 0
+            && !continues_after_block(kind)
+        {
+            self.current = Run::default();
+        }
+        self.current.tokens = self.current.tokens.saturating_add(1);
+        match kind {
+            SyntaxKind::L_PAREN | SyntaxKind::L_BRACK | SyntaxKind::L_CURLY => {
+                self.below = self.below.saturating_add(self.current.tokens);
+                self.open.push(std::mem::take(&mut self.current));
+            }
+            SyntaxKind::R_PAREN | SyntaxKind::R_BRACK | SyntaxKind::R_CURLY => {
+                if let Some(parent) = self.open.pop() {
+                    self.below = self.below.saturating_sub(parent.tokens);
+                    self.current = parent;
+                }
+                self.after_curly = kind == SyntaxKind::R_CURLY;
+            }
+            SyntaxKind::SEMICOLON => self.current = Run::default(),
+            SyntaxKind::COMMA
+                if self.current.angles == 0 && self.current.pipes.is_multiple_of(2) =>
+            {
+                self.current = Run::default();
+            }
+            SyntaxKind::PIPE => self.current.pipes = self.current.pipes.saturating_add(1),
+            SyntaxKind::L_ANGLE => self.current.angles = self.current.angles.saturating_add(1),
+            SyntaxKind::R_ANGLE => match previous {
+                Some(SyntaxKind::MINUS) => {}
+                Some(SyntaxKind::EQ) => self.current.angles = 0,
+                _ => self.current.angles = self.current.angles.saturating_sub(1),
+            },
+            _ => {}
+        }
+        self.deepest = self
+            .deepest
+            .max(self.below.saturating_add(self.current.tokens));
+    }
+}
+
+/// Returns true when a token of `kind` after a `}` can continue the same
+/// expression, so the parser can still be inside it.
+///
+/// A name, a keyword other than `else`, `as` and `in`, a `#`, a `;`, a `,` or
+/// a closing bracket cannot. The next item or statement starts there, or the
+/// enclosing list or bracket continues.
+fn continues_after_block(kind: SyntaxKind) -> bool {
+    match kind {
+        SyntaxKind::ELSE_KW | SyntaxKind::AS_KW | SyntaxKind::IN_KW => true,
+        SyntaxKind::POUND
+        | SyntaxKind::SEMICOLON
+        | SyntaxKind::COMMA
+        | SyntaxKind::R_CURLY
+        | SyntaxKind::R_PAREN
+        | SyntaxKind::R_BRACK => false,
+        _ => !kind.is_any_identifier(),
+    }
 }
 
 /// The postfix chain length at each open bracket level.
@@ -239,11 +382,12 @@ impl Chains {
     }
 }
 
-/// The stack that a parse of `source_len` bytes can use, or `None` when that
-/// is more than [`MAX_STACK`].
-fn stack_need(source_len: usize) -> Option<usize> {
-    let need = source_len
-        .checked_mul(STACK_PER_SOURCE_BYTE)?
+/// The stack for a parse with a scan depth of `depth`, or `None` when that is
+/// more than [`MAX_STACK`].
+fn stack_need(depth: u32) -> Option<usize> {
+    let need = usize::try_from(depth)
+        .ok()?
+        .checked_mul(STACK_PER_LEVEL)?
         .checked_add(BASE_STACK)?
         .checked_next_multiple_of(STACK_ALIGN)?;
     (need <= MAX_STACK).then_some(need)
@@ -479,18 +623,135 @@ mod tests {
         assert_eq!(parse_source(&source, EDITION), ParseOutcome::Parsed);
     }
 
-    #[test]
-    fn need_grows_with_length_and_is_aligned() {
-        assert_eq!(stack_need(0), Some(BASE_STACK));
-        assert!(stack_need(1000) > stack_need(100));
-        assert_eq!(stack_need(1).map(|need| need % STACK_ALIGN), Some(0));
-        assert_eq!(stack_need(usize::MAX), None);
-        assert_eq!(stack_need(MAX_STACK / STACK_PER_SOURCE_BYTE + 1), None);
+    /// About 2 MB of flat items, the shape of a generated file: many short
+    /// items and one long table.
+    fn large_flat_file() -> String {
+        use std::fmt::Write as _;
+        let mut source = String::from("pub static TABLE: &[u32] = &[");
+        for value in 0..50_000 {
+            let _ = write!(source, "{value}, ");
+        }
+        source.push_str("];\n");
+        let mut index = 0;
+        while source.len() < 2 << 20 {
+            let _ = write!(
+                source,
+                "pub const C{index}: [u32; 2] = [{index}, 1];\n\
+                 pub fn f{index}(a: u32) -> u32 {{ if a > {index} {{ a }} else {{ a + 1 }} }}\n\
+                 #[derive(Debug)]\n\
+                 pub struct S{index} {{ pub a: Vec<u32>, b: Option<u8> }}\n\
+                 impl S{index} {{ fn g(&self) -> usize {{ self.a.iter().map(|x| *x as usize).sum() }} }}\n"
+            );
+            index += 1;
+        }
+        source
     }
 
     #[test]
-    fn source_over_the_cap_is_too_deep_without_a_parse() {
-        let source = " ".repeat(MAX_STACK / STACK_PER_SOURCE_BYTE + 1);
+    fn large_flat_file_parses() {
+        let source = large_flat_file();
+        assert!(source.len() >= 2 << 20);
+        assert_eq!(parse_source(&source, EDITION), ParseOutcome::Parsed);
+    }
+
+    #[test]
+    fn need_grows_with_depth_and_is_aligned() {
+        assert_eq!(stack_need(0), Some(BASE_STACK));
+        assert!(stack_need(1000) > stack_need(100));
+        assert_eq!(stack_need(1).map(|need| need % STACK_ALIGN), Some(0));
+        assert_eq!(stack_need(u32::MAX), None);
+        let over = u32::try_from(MAX_STACK / STACK_PER_LEVEL + 1).unwrap_or(u32::MAX);
+        assert_eq!(stack_need(over), None);
+    }
+
+    #[test]
+    fn reservation_is_bounded_by_depth_not_by_size() {
+        let large = large_flat_file();
+        let small = &large[large.len() - 4096..];
+        let small = &small[small.find("pub const").unwrap_or(0)..];
+        let (Some(large_depth), Some(small_depth)) =
+            (scan_depth(&large, EDITION), scan_depth(small, EDITION))
+        else {
+            panic!("both sources pass the scan");
+        };
+        // The items of the large file are the same shape as the items of the
+        // small file. Only the table adds a little depth for its `&[` prefix.
+        assert!(
+            large_depth <= small_depth + 8,
+            "{large_depth} {small_depth}"
+        );
+        assert!(large_depth < 64, "{large_depth}");
+        // The reservation stays small in each build, also at 2 MB.
+        assert!(stack_need(large_depth) <= Some(BASE_STACK + 64 * STACK_PER_LEVEL));
+        // A deeper source gets a larger reservation.
+        let deep = format!("fn f() {}u8{}", "{".repeat(AT_LIMIT), "}".repeat(AT_LIMIT));
+        assert!(scan_depth(&deep, EDITION) > Some(u32::try_from(AT_LIMIT).unwrap_or(0)));
+    }
+
+    #[test]
+    fn each_recursive_shape_adds_depth() {
+        for (prefix, unit) in [
+            ("fn f() { ", "return "),
+            ("fn f() { ", "a = "),
+            ("fn f() { ", "|a, b| "),
+            ("fn f() { ", "move || "),
+            ("fn f() { ", ".."),
+            ("type T = ", "fn() -> "),
+            ("type T = ", "HashMap<u8, "),
+            ("fn f() { let ", "a @ "),
+            ("fn f() { ", "if a {} else "),
+            ("fn f() { ", "for S {} in "),
+        ] {
+            let source = format!("{prefix}{}", unit.repeat(400));
+            let depth = scan_depth(&source, EDITION).unwrap_or(u32::MAX);
+            assert!((400..u32::MAX).contains(&depth), "{unit}: {depth}");
+        }
+    }
+
+    #[test]
+    fn generic_arguments_with_inner_statements_add_depth() {
+        // A `;` or `{}` inside a generic argument must not end the count of
+        // the open `<` levels around it. An arrow `->` closes no `<`.
+        for unit in [
+            "Foo<[u8; 1], ",
+            "Foo<{1}, ",
+            "Foo<fn() -> u8, ",
+            "Foo<|a| -> u8 { a }, ",
+        ] {
+            let source = format!("type T = {}u8{};", unit.repeat(2000), ", u8>".repeat(2000));
+            let depth = scan_depth(&source, EDITION).unwrap_or(u32::MAX);
+            assert!((2000..u32::MAX).contains(&depth), "{unit}: {depth}");
+        }
+    }
+
+    #[test]
+    fn deep_generic_arguments_do_not_overflow_the_stack() {
+        for unit in ["Foo<[u8; 1], ", "Foo<{1}, "] {
+            let source = format!(
+                "type T = {}u8{};",
+                unit.repeat(20_000),
+                ", u8>".repeat(20_000)
+            );
+            assert_eq!(
+                parse_source(&source, EDITION),
+                ParseOutcome::TooDeep,
+                "{unit}"
+            );
+        }
+    }
+
+    #[test]
+    fn match_arms_with_comparisons_keep_a_small_depth() {
+        let arms = "x if x < 3 => 1,\n".repeat(5000);
+        let source = format!("fn f(x: u8) -> u8 {{ match x {{ {arms} _ => 0 }} }}");
+        let depth = scan_depth(&source, EDITION).unwrap_or(u32::MAX);
+        assert!(depth < 64, "{depth}");
+    }
+
+    #[test]
+    fn depth_over_the_cap_is_too_deep_without_a_parse() {
+        let run = MAX_STACK / STACK_PER_LEVEL + 1;
+        let source = format!("fn f() {{ {} }}", "return ".repeat(run));
         assert_eq!(parse_source(&source, EDITION), ParseOutcome::TooDeep);
     }
 

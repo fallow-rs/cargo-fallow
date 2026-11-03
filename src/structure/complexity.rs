@@ -662,6 +662,20 @@ mod tests {
         (found[0].1, found[0].2)
     }
 
+    /// The walk recurses once for each tree level on the parse stack. These
+    /// shapes give a tree near the depth limit of `crate::parse` with a small
+    /// scan depth for each tree level.
+    #[test]
+    fn the_walk_of_a_deep_tree_fits_on_the_parse_stack() {
+        let chain = format!("fn f() -> u32 {{ 1{} }}", " + 1".repeat(2900));
+        assert_eq!(one(&chain).0, 1);
+        let branches = format!(
+            "fn f(a: bool) {{ if a {{}}{} }}",
+            " else if a {}".repeat(1400)
+        );
+        assert_eq!(one(&branches).0, 1402);
+    }
+
     #[test]
     fn a_straight_function_has_cyclomatic_one_and_cognitive_zero() {
         assert_eq!(one("fn f(a: u8) -> u8 { a + 1 }"), (1, 0));

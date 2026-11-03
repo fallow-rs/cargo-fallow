@@ -22,6 +22,9 @@ pub struct ModuleDecl {
     pub path_attr: Option<String>,
     /// True when a `cfg` attribute other than `cfg(test)` is on the module.
     pub under_cfg: bool,
+    /// True when a `cfg` that can be off in a build with all features and
+    /// tests is on the module.
+    pub cfg_off: bool,
 }
 
 /// A target root of a package.
@@ -47,6 +50,9 @@ pub struct Visit {
     pub is_mod_rs: bool,
     /// True when a `cfg` attribute is on a module declaration on the way to the file.
     pub under_cfg: bool,
+    /// True when a `cfg` that can be off in a build with all features and tests
+    /// is on a module declaration on the way to the file.
+    pub cfg_off: bool,
     /// The module path of the file, from the crate root.
     pub module_path: Vec<String>,
 }
@@ -97,6 +103,7 @@ pub fn walk<T>(
                 is_root: true,
                 is_mod_rs: true,
                 under_cfg: false,
+                cfg_off: false,
                 module_path: Vec::new(),
             }
         })
@@ -116,6 +123,7 @@ pub fn walk<T>(
                         is_root: false,
                         is_mod_rs,
                         under_cfg: next.under_cfg || module.under_cfg,
+                        cfg_off: next.cfg_off || module.cfg_off,
                         module_path: child_module_path(&next.module_path, module),
                     }));
                 }
@@ -245,6 +253,7 @@ mod tests {
             inline_path: inline.iter().map(|part| (*part).to_owned()).collect(),
             path_attr: path_attr.map(str::to_owned),
             under_cfg: false,
+            cfg_off: false,
         }
     }
 

@@ -325,6 +325,7 @@ impl Walk<'_> {
             inline_path,
             path_attr: module.attrs().find_map(|attr| path_attribute(&attr)),
             under_cfg,
+            cfg_off: under_cfg,
         });
     }
 

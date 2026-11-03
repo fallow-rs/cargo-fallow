@@ -461,6 +461,13 @@ impl<'a> Walker<'a> {
             .any(|(_, frame)| matches!(frame, Frame::Test))
     }
 
+    /// True under a `cfg` that can be off in a build with all features and tests.
+    fn cfg_off(&self) -> bool {
+        self.frames
+            .iter()
+            .any(|(_, frame)| matches!(frame, Frame::CfgUnsure))
+    }
+
     fn under_cfg(&self) -> bool {
         self.frames
             .iter()
@@ -691,6 +698,7 @@ impl<'a> Walker<'a> {
             inline_path: self.inline(),
             path_attr: module.attrs().find_map(|attr| path_attribute(&attr)),
             under_cfg,
+            cfg_off: self.cfg_off(),
         });
     }
 
@@ -823,10 +831,7 @@ impl<'a> Walker<'a> {
             kind,
             origin,
             test_only: self.test_only(),
-            under_cfg: self
-                .frames
-                .iter()
-                .any(|(_, frame)| matches!(frame, Frame::CfgUnsure)),
+            under_cfg: self.cfg_off(),
         });
     }
 

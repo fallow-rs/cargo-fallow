@@ -945,7 +945,13 @@ fn precise_mode_leaves_a_candidate_with_a_use_under_cfg_undecided() {
             "pub struct A;\nimpl A {\n    pub fn helper(&self) {}\n}\n\
              pub fn run() {\n    #[cfg(target_os = \"none\")]\n    A.helper();\n    \
              #[cfg(feature = \"extra\")]\n    B.seen();\n}\n\
-             pub struct B;\nimpl B {\n    pub fn seen(&self) {}\n}\n",
+             pub struct B;\nimpl B {\n    pub fn seen(&self) {}\n}\n\
+             #[cfg(feature = \"extra\")]\nmod extra;\n\
+             pub struct C;\nimpl C {\n    pub fn used(&self) {}\n}\n",
+        ),
+        (
+            "mid/src/extra.rs",
+            "pub(crate) fn go() { crate::C.used(); }\n",
         ),
     ]);
     let (precise, left) = findings(&dir, &["--precise"]);
@@ -953,6 +959,7 @@ fn precise_mode_leaves_a_candidate_with_a_use_under_cfg_undecided() {
     assert!(left.contains("dead_public A::helper"), "{left:?}");
     // A feature is on in precise mode, so the use under it is in its view.
     assert!(!left.contains("dead_public B::seen"), "{left:?}");
+    assert!(!left.contains("dead_public C::used"), "{left:?}");
 }
 
 /// A precise finding goes through the same filters as a fast finding: the

@@ -229,8 +229,7 @@ pub struct Ref {
     /// True in test code.
     pub test_only: bool,
     /// True when a `cfg` that can be off in a build with all features and
-    /// tests is on the code, or when any `cfg` other than a test condition is on
-    /// its file.
+    /// tests is on the code or on a module declaration of its file.
     pub under_cfg: bool,
 }
 
@@ -266,6 +265,7 @@ struct ParsedFile {
     path: String,
     module_path: Vec<String>,
     under_cfg: bool,
+    cfg_off: bool,
     facts: FileFacts,
 }
 
@@ -394,6 +394,7 @@ fn parse_target(root: &Path, target: &Target) -> CrateFiles {
                 path: visit.path.clone(),
                 module_path: visit.module_path.clone(),
                 under_cfg: visit.under_cfg,
+                cfg_off: visit.cfg_off,
                 facts,
             },
             modules,
@@ -563,7 +564,7 @@ fn add_files(graph: &mut Graph, root: &Path, krate: CrateId, files: CrateFiles, 
                 kind: unraw_kind(raw.kind),
                 origin: raw.origin,
                 test_only: raw.test_only,
-                under_cfg: raw.under_cfg || file.under_cfg,
+                under_cfg: raw.under_cfg || file.cfg_off,
             });
         }
     }

@@ -276,7 +276,9 @@ pub fn decide(
             _ => None,
         })
         .collect();
-    merge(analysis, &decisions);
+    merge(analysis, &decisions, |item| {
+        graph.items[item].kind == crate::graph::extract::ItemKind::Variant
+    });
     summary.elapsed_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
     Ok(summary)
 }
@@ -421,7 +423,11 @@ fn stderr_tail(path: &Path) -> String {
 /// a weaker kind: a method call by name keeps a dead method live. A `keep`
 /// decision removes the findings on its item. A candidate without a decision
 /// stays undecided.
-pub fn merge(analysis: &mut Analysis, decisions: &FxHashMap<usize, Decision>) {
+pub fn merge(
+    analysis: &mut Analysis,
+    decisions: &FxHashMap<usize, Decision>,
+    is_variant: impl Fn(crate::graph::ItemId) -> bool,
+) {
     let undecided = std::mem::take(&mut analysis.undecided);
     for (id, candidate) in undecided.into_iter().enumerate() {
         let public = candidate.kind != FindingKind::UnnecessaryRestricted;
@@ -436,6 +442,10 @@ pub fn merge(analysis: &mut Analysis, decisions: &FxHashMap<usize, Decision>) {
                     continue;
                 };
                 analysis.findings.retain(|finding| !same_family(finding));
+                // A variant has no keyword, so a use in its own crate keeps it.
+                if kind == FindingKind::UnnecessaryPublic && is_variant(candidate.item) {
+                    continue;
+                }
                 analysis.findings.push(Finding { kind, ..candidate });
             }
             Some(Decision::Keep { .. }) => {
@@ -515,6 +525,7 @@ mod tests {
                 finding(FindingKind::DeadPublic, 2),
                 finding(FindingKind::UnnecessaryRestricted, 3),
                 finding(FindingKind::DeadPublic, 4),
+                finding(FindingKind::DeadPublic, 5),
             ],
         };
         let decisions: FxHashMap<usize, Decision> = [
@@ -536,10 +547,18 @@ mod tests {
                     kind: "unnecessary_restricted_visibility".to_owned(),
                 },
             ),
+            (
+                4,
+                Decision::Report {
+                    kind: "unnecessary_public".to_owned(),
+                },
+            ),
         ]
         .into_iter()
         .collect();
-        merge(&mut analysis, &decisions);
+        // Item 5 is an enum variant: it has no keyword, so only `dead_public`
+        // applies to it.
+        merge(&mut analysis, &decisions, |item| item == 5);
         assert_eq!(
             analysis.findings,
             vec![

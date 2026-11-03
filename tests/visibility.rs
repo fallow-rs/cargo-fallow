@@ -855,3 +855,39 @@ fn a_file_in_two_crates_gets_a_finding_only_when_both_crates_allow_it() {
         "{found:?}"
     );
 }
+
+/// The same holds for a `#[macro_export]` macro, also in a binary.
+#[test]
+fn a_restricted_item_that_an_exported_macro_names_keeps_its_visibility() {
+    let dir = workspace(&[(
+        "app/src/main.rs",
+        "#[macro_use]\nmod messages {\n    pub(crate) fn shown() -> bool { true }\n    \
+         #[macro_export]\n    macro_rules! message { () => { if $crate::messages::shown() {} }; }\n}\n\
+         fn main() { message!(); }\n",
+    )]);
+    let (found, _) = findings(&dir, &[]);
+    assert!(
+        !found.contains("unnecessary_restricted_visibility messages::shown"),
+        "{found:?}"
+    );
+}
+
+/// A `pub use` of an item needs the item to stay `pub`. When the re-export has
+/// a finding, only the re-export is reported, so each change compiles alone.
+#[test]
+fn a_reexported_item_waits_for_its_reexport() {
+    let dir = workspace(&[
+        ("app/src/main.rs", "fn main() { mid::run(); }\n"),
+        (
+            "mid/src/lib.rs",
+            "pub mod css {\n    pub fn located() {}\n}\npub use css::located;\n\
+             pub fn run() { located(); }\n",
+        ),
+    ]);
+    let (found, _) = findings(&dir, &[]);
+    assert!(found.contains("unnecessary_public located"), "{found:?}");
+    assert!(
+        !found.contains("unnecessary_public css::located"),
+        "{found:?}"
+    );
+}

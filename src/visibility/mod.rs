@@ -416,6 +416,7 @@ fn decide(
             && restricted_candidate(entry)
             && !surface.macro_covered[item]
             && !uses[item].exposed
+            && !uses[item].cross_crate
             && only_own_module(graph, item, &uses[item])
         {
             findings.push(Finding {
@@ -425,6 +426,7 @@ fn decide(
             });
         }
     }
+    wait_for_reexports(graph, surface, &mut findings);
     if options.uniform_fields {
         keep_field_groups(graph, surface, &mut findings);
     }
@@ -704,6 +706,21 @@ fn reach(
         }
     }
     seen
+}
+
+/// A `pub use` of an item needs the item to stay `pub`. When the re-export has
+/// a public finding, the item gets no public finding in this run, so each
+/// reported change compiles alone. The next run reports the item.
+fn wait_for_reexports(graph: &Graph, surface: &Surface, findings: &mut Vec<Finding>) {
+    let public = |kind: FindingKind| kind != FindingKind::UnnecessaryRestricted;
+    let waiting: FxHashSet<ItemId> = findings
+        .iter()
+        .filter(|finding| public(finding.kind) && graph.items[finding.item].kind == ItemKind::Use)
+        .filter_map(|finding| surface.reexport_targets.get(&finding.item))
+        .flatten()
+        .copied()
+        .collect();
+    findings.retain(|finding| !(public(finding.kind) && waiting.contains(&finding.item)));
 }
 
 /// A file can be in more than one crate, for example a `mod data;` in each

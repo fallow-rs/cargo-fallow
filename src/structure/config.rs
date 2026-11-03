@@ -6,7 +6,7 @@
 //! [workspace.metadata.fallow.boundaries]
 //! [workspace.metadata.fallow.size]
 //! [workspace.metadata.fallow.complexity]
-//! [workspace.metadata.fallow.duplication]
+//! [workspace.metadata.fallow.dupes]
 //! ```
 //!
 //! Cargo already parses the manifest, so `cargo metadata` gives the tables as
@@ -238,7 +238,7 @@ impl Mode {
     }
 }
 
-/// `[workspace.metadata.fallow.duplication]`.
+/// `[workspace.metadata.fallow.dupes]`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
 pub struct Duplication {

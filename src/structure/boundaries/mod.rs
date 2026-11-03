@@ -608,7 +608,7 @@ fn module_rule(workspace: &Workspace, rule: &ModuleRule) -> Result<Vec<Finding>,
                 scan.items(file.syntax(), &base, &mut Vec::new());
                 ((visit.path.clone(), scan.used), scan.decls)
             })
-            .map_err(|outcome| format!("the parse failed: {outcome:?}"))
+            .map_err(crate::structure::source::parse_reason)
         });
         for skipped in &walked.skipped {
             warn(&format!(

@@ -423,7 +423,8 @@ gate. A gate is in the report each time, but it fails the run only with its flag
 | `cargo fallow complexity` | Functions over the cyclomatic or the cognitive limit | `--fail-on-complexity` | `health-findings` |
 | `cargo fallow dupes` | Clone groups on normalized token streams | `--fail-on-clones`, `--threshold <PERCENT>` | `duplication-findings`, `duplication-threshold` |
 
-The configuration is in the root `Cargo.toml`, in one table for each check. Cargo
+The configuration is in the root `Cargo.toml`, in one table for each check. The
+name of each table is the name of its command. Cargo
 already parses the manifest, so the tool reads the tables from `cargo metadata`.
 An unknown key is an error with the code `CARGO_FALLOW_INVALID_CONFIG`.
 
@@ -463,7 +464,7 @@ max-function-lines = 60
 max-cyclomatic = 20
 max-cognitive = 15
 
-[workspace.metadata.fallow.duplication]
+[workspace.metadata.fallow.dupes]
 mode = "mild"             # strict, mild, weak or semantic
 min-tokens = 50
 min-lines = 5
@@ -477,9 +478,42 @@ are not checked. `--base <REF>` compares HEAD with the merge base, and
 `--staged` compares the index with HEAD.
 
 The complexity and clone models are the models of fallow for JavaScript. A unit
-is a `fn` with a body or a closure. The `?` operator and code in macro calls add
-no complexity. Put `// fallow-ignore-next-line complexity` above a function, or
-`// fallow-ignore-next-line code-duplication` above a clone, to suppress it.
+is a `fn` with a body or a closure. Put `// fallow-ignore-next-line complexity`
+above a function, or `// fallow-ignore-next-line code-duplication` above a
+clone, to suppress it.
+
+The complexity counts have these known differences from other tools:
+
+- Code in a macro call adds nothing. The parser keeps the arguments of a macro
+  call as tokens, so a condition in `assert!(a && b)` or in `vec![...]` is not
+  visible.
+- The `?` operator adds nothing, although it is an early return.
+- `loop` adds 1 to the cyclomatic count and 1 plus the nesting level to the
+  cognitive count, the same as `while` and `for`.
+- The cognitive count of a sequence of logical operators keeps the last
+  operator through a group in parentheses. So `a && (b && c)` adds 1, and
+  `a && (b || c)` adds 2. A sequence ends at an operand with no logical
+  operator in it, so `(a && b) || (c && d)` adds 3. This is the model of
+  fallow for JavaScript.
+
+`skipped_files` in the summary of `size`, `complexity` and `dupes` lists each
+skipped file with its `path` and a `reason`. These limits keep each run bounded:
+
+- The parse refuses a file that nests too deep, has a postfix chain of more than
+  2048 steps (for example `a.x.x` or `a???`), or gives a syntax tree deeper than
+  3072 levels (for example a `1 + 1 + ...` chain). The reason is
+  `the file nests too deep for the parser`.
+- `dupes` skips a file with more than 250000 tokens.
+- In a run of a repeated pattern of up to 4 tokens, such as a data table, `dupes`
+  compares only the first 256 tokens.
+- A clone group keeps at most 128 instances.
+- `dupes` stops with exit code 2 and the code `CARGO_FALLOW_TIMED_OUT` after
+  300 s.
+
+The growth rule of `size` runs git with a clean environment: it removes
+`GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` and the other variables that move
+git to another repository. `--base` must name a commit. A value that starts with
+`-` is an error. A changed path that is not UTF-8 text is in `skipped_files`.
 
 ## Exit codes
 

@@ -20,6 +20,18 @@
 //!    removes the place. A group under `min-occurrences` places is dropped.
 //!
 //! Groups whose places are in the same set of files form a clone family.
+//!
+//! [`Limits`] keeps the work bounded on data files, such as a large table
+//! without a generator header:
+//!
+//! - A file with more tokens than the budget is skipped, with the reason in
+//!   `skipped_files`.
+//! - In a run of a repeated pattern of up to [`MAX_PERIOD`] tokens, each token
+//!   after the first [`Limits::run_cap`] tokens becomes unique. Without this
+//!   step, a run of `n` tokens gives about `n` nested repeats with about `n`
+//!   places each, so the time and the memory grow with the square of `n`.
+//! - A repeat keeps at most [`Limits::max_places`] places.
+//! - The search stops with an error at [`Limits::deadline`].
 
 mod suffix;
 pub mod tokens;
@@ -27,17 +39,18 @@ pub mod tokens;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use xxhash_rust::xxh3::xxh3_64;
 
-use crate::error::CliError;
+use crate::error::{CliError, ErrorCode};
 use crate::render::Progress;
 pub use crate::structure::config::Mode;
 use crate::structure::config::{self, Duplication, matches_prefix};
 use crate::structure::report::{Action, Gate, Report, count_gate, gates_text, plural};
 use crate::structure::sarif::{self, Item};
-use crate::structure::source::{self, File, Needs};
+use crate::structure::source::{self, File, Needs, Skipped};
 use crate::structure::{DupesArgs, Output};
 use crate::workspace;
 
@@ -47,6 +60,53 @@ const SUPPRESS_KIND: &str = "code-duplication";
 const SUPPRESS_COMMENT: &str = "// fallow-ignore-next-line code-duplication";
 /// A family with this many duplicated lines or more gets one module step.
 const FAMILY_MODULE_LINES: u32 = 50;
+/// The longest repeated pattern, in tokens, that the run cap reads.
+const MAX_PERIOD: usize = 4;
+
+/// The bounds of the clone search.
+#[derive(Debug, Clone)]
+pub struct Limits {
+    /// The most places of one repeat. A repeat with more places keeps the
+    /// first places in suffix order.
+    pub max_places: usize,
+    /// The tokens of a repeated pattern that stay comparable.
+    pub run_cap: usize,
+    /// The most tokens of one file. A larger file is skipped.
+    pub max_file_tokens: usize,
+    /// The time after which the search stops.
+    pub deadline: Duration,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            max_places: 128,
+            run_cap: 256,
+            max_file_tokens: 250_000,
+            deadline: Duration::from_secs(300),
+        }
+    }
+}
+
+/// The search did not finish before [`Limits::deadline`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TimedOut;
+
+/// The start of a search and its deadline.
+struct Clock {
+    started: Instant,
+    deadline: Duration,
+}
+
+impl Clock {
+    fn check(&self) -> Result<(), TimedOut> {
+        if self.started.elapsed() >= self.deadline {
+            Err(TimedOut)
+        } else {
+            Ok(())
+        }
+    }
+}
 
 /// One place of a clone.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -136,15 +196,16 @@ pub struct Summary {
     pub generated_files: usize,
     /// The clone families.
     pub clone_families: Vec<CloneFamily>,
-    /// The files that a declaration reached but that did not parse.
-    pub skipped_files: Vec<String>,
+    /// The files that the check skips, with the reason: a file that did not
+    /// parse, or a file over the token budget.
+    pub skipped_files: Vec<Skipped>,
 }
 
 pub fn run(args: &DupesArgs) -> Result<Output, CliError> {
     let progress = Progress::new(args.common.quiet);
     progress.step("Reading cargo metadata");
     let workspace = workspace::load(args.common.manifest_path.as_deref())?;
-    let mut settings: Duplication = config::section(&workspace, "duplication")?;
+    let mut settings: Duplication = config::section(&workspace, "dupes")?;
     if let Some(mode) = args.mode {
         settings.mode = mode;
     }
@@ -171,7 +232,20 @@ pub fn run(args: &DupesArgs) -> Result<Output, CliError> {
         .filter(|file| !file.skip_metrics && !matches_prefix(&file.path, &settings.exclude))
         .collect();
     progress.step("Finding clones");
-    let found = detect(&files, &settings);
+    let limits = Limits::default();
+    let found = detect(&files, &settings, &limits).map_err(|TimedOut| {
+        CliError::new(
+            ErrorCode::TimedOut,
+            format!(
+                "the clone search did not finish in {} s",
+                limits.deadline.as_secs()
+            ),
+        )
+        .with_help("Add the large generated or data files to `exclude` in `[workspace.metadata.fallow.dupes]`.")
+    })?;
+    let mut skipped_files = loaded.skipped_files();
+    skipped_files.extend(found.skipped.iter().cloned());
+    skipped_files.sort();
     let summary = Summary {
         mode: settings.mode.as_str(),
         min_tokens: settings.min_tokens,
@@ -179,11 +253,7 @@ pub fn run(args: &DupesArgs) -> Result<Output, CliError> {
         stats: found.stats,
         generated_files: loaded.files.iter().filter(|file| file.skip_metrics).count(),
         clone_families: found.families,
-        skipped_files: loaded
-            .skipped
-            .iter()
-            .map(|file| file.path.clone())
-            .collect(),
+        skipped_files,
     };
     let mut report = Report::new("dupes", summary, found.groups);
     report.gate_outcomes.insert(
@@ -226,6 +296,8 @@ pub struct Found {
     pub families: Vec<CloneFamily>,
     /// The counts.
     pub stats: Stats,
+    /// The files over the token budget.
+    pub skipped: Vec<Skipped>,
 }
 
 /// A token range in one file.
@@ -241,15 +313,44 @@ struct Raw {
     places: Vec<Spot>,
 }
 
-/// Finds the clone groups in `files`.
-pub fn detect(files: &[&File], settings: &Duplication) -> Found {
-    let (text, alphabet, starts) = sequence(files);
-    let raw = raw_groups(&text, alphabet, &starts, settings.min_tokens.max(1));
+/// Finds the clone groups in `files`, within `limits`.
+pub fn detect(files: &[&File], settings: &Duplication, limits: &Limits) -> Result<Found, TimedOut> {
+    let clock = Clock {
+        started: Instant::now(),
+        deadline: limits.deadline,
+    };
+    let (kept_files, over): (Vec<&File>, Vec<&File>) = files
+        .iter()
+        .partition(|file| file.tokens.len() <= limits.max_file_tokens);
+    let files = kept_files.as_slice();
+    let skipped = over
+        .iter()
+        .map(|file| Skipped {
+            path: file.path.clone(),
+            reason: format!(
+                "the file has {} tokens, over the limit of {} for the clone search",
+                file.tokens.len(),
+                limits.max_file_tokens
+            ),
+        })
+        .collect();
+    let (text, alphabet, starts) = sequence(files, limits.run_cap);
+    clock.check()?;
+    let raw = raw_groups(
+        &text,
+        alphabet,
+        &starts,
+        settings.min_tokens.max(1),
+        limits,
+        &clock,
+    )?;
     let kept = drop_token_subsets(raw, files.len());
+    clock.check()?;
     let mut groups: Vec<(CloneGroup, u64)> = kept
         .iter()
         .filter_map(|group| line_group(files, &text, &starts, group, settings))
         .collect();
+    clock.check()?;
     drop_line_subsets(&mut groups);
     let below = drop_suppressed(&mut groups, files, settings.min_occurrences);
     set_fingerprints(&mut groups);
@@ -270,46 +371,63 @@ pub fn detect(files: &[&File], settings: &Duplication) -> Found {
     let mut stats = stats(files, &text, &groups);
     stats.clone_families = families.len();
     stats.clone_groups_below_min_occurrences = below;
-    Found {
+    Ok(Found {
         groups,
         families,
         stats,
-    }
+        skipped,
+    })
 }
 
 /// Each repeat of at least `min_tokens` tokens with two places that do not
 /// overlap, the longest first.
-fn raw_groups(text: &[u32], alphabet: usize, starts: &[usize], min_tokens: u32) -> Vec<Raw> {
+fn raw_groups(
+    text: &[u32],
+    alphabet: usize,
+    starts: &[usize],
+    min_tokens: u32,
+    limits: &Limits,
+    clock: &Clock,
+) -> Result<Vec<Raw>, TimedOut> {
     let order = suffix::suffix_array(text, alphabet);
+    clock.check()?;
     let lcp = suffix::lcp_array(text, &order);
     let file_of = |position: usize| starts.partition_point(|&start| start <= position) - 1;
-    let mut raw: Vec<Raw> = suffix::intervals(text, &order, &lcp, min_tokens)
-        .into_iter()
-        .filter_map(|interval| {
-            let length = interval.length as usize;
-            let mut places: Vec<Spot> = order[interval.first..=interval.last]
-                .iter()
-                .map(|&position| {
-                    let position = position as usize;
-                    let file = file_of(position);
-                    Spot {
-                        file,
-                        start: position - starts[file],
-                    }
-                })
-                .collect();
-            places.sort_by_key(|place| (place.file, place.start));
-            drop_overlaps(&mut places, length);
-            (places.len() >= 2).then_some(Raw { length, places })
-        })
-        .collect();
+    let found = suffix::intervals(text, &order, &lcp, min_tokens);
+    clock.check()?;
+    let mut raw: Vec<Raw> = Vec::new();
+    for interval in found {
+        if raw.len().is_multiple_of(1024) {
+            clock.check()?;
+        }
+        let length = interval.length as usize;
+        let last = interval
+            .last
+            .min(interval.first + limits.max_places.max(2) - 1);
+        let mut places: Vec<Spot> = order[interval.first..=last]
+            .iter()
+            .map(|&position| {
+                let position = position as usize;
+                let file = file_of(position);
+                Spot {
+                    file,
+                    start: position - starts[file],
+                }
+            })
+            .collect();
+        places.sort_by_key(|place| (place.file, place.start));
+        drop_overlaps(&mut places, length);
+        if places.len() >= 2 {
+            raw.push(Raw { length, places });
+        }
+    }
     raw.sort_by(|a, b| {
         b.length
             .cmp(&a.length)
             .then_with(|| a.places[0].file.cmp(&b.places[0].file))
             .then_with(|| a.places[0].start.cmp(&b.places[0].start))
     });
-    raw
+    Ok(raw)
 }
 
 /// Drops each group whose token ranges the kept groups already cover.
@@ -383,7 +501,9 @@ fn drop_suppressed(
 }
 
 /// The joined sequence of ranks, the alphabet size and the start of each file.
-fn sequence(files: &[&File]) -> (Vec<u32>, usize, Vec<usize>) {
+/// In a run of a repeated pattern, each token after the first `run_cap`
+/// tokens gets a unique rank.
+fn sequence(files: &[&File], run_cap: usize) -> (Vec<u32>, usize, Vec<usize>) {
     let mut ranks: BTreeMap<u64, u32> = BTreeMap::new();
     for file in files {
         for token in &file.tokens {
@@ -397,13 +517,43 @@ fn sequence(files: &[&File]) -> (Vec<u32>, usize, Vec<usize>) {
     let total: usize = files.iter().map(|file| file.tokens.len() + 1).sum();
     let mut text = Vec::with_capacity(total);
     let mut starts = Vec::with_capacity(files.len());
+    let mut next_unique = distinct + files.len();
     for (index, file) in files.iter().enumerate() {
-        starts.push(text.len());
+        let start = text.len();
+        starts.push(start);
         text.extend(file.tokens.iter().map(|token| ranks[&token.hash]));
+        for at in long_runs(&text[start..], run_cap) {
+            text[start + at] = u32::try_from(next_unique).unwrap_or(u32::MAX);
+            next_unique += 1;
+        }
         // A unique separator, so no repeat crosses the end of a file.
         text.push(u32::try_from(distinct + index).unwrap_or(u32::MAX));
     }
-    (text, distinct + files.len(), starts)
+    (text, next_unique, starts)
+}
+
+/// The positions in `ranks` after the first `run_cap` tokens of a run of a
+/// repeated pattern of up to [`MAX_PERIOD`] tokens.
+fn long_runs(ranks: &[u32], run_cap: usize) -> Vec<usize> {
+    let mut marked = vec![false; ranks.len()];
+    for period in 1..=MAX_PERIOD {
+        let mut run = period;
+        for at in period..ranks.len() {
+            if ranks[at] == ranks[at - period] {
+                run += 1;
+                if run > run_cap {
+                    marked[at] = true;
+                }
+            } else {
+                run = period;
+            }
+        }
+    }
+    marked
+        .iter()
+        .enumerate()
+        .filter_map(|(at, &mark)| mark.then_some(at))
+        .collect()
 }
 
 /// Drops each place that starts inside the place before it in the same file.
@@ -738,8 +888,8 @@ fn human(report: &Report<Summary, CloneGroup>) -> String {
             );
         }
     }
-    for path in &report.summary.skipped_files {
-        let _ = writeln!(text, "  skipped {path}: the file does not parse");
+    for file in &report.summary.skipped_files {
+        let _ = writeln!(text, "  skipped {}: {}", file.path, file.reason);
     }
     text.push_str(&gates_text(&report.gate_outcomes));
     text

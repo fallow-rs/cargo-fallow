@@ -11,11 +11,12 @@ use std::path::Path;
 
 use ra_ap_syntax::ast::{self, HasAttrs, HasModuleItem, HasName};
 use ra_ap_syntax::{AstNode, SyntaxKind, TextSize};
+use serde::Serialize;
 
 use crate::attrs::{path_attribute, plain_name};
 use crate::gates::parse_edition;
 use crate::modules::{ModuleDecl, SkippedFile, TargetRoot, walk};
-use crate::parse::with_parsed;
+use crate::parse::{ParseOutcome, with_parsed};
 use crate::structure::complexity::{Function, functions};
 use crate::structure::config::Mode;
 use crate::structure::dupes::tokens::{Token, tokens};
@@ -120,7 +121,7 @@ fn load_file(
             declarations(file),
         )
     })
-    .map_err(|outcome| format!("the parse failed: {outcome:?}"))?;
+    .map_err(parse_reason)?;
     Ok((
         File {
             path: path.to_owned(),
@@ -133,6 +134,41 @@ fn load_file(
         },
         modules,
     ))
+}
+
+/// The reason text of a skipped file for a parse outcome.
+pub fn parse_reason(outcome: ParseOutcome) -> String {
+    match outcome {
+        ParseOutcome::TooDeep => "the file nests too deep for the parser".to_owned(),
+        ParseOutcome::Panicked => "the parser stopped on the file".to_owned(),
+        ParseOutcome::Failed { error_count } => format!(
+            "the file does not parse ({error_count} {})",
+            if error_count == 1 { "error" } else { "errors" }
+        ),
+        ParseOutcome::Parsed => "the file parsed".to_owned(),
+    }
+}
+
+/// A file that a check skips, with the reason.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub struct Skipped {
+    /// The path relative to the workspace root.
+    pub path: String,
+    /// The reason.
+    pub reason: String,
+}
+
+impl Loaded {
+    /// The files that the walk reached but could not use.
+    pub fn skipped_files(&self) -> Vec<Skipped> {
+        self.skipped
+            .iter()
+            .map(|file| Skipped {
+                path: file.path.clone(),
+                reason: file.reason.clone(),
+            })
+            .collect()
+    }
 }
 
 /// True for whitespace and for each kind of comment, also doc comments. The
@@ -206,15 +242,30 @@ fn is_generated_header(line: &str) -> bool {
 pub struct LineIndex<'a> {
     text: &'a str,
     starts: Vec<usize>,
+    /// True for each line with only ASCII text. On such a line the column is
+    /// the byte offset, so a long line needs no count of its characters.
+    ascii: Vec<bool>,
 }
 
 impl<'a> LineIndex<'a> {
     /// The index of `text`.
     pub fn new(text: &'a str) -> Self {
-        let starts = std::iter::once(0)
+        let starts: Vec<usize> = std::iter::once(0)
             .chain(text.match_indices('\n').map(|(at, _)| at + 1))
             .collect();
-        Self { text, starts }
+        let ascii = starts
+            .iter()
+            .enumerate()
+            .map(|(line, &start)| {
+                let end = starts.get(line + 1).copied().unwrap_or(text.len());
+                text.as_bytes()[start..end].is_ascii()
+            })
+            .collect();
+        Self {
+            text,
+            starts,
+            ascii,
+        }
     }
 
     /// The line and the column of `offset`.
@@ -226,10 +277,18 @@ impl<'a> LineIndex<'a> {
             .get(line.saturating_sub(1))
             .copied()
             .unwrap_or(0);
-        let column = self
-            .text
-            .get(start..offset)
-            .map_or(0, |part| part.chars().count());
+        let column = if self
+            .ascii
+            .get(line.saturating_sub(1))
+            .copied()
+            .unwrap_or(false)
+        {
+            offset.saturating_sub(start)
+        } else {
+            self.text
+                .get(start..offset)
+                .map_or(0, |part| part.chars().count())
+        };
         (
             u32::try_from(line).unwrap_or(u32::MAX),
             u32::try_from(column + 1).unwrap_or(u32::MAX),

@@ -35,7 +35,7 @@ use crate::render::Progress;
 use crate::structure::config::{self, matches_prefix};
 use crate::structure::report::{Action, Gate, Report, count_gate, gates_text, plural};
 use crate::structure::sarif::{self, Item, Place};
-use crate::structure::source::{self, LineIndex, Needs, is_space_or_comment};
+use crate::structure::source::{self, LineIndex, Needs, Skipped, is_space_or_comment};
 use crate::structure::{ComplexityArgs, Output};
 use crate::workspace;
 
@@ -464,7 +464,7 @@ pub struct Summary {
     /// the check skips.
     pub generated_files: usize,
     /// The files that a declaration reached but that did not parse.
-    pub skipped_files: Vec<String>,
+    pub skipped_files: Vec<Skipped>,
 }
 
 pub fn run(args: &ComplexityArgs) -> Result<Output, CliError> {
@@ -523,11 +523,7 @@ pub fn run(args: &ComplexityArgs) -> Result<Output, CliError> {
         max_cognitive: settings.max_cognitive,
         suppressed,
         generated_files: loaded.files.iter().filter(|file| file.skip_metrics).count(),
-        skipped_files: loaded
-            .skipped
-            .iter()
-            .map(|file| file.path.clone())
-            .collect(),
+        skipped_files: loaded.skipped_files(),
     };
     let mut report = Report::new("complexity", summary, findings);
     report.gate_outcomes.insert(
@@ -603,8 +599,8 @@ fn human(report: &Report<Summary, Finding>) -> String {
             finding.line_count,
         );
     }
-    for path in &summary.skipped_files {
-        let _ = writeln!(text, "  skipped {path}: the file does not parse");
+    for file in &summary.skipped_files {
+        let _ = writeln!(text, "  skipped {}: {}", file.path, file.reason);
     }
     text.push_str(&gates_text(&report.gate_outcomes));
     text
@@ -712,6 +708,28 @@ mod tests {
         assert_eq!(
             one("fn f(a: bool, b: bool, c: bool, d: bool) -> bool { (a && b) || (c && d) }"),
             (4, 3)
+        );
+    }
+
+    #[test]
+    fn the_known_differences_in_the_readme_hold() {
+        // The operator memory passes into a group in parentheses.
+        assert_eq!(
+            one("fn f(a: bool, b: bool, c: bool) -> bool { a && (b && c) }"),
+            (3, 1)
+        );
+        assert_eq!(
+            one("fn f(a: bool, b: bool, c: bool) -> bool { a && (b || c) }"),
+            (3, 2)
+        );
+        // Code in a macro call adds nothing.
+        assert_eq!(one("fn f(a: bool, b: bool) { assert!(a && b); }"), (1, 0));
+        // `loop` counts the same as `while`.
+        assert_eq!(one("fn f() { loop {} }"), (2, 1));
+        // `?` adds nothing.
+        assert_eq!(
+            one("fn f(a: Option<u8>) -> Option<u8> { let b = a?; Some(b) }"),
+            (1, 0)
         );
     }
 

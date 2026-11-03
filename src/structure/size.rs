@@ -23,7 +23,7 @@ use crate::structure::config::{self, matches_prefix};
 use crate::structure::git::{self, Change, Changes};
 use crate::structure::report::{Action, Gate, Report, count_gate, gates_text, plural};
 use crate::structure::sarif::{self, Item, Place};
-use crate::structure::source::{self, Needs, count_lines, is_generated};
+use crate::structure::source::{self, Needs, Skipped, count_lines, is_generated};
 use crate::structure::{Output, SizeArgs};
 use crate::workspace;
 
@@ -122,8 +122,9 @@ pub struct Summary {
     pub large_files: Vec<LargeFile>,
     /// The functions over the function line limit, largest first.
     pub large_functions: Vec<LargeFunction>,
-    /// The files that a declaration reached but that did not parse.
-    pub skipped_files: Vec<String>,
+    /// The files that the check skips, with the reason: a file that did not
+    /// parse, or a changed path that is not UTF-8 text.
+    pub skipped_files: Vec<Skipped>,
 }
 
 pub fn run(args: &SizeArgs) -> Result<Output, CliError> {
@@ -185,10 +186,22 @@ pub fn run(args: &SizeArgs) -> Result<Output, CliError> {
             .cmp(&a.line_count)
             .then_with(|| (&a.path, a.line).cmp(&(&b.path, b.line)))
     });
-    let (findings, checked) = changes.as_ref().map_or_else(
-        || (Vec::new(), 0),
-        |changes| growth(root, changes, &settings),
+    let (findings, checked) = match &changes {
+        Some(changes) => growth(root, changes, &settings)?,
+        None => (Vec::new(), 0),
+    };
+    let mut skipped_files = loaded.skipped_files();
+    skipped_files.extend(
+        changes
+            .iter()
+            .flat_map(|changes| &changes.skipped)
+            .map(|path| Skipped {
+                path: path.clone(),
+                reason: "the changed path is not UTF-8 text, so the growth rule cannot check it"
+                    .to_owned(),
+            }),
     );
+    skipped_files.sort();
     let summary = Summary {
         max_file_lines: settings.max_file_lines,
         max_function_lines: settings.max_function_lines,
@@ -197,11 +210,7 @@ pub fn run(args: &SizeArgs) -> Result<Output, CliError> {
         files: loaded.files.len(),
         large_files,
         large_functions,
-        skipped_files: loaded
-            .skipped
-            .iter()
-            .map(|file| file.path.clone())
-            .collect(),
+        skipped_files,
     };
     let mut report = Report::new("size", summary, findings);
     let outcome = if changes.is_some() {
@@ -226,41 +235,41 @@ fn growth(
     root: &std::path::Path,
     changes: &Changes,
     settings: &config::Size,
-) -> (Vec<Finding>, usize) {
+) -> Result<(Vec<Finding>, usize), CliError> {
     let checked: Vec<&Change> = changes
-        .changes
+        .files
         .iter()
         .filter(|change| is_checked_path(&change.path))
         .filter(|change| !matches_prefix(&change.path, &settings.exclude))
         .collect();
-    let mut findings: Vec<Finding> = checked
-        .iter()
-        .filter_map(|change| {
-            let text = git::blob(root, &change.new_spec)?;
-            let lines = count_lines(&text);
-            if lines <= settings.max_file_lines || is_generated(&text) {
-                return None;
+    let mut findings: Vec<Finding> = Vec::new();
+    for change in &checked {
+        let Some(text) = git::blob(root, &change.new_spec)? else {
+            continue;
+        };
+        let lines = count_lines(&text);
+        if lines <= settings.max_file_lines || is_generated(&text) {
+            continue;
+        }
+        let mut previous: Option<u32> = None;
+        for spec in &change.old_specs {
+            if let Some(old) = git::blob(root, spec)? {
+                previous = previous.max(Some(count_lines(&old)));
             }
-            let previous = change
-                .old_specs
-                .iter()
-                .filter_map(|spec| git::blob(root, spec))
-                .map(|old| count_lines(&old))
-                .max();
-            if previous.is_some_and(|old| lines <= old) {
-                return None;
-            }
-            Some(finding(
-                change,
-                lines,
-                previous,
-                &changes.label,
-                settings.max_file_lines,
-            ))
-        })
-        .collect();
+        }
+        if previous.is_some_and(|old| lines <= old) {
+            continue;
+        }
+        findings.push(finding(
+            change,
+            lines,
+            previous,
+            &changes.label,
+            settings.max_file_lines,
+        ));
+    }
     findings.sort_by(|a, b| a.path.cmp(&b.path));
-    (findings, checked.len())
+    Ok((findings, checked.len()))
 }
 
 fn finding(change: &Change, lines: u32, previous: Option<u32>, label: &str, limit: u32) -> Finding {
@@ -344,8 +353,8 @@ fn human(report: &Report<Summary, Finding>) -> String {
             )
         }),
     );
-    for path in &summary.skipped_files {
-        let _ = writeln!(text, "  skipped {path}: the file does not parse");
+    for file in &summary.skipped_files {
+        let _ = writeln!(text, "  skipped {}: {}", file.path, file.reason);
     }
     text.push_str(&gates_text(&report.gate_outcomes));
     text

@@ -24,6 +24,8 @@ pub enum ErrorCode {
     MutationFailed,
     /// A table under `[workspace.metadata.fallow]` is not valid.
     InvalidConfig,
+    /// A check did not finish before its time limit.
+    TimedOut,
 }
 
 impl ErrorCode {
@@ -36,6 +38,7 @@ impl ErrorCode {
             Self::OutputFailed => "CARGO_FALLOW_OUTPUT_FAILED",
             Self::MutationFailed => "CARGO_FALLOW_MUTATION_FAILED",
             Self::InvalidConfig => "CARGO_FALLOW_INVALID_CONFIG",
+            Self::TimedOut => "CARGO_FALLOW_TIMED_OUT",
         }
     }
 }

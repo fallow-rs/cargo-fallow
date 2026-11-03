@@ -124,6 +124,7 @@ pub struct Interval {
 /// earlier holds the same repeat with one more value.
 pub fn intervals(text: &[u32], order: &[u32], lcp: &[u32], min_length: u32) -> Vec<Interval> {
     let n = order.len();
+    let changes = left_changes(text, order);
     let mut found = Vec::new();
     let mut stack: Vec<(u32, usize)> = vec![(0, 0)];
     for index in 1..=n {
@@ -134,7 +135,8 @@ pub fn intervals(text: &[u32], order: &[u32], lcp: &[u32], min_length: u32) -> V
                 break;
             }
             stack.pop();
-            if length >= min_length && left_maximal(text, &order[start..index]) {
+            // The suffixes do not all follow the same value.
+            if length >= min_length && changes[index - 1] > changes[start] {
                 found.push(Interval {
                     length,
                     first: start,
@@ -150,14 +152,19 @@ pub fn intervals(text: &[u32], order: &[u32], lcp: &[u32], min_length: u32) -> V
     found
 }
 
-fn left_maximal(text: &[u32], starts: &[u32]) -> bool {
-    let mut before = starts
-        .iter()
-        .map(|&start| (start as usize).checked_sub(1).map(|at| text[at]));
-    let Some(Some(first)) = before.next() else {
-        return true;
-    };
-    before.any(|value| value != Some(first))
+/// For each index `i` of the suffix array, the number of indexes `j` in
+/// `1..=i` where the value before suffix `j` differs from the value before
+/// suffix `j - 1`. The start of the text has no value before it, which differs
+/// from each value. So the suffixes of `first..=last` all follow the same value
+/// exactly when `changes[last] == changes[first]`, and the check takes constant
+/// time for each interval.
+fn left_changes(text: &[u32], order: &[u32]) -> Vec<u32> {
+    let before = |index: usize| (order[index] as usize).checked_sub(1).map(|at| text[at]);
+    let mut changes = vec![0_u32; order.len()];
+    for index in 1..order.len() {
+        changes[index] = changes[index - 1] + u32::from(before(index) != before(index - 1));
+    }
+    changes
 }
 
 #[cfg(test)]

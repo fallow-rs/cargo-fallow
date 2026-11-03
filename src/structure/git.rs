@@ -27,8 +27,25 @@ pub struct Changes {
     /// The name of the old version for the messages.
     pub label: String,
     /// The changed files.
-    pub changes: Vec<Change>,
+    pub files: Vec<Change>,
+    /// The changed paths that are not UTF-8 text, with the bytes that are not
+    /// valid replaced. The growth rule cannot check them.
+    pub skipped: Vec<String>,
 }
+
+/// The variables that move git to another repository, index or object store.
+/// A hook or a parent process can set them, so each command removes them.
+const SCRUBBED_VARIABLES: [&str; 9] = [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_NAMESPACE",
+    "GIT_CEILING_DIRECTORIES",
+    "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+];
 
 /// The arguments of the diff: added, changed and renamed files, with renames.
 const DIFF_ARGS: [&str; 6] = [
@@ -42,17 +59,37 @@ const DIFF_ARGS: [&str; 6] = [
 
 /// The files that HEAD changes since the merge base of HEAD and `base`.
 pub fn since_base(root: &Path, base: &str) -> Result<Changes, CliError> {
-    let merge_base = git(root, &["merge-base", "HEAD", base])
-        .map_err(|detail| cannot_read(&format!("the merge base with `{base}`"), &detail))?;
+    let commit = verify_base(root, base)?;
+    let merge_base = git(root, &["merge-base", "HEAD", commit.as_str()])
+        .map_err(|detail| {
+            // `git merge-base` exits with 1 and no message when it finds no
+            // common commit.
+            let detail = if detail.trim().is_empty() {
+                "git found no common commit"
+            } else {
+                detail.as_str()
+            };
+            let error = cannot_read(&format!("the merge base with `{base}`"), detail);
+            if is_shallow(root) {
+                error.with_help(
+                    "The clone is shallow, so the merge base can be missing. Fetch more history (for example `git fetch --unshallow`).",
+                )
+            } else {
+                error
+            }
+        })
+        .and_then(|output| text(output, "the merge base"))?;
     let merge_base = merge_base.trim().to_owned();
     let mut args = DIFF_ARGS.to_vec();
     args.extend(["--relative", merge_base.as_str(), "HEAD"]);
     let listed = git(root, &args)
         .map_err(|detail| cannot_read(&format!("the diff with `{base}`"), &detail))?;
     let short: String = merge_base.chars().take(12).collect();
+    let (listed, skipped) = parse_name_status(&listed);
     Ok(Changes {
         label: format!("merge base {short}"),
-        changes: parse_name_status(&listed)
+        skipped,
+        files: listed
             .into_iter()
             .map(|(path, old_path)| Change {
                 new_spec: format!("HEAD:./{path}"),
@@ -68,7 +105,7 @@ pub fn since_base(root: &Path, base: &str) -> Result<Changes, CliError> {
 /// also in MERGE_HEAD.
 pub fn staged(root: &Path) -> Result<Changes, CliError> {
     let has_head = has_commit(root, "HEAD");
-    let listed = if has_head {
+    let (listed, skipped) = if has_head {
         let mut args = DIFF_ARGS.to_vec();
         args.extend(["--relative", "--cached", "HEAD"]);
         let output =
@@ -77,21 +114,29 @@ pub fn staged(root: &Path) -> Result<Changes, CliError> {
     } else {
         let output = git(root, &["ls-files", "-z", "--cached"])
             .map_err(|detail| cannot_read("the staged changes", &detail))?;
-        output
-            .split('\0')
-            .filter(|path| !path.is_empty())
-            .map(|path| (path.to_owned(), path.to_owned()))
-            .collect()
+        let mut listed = Vec::new();
+        let mut skipped = Vec::new();
+        for field in output
+            .split(|&byte| byte == 0)
+            .filter(|field| !field.is_empty())
+        {
+            match std::str::from_utf8(field) {
+                Ok(path) => listed.push((path.to_owned(), path.to_owned())),
+                Err(_) => skipped.push(String::from_utf8_lossy(field).into_owned()),
+            }
+        }
+        (listed, skipped)
     };
     let merging = has_head && has_commit(root, "MERGE_HEAD");
     Ok(Changes {
+        skipped,
         label: if merging {
             "HEAD or MERGE_HEAD"
         } else {
             "HEAD"
         }
         .to_owned(),
-        changes: listed
+        files: listed
             .into_iter()
             .map(|(path, old_path)| {
                 let mut old_specs = Vec::new();
@@ -113,9 +158,75 @@ pub fn staged(root: &Path) -> Result<Changes, CliError> {
     })
 }
 
-/// The text of a blob, or `None` when the blob does not exist.
-pub fn blob(root: &Path, spec: &str) -> Option<String> {
-    git(root, &["cat-file", "blob", spec]).ok()
+/// The text of a blob, or `None` when the blob does not exist: the file is
+/// new, or the old version did not have it. A byte that is not valid UTF-8
+/// becomes a replacement character, so the line count stays the same. A git
+/// failure is an error.
+pub fn blob(root: &Path, spec: &str) -> Result<Option<String>, CliError> {
+    let Some(object) = object_id(root, spec)? else {
+        return Ok(None);
+    };
+    let bytes = git(root, &["cat-file", "blob", object.as_str()])
+        .map_err(|detail| cannot_read(&format!("`{spec}`"), &detail))?;
+    Ok(Some(String::from_utf8_lossy(&bytes).into_owned()))
+}
+
+/// The object id of `spec`, or `None` when git reports no such object.
+fn object_id(root: &Path, spec: &str) -> Result<Option<String>, CliError> {
+    let output = run_git(
+        root,
+        &["rev-parse", "--verify", "--quiet", "--end-of-options", spec],
+    )
+    .map_err(|detail| cannot_read(&format!("`{spec}`"), &detail))?;
+    if output.status.success() {
+        let id = text(output.stdout, "an object id")?;
+        return Ok(Some(id.trim().to_owned()));
+    }
+    // `--verify --quiet` exits with 1 and no message for a missing object.
+    if output.status.code() == Some(1) && output.stderr.is_empty() {
+        return Ok(None);
+    }
+    Err(cannot_read(
+        &format!("`{spec}`"),
+        &String::from_utf8_lossy(&output.stderr),
+    ))
+}
+
+/// The commit of `base`. A value that starts with `-` is an error, because git
+/// would read it as an option.
+fn verify_base(root: &Path, base: &str) -> Result<String, CliError> {
+    if base.starts_with('-') || base.is_empty() {
+        return Err(CliError::new(
+            ErrorCode::InvalidArgument,
+            format!("`--base` must name a git ref, not `{base}`"),
+        )
+        .with_help("Give a branch, a tag or a commit, for example `--base origin/main`."));
+    }
+    let spec = format!("{base}^{{commit}}");
+    match object_id(root, &spec)? {
+        Some(commit) => Ok(commit),
+        None => Err(CliError::new(
+            ErrorCode::InvalidArgument,
+            format!("`{base}` is not a commit that git knows"),
+        )
+        .with_help("Give a ref that git knows. Run `git fetch` when the ref is on a remote.")),
+    }
+}
+
+/// True when the repository is a shallow clone.
+fn is_shallow(root: &Path) -> bool {
+    git(root, &["rev-parse", "--is-shallow-repository"])
+        .is_ok_and(|output| output.trim_ascii() == b"true")
+}
+
+/// The output as text, or an error that names `subject`.
+fn text(output: Vec<u8>, subject: &str) -> Result<String, CliError> {
+    String::from_utf8(output).map_err(|_| {
+        CliError::new(
+            ErrorCode::InvalidArgument,
+            format!("cannot read {subject}: the git output is not UTF-8 text"),
+        )
+    })
 }
 
 fn has_commit(root: &Path, name: &str) -> bool {
@@ -131,27 +242,34 @@ fn has_commit(root: &Path, name: &str) -> bool {
     .is_ok()
 }
 
-/// Reads `git diff --name-status -z` output as `(path, old path)` pairs.
-pub fn parse_name_status(output: &str) -> Vec<(String, String)> {
-    let fields: Vec<&str> = output.split('\0').collect();
+/// Reads `git diff --name-status -z` output as `(path, old path)` pairs. The
+/// second list holds each entry with a path that is not UTF-8 text.
+pub fn parse_name_status(output: &[u8]) -> (Vec<(String, String)>, Vec<String>) {
+    let fields: Vec<&[u8]> = output.split(|&byte| byte == 0).collect();
     let mut found = Vec::new();
+    let mut skipped = Vec::new();
     let mut index = 0;
+    let mut add =
+        |new: &[u8], old: &[u8]| match (std::str::from_utf8(new), std::str::from_utf8(old)) {
+            (Ok(new), Ok(old)) => found.push((new.to_owned(), old.to_owned())),
+            _ => skipped.push(String::from_utf8_lossy(new).into_owned()),
+        };
     while let Some(status) = fields.get(index).filter(|field| !field.is_empty()) {
-        if status.starts_with('R') || status.starts_with('C') {
+        if status.starts_with(b"R") || status.starts_with(b"C") {
             let (Some(old), Some(new)) = (fields.get(index + 1), fields.get(index + 2)) else {
                 break;
             };
-            found.push(((*new).to_owned(), (*old).to_owned()));
+            add(new, old);
             index += 3;
         } else {
             let Some(path) = fields.get(index + 1) else {
                 break;
             };
-            found.push(((*path).to_owned(), (*path).to_owned()));
+            add(path, path);
             index += 2;
         }
     }
-    found
+    (found, skipped)
 }
 
 fn cannot_read(subject: &str, detail: &str) -> CliError {
@@ -163,23 +281,34 @@ fn cannot_read(subject: &str, detail: &str) -> CliError {
 }
 
 /// Runs git in `root`. The error is the stderr text or the spawn error.
-fn git(root: &Path, args: &[&str]) -> Result<String, String> {
+fn git(root: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
+    let output = run_git(root, args)?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).into_owned());
+    }
+    Ok(output.stdout)
+}
+
+/// Runs git in `root` with a clean environment: no variable of
+/// [`SCRUBBED_VARIABLES`], and no optional locks, so a read does not write
+/// the index.
+fn run_git(root: &Path, args: &[&str]) -> Result<std::process::Output, String> {
     #[expect(
         clippy::disallowed_methods,
         reason = "the size check reads the changed files and the old blobs from git"
     )]
     let mut command = Command::new("git");
-    let output = command
+    for name in SCRUBBED_VARIABLES {
+        command.env_remove(name);
+    }
+    command
+        .env("GIT_OPTIONAL_LOCKS", "0")
         .arg("-C")
         .arg(root)
         .args(args)
         .stdin(Stdio::null())
         .output()
-        .map_err(|err| format!("git does not run: {err}"))?;
-    if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).into_owned());
-    }
-    String::from_utf8(output.stdout).map_err(|err| err.to_string())
+        .map_err(|err| format!("git does not run: {err}"))
 }
 
 #[cfg(test)]
@@ -188,15 +317,32 @@ mod tests {
 
     #[test]
     fn name_status_reads_plain_and_renamed_entries() {
-        let output = "M\0a.rs\0R087\0old.rs\0new.rs\0A\0b.rs\0";
+        let output = b"M\0a.rs\0R087\0old.rs\0new.rs\0A\0b.rs\0";
         assert_eq!(
-            parse_name_status(output),
+            parse_name_status(output).0,
             vec![
                 ("a.rs".to_owned(), "a.rs".to_owned()),
                 ("new.rs".to_owned(), "old.rs".to_owned()),
                 ("b.rs".to_owned(), "b.rs".to_owned()),
             ]
         );
-        assert!(parse_name_status("").is_empty());
+        assert!(parse_name_status(b"").0.is_empty());
+    }
+
+    #[test]
+    fn name_status_skips_an_entry_with_a_path_that_is_not_utf8() {
+        let output = b"M\0a.rs\0A\0bad\xff.rs\0R100\0old\xfe.rs\0new.rs\0A\0b.rs\0";
+        let (found, skipped) = parse_name_status(output);
+        assert_eq!(
+            found,
+            vec![
+                ("a.rs".to_owned(), "a.rs".to_owned()),
+                ("b.rs".to_owned(), "b.rs".to_owned()),
+            ]
+        );
+        assert_eq!(
+            skipped,
+            vec!["bad\u{fffd}.rs".to_owned(), "new.rs".to_owned()]
+        );
     }
 }

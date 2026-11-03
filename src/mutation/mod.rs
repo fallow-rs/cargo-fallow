@@ -51,3 +51,4 @@ mod sites;
 pub mod status;
 mod testrun;
 mod workdir;
+mod workers;

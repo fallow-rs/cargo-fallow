@@ -65,6 +65,8 @@ pub enum Parsed {
     Mutants(Box<crate::mutation::run::Options>),
     /// Run the experimental visibility check.
     Visibility(VisibilityOptions),
+    /// Run the unused dependency check.
+    Deps(crate::deps::Options),
     /// Run the hidden watchdog of the memory guard.
     Watchdog {
         /// The file that lists the root of each process tree.
@@ -99,6 +101,8 @@ enum Command {
     Check(CheckArgs),
     /// Run the tests against small changes in the source of one package.
     Mutants(MutantsArgs),
+    /// Report dependencies in Cargo.toml that no code uses.
+    Deps(DepsArgs),
     /// Report `pub` items that only their own crate uses. This is an experiment
     /// for the module graph, and its output can change.
     #[command(hide = true)]
@@ -309,6 +313,33 @@ impl From<VisibilityArgs> for VisibilityOptions {
 }
 
 #[derive(Debug, Args)]
+struct DepsArgs {
+    /// Path to the Cargo.toml of the workspace.
+    #[arg(long, value_name = "PATH")]
+    manifest_path: Option<PathBuf>,
+    /// The output format.
+    #[arg(long, value_enum, default_value_t = Format::Human)]
+    format: Format,
+    /// Hide the progress lines on stderr.
+    #[arg(long)]
+    quiet: bool,
+    /// Exit 1 when a finding has the `error` severity. A warning does not count.
+    #[arg(long)]
+    fail_on_issues: bool,
+}
+
+impl From<DepsArgs> for crate::deps::Options {
+    fn from(args: DepsArgs) -> Self {
+        Self {
+            manifest_path: args.manifest_path,
+            format: args.format,
+            quiet: args.quiet,
+            fail_on_issues: args.fail_on_issues,
+        }
+    }
+}
+
+#[derive(Debug, Args)]
 struct CheckArgs {
     /// Path to the Cargo.toml of the workspace.
     #[arg(long, value_name = "PATH")]
@@ -350,6 +381,7 @@ pub fn parse(args: &[OsString]) -> Parsed {
         Ok(cli) => match cli.command {
             Some(Command::Mutants(args)) => Parsed::Mutants(Box::new(args.into())),
             Some(Command::Visibility(args)) => Parsed::Visibility(args.into()),
+            Some(Command::Deps(args)) => Parsed::Deps(args.into()),
             Some(Command::MutationWatchdog {
                 roots,
                 sweep,

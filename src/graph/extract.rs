@@ -775,24 +775,38 @@ impl<'a> Walker<'a> {
         let Some(path) = ast::Path::cast(node.clone()) else {
             return;
         };
-        let skip = node.parent().is_some_and(|parent| {
-            matches!(
-                parent.kind(),
+        let parent = node.parent().map(|parent| parent.kind());
+        if matches!(
+            parent,
+            Some(SyntaxKind::PATH_META | SyntaxKind::TOKEN_TREE_META | SyntaxKind::KEY_VALUE_META)
+        ) {
+            self.attribute_path(&path);
+            return;
+        }
+        if matches!(
+            parent,
+            Some(
                 SyntaxKind::PATH
                     | SyntaxKind::USE_TREE
                     | SyntaxKind::VISIBILITY
                     | SyntaxKind::MACRO_CALL
-                    | SyntaxKind::PATH_META
-                    | SyntaxKind::TOKEN_TREE_META
-                    | SyntaxKind::KEY_VALUE_META
             )
-        });
-        if skip {
+        ) {
             return;
         }
         let (segments, global) = self.segments_of(&path);
         if !segments.is_empty() {
             self.add_ref(RefKind::Path { segments, global }, Origin::Body);
+        }
+    }
+
+    /// The path of an attribute, for example `#[tokio::main]`, is a reference
+    /// when it has a crate prefix. A single name needs an import, which is a
+    /// reference already. The attributes of the compiler and its tools are not.
+    fn attribute_path(&mut self, path: &ast::Path) {
+        let (segments, global) = path_segments(path);
+        if segments.len() > 1 && !is_builtin_attribute(&segments.join("::")) {
+            self.add_ref(RefKind::Path { segments, global }, Origin::Attr);
         }
     }
 
@@ -908,15 +922,33 @@ impl<'a> Walker<'a> {
 
     fn attr_refs(&mut self, owner: &ast::AnyHasAttrs) {
         for attr in owner.attrs() {
-            match attr.meta() {
-                Some(ast::Meta::TokenTreeMeta(meta)) => {
-                    if let Some(tree) = meta.token_tree() {
-                        self.token_refs(tree.syntax(), Origin::Attr);
-                    }
-                }
-                Some(ast::Meta::KeyValueMeta(meta)) => self.key_value(&meta),
-                _ => {}
+            if let Some(meta) = attr.meta() {
+                self.meta_refs(meta);
             }
+        }
+    }
+
+    /// The references of one attribute. The attributes inside `cfg_attr(..)`
+    /// and `unsafe(..)` count, because one `cfg` branch can apply them.
+    fn meta_refs(&mut self, meta: ast::Meta) {
+        match meta {
+            ast::Meta::TokenTreeMeta(meta) => {
+                if let Some(tree) = meta.token_tree() {
+                    self.token_refs(tree.syntax(), Origin::Attr);
+                }
+            }
+            ast::Meta::KeyValueMeta(meta) => self.key_value(&meta),
+            ast::Meta::CfgAttrMeta(meta) => {
+                for inner in meta.metas() {
+                    self.meta_refs(inner);
+                }
+            }
+            ast::Meta::UnsafeMeta(meta) => {
+                if let Some(inner) = meta.meta() {
+                    self.meta_refs(inner);
+                }
+            }
+            ast::Meta::CfgMeta(_) | ast::Meta::PathMeta(_) => {}
         }
     }
 

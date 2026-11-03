@@ -1,5 +1,6 @@
 //! The output of a run.
 
+pub mod deps;
 mod human;
 mod json;
 pub mod mutants;

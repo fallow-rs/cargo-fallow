@@ -381,6 +381,79 @@ The `gaps` part of the report counts the code that a run does not cover:
 - A test that closes each inherited file descriptor, or a system with no `/dev/fd`,
   turns the schema switch off. Then a mutant can survive. `--no-schema` checks that.
 
+## Unused dependencies
+
+`cargo fallow deps` reports the dependencies in `Cargo.toml` that no code of
+the package uses. It reads the first segment of each path, `use`, `extern
+crate`, macro path and attribute path in each target, also in macro tokens,
+attributes, `cfg_attr` and doc tests.
+
+```bash
+cargo fallow deps
+cargo fallow deps --fail-on-issues --format sarif --quiet
+```
+
+| Flag | Meaning |
+| --- | --- |
+| `--manifest-path <PATH>` | The `Cargo.toml` of the workspace. |
+| `--format human\|json\|sarif` | The output format. The default is `human`. |
+| `--quiet` | Hide the progress lines on stderr. |
+| `--fail-on-issues` | Exit 1 when a finding has the `error` severity. |
+
+The command runs `cargo metadata` with all features and without `--no-deps`,
+so it gets the library name and the `links` key of each dependency. Cargo can
+use the network and update `Cargo.lock`, the same as for `cargo check`.
+
+| Rule | Severity | Meaning |
+| --- | --- | --- |
+| `unused-dependency` | error | No code of the package uses the `[dependencies]` entry. |
+| `unused-dev-dependency` | error | No test, bench, example, doc test or `cfg(test)` code uses the entry. |
+| `unused-build-dependency` | error | The build script does not use the entry. |
+| `misplaced-dependency` | error | Only tests, benches, examples or doc tests use the `[dependencies]` entry. `used_by` names them. |
+| `unused-workspace-dependency` | error | No member inherits the `[workspace.dependencies]` entry, or each member entry that inherits it is unused. |
+| `unused-optional-dependency` | warning | No code uses the optional dependency. A feature enables it. |
+| `feature-only-dependency` | warning | No code uses the dependency, and a feature sets its features (`dep/feature`). |
+| `redundant-ignore` | warning | An ignore entry hides no finding. |
+
+Each finding has `package`, `manifest_path`, `line`, `section`, `platform`,
+`dependency` (the key in `Cargo.toml`), `package_name` (for a rename) and an
+`actions` array. The tool does not edit `Cargo.toml`, so `auto_fixable` is
+always `false`. Only `error` findings count for the `error-severity-findings`
+gate, and only `--fail-on-issues` enforces it.
+
+The check stays silent where the code can use a dependency without a name:
+
+- A dependency with a `links` key gets no error, because it can link a native
+  library. An optional one gets the warning.
+- `include!` can add code that the check cannot read. When the package has a
+  build script, the included code can use each `name::` in the text of the
+  build script and the runtime crate of an `X-build` or `X-codegen` build
+  dependency. Without a build script, it can use each dependency.
+- A package with a file that does not parse is not judged. The report lists
+  it in `skipped`.
+- A dev-dependency that repeats a normal dependency is not reported. It often
+  turns on more features for the tests.
+- A package with `trybuild`, `macrotest`, `ui_test` or `compiletest_rs` in
+  `[dev-dependencies]` gets no dev-dependency findings. These harnesses build
+  test files that no target declares.
+- Every `cfg` branch counts, so a `[target.'cfg(..)'.dependencies]` entry that
+  `#[cfg(..)]` code uses is in use.
+
+A crate that is in `Cargo.toml` only to turn on a feature of another
+dependency looks unused. Add its name to an ignore list:
+
+```toml
+[package.metadata.cargo-fallow.deps]
+ignored = ["chrono"] # unifies the features with a workspace build
+
+[workspace.metadata.cargo-fallow.deps]
+ignored = ["getrandom"]
+```
+
+The command also reads `ignored` in `[package.metadata.cargo-shear]` and
+`[workspace.metadata.cargo-shear]`, so a workspace can move from cargo-shear
+without a change. Only the cargo-fallow lists get `redundant-ignore` findings.
+
 ## Output formats
 
 This section describes `check`. [Output](#output) describes `mutants`.

@@ -160,3 +160,34 @@ fn local_items_in_a_body_are_not_items() {
     assert_eq!(found.items.len(), 1);
     assert_eq!(found.uses.len(), 1);
 }
+
+#[test]
+fn attribute_path_with_a_crate_prefix_is_a_reference() {
+    let found = facts(
+        "#[tokio::main]\nasync fn main() {}\n#[rustfmt::skip]\n#[cfg(test)]\n#[allow(dead_code)]\nfn f() {}\n",
+    );
+    let attrs: Vec<String> = found
+        .refs
+        .iter()
+        .filter(|reference| reference.origin == Origin::Attr)
+        .filter_map(|reference| match &reference.kind {
+            RefKind::Path { segments, .. } => Some(segments.join("::")),
+            _ => None,
+        })
+        .collect();
+    assert!(attrs.contains(&"tokio::main".to_owned()), "{attrs:?}");
+    for builtin in ["rustfmt::skip", "cfg", "allow"] {
+        assert!(!attrs.contains(&builtin.to_owned()), "{attrs:?}");
+    }
+}
+
+#[test]
+fn derive_path_inside_cfg_attr_is_a_reference() {
+    let found =
+        facts("#[cfg_attr(feature = \"x\", derive(arbitrary::Arbitrary))]\npub struct S;\n");
+    assert!(
+        path_refs(&found).contains(&"arbitrary::Arbitrary".to_owned()),
+        "{:?}",
+        path_refs(&found)
+    );
+}

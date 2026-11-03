@@ -92,8 +92,30 @@ pub struct Target {
 /// Reads the workspace. Cargo does not resolve dependencies, does not use the
 /// network and does not write `Cargo.lock`.
 pub fn load(manifest_path: Option<&Path>) -> Result<Workspace, CliError> {
+    metadata(manifest_path, false).map(|metadata| model(&metadata))
+}
+
+/// Reads the workspace and resolves the dependencies with all features on.
+/// Cargo can use the network and write `Cargo.lock`, the same as `cargo
+/// check`. The raw metadata has the library names and the `links` keys of the
+/// dependencies.
+pub fn load_resolved(
+    manifest_path: Option<&Path>,
+) -> Result<(Workspace, cargo_metadata::Metadata), CliError> {
+    let metadata = metadata(manifest_path, true)?;
+    Ok((model(&metadata), metadata))
+}
+
+fn metadata(
+    manifest_path: Option<&Path>,
+    resolve: bool,
+) -> Result<cargo_metadata::Metadata, CliError> {
     let mut command = MetadataCommand::new();
-    command.no_deps();
+    if resolve {
+        command.features(cargo_metadata::CargoOpt::AllFeatures);
+    } else {
+        command.no_deps();
+    }
     if let Some(path) = manifest_path {
         check_manifest(path)?;
         command.manifest_path(path);
@@ -103,6 +125,10 @@ pub fn load(manifest_path: Option<&Path>) -> Result<Workspace, CliError> {
         reason = "the workspace loader is the one module that spawns a process: `cargo metadata`"
     )]
     let metadata = command.exec().map_err(|err| metadata_error(&err))?;
+    Ok(metadata)
+}
+
+fn model(metadata: &cargo_metadata::Metadata) -> Workspace {
     let root = metadata.workspace_root.clone();
     let mut members: Vec<Member> = metadata
         .workspace_packages()
@@ -114,11 +140,11 @@ pub fn load(manifest_path: Option<&Path>) -> Result<Workspace, CliError> {
             .cmp(&b.name)
             .then_with(|| a.manifest_path.cmp(&b.manifest_path))
     });
-    Ok(Workspace {
+    Workspace {
         root,
-        target_dir: metadata.target_directory,
+        target_dir: metadata.target_directory.clone(),
         members,
-    })
+    }
 }
 
 fn check_manifest(path: &Path) -> Result<(), CliError> {

@@ -10,6 +10,7 @@
 
 mod attrs;
 mod cli;
+mod deps;
 mod error;
 mod gates;
 mod graph;
@@ -40,6 +41,7 @@ pub fn run(args: Vec<OsString>) -> ExitCode {
     let code = match cli::parse(&args) {
         Parsed::Run(options) => run_check(&options),
         Parsed::Mutants(options) => run_mutants(&options),
+        Parsed::Deps(options) => run_deps(&options),
         Parsed::Visibility(options) => run_visibility(&options),
         Parsed::Watchdog {
             roots,
@@ -104,6 +106,29 @@ fn visibility_report(options: &cli::VisibilityOptions) -> Result<u8, CliError> {
     };
     render::write_stdout(text.trim_end()).map_err(|err| CliError::output(&err))?;
     Ok(EXIT_OK)
+}
+
+/// Runs the `deps` command and returns the process exit code.
+fn run_deps(options: &deps::Options) -> u8 {
+    deps_report(options).unwrap_or_else(|err| {
+        err.emit(options.format);
+        EXIT_INVALID_INPUT
+    })
+}
+
+fn deps_report(options: &deps::Options) -> Result<u8, CliError> {
+    let report = deps::run(options)?;
+    let text = match options.format {
+        cli::Format::Human => render::deps::human(&report),
+        cli::Format::Json => to_json(&report)?,
+        cli::Format::Sarif => render::deps::sarif(&report).map_err(|err| CliError::output(&err))?,
+    };
+    render::write_stdout(text.trim_end()).map_err(|err| CliError::output(&err))?;
+    Ok(if report.fails_run() {
+        EXIT_GATE_FAILED
+    } else {
+        EXIT_OK
+    })
 }
 
 /// Runs the `mutants` command and returns the process exit code.

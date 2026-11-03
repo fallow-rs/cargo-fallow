@@ -5,6 +5,12 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # This repository is private, so macOS minutes cost 10 times the Linux
+  # price. Pull requests and pushes to main run on Linux only. The weekly run
+  # and a manual run also test macOS and Windows.
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
 
 # Deny all permissions by default, grant per-job as needed
 permissions: {}
@@ -26,7 +32,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-26.04, macos-latest]
+        os: ${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["ubuntu-26.04","macos-latest"]' || '["ubuntu-26.04"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -55,7 +61,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-26.04, macos-latest, windows-latest]
+        os: ${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["ubuntu-26.04","macos-latest","windows-latest"]' || '["ubuntu-26.04"]') }}
     env:
       # `cargo install` builds in this folder, so the Rust cache keeps it.
       CARGO_TARGET_DIR: ${{ github.workspace }}/target

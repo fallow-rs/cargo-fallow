@@ -5,6 +5,12 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # This repository is private, so macOS minutes cost 10 times the Linux
+  # price. Pull requests and pushes to main run on Linux only. The weekly run
+  # and a manual run also test macOS and Windows.
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
 
 # Deny all permissions by default, grant per-job as needed
 permissions: {}
@@ -67,7 +73,7 @@ jobs:
       fail-fast: false
       matrix:
         # The `windows` job below runs the tests on Windows.
-        os: [ubuntu-26.04, macos-latest]
+        os: ${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["ubuntu-26.04","macos-latest"]' || '["ubuntu-26.04"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -105,6 +111,7 @@ jobs:
   # see all of it. The same pattern as the `windows-rust` job in fallow.
   windows:
     name: Windows path handling
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: windows-latest
     timeout-minutes: 30
     permissions:

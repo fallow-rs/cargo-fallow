@@ -161,7 +161,7 @@ pub fn run(args: &SizeArgs) -> Result<Section, CliError> {
         loaded: &loaded,
         settings: &settings,
         changes: changes.as_ref(),
-        enforced: args.fail_on_growth,
+        enforced: args.fail_on_growth || args.fail_on_issues,
     })
 }
 

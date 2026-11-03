@@ -248,11 +248,9 @@ assert_equals "$(output_of results)" "$(cd "$CASE_DIR/artifacts" && pwd -P)/carg
 assert_equals "$(output_of report)" "$(cd "$CASE_DIR/artifacts" && pwd -P)/cargo-fallow-report.txt" "check: report output is the human report"
 assert_equals "$(output_of path-prefix)" "" "check: no cargo, so no prefix"
 
-for pair in check:--fail-on-issues deps:--fail-on-issues visibility:--fail-on-issues \
-  boundaries:--fail-on-violations size:--fail-on-growth complexity:--fail-on-complexity \
-  dupes:--fail-on-clones; do
-  run_analyze INPUT_COMMAND="${pair%%:*}" INPUT_FORMAT=json
-  assert_equals "$(call_args 1)" "${pair%%:*} ${pair#*:} --format json " "${pair%%:*}: the gate flag is ${pair#*:}"
+for command in check deps visibility boundaries size complexity dupes mutants; do
+  run_analyze INPUT_COMMAND="$command" INPUT_FORMAT=json
+  assert_equals "$(call_args 1)" "$command --fail-on-issues --format json " "$command: the gate flag is --fail-on-issues"
 done
 
 run_analyze INPUT_COMMAND=complexity INPUT_FAIL_ON_ISSUES=false INPUT_FORMAT=sarif
@@ -261,13 +259,17 @@ assert_equals "$(calls_made)" "2" "format sarif: no human run"
 assert_equals "$(output_of report)" "$(output_of sarif)" "format sarif: report is the SARIF log"
 assert_equals "$(output_of gates-failed)" "health-findings" "gates-failed output"
 
+run_analyze INPUT_COMMAND=complexity INPUT_ARGS="--fail-on-issues --max-cyclomatic 10"
+assert_equals "$(call_args 1)" "complexity --fail-on-issues --max-cyclomatic 10 --format json " "a gate flag in args is not given twice"
 run_analyze INPUT_COMMAND=complexity INPUT_ARGS="--fail-on-complexity --max-cyclomatic 10"
-assert_equals "$(call_args 1)" "complexity --fail-on-complexity --max-cyclomatic 10 --format json " "a gate flag in args is not given twice"
+assert_equals "$(call_args 1)" "complexity --fail-on-complexity --max-cyclomatic 10 --format json " "an older gate flag in args gives no second gate flag"
+run_analyze INPUT_COMMAND=size INPUT_ARGS="--fail-on-clones"
+assert_equals "$(call_args 1)" "size --fail-on-issues --fail-on-clones --format json " "the older flag of another command does not count"
 
 MARKER="$WORK/pwned"
 run_analyze INPUT_COMMAND=dupes INPUT_FORMAT=json INPUT_ARGS="--min-tokens 40 \$(touch $MARKER) ;touch $MARKER \`touch $MARKER\` *
 --skip-local"
-assert_equals "$(call_args 1)" "dupes --fail-on-clones --min-tokens 40 \$(touch $MARKER) ;touch $MARKER \`touch $MARKER\` * --skip-local --format json " "args stay literal, also after a line break"
+assert_equals "$(call_args 1)" "dupes --fail-on-issues --min-tokens 40 \$(touch $MARKER) ;touch $MARKER \`touch $MARKER\` * --skip-local --format json " "args stay literal, also after a line break"
 if [ -e "$MARKER" ]; then fail "args run no command" "the marker file exists"; else pass "args run no command"; fi
 
 for bad in "--format json" "--format=sarif" "--quiet"; do
@@ -293,7 +295,7 @@ run_analyze INPUT_COMMAND=mutants STUB_JSON="$FIXTURES/mutants.json" STUB_SARIF=
   INPUT_PACKAGE=my-crate INPUT_MAX_MUTANTS=10 INPUT_TIME_BUDGET=600 INPUT_JOBS=2 INPUT_TIMEOUT=30 \
   INPUT_BASE=auto PR_BASE_SHA=0123abc
 assert_equals "$(calls_made)" "1" "mutants: one run"
-assert_equals "$(call_args 1)" "mutants --fail-on-survivors --in-diff 0123abc --package my-crate --max-mutants 10 --time-budget 600 --jobs 2 --timeout 30 --format json " "mutants: the inputs become flags"
+assert_equals "$(call_args 1)" "mutants --fail-on-issues --in-diff 0123abc --package my-crate --max-mutants 10 --time-budget 600 --jobs 2 --timeout 30 --format json " "mutants: the inputs become flags"
 if diff <(jq -S . "$(output_of sarif)") <(jq -S . "$FIXTURES/mutants.sarif") > /dev/null; then
   pass "mutants: the SARIF log comes from the JSON report"
 else
@@ -303,12 +305,12 @@ assert_equals "$(output_of mutation-score)" "66.7" "mutants: mutation-score outp
 assert_contains "$OUT" "The mutants run has no second human run" "mutants: format human explains the log"
 
 run_analyze INPUT_COMMAND=mutants INPUT_BASE=auto STUB_JSON="$FIXTURES/mutants.json"
-assert_equals "$(call_args 1)" "mutants --fail-on-survivors --format json " "base auto with no pull request gives no flag"
+assert_equals "$(call_args 1)" "mutants --fail-on-issues --format json " "base auto with no pull request gives no flag"
 assert_contains "$OUT" "base: auto needs a pull request event" "base auto with no pull request explains it"
 run_analyze INPUT_COMMAND=size INPUT_BASE=origin/main INPUT_FORMAT=json
-assert_equals "$(call_args 1)" "size --fail-on-growth --base origin/main --format json " "size: base becomes --base"
+assert_equals "$(call_args 1)" "size --fail-on-issues --base origin/main --format json " "size: base becomes --base"
 run_analyze INPUT_COMMAND=complexity INPUT_BASE=origin/main INPUT_PACKAGE=x INPUT_FORMAT=json
-assert_equals "$(call_args 1)" "complexity --fail-on-complexity --format json " "complexity: base and mutants inputs give no flags"
+assert_equals "$(call_args 1)" "complexity --fail-on-issues --format json " "complexity: base and mutants inputs give no flags"
 assert_contains "$OUT" "The 'base' input applies only to size and mutants" "complexity: base gives a warning"
 assert_contains "$OUT" "The mutants-* inputs apply only to command: mutants" "complexity: mutants inputs give a warning"
 

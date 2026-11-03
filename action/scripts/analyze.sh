@@ -31,15 +31,17 @@ fail() {
   exit 1
 }
 
-# The flag that turns the gate of each command into exit code 1.
-fail_flag() {
+# The flags that turn the gate of each command into exit code 1. Each command
+# accepts `--fail-on-issues`, and the action gives that flag. The other flag is
+# the older name of the same gate.
+gate_flags() {
   case "$1" in
     check | deps | visibility) echo "--fail-on-issues" ;;
-    boundaries) echo "--fail-on-violations" ;;
-    size) echo "--fail-on-growth" ;;
-    complexity) echo "--fail-on-complexity" ;;
-    dupes) echo "--fail-on-clones" ;;
-    mutants) echo "--fail-on-survivors" ;;
+    boundaries) echo "--fail-on-issues --fail-on-violations" ;;
+    size) echo "--fail-on-issues --fail-on-growth" ;;
+    complexity) echo "--fail-on-issues --fail-on-complexity" ;;
+    dupes) echo "--fail-on-issues --fail-on-clones" ;;
+    mutants) echo "--fail-on-issues --fail-on-survivors" ;;
     *) return 1 ;;
   esac
 }
@@ -93,7 +95,7 @@ path_prefix() {
 }
 
 COMMAND="$INPUT_COMMAND"
-FLAG="$(fail_flag "$COMMAND")" \
+GATE_FLAGS="$(gate_flags "$COMMAND")" \
   || fail "Invalid 'command' input: ${COMMAND}. Use check, deps, visibility, boundaries, size, complexity, dupes or mutants."
 case "$INPUT_FORMAT" in
   human | json | sarif) ;;
@@ -125,11 +127,14 @@ if [ -n "$INPUT_MANIFEST_PATH" ]; then
   ARGS+=(--manifest-path "$INPUT_MANIFEST_PATH")
 fi
 if [ "$INPUT_FAIL_ON_ISSUES" = "true" ]; then
+  read -r -a FLAGS <<< "$GATE_FLAGS"
   has_flag=false
   for arg in "${EXTRA[@]+"${EXTRA[@]}"}"; do
-    [ "$arg" = "$FLAG" ] && has_flag=true
+    for flag in "${FLAGS[@]}"; do
+      [ "$arg" = "$flag" ] && has_flag=true
+    done
   done
-  [ "$has_flag" = "true" ] || ARGS+=("$FLAG")
+  [ "$has_flag" = "true" ] || ARGS+=(--fail-on-issues)
 fi
 
 BASE="$INPUT_BASE"

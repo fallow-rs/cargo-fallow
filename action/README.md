@@ -109,14 +109,20 @@ The `mutants-*` inputs apply only to `command: mutants`. For other flags, use
 
 ### Gate flags
 
-| Command | Flag |
+The action gives `--fail-on-issues` to each command. The commands below also
+accept an older flag for the same gate. When `args` holds the older flag, the
+action does not add `--fail-on-issues`.
+
+| Command | Older flag |
 | --- | --- |
-| `check`, `deps`, `visibility` | `--fail-on-issues` |
 | `boundaries` | `--fail-on-violations` |
 | `size` | `--fail-on-growth` |
 | `complexity` | `--fail-on-complexity` |
 | `dupes` | `--fail-on-clones` |
 | `mutants` | `--fail-on-survivors` |
+
+`size` has a growth gate only with `--base` or `--staged`. Set the `base`
+input to turn the gate on.
 
 An execution error (exit code 2) fails the job also with
 `fail-on-issues: false`.

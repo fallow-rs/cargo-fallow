@@ -47,6 +47,8 @@ line_count() {
 TOOLS="$WORK/tools"
 mkdir -p "$TOOLS"
 ln -s "$(command -v jq)" "$TOOLS/jq"
+# install.sh checks the release signature with node.
+if command -v node > /dev/null 2>&1; then ln -s "$(command -v node)" "$TOOLS/node"; fi
 BASE_PATH="$TOOLS:/usr/bin:/bin"
 
 # --- The stub binary ---------------------------------------------------------
@@ -413,11 +415,12 @@ assert_contains "$OUT" "DRY RUN: cargo install --locked --root $INSTALL_CASE/car
 assert_equals "$(cat "$INSTALL_CASE/path")" "$INSTALL_CASE/cargo-fallow-install/bin" "source: the bin folder goes on the PATH"
 run_install INPUT_INSTALL=auto ACTION_PATH="$RELEASED"
 assert_equals "$(output_of method)" "release" "auto: a released action ref takes the release binary"
-assert_contains "$OUT" "DRY RUN: download https://github.com/fallow-rs/cargo-fallow/releases/download/v0.3.1/cargo-fallow-x86_64-unknown-linux-gnu.tar.xz" "release: the asset of the action version"
+assert_contains "$OUT" "DRY RUN: download https://github.com/fallow-rs/cargo-fallow/releases/download/v0.3.1/cargo-fallow-0.3.1-x86_64-unknown-linux-musl.tar.gz" "release: the asset of the action version"
+assert_contains "$OUT" "check https://github.com/fallow-rs/cargo-fallow/releases/download/v0.3.1/cargo-fallow-0.3.1-x86_64-unknown-linux-musl.tar.gz.sig and" "release: the signature of the asset"
 run_install INPUT_INSTALL=release ACTION_PATH="$RELEASED" INPUT_VERSION=v0.4.0 RUNNER_OS=Windows
-assert_contains "$OUT" "/v0.4.0/cargo-fallow-x86_64-pc-windows-msvc.zip" "release: the version input wins, and Windows takes a zip"
+assert_contains "$OUT" "/v0.4.0/cargo-fallow-0.4.0-x86_64-pc-windows-msvc.zip" "release: the version input wins, and Windows takes a zip"
 run_install INPUT_INSTALL=release ACTION_PATH="$RELEASED" RUNNER_OS=Linux RUNNER_ARCH=ARM64
-assert_contains "$OUT" "cargo-fallow-aarch64-unknown-linux-gnu.tar.xz" "release: Linux ARM64"
+assert_contains "$OUT" "cargo-fallow-0.3.1-aarch64-unknown-linux-musl.tar.gz" "release: Linux ARM64"
 run_install INPUT_INSTALL=release
 assert_equals "$CODE" "1" "release: an unreleased version fails"
 assert_contains "$OUT" "install: release found no binary" "release: the failure names other methods"
@@ -435,31 +438,97 @@ assert_contains "$OUT" "Invalid 'version' input" "an invalid version explains th
 run_install INPUT_INSTALL=npm
 assert_contains "$OUT" "Invalid 'install' input" "an unknown method explains the failure"
 
-# A real download from a file URL, with a good and with a bad checksum.
+# A real download from a file URL, with good and bad signatures and checksums.
+# The names are those of .github/workflows/release.yml. The test key pair
+# replaces the release key through CARGO_FALLOW_SIGNING_PUBLIC_KEY.
 sha256() {
   if command -v sha256sum > /dev/null 2>&1; then sha256sum "$1" | awk '{ print $1 }'; else shasum -a 256 "$1" | awk '{ print $1 }'; fi
 }
+NAME="cargo-fallow-0.3.1-x86_64-unknown-linux-musl"
+ASSET="$NAME.tar.gz"
 DIST="$WORK/dist/v0.3.1"
-mkdir -p "$DIST" "$WORK/pack/cargo-fallow-x86_64-unknown-linux-gnu"
-printf '#!/bin/sh\necho "cargo-fallow 0.3.1"\n' > "$WORK/pack/cargo-fallow-x86_64-unknown-linux-gnu/cargo-fallow"
-chmod +x "$WORK/pack/cargo-fallow-x86_64-unknown-linux-gnu/cargo-fallow"
-(cd "$WORK/pack" && tar -cJf "$DIST/cargo-fallow-x86_64-unknown-linux-gnu.tar.xz" cargo-fallow-x86_64-unknown-linux-gnu)
-printf '%s  cargo-fallow-x86_64-unknown-linux-gnu.tar.xz\n' "$(sha256 "$DIST/cargo-fallow-x86_64-unknown-linux-gnu.tar.xz")" > "$DIST/cargo-fallow-x86_64-unknown-linux-gnu.tar.xz.sha256"
-if command -v curl > /dev/null 2>&1 && command -v xz > /dev/null 2>&1; then
-  run_install INPUT_INSTALL=release ACTION_PATH="$RELEASED" CARGO_FALLOW_DRY_RUN=0 CARGO_FALLOW_RELEASE_URL="file://$WORK/dist"
-  assert_equals "$CODE" "0" "release download: a good checksum installs"
+mkdir -p "$DIST" "$WORK/pack/$NAME"
+printf '#!/bin/sh\necho "cargo-fallow 0.3.1"\n' > "$WORK/pack/$NAME/cargo-fallow"
+chmod +x "$WORK/pack/$NAME/cargo-fallow"
+(cd "$WORK/pack" && tar -czf "$DIST/$ASSET" "$NAME")
+write_checksum() {
+  printf '%s  %s\n' "$(sha256 "$DIST/$ASSET")" "$ASSET" > "$DIST/$ASSET.sha256"
+}
+write_checksum
+SIGN="$ACTION_DIR/../.github/scripts/sign-binary.mjs"
+VERIFY="$SCRIPTS/verify-signature.mjs"
+TEST_SEED="$(printf 'cargo-fallow action test key 32b' | base64)"
+OTHER_SEED="$(printf 'cargo-fallow action other key 32' | base64)"
+public_key_of() {
+  node -e 'const c = require("node:crypto");
+const seed = Buffer.from(process.argv[1], "base64");
+const header = Buffer.from("302e020100300506032b657004220420", "hex");
+const key = c.createPrivateKey({ key: Buffer.concat([header, seed]), format: "der", type: "pkcs8" });
+const spki = c.createPublicKey(key).export({ format: "der", type: "spki" });
+process.stdout.write(spki.subarray(-32).toString("base64"));' "$1"
+}
+sign_with() {
+  ED25519_BINARY_SIGNING_PRIVATE_KEY="$1" node "$SIGN" "$DIST/$ASSET" "$DIST/$ASSET.sig" > /dev/null
+}
+download() {
+  run_install INPUT_INSTALL="$1" ACTION_PATH="$RELEASED" CARGO_FALLOW_DRY_RUN=0 \
+    CARGO_FALLOW_RELEASE_URL="file://$WORK/dist" CARGO_FALLOW_SIGNING_PUBLIC_KEY="$TEST_PUBLIC_KEY"
+}
+if command -v curl > /dev/null 2>&1 && command -v node > /dev/null 2>&1; then
+  TEST_PUBLIC_KEY="$(public_key_of "$TEST_SEED")"
+  sign_with "$TEST_SEED"
+  node "$VERIFY" "$DIST/$ASSET" "$DIST/$ASSET.sig" > /dev/null 2>&1
+  assert_equals "$?" "1" "verify-signature: the release key rejects a signature of another key"
+  CARGO_FALLOW_SIGNING_PUBLIC_KEY="$TEST_PUBLIC_KEY" node "$VERIFY" "$DIST/$ASSET" "$DIST/$ASSET.sig"
+  assert_equals "$?" "0" "verify-signature: the signer and the verifier agree"
+  download release
+  assert_equals "$CODE" "0" "release download: a good signature and checksum install"
   assert_contains "$OUT" "cargo-fallow: cargo-fallow 0.3.1 (install: release)" "release download: the binary runs"
-  printf '%s  x\n' "0000000000000000000000000000000000000000000000000000000000000000" > "$DIST/cargo-fallow-x86_64-unknown-linux-gnu.tar.xz.sha256"
-  run_install INPUT_INSTALL=auto ACTION_PATH="$RELEASED" CARGO_FALLOW_DRY_RUN=0 CARGO_FALLOW_RELEASE_URL="file://$WORK/dist"
+
+  sign_with "$OTHER_SEED"
+  download auto
+  assert_equals "$CODE" "1" "release download: a signature of another key fails, also for auto"
+  assert_contains "$OUT" "The Ed25519 signature of $ASSET is not valid." "release download: the failure names the signature"
+  assert_not_contains "$OUT" "Building cargo-fallow from the source" "release download: a bad signature does not fall back"
+
+  sign_with "$TEST_SEED"
+  printf 'changed' >> "$DIST/$ASSET"
+  write_checksum
+  download release
+  assert_equals "$CODE" "1" "release download: a changed archive with a new checksum fails the signature"
+  assert_contains "$OUT" "signature of $ASSET is not valid" "release download: the signature finds a replaced archive"
+  (cd "$WORK/pack" && tar -czf "$DIST/$ASSET" "$NAME")
+  write_checksum
+
+  rm -f "$DIST/$ASSET.sig"
+  download auto
+  assert_equals "$CODE" "1" "release download: a missing signature fails, also for auto"
+  assert_contains "$OUT" "The release has no signature $ASSET.sig" "release download: the failure names the missing signature"
+
+  sign_with "$TEST_SEED"
+  printf '%s  x\n' "0000000000000000000000000000000000000000000000000000000000000000" > "$DIST/$ASSET.sha256"
+  download auto
   assert_equals "$CODE" "1" "release download: a bad checksum fails, also for auto"
-  assert_contains "$OUT" "The SHA-256 of cargo-fallow-x86_64-unknown-linux-gnu.tar.xz is" "release download: the failure names the checksum"
+  assert_contains "$OUT" "The SHA-256 of $ASSET is" "release download: the failure names the checksum"
   assert_not_contains "$OUT" "Building cargo-fallow from the source" "release download: a bad checksum does not fall back"
+  write_checksum
+
   run_install INPUT_INSTALL=release ACTION_PATH="$RELEASED" CARGO_FALLOW_DRY_RUN=0 CARGO_FALLOW_RELEASE_URL="http://127.0.0.1:9/dist"
   assert_equals "$CODE" "1" "release download: a plain http URL is refused"
   assert_contains "$OUT" "No release asset at http://127.0.0.1:9/dist" "release download: the refused URL is named"
   assert_contains "$OUT" "Protocol" "release download: curl refuses the http protocol"
 else
-  echo "  skip release download: curl or xz is missing"
+  echo "  skip release download: curl or node is missing"
+fi
+if ! PATH=/usr/bin:/bin command -v node > /dev/null 2>&1; then
+  OUT="$(env -i PATH=/usr/bin:/bin HOME="$WORK" RUNNER_TEMP="$WORK" GITHUB_OUTPUT=/dev/null \
+    GITHUB_PATH=/dev/null RUNNER_OS=Linux RUNNER_ARCH=X64 ACTION_PATH="$RELEASED" \
+    INPUT_INSTALL=release CARGO_FALLOW_RELEASE_URL="file://$WORK/dist" \
+    bash "$SCRIPTS/install.sh" 2>&1)"
+  assert_equals "$?" "1" "release download: a runner without node fails closed"
+  assert_contains "$OUT" "cannot check the signature" "release download: the failure names node"
+else
+  echo "  skip release download without node: /usr/bin has node"
 fi
 
 echo "code-scanning.sh"

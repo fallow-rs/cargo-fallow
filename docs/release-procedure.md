@@ -26,13 +26,17 @@ A release does these steps in this order:
    `x86_64-apple-darwin`, `aarch64-apple-darwin` and `x86_64-pc-windows-msvc`.
    Each archive has a `.sha256` file.
 3. The `attest` job writes a build provenance attestation for each archive.
-4. The `publish-crate` job publishes the crate to crates.io with trusted
+4. The `sign` job writes an Ed25519 signature `<archive>.sig` for each
+   archive with the `ED25519_BINARY_SIGNING_PRIVATE_KEY` secret. Then it checks
+   each signature with the public key in `action/scripts/verify-signature.mjs`.
+   The key pair is the key pair of the fallow repo.
+5. The `publish-crate` job publishes the crate to crates.io with trusted
    publishing. It gets a short-lived token through OIDC. The repository has no
    crates.io token.
-5. The `github-release` job creates the GitHub release with the notes, the
-   archives, the `.sha256` files and one `SHA256SUMS` file.
+6. The `github-release` job creates the GitHub release with the notes, the
+   archives, the `.sha256` files, the `.sig` files and one `SHA256SUMS` file.
 
-Jobs 3, 4 and 5 run only for a release, in the `release` environment.
+Jobs 3 to 6 run only for a release, in the `release` environment.
 `.github/scripts/release-workflow.test.mjs` checks the triggers, the
 permissions, the environment of each job and the action pins.
 
@@ -95,8 +99,11 @@ In the repository settings, open **Environments** and create `release`:
   OIDC token for this environment.
 - **Required reviewers**: add yourself. Each release then waits for your
   approval before the credential jobs start. GitHub asks once for each of the
-  three jobs `attest`, `publish-crate` and `github-release`.
-- Add no secrets. Trusted publishing needs none.
+  four jobs `attest`, `sign`, `publish-crate` and `github-release`.
+- Add one secret, `ED25519_BINARY_SIGNING_PRIVATE_KEY`, with the same value
+  as the secret of the same name in the `fallow-rs/fallow` repository: the
+  32-byte Ed25519 seed in base64. The `sign` job fails without it. Trusted
+  publishing needs no crates.io secret.
 
 Also add a tag ruleset for `v*` that lets only the owner create, update or
 delete a release tag.

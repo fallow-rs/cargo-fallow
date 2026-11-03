@@ -258,6 +258,61 @@ jobs:
             dist/*.tar.gz
             dist/*.zip
 
+  # Each archive gets an Ed25519 signature, the same model as the fallow repo.
+  # The Action installer checks the signature with the public key in
+  # action/scripts/verify-signature.mjs. This job checks each new signature
+  # with that key, so a wrong secret stops the release.
+  sign:
+    name: Sign the archives
+    needs: [plan, build]
+    if: ${{ needs.plan.outputs.publish == 'true' }}
+    environment: release
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '26'
+          package-manager-cache: false
+
+      - name: Download the archives
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          path: dist
+          pattern: binary-*
+          merge-multiple: true
+
+      - name: Sign and check each archive
+        shell: bash
+        env:
+          ED25519_BINARY_SIGNING_PRIVATE_KEY: ${{ secrets.ED25519_BINARY_SIGNING_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          archives=(dist/*.tar.gz dist/*.zip)
+          if [ "${#archives[@]}" -eq 0 ]; then
+            echo "::error::The build jobs gave no archive to sign"
+            exit 1
+          fi
+          for archive in "${archives[@]}"; do
+            node .github/scripts/sign-binary.mjs "$archive" "${archive}.sig"
+            node action/scripts/verify-signature.mjs "$archive" "${archive}.sig"
+          done
+
+      - name: Upload the signatures
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: signatures
+          path: dist/*.sig
+          if-no-files-found: error
+          retention-days: 7
+
   publish-crate:
     name: Publish to crates.io
     needs: [plan, build, attest]
@@ -308,7 +363,7 @@ jobs:
 
   github-release:
     name: Create the GitHub release
-    needs: [plan, attest, publish-crate]
+    needs: [plan, attest, sign, publish-crate]
     if: ${{ needs.plan.outputs.publish == 'true' }}
     environment: release
     runs-on: ubuntu-26.04
@@ -322,6 +377,12 @@ jobs:
           path: dist
           pattern: binary-*
           merge-multiple: true
+
+      - name: Download the signatures
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: signatures
+          path: dist
 
       - name: Download the release notes
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
@@ -342,7 +403,7 @@ jobs:
           # replaces the assets and keeps the release.
           if gh release view "$TAG_NAME" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
             gh release upload "$TAG_NAME" --repo "$GITHUB_REPOSITORY" --clobber \
-              ./*.tar.gz ./*.zip ./*.sha256 SHA256SUMS
+              ./*.tar.gz ./*.zip ./*.sha256 ./*.sig SHA256SUMS
             exit 0
           fi
           gh release create "$TAG_NAME" \
@@ -350,4 +411,4 @@ jobs:
             --verify-tag \
             --title "cargo-fallow ${TAG_NAME}" \
             --notes-file ../notes/release-notes.md \
-            ./*.tar.gz ./*.zip ./*.sha256 SHA256SUMS
+            ./*.tar.gz ./*.zip ./*.sha256 ./*.sig SHA256SUMS

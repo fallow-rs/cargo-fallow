@@ -86,7 +86,7 @@ test("a release checks the tag, the manifest and the branch before it publishes"
   assert.match(plan, /git merge-base --is-ancestor "\$GITHUB_SHA" origin\/main/u);
   assert.match(plan, /node scripts\/release-notes\.mjs "\$VERSION" > notes/u);
   assert.match(job("publish-crate"), /^ {4}needs: \[plan, build, attest\]$/mu);
-  assert.match(job("github-release"), /^ {4}needs: \[plan, attest, publish-crate\]$/mu);
+  assert.match(job("github-release"), /^ {4}needs: \[plan, attest, sign, publish-crate\]$/mu);
   assert.match(job("attest"), /^ {4}needs: \[plan, build\]$/mu);
 });
 
@@ -99,6 +99,7 @@ test("each job has exactly the permissions it needs", () => {
     plan: ["contents: read"],
     build: ["contents: read"],
     attest: ["attestations: write", "contents: read", "id-token: write"],
+    sign: ["contents: read"],
     "publish-crate": ["contents: read", "id-token: write"],
     "github-release": ["contents: write"],
   };
@@ -171,4 +172,27 @@ test("each action in each workflow is pinned to a commit", () => {
       assert.ok(local || pinned, `${path}: ${reference} is not pinned to a commit`);
     }
   }
+});
+
+test("a release signs each archive and checks the signature with the action key", () => {
+  const sign = job("sign");
+  assert.match(sign, /^ {4}needs: \[plan, build\]$/mu);
+  assert.match(
+    sign,
+    /ED25519_BINARY_SIGNING_PRIVATE_KEY: \$\{\{ secrets\.ED25519_BINARY_SIGNING_PRIVATE_KEY \}\}/u,
+  );
+  assert.match(sign, /node \.github\/scripts\/sign-binary\.mjs "\$archive" "\$\{archive\}\.sig"/u);
+  assert.match(
+    sign,
+    /node action\/scripts\/verify-signature\.mjs "\$archive" "\$\{archive\}\.sig"/u,
+  );
+  assert.doesNotMatch(sign, /CARGO_FALLOW_SIGNING_PUBLIC_KEY/u);
+  const release = job("github-release");
+  assert.match(release, /name: signatures/u);
+  const uploads = release.split("\n").filter((text) => /\.\/\*\.zip \.\/\*\.sha256/u.test(text));
+  assert.equal(uploads.length, 2, "the create and the upload command");
+  for (const line of uploads) {
+    assert.match(line, /\.\/\*\.sig\b/u, line);
+  }
+  assert.doesNotMatch(RELEASE.replace(job("sign"), ""), /ED25519_BINARY_SIGNING_PRIVATE_KEY/u);
 });

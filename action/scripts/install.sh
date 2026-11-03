@@ -5,7 +5,8 @@ set -euo pipefail
 #
 # Methods (input `install`):
 #   path     use the `cargo-fallow` that is on the PATH already.
-#   release  download the binary of a GitHub release and check its SHA-256.
+#   release  download the binary of a GitHub release, and check its Ed25519
+#            signature and its SHA-256.
 #   cargo    run `cargo install cargo-fallow` from crates.io.
 #   source   run `cargo install --path` on the source of the action ref.
 #   auto     path, then release, then source.
@@ -14,7 +15,8 @@ set -euo pipefail
 #   source of the action ref)
 # Optional env: INPUT_VERSION, RUNNER_OS, RUNNER_ARCH, RUNNER_TEMP,
 #   GITHUB_PATH, GITHUB_OUTPUT, CARGO_FALLOW_RELEASE_URL,
-#   CARGO_FALLOW_DRY_RUN (1: print the install commands and do not run them)
+#   CARGO_FALLOW_DRY_RUN (1: print the install commands and do not run them),
+#   CARGO_FALLOW_SIGNING_PUBLIC_KEY (tests only, see verify-signature.mjs)
 
 : "${ACTION_PATH:=${GITHUB_ACTION_PATH:?the action path is unknown}}"
 : "${INPUT_VERSION:=}" "${RUNNER_OS:=}" "${RUNNER_ARCH:=}"
@@ -22,6 +24,7 @@ set -euo pipefail
 : "${GITHUB_OUTPUT:=/dev/stdout}" "${CARGO_FALLOW_DRY_RUN:=0}"
 : "${CARGO_FALLOW_RELEASE_URL:=https://github.com/fallow-rs/cargo-fallow/releases/download}"
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_ROOT="${RUNNER_TEMP}/cargo-fallow-install"
 BIN_DIR="${INSTALL_ROOT}/bin"
 
@@ -62,8 +65,8 @@ resolve_version() {
 
 target_triple() {
   case "${RUNNER_OS}/${RUNNER_ARCH}" in
-    Linux/X64) echo "x86_64-unknown-linux-gnu" ;;
-    Linux/ARM64) echo "aarch64-unknown-linux-gnu" ;;
+    Linux/X64) echo "x86_64-unknown-linux-musl" ;;
+    Linux/ARM64) echo "aarch64-unknown-linux-musl" ;;
     macOS/ARM64) echo "aarch64-apple-darwin" ;;
     macOS/X64) echo "x86_64-apple-darwin" ;;
     Windows/X64) echo "x86_64-pc-windows-msvc" ;;
@@ -79,8 +82,10 @@ sha256_of() {
   fi
 }
 
-# Download, check and unpack one release archive. Returns 1 when the release
-# has no binary for this runner, so `auto` can try the next method.
+# Download, check and unpack one release archive. The names are those of
+# .github/workflows/release.yml. Returns 1 when the release has no binary for
+# this runner, so `auto` can try the next method. A bad or missing signature
+# or checksum stops the job.
 install_release() {
   local version="$1" target asset url work expected actual binary
   if [ -z "$version" ]; then
@@ -91,14 +96,18 @@ install_release() {
     echo "No release binary for runner ${RUNNER_OS}/${RUNNER_ARCH}."
     return 1
   fi
-  asset="cargo-fallow-${target}.tar.xz"
+  asset="cargo-fallow-${version}-${target}.tar.gz"
   if [ "$RUNNER_OS" = "Windows" ]; then
-    asset="cargo-fallow-${target}.zip"
+    asset="cargo-fallow-${version}-${target}.zip"
   fi
   url="${CARGO_FALLOW_RELEASE_URL}/v${version}/${asset}"
   if [ "$CARGO_FALLOW_DRY_RUN" = "1" ]; then
-    echo "DRY RUN: download ${url} and check ${url}.sha256"
+    echo "DRY RUN: download ${url} and check ${url}.sig and ${url}.sha256"
     return 0
+  fi
+  if ! command -v node > /dev/null 2>&1; then
+    echo "The runner has no node, so the action cannot check the signature of the release binary."
+    return 1
   fi
   work="$(mktemp -d "${RUNNER_TEMP}/cargo-fallow-release.XXXXXX")"
   # Only HTTPS, also after a redirect. `file` serves the local release of the tests.
@@ -109,6 +118,13 @@ install_release() {
     echo "No release asset at ${url}."
     return 1
   fi
+  if ! curl -fsSL --proto '=https,file' --proto-redir '=https' --tlsv1.2 --retry 3 \
+    -o "${work}/${asset}.sig" "${url}.sig"; then
+    fail "The release has no signature ${asset}.sig, so the action does not install ${asset}."
+  fi
+  if ! node "${SCRIPT_DIR}/verify-signature.mjs" "${work}/${asset}" "${work}/${asset}.sig"; then
+    fail "The Ed25519 signature of ${asset} is not valid. The action does not install it."
+  fi
   expected="$(awk '{ print $1; exit }' "${work}/${asset}.sha256")"
   actual="$(sha256_of "${work}/${asset}")"
   if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
@@ -117,7 +133,7 @@ install_release() {
   mkdir -p "$BIN_DIR" || fail "Could not make ${BIN_DIR}."
   case "$asset" in
     *.zip) unzip -q -o "${work}/${asset}" -d "$work" ;;
-    *) tar -xJf "${work}/${asset}" -C "$work" ;;
+    *) tar -xzf "${work}/${asset}" -C "$work" ;;
   esac || fail "Could not unpack ${asset}."
   binary="$(find "$work" -type f \( -name cargo-fallow -o -name cargo-fallow.exe \) | head -n 1)"
   if [ -z "$binary" ]; then

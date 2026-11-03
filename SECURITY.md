@@ -22,6 +22,22 @@ cargo-fallow runs `cargo metadata --no-deps` and parses the root source file of 
 
 The crate root uses `#![cfg_attr(not(test), deny(clippy::disallowed_methods))]` to prohibit `std::process::Command::new`. The workspace loader in `src/workspace.rs` is the one module that spawns a process.
 
+## Release binaries
+
+Each release archive has an Ed25519 signature (`<archive>.sig`) next to its
+SHA-256 file (`<archive>.sha256`). The release workflow signs each archive
+with the `ED25519_BINARY_SIGNING_PRIVATE_KEY` secret of the `release`
+environment. The key pair is the key pair of the fallow binaries.
+
+The GitHub Action installer (`action/scripts/install.sh`) checks the
+signature with the public key in `action/scripts/verify-signature.mjs`, then
+the SHA-256. It fails closed: a bad or missing signature stops the job, and
+the installer does not fall back to a source build. To check an archive by
+hand, run `node action/scripts/verify-signature.mjs <archive> <archive>.sig`.
+
+Each archive also has a build provenance attestation. Run
+`gh attestation verify <archive> --repo fallow-rs/cargo-fallow` to check it.
+
 ## Threat model
 
 The analyzed workspace controls the source files that cargo-fallow parses. A source file must not crash the run:

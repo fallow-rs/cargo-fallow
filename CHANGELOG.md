@@ -17,6 +17,9 @@ GitHub release. Each release needs a `## [X.Y.Z] - YYYY-MM-DD` section.
 - `cargo fallow deps`, `visibility`, `boundaries`, `size`, `complexity` and
   `dupes` report native checks of the workspace.
 - JSON, SARIF and human output, with exit codes 0, 1 and 2.
+- Each release archive has an Ed25519 signature (`.sig`). The GitHub Action
+  installer checks it before the SHA-256 and fails closed. The installer now
+  downloads the archive names that the release workflow writes.
 
 ### Fixed
 

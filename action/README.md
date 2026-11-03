@@ -141,13 +141,22 @@ An execution error (exit code 2) fails the job also with
 | --- | --- |
 | `auto` | Uses `cargo-fallow` on the PATH, when it has the `version` input or no `version` is set. Else it downloads the release binary of the version. Else it builds the source of the action ref. |
 | `path` | Uses `cargo-fallow` on the PATH. |
-| `release` | Downloads `cargo-fallow-<target>.tar.xz` (`.zip` on Windows) from the GitHub release `v<version>`, and checks the SHA-256 in the `.sha256` file next to it. |
+| `release` | Downloads `cargo-fallow-<version>-<target>.tar.gz` (`.zip` on Windows) from the GitHub release `v<version>`. It checks the Ed25519 signature in the `.sig` file, then the SHA-256 in the `.sha256` file. Linux runners get the static `musl` binary. |
 | `cargo` | Runs `cargo install --locked cargo-fallow` from crates.io. |
 | `source` | Runs `cargo install --locked --path` on the source of the action ref. |
 
-A checksum mismatch stops the job. `auto` does not fall back after a
-mismatch. The checksum file comes from the same release as the archive, so it
-finds a damaged download, not a replaced release.
+The action checks the signature before it checks the checksum:
+
+- The signature check uses the Ed25519 public key in
+  `action/scripts/verify-signature.mjs`. The release signs each archive with
+  the private key of that pair. A replaced archive with a new checksum file
+  fails this check.
+- The checksum file comes from the same release as the archive, so it finds a
+  damaged download.
+- A bad signature, a missing `.sig` file or a checksum mismatch stops the job.
+  `auto` does not fall back to a source build after such a failure.
+- The check needs `node`, which each GitHub-hosted runner has. On a runner
+  without `node`, `release` stops the job and `auto` builds the source.
 
 ## How the action runs a command
 

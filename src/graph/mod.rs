@@ -430,8 +430,8 @@ fn externs_of(
     }
     let wanted = |link_kind: LinkKind| match kind {
         CrateKind::Build => link_kind == LinkKind::Build,
-        CrateKind::Test | CrateKind::Bench | CrateKind::Example => link_kind != LinkKind::Build,
-        _ => link_kind == LinkKind::Normal,
+        // The unit tests of a library or a binary can use the dev-dependencies.
+        _ => link_kind != LinkKind::Build,
     };
     for link in member.links.iter().filter(|link| wanted(link.kind)) {
         let target = libs.get(link.package.as_str()).copied();

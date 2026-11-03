@@ -118,6 +118,9 @@ pub struct ItemFlags {
     pub trait_item: bool,
     /// The item is a proc-macro entry point.
     pub proc_macro: bool,
+    /// An attribute macro is on the item, for example `#[wasm_bindgen]`. Its
+    /// output can use the item from any place.
+    pub attr_macro: bool,
 }
 
 /// One item of a file.
@@ -525,6 +528,7 @@ impl<'a> Walker<'a> {
 
     fn flags_of(&self, node: &SyntaxNode) -> ItemFlags {
         let mut flags = ItemFlags::default();
+        let mut unknown_attr = false;
         if let Some(owner) = ast::AnyHasAttrs::cast(node.clone()) {
             for attr in owner.attrs() {
                 let body = attr_body(&attr);
@@ -542,8 +546,22 @@ impl<'a> Walker<'a> {
                     last,
                     "proc_macro" | "proc_macro_derive" | "proc_macro_attribute"
                 );
+                unknown_attr |= !is_builtin_attribute(name);
             }
         }
+        // A derive helper such as `#[serde(..)]` needs a derive on the item or
+        // on its parent, so it cannot be on a function, a module or an `impl`.
+        let can_have_helpers = matches!(
+            node.kind(),
+            SyntaxKind::STRUCT
+                | SyntaxKind::ENUM
+                | SyntaxKind::UNION
+                | SyntaxKind::RECORD_FIELD
+                | SyntaxKind::TUPLE_FIELD
+                | SyntaxKind::VARIANT
+        );
+        flags.attr_macro =
+            unknown_attr && !(can_have_helpers && (flags.derive || self.owner().is_some()));
         for (_, frame) in self.frames.iter().rev() {
             if let Frame::Owner(index) = frame {
                 let parent = &self.facts.items[*index];
@@ -959,6 +977,52 @@ impl<'a> Walker<'a> {
             self.facts.refs.extend(refs);
         }
     }
+}
+
+/// True for an attribute that the compiler or a tool defines, not a macro.
+fn is_builtin_attribute(path: &str) -> bool {
+    const BUILTIN: [&str; 38] = [
+        "cfg",
+        "cfg_attr",
+        "derive",
+        "doc",
+        "allow",
+        "warn",
+        "deny",
+        "forbid",
+        "expect",
+        "inline",
+        "cold",
+        "must_use",
+        "deprecated",
+        "path",
+        "test",
+        "bench",
+        "ignore",
+        "should_panic",
+        "repr",
+        "non_exhaustive",
+        "macro_export",
+        "macro_use",
+        "automatically_derived",
+        "track_caller",
+        "no_mangle",
+        "export_name",
+        "link_section",
+        "link",
+        "link_name",
+        "used",
+        "unsafe",
+        "target_feature",
+        "proc_macro",
+        "proc_macro_derive",
+        "proc_macro_attribute",
+        "global_allocator",
+        "panic_handler",
+        "diagnostic",
+    ];
+    let first = path.split("::").next().unwrap_or(path);
+    BUILTIN.contains(&first) || matches!(first, "rustfmt" | "clippy" | "rustdoc")
 }
 
 fn string_literals(node: &SyntaxNode) -> Vec<String> {

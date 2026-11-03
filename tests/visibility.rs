@@ -21,7 +21,7 @@ use tempfile::TempDir;
 const MANIFESTS: &[(&str, &str)] = &[
     (
         "Cargo.toml",
-        "[workspace]\nmembers = [\"app\", \"mid\", \"base\"]\nresolver = \"3\"\n",
+        "[workspace]\nmembers = [\"app\", \"mid\", \"base\", \"testing\"]\nresolver = \"3\"\n",
     ),
     (
         "app/Cargo.toml",
@@ -35,7 +35,12 @@ const MANIFESTS: &[(&str, &str)] = &[
     ),
     (
         "base/Cargo.toml",
-        "[package]\nname = \"base\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n",
+        "[package]\nname = \"base\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n\
+         [dev-dependencies]\ntesting = { path = \"../testing\" }\n",
+    ),
+    (
+        "testing/Cargo.toml",
+        "[package]\nname = \"testing\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n",
     ),
 ];
 
@@ -45,7 +50,12 @@ fn workspace(files: &[(&str, &str)]) -> TempDir {
     for (path, text) in MANIFESTS.iter().chain(files) {
         write(dir.path(), path, text);
     }
-    for default in ["app/src/main.rs", "mid/src/lib.rs", "base/src/lib.rs"] {
+    for default in [
+        "app/src/main.rs",
+        "mid/src/lib.rs",
+        "base/src/lib.rs",
+        "testing/src/lib.rs",
+    ] {
         if !dir.path().join(default).exists() {
             write(dir.path(), default, "");
         }
@@ -392,4 +402,27 @@ fn a_local_variable_does_not_credit_a_field_with_its_name() {
         found.contains("unnecessary_public Frame::column"),
         "{found:?}"
     );
+}
+
+#[test]
+fn unit_tests_of_a_library_can_use_its_dev_dependencies() {
+    let dir = workspace(&[
+        ("testing/src/lib.rs", "pub fn fixture() -> u8 { 1 }\n"),
+        (
+            "base/src/lib.rs",
+            "#[cfg(test)]\nmod tests {\n    #[test]\n    fn uses() { assert_eq!(testing::fixture(), 1); }\n}\n",
+        ),
+    ]);
+    let (found, _) = findings(&dir, &[]);
+    assert!(!found.contains("dead_public fixture"), "{found:?}");
+}
+
+#[test]
+fn an_item_with_an_attribute_macro_gets_credit() {
+    let dir = workspace(&[(
+        "mid/src/lib.rs",
+        "#[some_macro::export]\npub fn exported() {}\npub fn plain() {}\n",
+    )]);
+    let (found, _) = findings(&dir, &[]);
+    assert_eq!(found, set(&["dead_public plain"]));
 }

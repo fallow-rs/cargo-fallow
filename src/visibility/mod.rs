@@ -273,7 +273,10 @@ impl Surface {
         if krate.kind != CrateKind::Lib || self.excluded.contains(&entry.krate) {
             return false;
         }
-        if entry.flags.macro_export || matches!(entry.kind, ItemKind::Impl | ItemKind::Macro) {
+        if entry.flags.macro_export
+            || entry.flags.attr_macro
+            || matches!(entry.kind, ItemKind::Impl | ItemKind::Macro)
+        {
             return false;
         }
         if self.glob_exported.contains(&item) {
@@ -508,6 +511,7 @@ fn live_items(graph: &Graph, credits: &[&Credit]) -> (FxHashSet<ItemId>, FxHashS
             || entry.flags.trait_impl
             || entry.flags.trait_item
             || entry.flags.proc_macro
+            || entry.flags.attr_macro
             || derived_field
         {
             production_roots.push(item);

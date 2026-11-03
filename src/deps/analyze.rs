@@ -13,9 +13,9 @@ use crate::graph::{Graph, crate_name};
 use crate::workspace::{self, Workspace};
 
 /// The table of the cargo-fallow ignore list in a package.
-const PACKAGE_IGNORE_TABLE: &str = "package.metadata.cargo-fallow.deps";
+const PACKAGE_IGNORE_TABLE: &str = "package.metadata.fallow.deps";
 /// The table of the cargo-fallow ignore list in the workspace root.
-const WORKSPACE_IGNORE_TABLE: &str = "workspace.metadata.cargo-fallow.deps";
+const WORKSPACE_IGNORE_TABLE: &str = "workspace.metadata.fallow.deps";
 /// The target kinds that give a crate name to other crates.
 const LIB_KINDS: [&str; 6] = ["lib", "rlib", "dylib", "cdylib", "staticlib", "proc-macro"];
 
@@ -50,7 +50,7 @@ struct IgnoreList {
 impl IgnoreList {
     fn from_metadata(value: &Value) -> Self {
         Self {
-            own: strings(&value["cargo-fallow"]["deps"]["ignored"]),
+            own: strings(&value["fallow"]["deps"]["ignored"]),
             shear: strings(&value["cargo-shear"]["ignored"]),
             used: BTreeSet::new(),
         }

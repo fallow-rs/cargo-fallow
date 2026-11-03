@@ -363,14 +363,14 @@ mod tests {
 
     #[test]
     fn line_of_an_ignore_entry() {
-        let text = "[package.metadata.cargo-fallow.deps]\nignored = [\n  \"a\",\n  \"b\",\n]\n\
+        let text = "[package.metadata.fallow.deps]\nignored = [\n  \"a\",\n  \"b\",\n]\n\
                     [other]\nx = \"b\"\n";
         assert_eq!(
-            line_in_table(text, "package.metadata.cargo-fallow.deps", "b"),
+            line_in_table(text, "package.metadata.fallow.deps", "b"),
             Some(4)
         );
         assert_eq!(
-            line_in_table(text, "package.metadata.cargo-fallow.deps", "c"),
+            line_in_table(text, "package.metadata.fallow.deps", "c"),
             None
         );
     }

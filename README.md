@@ -460,10 +460,10 @@ A crate that is in `Cargo.toml` only to turn on a feature of another
 dependency looks unused. Add its name to an ignore list:
 
 ```toml
-[package.metadata.cargo-fallow.deps]
+[package.metadata.fallow.deps]
 ignored = ["chrono"] # unifies the features with a workspace build
 
-[workspace.metadata.cargo-fallow.deps]
+[workspace.metadata.fallow.deps]
 ignored = ["getrandom"]
 ```
 

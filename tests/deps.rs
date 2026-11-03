@@ -531,7 +531,7 @@ fn generated_include_gives_credit_to_the_names_of_the_build_script() {
 #[test]
 fn ignore_lists_hide_findings_and_a_stale_entry_is_reported() {
     let deps = format!(
-        "[package.metadata.cargo-fallow.deps]\nignored = [\"alpha\", \"beta\"]\n\n\
+        "[package.metadata.fallow.deps]\nignored = [\"alpha\", \"beta\"]\n\n\
          [package.metadata.cargo-shear]\nignored = [\"gamma\"]\n\n[dependencies]\n{}{}{}",
         path_dep("alpha"),
         path_dep("beta"),
@@ -541,7 +541,7 @@ fn ignore_lists_hide_findings_and_a_stale_entry_is_reported() {
     let (_, report) = run(&dir, &[]);
     assert_eq!(
         findings(&report),
-        set(&["redundant-ignore app package.metadata.cargo-fallow.deps beta"])
+        set(&["redundant-ignore app package.metadata.fallow.deps beta"])
     );
 }
 
@@ -668,7 +668,7 @@ fn file_that_does_not_parse_skips_its_package() {
     let dir = workspace(&deps, &[("app/src/lib.rs", &"(".repeat(20_000))]);
     let root = dir.path().join("Cargo.toml");
     let mut text = fs::read_to_string(&root).expect("read the root manifest");
-    text.push_str("\n[workspace.metadata.cargo-fallow.deps]\nignored = [\"alpha\"]\n");
+    text.push_str("\n[workspace.metadata.fallow.deps]\nignored = [\"alpha\"]\n");
     fs::write(&root, text).expect("write the root manifest");
     let (_, report) = run(&dir, &[]);
     assert_eq!(findings(&report), set(&[]));

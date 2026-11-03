@@ -454,6 +454,10 @@ if command -v curl > /dev/null 2>&1 && command -v xz > /dev/null 2>&1; then
   assert_equals "$CODE" "1" "release download: a bad checksum fails, also for auto"
   assert_contains "$OUT" "The SHA-256 of cargo-fallow-x86_64-unknown-linux-gnu.tar.xz is" "release download: the failure names the checksum"
   assert_not_contains "$OUT" "Building cargo-fallow from the source" "release download: a bad checksum does not fall back"
+  run_install INPUT_INSTALL=release ACTION_PATH="$RELEASED" CARGO_FALLOW_DRY_RUN=0 CARGO_FALLOW_RELEASE_URL="http://127.0.0.1:9/dist"
+  assert_equals "$CODE" "1" "release download: a plain http URL is refused"
+  assert_contains "$OUT" "No release asset at http://127.0.0.1:9/dist" "release download: the refused URL is named"
+  assert_contains "$OUT" "Protocol" "release download: curl refuses the http protocol"
 else
   echo "  skip release download: curl or xz is missing"
 fi

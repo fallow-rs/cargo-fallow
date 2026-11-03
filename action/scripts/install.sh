@@ -101,8 +101,11 @@ install_release() {
     return 0
   fi
   work="$(mktemp -d "${RUNNER_TEMP}/cargo-fallow-release.XXXXXX")"
-  if ! curl -fsSL --retry 3 -o "${work}/${asset}" "$url" \
-    || ! curl -fsSL --retry 3 -o "${work}/${asset}.sha256" "${url}.sha256"; then
+  # Only HTTPS, also after a redirect. `file` serves the local release of the tests.
+  if ! curl -fsSL --proto '=https,file' --proto-redir '=https' --tlsv1.2 --retry 3 \
+    -o "${work}/${asset}" "$url" \
+    || ! curl -fsSL --proto '=https,file' --proto-redir '=https' --tlsv1.2 --retry 3 \
+      -o "${work}/${asset}.sha256" "${url}.sha256"; then
     echo "No release asset at ${url}."
     return 1
   fi

@@ -891,3 +891,23 @@ fn a_reexported_item_waits_for_its_reexport() {
         "{found:?}"
     );
 }
+
+/// A derive outside the standard library, such as `Deserialize` or the
+/// `#[from]` of an error derive, can construct each variant of its enum.
+#[test]
+fn the_variants_of_an_enum_with_a_helper_derive_get_credit() {
+    let dir = workspace(&[
+        (
+            "app/src/main.rs",
+            "fn main() { let _ = mid::Kind::Used; let _ = mid::Plain::Used; }\n",
+        ),
+        (
+            "mid/src/lib.rs",
+            "#[derive(Debug, serde::Deserialize)]\npub enum Kind {\n    Used,\n    Read,\n}\n\
+             #[derive(Debug, Clone)]\npub enum Plain {\n    Used,\n    Unused,\n}\n",
+        ),
+    ]);
+    let (found, _) = findings(&dir, &[]);
+    assert!(!found.contains("dead_public Kind::Read"), "{found:?}");
+    assert!(found.contains("dead_public Plain::Unused"), "{found:?}");
+}

@@ -599,6 +599,12 @@ fn live_items(
             && entry.module == krate.root_module;
         let derived_field = entry.kind == ItemKind::Field
             && entry.parent.is_some_and(|parent| derived(graph, parent));
+        // A derive outside the standard library, for example `Deserialize`,
+        // can construct each variant.
+        let derived_variant = entry.kind == ItemKind::Variant
+            && entry
+                .parent
+                .is_some_and(|parent| graph.items[parent].flags.helper_derive);
         if (main && krate.production)
             || entry.flags.external
             || surface.dead_allowed[item]
@@ -607,6 +613,7 @@ fn live_items(
             || entry.flags.proc_macro
             || surface.macro_covered[item]
             || derived_field
+            || derived_variant
         {
             production_roots.push(item);
         } else if main || entry.flags.test_fn {

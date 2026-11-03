@@ -526,12 +526,13 @@ fn add_files(graph: &mut Graph, root: &Path, krate: CrateId, files: CrateFiles, 
             });
         }
         let mut refs = file.facts.refs;
+        let mut budget = MAX_INCLUDED_FILES;
         refs.extend(included_code(
             root,
-            &file.path,
+            &mut vec![file.path.clone()],
             file.facts.code_includes,
             edition,
-            MAX_INCLUDE_DEPTH,
+            &mut budget,
         ));
         if doctest {
             refs.extend(included_docs(
@@ -593,28 +594,38 @@ fn module_id(
     id
 }
 
-/// The maximum depth of nested `include!` files. A deeper file, or a cycle,
-/// keeps the `include` reference at the call.
-const MAX_INCLUDE_DEPTH: u32 = 8;
+/// The maximum number of `include!` files that the graph reads for one file.
+/// A file over this budget keeps the `include` reference at the call.
+const MAX_INCLUDED_FILES: u32 = 64;
+
+/// The maximum depth of nested `include!` files.
+const MAX_INCLUDE_DEPTH: usize = 8;
 
 /// The references of the files that `include!("path")` reads. The code of the
 /// file is part of the module of the call, so each reference gets the inline
 /// modules, the owner and the test state of the call. An import of the file
 /// becomes a path reference, because the graph does not add the items of the
-/// file. When the file cannot be read or parsed, the `include` reference at
-/// the call stays.
+/// file. `chain` holds the file of the call and the files that include it.
+/// When the file cannot be read or parsed, is on the chain, is too deep or is
+/// over the budget, the `include` reference at the call stays.
 fn included_code(
     root: &Path,
-    file: &str,
+    chain: &mut Vec<String>,
     includes: Vec<CodeInclude>,
     edition: Edition,
-    depth: u32,
+    budget: &mut u32,
 ) -> Vec<RawRef> {
-    let folder = Path::new(file).parent().unwrap_or_else(|| Path::new(""));
+    let Some(file) = chain.last().cloned() else {
+        return Vec::new();
+    };
+    let folder = Path::new(&file).parent().unwrap_or_else(|| Path::new(""));
     let mut refs = Vec::new();
     for include in includes {
-        let path = normalize(&folder.join(&include.path));
-        let facts = path.as_ref().filter(|_| depth > 0).and_then(|path| {
+        let path = normalize(&folder.join(&include.path)).filter(|path| {
+            !chain.contains(path) && chain.len() <= MAX_INCLUDE_DEPTH && *budget > 0
+        });
+        let facts = path.as_ref().and_then(|path| {
+            *budget -= 1;
             let source = fs::read_to_string(root.join(path)).ok()?;
             extract(&source, edition).ok()
         });
@@ -657,7 +668,9 @@ fn included_code(
                 ),
             })
             .collect();
-        refs.extend(included_code(root, &path, nested, edition, depth - 1));
+        chain.push(path);
+        refs.extend(included_code(root, chain, nested, edition, budget));
+        chain.pop();
     }
     refs
 }

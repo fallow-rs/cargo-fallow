@@ -822,3 +822,22 @@ fn offline_flag_reaches_cargo() {
     let (code, report) = run(&dir, &["--offline"]);
     assert_eq!(code, 0, "{report}");
 }
+
+#[test]
+fn include_cycle_with_many_calls_finishes() {
+    let deps = format!("[dependencies]\n{}{}", path_dep("alpha"), path_dep("beta"));
+    let calls = "include!(\"a.rs\");\n".repeat(20);
+    let dir = workspace(
+        &deps,
+        &[
+            ("app/src/lib.rs", "include!(\"a.rs\");\n"),
+            (
+                "app/src/a.rs",
+                &format!("{calls}pub fn t() {{ alpha::f(); }}\n"),
+            ),
+        ],
+    );
+    let (code, report) = run(&dir, &[]);
+    assert_eq!(code, 0, "{report}");
+    assert_eq!(findings(&report), set(&[]));
+}

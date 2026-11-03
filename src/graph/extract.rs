@@ -414,6 +414,7 @@ impl<'a> Walker<'a> {
             SyntaxKind::METHOD_CALL_EXPR => self.method_call(node),
             SyntaxKind::FIELD_EXPR => self.field_access(node),
             SyntaxKind::RECORD_EXPR_FIELD | SyntaxKind::RECORD_PAT_FIELD => self.record_field(node),
+            SyntaxKind::RECORD_EXPR_FIELD_LIST => self.record_spread(node),
             SyntaxKind::MACRO_CALL => self.macro_call(node),
             SyntaxKind::MACRO_RULES | SyntaxKind::MACRO_DEF => self.macro_def(node),
             _ => self.plain_item(node),
@@ -902,6 +903,37 @@ impl<'a> Walker<'a> {
         );
     }
 
+    /// Struct update syntax, `S { a, ..base }`, reads each field of `S`, so
+    /// each field must be visible here. The field name `..` stands for all
+    /// fields.
+    fn record_spread(&mut self, node: &SyntaxNode) {
+        let Some(list) = ast::RecordExprFieldList::cast(node.clone()) else {
+            return;
+        };
+        if list.dotdot_token().is_none() {
+            return;
+        }
+        let Some(path) = node
+            .parent()
+            .and_then(ast::RecordExpr::cast)
+            .and_then(|record| record.path())
+        else {
+            return;
+        };
+        let (segments, global) = self.segments_of(&path);
+        if segments.is_empty() {
+            return;
+        }
+        self.add_ref(
+            RefKind::RecordField {
+                segments,
+                global,
+                field: ALL_FIELDS.to_owned(),
+            },
+            Origin::Body,
+        );
+    }
+
     fn macro_call(&mut self, node: &SyntaxNode) {
         let Some(call) = ast::MacroCall::cast(node.clone()) else {
             return;
@@ -1023,6 +1055,10 @@ impl<'a> Walker<'a> {
         }
     }
 }
+
+/// The field name of a [`RefKind::RecordField`] that stands for each field of
+/// the struct: struct update syntax reads them all.
+pub const ALL_FIELDS: &str = "..";
 
 /// The derives of the standard library. None of them declares a helper
 /// attribute, except `#[default]`, which is a built-in attribute here.

@@ -530,7 +530,7 @@ fn add_files(graph: &mut Graph, root: &Path, krate: CrateId, files: CrateFiles, 
                 krate,
                 module,
                 vis: raw.vis,
-                path: raw.path,
+                path: raw.path.into_iter().map(unraw).collect(),
                 global: raw.global,
                 binding: raw.binding,
                 item: raw.item.map(|index| ids[index]),
@@ -556,11 +556,43 @@ fn add_files(graph: &mut Graph, root: &Path, krate: CrateId, files: CrateFiles, 
                 krate,
                 module,
                 owner: raw.owner.map(|index| ids[index]),
-                kind: raw.kind,
+                kind: unraw_kind(raw.kind),
                 origin: raw.origin,
                 test_only: raw.test_only,
             });
         }
+    }
+}
+
+/// The name without the `r#` prefix of a raw identifier. The items have their
+/// names in this form.
+fn unraw(name: String) -> String {
+    match name.strip_prefix("r#") {
+        Some(plain) => plain.to_owned(),
+        None => name,
+    }
+}
+
+fn unraw_kind(kind: RefKind) -> RefKind {
+    let all = |segments: Vec<String>| segments.into_iter().map(unraw).collect();
+    match kind {
+        RefKind::Path { segments, global } => RefKind::Path {
+            segments: all(segments),
+            global,
+        },
+        RefKind::Method(name) => RefKind::Method(unraw(name)),
+        RefKind::Field(name) => RefKind::Field(unraw(name)),
+        RefKind::RecordField {
+            segments,
+            global,
+            field,
+        } => RefKind::RecordField {
+            segments: all(segments),
+            global,
+            field: unraw(field),
+        },
+        RefKind::Macro(name) => RefKind::Macro(unraw(name)),
+        RefKind::Member(name) => RefKind::Member(unraw(name)),
     }
 }
 

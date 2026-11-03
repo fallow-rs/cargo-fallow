@@ -358,7 +358,7 @@ fn decide(
         if credit.origin == Origin::Signature
             && let Some(owner) = credit.owner
             && owner != credit.item
-            && graph.items[owner].vis != Vis::Private
+            && signature_visible(graph, owner)
         {
             entry.exposed = true;
         }
@@ -368,7 +368,15 @@ fn decide(
         if credit.krate != target.krate || credit.origin == Origin::Doc || from_macro_export {
             entry.cross_crate = true;
         } else if credit.owner != Some(credit.item) {
-            entry.from_modules.push(credit.module);
+            // A `macro_rules!` body expands at each call site, in any module.
+            let in_macro = credit
+                .owner
+                .is_some_and(|owner| graph.items[owner].kind == ItemKind::Macro);
+            entry.from_modules.push(if in_macro {
+                graph.crates[credit.krate].root_module
+            } else {
+                credit.module
+            });
         }
     }
     let required = required_items(graph, surface, &credits, &uses);
@@ -420,8 +428,32 @@ fn decide(
     if options.uniform_fields {
         keep_field_groups(graph, surface, &mut findings);
     }
+    keep_shared_files(graph, &mut findings);
     findings.sort();
     findings
+}
+
+/// True when the signature of `owner` has a visibility wider than private. An
+/// item of a trait impl and an enum variant have no keyword, but the compiler
+/// checks their signatures against the type, the trait and the enum.
+fn signature_visible(graph: &Graph, owner: ItemId) -> bool {
+    let mut current = Some(owner);
+    while let Some(id) = current {
+        let entry = &graph.items[id];
+        if entry.flags.trait_impl {
+            return true;
+        }
+        match entry.kind {
+            ItemKind::Variant => {}
+            ItemKind::Field
+                if entry
+                    .parent
+                    .is_some_and(|parent| graph.items[parent].kind == ItemKind::Variant) => {}
+            _ => return entry.vis != Vis::Private,
+        }
+        current = entry.parent;
+    }
+    false
 }
 
 fn restricted_candidate(entry: &crate::graph::Item) -> bool {
@@ -476,6 +508,11 @@ fn required_items(
     for credit in credits {
         if let (Some(owner), Origin::Signature) = (credit.owner, credit.origin) {
             signature.entry(owner).or_default().push(credit.item);
+            // A field of a variant is as visible as its enum, so a required
+            // enum needs the types of its variant fields.
+            if let Some(enumeration) = variant_enum(graph, owner) {
+                signature.entry(enumeration).or_default().push(credit.item);
+            }
         }
     }
     let mut required: FxHashSet<ItemId> = FxHashSet::default();
@@ -504,6 +541,19 @@ fn required_items(
         queue.extend(graph.items[item].parent);
     }
     required
+}
+
+/// The enum of a variant field, or `None` for another item.
+fn variant_enum(graph: &Graph, field: ItemId) -> Option<ItemId> {
+    let entry = &graph.items[field];
+    if entry.kind != ItemKind::Field {
+        return None;
+    }
+    let variant = entry.parent?;
+    if graph.items[variant].kind != ItemKind::Variant {
+        return None;
+    }
+    graph.items[variant].parent
 }
 
 impl Surface {
@@ -654,6 +704,75 @@ fn reach(
         }
     }
     seen
+}
+
+/// A file can be in more than one crate, for example a `mod data;` in each
+/// bench target. A change of a keyword holds for each of those crates, so a
+/// restricted finding needs the same finding in each crate that holds the
+/// item. A public finding needs a public finding in each library that holds
+/// it, and the weaker kind wins.
+fn keep_shared_files(graph: &Graph, findings: &mut Vec<Finding>) {
+    type Place<'a> = (&'a str, u32, u32);
+    let place = |item: ItemId| -> Place<'_> {
+        let entry = &graph.items[item];
+        (entry.file.as_str(), entry.line, entry.column)
+    };
+    let mut instances: FxHashMap<Place<'_>, Vec<ItemId>> = FxHashMap::default();
+    for (id, entry) in graph.items.iter().enumerate() {
+        if entry.kind != ItemKind::Impl {
+            instances.entry(place(id)).or_default().push(id);
+        }
+    }
+    let by_item: FxHashMap<ItemId, Vec<FindingKind>> =
+        findings
+            .iter()
+            .fold(FxHashMap::default(), |mut map, finding| {
+                map.entry(finding.item).or_default().push(finding.kind);
+                map
+            });
+    let has = |item: ItemId, test: &dyn Fn(FindingKind) -> bool| {
+        by_item
+            .get(&item)
+            .is_some_and(|kinds| kinds.iter().any(|kind| test(*kind)))
+    };
+    let mut weaker: FxHashSet<ItemId> = FxHashSet::default();
+    findings.retain(|finding| {
+        let Some(others) = instances.get(&place(finding.item)) else {
+            return true;
+        };
+        if others.len() < 2 {
+            return true;
+        }
+        match finding.kind {
+            FindingKind::UnnecessaryRestricted => others
+                .iter()
+                .all(|&other| has(other, &|kind| kind == FindingKind::UnnecessaryRestricted)),
+            FindingKind::DeadPublic | FindingKind::UnnecessaryPublic => {
+                let libraries: Vec<ItemId> = others
+                    .iter()
+                    .copied()
+                    .filter(|&other| graph.crates[graph.items[other].krate].kind.is_library())
+                    .collect();
+                let all_public = libraries
+                    .iter()
+                    .all(|&other| has(other, &|kind| kind != FindingKind::UnnecessaryRestricted));
+                if all_public
+                    && finding.kind == FindingKind::DeadPublic
+                    && libraries
+                        .iter()
+                        .any(|&other| has(other, &|kind| kind == FindingKind::UnnecessaryPublic))
+                {
+                    weaker.insert(finding.item);
+                }
+                all_public
+            }
+        }
+    });
+    for finding in findings.iter_mut() {
+        if weaker.contains(&finding.item) {
+            finding.kind = FindingKind::UnnecessaryPublic;
+        }
+    }
 }
 
 /// With uniform field groups, the fields of one struct with one written

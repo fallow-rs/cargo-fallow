@@ -690,3 +690,168 @@ fn precise_mode_resolves_a_method_call_to_its_type() {
     );
     assert!(left.is_empty(), "{left:?}");
 }
+
+/// Struct update syntax, `S { a: 1, ..Default::default() }`, needs each field
+/// of `S` to be visible at the place of the expression.
+#[test]
+fn struct_update_syntax_keeps_each_field_visible() {
+    let dir = workspace(&[
+        (
+            "app/src/main.rs",
+            "fn main() { let _ = mid::Config { plugins: 1, ..Default::default() }; }\n",
+        ),
+        (
+            "mid/src/lib.rs",
+            "#[derive(Default)]\npub struct Config {\n    pub plugins: u8,\n    pub exclude: u8,\n}\n",
+        ),
+    ]);
+    let (found, _) = findings(&dir, &[]);
+    assert!(
+        !found.contains("unnecessary_public Config::exclude"),
+        "{found:?}"
+    );
+}
+
+/// A path through a type alias, `Alias::new()`, names an associated item of the
+/// aliased type.
+#[test]
+fn a_path_through_a_type_alias_credits_the_associated_item() {
+    let dir = workspace(&[
+        ("app/src/main.rs", "fn main() { mid::run(); }\n"),
+        (
+            "mid/src/lib.rs",
+            "pub struct Match;\nimpl Match {\n    pub fn zero() -> Self { Match }\n}\ntype Range = Match;\n\
+             pub fn run() { let _ = Range::zero(); }\n",
+        ),
+    ]);
+    let (found, _) = findings(&dir, &[]);
+    assert!(!found.contains("dead_public Match::zero"), "{found:?}");
+}
+
+/// A `macro_rules!` body expands at each call site, so a path in the body is a
+/// use from each module that calls the macro.
+#[test]
+fn a_restricted_item_that_a_macro_body_names_keeps_its_visibility() {
+    let dir = workspace(&[(
+        "mid/src/lib.rs",
+        "#[macro_use]\nmod messages {\n    pub(crate) fn errored() {}\n    \
+         macro_rules! err { () => { $crate::messages::errored() }; }\n}\n\
+         mod other {\n    pub(crate) fn call() { err!(); }\n}\n",
+    )]);
+    let (found, _) = findings(&dir, &[]);
+    assert!(
+        !found.contains("unnecessary_restricted_visibility messages::errored"),
+        "{found:?}"
+    );
+}
+
+/// A trait impl and an enum variant have no visibility keyword, but their
+/// signatures have the visibility of the type and of the enum.
+#[test]
+fn a_restricted_type_in_a_trait_impl_or_a_variant_keeps_its_visibility() {
+    let dir = workspace(&[(
+        "mid/src/lib.rs",
+        "pub mod outer {\n    pub(crate) struct Item;\n    pub(crate) struct Parents;\n    \
+         impl Iterator for Parents {\n        type Item = Item;\n        \
+         fn next(&mut self) -> Option<Item> { None }\n    }\n    \
+         pub(crate) struct Limited;\n    pub(crate) enum Mode {\n        Limited(Limited),\n    }\n}\n\
+         pub fn run() { let _ = outer::Parents; let _ = outer::Mode::Limited(outer::Limited); }\n",
+    )]);
+    let (found, _) = findings(&dir, &[]);
+    assert!(
+        !found.contains("unnecessary_restricted_visibility outer::Item"),
+        "{found:?}"
+    );
+    assert!(
+        !found.contains("unnecessary_restricted_visibility outer::Limited"),
+        "{found:?}"
+    );
+}
+
+/// A call of a tuple struct, `Wrapper(value)`, needs each tuple field to be
+/// visible at the call.
+#[test]
+fn a_tuple_struct_constructor_keeps_its_fields_visible() {
+    let dir = workspace(&[(
+        "mid/src/lib.rs",
+        "mod util {\n    pub(crate) struct Wrapper(pub(crate) u8);\n}\n\
+         pub fn run() -> u8 { let _ = util::Wrapper(1); 0 }\n",
+    )]);
+    let (found, _) = findings(&dir, &[]);
+    assert!(
+        !found.contains("unnecessary_restricted_visibility util::Wrapper::0"),
+        "{found:?}"
+    );
+}
+
+/// A field of a variant of a `pub` enum is a public signature, also for a type
+/// that only macro tokens name elsewhere.
+#[cfg(feature = "precise")]
+#[test]
+fn precise_mode_keeps_a_type_in_a_variant_of_a_public_enum() {
+    let dir = workspace(&[
+        ("app/src/main.rs", "fn main() { let _ = mid::run(); }\n"),
+        (
+            "mid/src/lib.rs",
+            "pub struct QueryError;\npub enum Error {\n    Query(QueryError),\n}\n\
+             macro_rules! make { () => { QueryError } }\n\
+             pub fn run() -> Error { Error::Query(make!()) }\n",
+        ),
+    ]);
+    let (fast, undecided) = findings(&dir, &[]);
+    let (precise, _) = findings(&dir, &["--precise"]);
+    assert!(
+        !precise.contains("unnecessary_public QueryError"),
+        "fast {fast:?} undecided {undecided:?} precise {precise:?}"
+    );
+}
+
+/// A raw identifier, `r#gen`, names the same field as `gen`.
+#[test]
+fn a_raw_identifier_credits_its_item() {
+    let dir = workspace(&[(
+        "mid/src/lib.rs",
+        "mod map {\n    pub(crate) struct MapGen {\n        pub(crate) r#gen: u8,\n    }\n}\n\
+         pub fn run() -> u8 { let value = map::MapGen { r#gen: 1 }; value.r#gen }\n",
+    )]);
+    let (found, _) = findings(&dir, &[]);
+    assert!(
+        !found.iter().any(|row| row.ends_with("MapGen::gen")),
+        "{found:?}"
+    );
+}
+
+/// Each bench target declares `mod data;`, so one file is in two crates. A
+/// change must hold in each crate that holds the file.
+#[test]
+fn a_file_in_two_crates_gets_a_finding_only_when_both_crates_allow_it() {
+    let dir = workspace(&[
+        (
+            "mid/Cargo.toml",
+            "[package]\nname = \"mid\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n\
+             [[bench]]\nname = \"one\"\nharness = false\n\n[[bench]]\nname = \"two\"\nharness = false\n",
+        ),
+        (
+            "mid/benches/data.rs",
+            "pub(crate) fn name() -> u8 { 1 }\npub(crate) fn local() -> u8 { 2 }\n\
+             pub(crate) fn here() -> u8 { local() }\n",
+        ),
+        (
+            "mid/benches/one.rs",
+            "mod data;\nfn main() { let _ = data::here(); }\n",
+        ),
+        (
+            "mid/benches/two.rs",
+            "mod data;\nfn main() { let _ = data::name() + data::here(); }\n",
+        ),
+    ]);
+    let (found, _) = findings(&dir, &[]);
+    assert!(
+        !found.contains("unnecessary_restricted_visibility data::name"),
+        "{found:?}"
+    );
+    assert!(
+        found.contains("unnecessary_restricted_visibility data::local"),
+        "{found:?}"
+    );
+}

@@ -228,28 +228,51 @@ fn within(db: &RootDatabase, module: ra_ap_hir::Module, home: ra_ap_hir::Module)
 }
 
 /// True when the node is in the signature of an item with a `pub` keyword: a
-/// field type, a parameter, a return type or a bound, not a body.
+/// field type, a parameter, a return type or a bound, not a body. A field of an
+/// enum variant has the visibility of the enum. An item of a trait impl counts
+/// as public, because the compiler checks it against the type and the trait.
 fn in_public_signature(node: &SyntaxNode) -> bool {
+    let mut in_variant = false;
     for ancestor in node.ancestors() {
         match ancestor.kind() {
             SyntaxKind::BLOCK_EXPR | SyntaxKind::STMT_LIST => return false,
-            SyntaxKind::RECORD_FIELD
-            | SyntaxKind::TUPLE_FIELD
-            | SyntaxKind::FN
+            SyntaxKind::VARIANT => in_variant = true,
+            SyntaxKind::RECORD_FIELD | SyntaxKind::TUPLE_FIELD if !in_variant => {
+                return written_pub(&ancestor);
+            }
+            SyntaxKind::ENUM if in_variant => return written_pub(&ancestor),
+            SyntaxKind::FN | SyntaxKind::TYPE_ALIAS | SyntaxKind::CONST
+                if in_trait_impl(&ancestor) =>
+            {
+                return true;
+            }
+            SyntaxKind::FN
             | SyntaxKind::TYPE_ALIAS
             | SyntaxKind::CONST
             | SyntaxKind::STATIC
-            | SyntaxKind::TRAIT
-            | SyntaxKind::IMPL => {
-                return ancestor
-                    .children()
-                    .find(|child| child.kind() == SyntaxKind::VISIBILITY)
-                    .is_some_and(|vis| vis.text() == "pub");
+            | SyntaxKind::TRAIT => return written_pub(&ancestor),
+            SyntaxKind::IMPL => {
+                return ast::Impl::cast(ancestor).is_some_and(|block| block.trait_().is_some());
             }
             _ => {}
         }
     }
     false
+}
+
+fn written_pub(node: &SyntaxNode) -> bool {
+    node.children()
+        .find(|child| child.kind() == SyntaxKind::VISIBILITY)
+        .is_some_and(|vis| vis.text() == "pub")
+}
+
+/// True for an item in the body of an `impl Trait for Type` block.
+fn in_trait_impl(item: &SyntaxNode) -> bool {
+    item.parent()
+        .filter(|list| list.kind() == SyntaxKind::ASSOC_ITEM_LIST)
+        .and_then(|list| list.parent())
+        .and_then(ast::Impl::cast)
+        .is_some_and(|block| block.trait_().is_some())
 }
 
 /// The definition whose name starts at `line` and `column` (one-based, in

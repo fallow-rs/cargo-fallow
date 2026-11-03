@@ -10,7 +10,7 @@ use std::cell::RefCell;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::graph::extract::{Binding, ItemKind, Origin, RefKind};
+use crate::graph::extract::{ALL_FIELDS, Binding, ItemKind, Origin, RefKind};
 use crate::graph::{CrateId, Extern, Graph, ItemId, ModuleId};
 use crate::parse::Edition;
 
@@ -254,8 +254,12 @@ impl<'g> Resolver<'g> {
                     class
                 };
                 push_targets(credits, base, class, &targets, &modules, self.graph);
+                if base.origin != Origin::Signature {
+                    self.credit_tuple_fields(credits, base, class, &targets);
+                }
+                // A path that did not resolve to its end, for example through a
+                // type alias, can name any item with its last name.
                 if class != Class::Exact
-                    && targets.is_empty()
                     && let Some(last) = segments.last()
                 {
                     // A path names no field. A one-name path names no method.
@@ -331,10 +335,49 @@ impl<'g> Resolver<'g> {
             .filter(|id| {
                 let candidate = &graph.items[*id];
                 candidate.kind == ItemKind::Field
-                    && candidate.name == field
+                    && (candidate.name == field || field == ALL_FIELDS)
                     && candidate.parent == Some(item)
             })
             .collect()
+    }
+
+    /// A call or a pattern of a tuple struct or a tuple variant, `Wrapper(x)`,
+    /// needs each tuple field to be visible here.
+    fn credit_tuple_fields(
+        &self,
+        credits: &mut Vec<Credit>,
+        base: Credit,
+        class: Class,
+        targets: &[Target],
+    ) {
+        for target in targets {
+            let Target::Item(item) = *target else {
+                continue;
+            };
+            if !matches!(
+                self.graph.items[item].kind,
+                ItemKind::Struct | ItemKind::Variant
+            ) {
+                continue;
+            }
+            let owner = &self.graph.items[item];
+            for &field in self
+                .members
+                .get(&(owner.krate, owner.name.as_str()))
+                .into_iter()
+                .flatten()
+            {
+                let candidate = &self.graph.items[field];
+                let tuple = candidate.name.bytes().all(|byte| byte.is_ascii_digit());
+                if candidate.kind == ItemKind::Field && candidate.parent == Some(item) && tuple {
+                    credits.push(Credit {
+                        item: field,
+                        class,
+                        ..base
+                    });
+                }
+            }
+        }
     }
 
     /// Credits each item called `name` in the crate of `base` and in the

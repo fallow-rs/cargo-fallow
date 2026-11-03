@@ -60,6 +60,8 @@ pub struct Credit {
     pub import: bool,
     /// True in test code.
     pub test_only: bool,
+    /// True when a `cfg` other than a test condition is on the code.
+    pub under_cfg: bool,
 }
 
 /// The resolver. Build it once for a graph.
@@ -154,6 +156,7 @@ impl<'g> Resolver<'g> {
                 origin: Origin::Body,
                 import: true,
                 test_only: false,
+                under_cfg: false,
             };
             if import.binding == Binding::Glob {
                 let (targets, class, modules) = self.resolve_path(
@@ -186,6 +189,7 @@ impl<'g> Resolver<'g> {
                 origin: reference.origin,
                 import: false,
                 test_only: reference.test_only,
+                under_cfg: reference.under_cfg,
             };
             self.credit_ref(&mut credits, base, &reference.kind);
         }

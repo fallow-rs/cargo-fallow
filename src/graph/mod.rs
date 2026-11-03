@@ -228,6 +228,9 @@ pub struct Ref {
     pub origin: Origin,
     /// True in test code.
     pub test_only: bool,
+    /// True when a `cfg` attribute other than a test condition is on the code
+    /// or on its file.
+    pub under_cfg: bool,
 }
 
 /// The workspace module graph.
@@ -559,6 +562,7 @@ fn add_files(graph: &mut Graph, root: &Path, krate: CrateId, files: CrateFiles, 
                 kind: unraw_kind(raw.kind),
                 origin: raw.origin,
                 test_only: raw.test_only,
+                under_cfg: raw.under_cfg || file.under_cfg,
             });
         }
     }

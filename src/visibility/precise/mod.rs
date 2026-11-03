@@ -244,6 +244,7 @@ pub fn decide(
         .undecided
         .iter()
         .enumerate()
+        .filter(|(_, finding)| analysis.cfg_used.binary_search(&finding.item).is_err())
         .map(|(id, finding)| candidate(graph, id, finding))
         .collect();
     if candidates.is_empty() {
@@ -395,9 +396,13 @@ fn summarize(
         .any(|event| matches!(event, Event::Done { .. }));
     match exit {
         Exit::Code(Some(0)) if finished && !time_limit => {}
-        Exit::Code(Some(0)) | Exit::TimedOut => {
+        Exit::Code(Some(0)) if time_limit => {
             summary.status = "time_limit";
             summary.message = Some("The time limit stopped the search.".to_owned());
+        }
+        Exit::TimedOut => {
+            summary.status = "time_limit";
+            summary.message = Some("The time limit stopped the worker.".to_owned());
         }
         Exit::Killed(reason) => {
             summary.status = "memory_limit";
@@ -527,6 +532,7 @@ mod tests {
                 finding(FindingKind::DeadPublic, 4),
                 finding(FindingKind::DeadPublic, 5),
             ],
+            cfg_used: Vec::new(),
         };
         let decisions: FxHashMap<usize, Decision> = [
             (

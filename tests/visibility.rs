@@ -911,3 +911,58 @@ fn the_variants_of_an_enum_with_a_helper_derive_get_credit() {
     assert!(!found.contains("dead_public Kind::Read"), "{found:?}");
     assert!(found.contains("dead_public Plain::Unused"), "{found:?}");
 }
+
+/// A method of a `pub` trait has no keyword, but its signature is as visible as
+/// the trait.
+#[test]
+fn a_restricted_type_in_a_trait_method_keeps_its_visibility() {
+    let dir = workspace(&[(
+        "mid/src/lib.rs",
+        "pub mod outer {\n    pub(crate) struct Input;\n    pub(crate) trait Source {\n        \
+         fn read(&self) -> Input;\n    }\n}\npub fn run() {}\n",
+    )]);
+    let (found, _) = findings(&dir, &[]);
+    assert!(
+        !found.contains("unnecessary_restricted_visibility outer::Input"),
+        "{found:?}"
+    );
+}
+
+/// rust-analyzer does not see code that a `cfg` for another platform turns off,
+/// so such a candidate stays undecided in `--precise` mode.
+#[cfg(feature = "precise")]
+#[test]
+fn precise_mode_leaves_a_candidate_with_a_use_under_cfg_undecided() {
+    let dir = workspace(&[
+        ("app/src/main.rs", "fn main() { mid::run(); }\n"),
+        (
+            "mid/src/lib.rs",
+            "pub struct A;\nimpl A {\n    pub fn helper(&self) {}\n}\n\
+             #[cfg(target_os = \"none\")]\npub fn other() { A.helper(); }\npub fn run() {}\n",
+        ),
+    ]);
+    let (precise, left) = findings(&dir, &["--precise"]);
+    assert!(!precise.contains("dead_public A::helper"), "{precise:?}");
+    assert!(left.contains("dead_public A::helper"), "{left:?}");
+}
+
+/// A precise finding goes through the same filters as a fast finding: the
+/// target of a flagged re-export waits for the next run.
+#[cfg(feature = "precise")]
+#[test]
+fn a_precise_finding_waits_for_its_reexport() {
+    let dir = workspace(&[
+        ("app/src/main.rs", "fn main() { mid::run(); }\n"),
+        (
+            "mid/src/lib.rs",
+            "pub mod a {\n    pub fn f() {}\n}\npub use a::f;\n\
+             macro_rules! call { () => { f() } }\npub fn run() { call!(); }\n",
+        ),
+    ]);
+    let (fast, undecided) = findings(&dir, &[]);
+    let (precise, _) = findings(&dir, &["--precise"]);
+    assert!(
+        !precise.iter().any(|row| row.ends_with(" a::f")),
+        "fast {fast:?} undecided {undecided:?} precise {precise:?}"
+    );
+}

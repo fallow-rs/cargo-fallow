@@ -84,14 +84,11 @@ fn visibility_report(options: &cli::VisibilityOptions) -> Result<u8, CliError> {
     };
     let module_graph = graph::build(&workspace, &production);
     progress.step("Checking the visibility");
-    let mut analysis = visibility::analyze(
-        &module_graph,
-        &visibility::Options {
-            exclude: options.exclude.clone(),
-            uniform_fields: options.uniform_fields,
-        },
-    );
-    analysis.retain_kinds(&options.kinds);
+    let check_options = visibility::Options {
+        exclude: options.exclude.clone(),
+        uniform_fields: options.uniform_fields,
+    };
+    let mut analysis = visibility::analyze(&module_graph, &check_options);
     let precise = match options.precise {
         Some(limits) => {
             progress.step("Deciding the undecided candidates with rust-analyzer");
@@ -102,6 +99,7 @@ fn visibility_report(options: &cli::VisibilityOptions) -> Result<u8, CliError> {
                 limits,
             };
             let summary = visibility::precise::decide(&module_graph, &mut analysis, &run)?;
+            visibility::refine(&module_graph, &check_options, &mut analysis);
             if summary.left > 0 {
                 render::warn(&summary.human_line());
             }
@@ -109,6 +107,7 @@ fn visibility_report(options: &cli::VisibilityOptions) -> Result<u8, CliError> {
         }
         None => None,
     };
+    analysis.retain_kinds(&options.kinds);
     let report = visibility::report::VisibilityReport::new(visibility::report::Inputs {
         graph: &module_graph,
         analysis: &analysis,

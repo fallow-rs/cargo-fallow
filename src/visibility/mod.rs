@@ -84,6 +84,10 @@ pub struct Analysis {
     pub findings: Vec<Finding>,
     /// The findings that only untyped credits stop.
     pub undecided: Vec<Finding>,
+    /// The items with a use in code under a `cfg` other than a test condition.
+    /// rust-analyzer does not see such code when the condition is off, so
+    /// `--precise` mode does not decide these items. Sorted.
+    pub cfg_used: Vec<ItemId>,
 }
 
 impl Analysis {
@@ -119,10 +123,32 @@ pub fn analyze(graph: &Graph, options: &Options) -> Analysis {
         .into_iter()
         .filter(|finding| !known.contains(&(finding.item, finding.kind)))
         .collect();
+    let mut cfg_used: Vec<ItemId> = credits
+        .iter()
+        .filter(|credit| credit.under_cfg)
+        .map(|credit| credit.item)
+        .collect();
+    cfg_used.sort_unstable();
+    cfg_used.dedup();
     Analysis {
         findings,
         undecided,
+        cfg_used,
     }
+}
+
+/// Runs the filters that keep each reported change valid alone, again, after
+/// `--precise` mode added findings: a re-export before its target, field
+/// groups, and files in more than one crate.
+pub fn refine(graph: &Graph, options: &Options, analysis: &mut Analysis) {
+    let resolver = Resolver::new(graph);
+    let surface = Surface::new(graph, &resolver, options);
+    wait_for_reexports(graph, &surface, &mut analysis.findings);
+    if options.uniform_fields {
+        keep_field_groups(graph, &surface, &mut analysis.findings);
+    }
+    keep_shared_files(graph, &mut analysis.findings);
+    analysis.findings.sort();
 }
 
 /// The exported surface of the libraries.
@@ -446,6 +472,8 @@ fn signature_visible(graph: &Graph, owner: ItemId) -> bool {
             return true;
         }
         match entry.kind {
+            // A trait item has the visibility of its trait.
+            _ if entry.flags.trait_item => {}
             ItemKind::Variant => {}
             ItemKind::Field
                 if entry

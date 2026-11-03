@@ -260,6 +260,9 @@ pub struct RawRef {
     pub origin: Origin,
     /// True in test code.
     pub test_only: bool,
+    /// True when a `cfg` attribute other than a test condition is on an
+    /// enclosing node.
+    pub under_cfg: bool,
 }
 
 /// The facts of one file.
@@ -308,6 +311,7 @@ fn doc_ref(path: TokenPath) -> Vec<RawRef> {
             kind,
             origin: Origin::Doc,
             test_only: true,
+            under_cfg: false,
         })
         .collect()
 }
@@ -814,6 +818,7 @@ impl<'a> Walker<'a> {
             kind,
             origin,
             test_only: self.test_only(),
+            under_cfg: self.under_cfg(),
         });
     }
 

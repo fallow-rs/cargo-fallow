@@ -232,8 +232,8 @@ A switch reads a value at run time, and a constant context cannot. So a mutant i
 | Status | Meaning |
 | --- | --- |
 | `killed` | A test failed with the mutant, also in a second look with no other test process of the run. `killed_by` names the test. |
-| `survived` | Each test passed, also in the retry. A first failure next to another test that does not repeat one at a time also gives this status, and `reason` says so. |
-| `timeout` | The tests did not end within the limit of the tool, or the nextest config of the project ended a test at its limit. A limit at most 10 times the baseline gets a retry with twice the limit, because host load can explain it. |
+| `survived` | Each test passed, also in the retry. A failure next to another test that does not repeat one at a time also gives this status, and `reason` says so. This applies to a failure in the first run and to a failure in the retry. With `-j 1` no other test runs next to the mutant, so such a failure in the retry gives `flaky`. |
+| `timeout` | The tests did not end within the limit of the tool, or the nextest config of the project ended a test at its limit. A limit at most 10 times the baseline gets a retry with twice the limit, because host load can explain it. A failure in that retry that does not repeat one at a time keeps the timeout. |
 | `flaky` | Two runs of the mutant disagree. |
 | `no_coverage` | No test executes the mutant, no build reads it (for example a `cfg` that is off), or the package has no test that passes. `reason` says which. |
 | `compile_error` | The mutant does not compile, or its compile passed the limit: 3 times the clean build, with a minimum of 30 seconds. A mutant in a `const fn` can loop in the compiler. |

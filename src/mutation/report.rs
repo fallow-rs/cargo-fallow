@@ -86,6 +86,11 @@ const INSPECT_ACTION: &str = "inspect-mutant";
 /// one mutant, without the id.
 pub fn actions_for(row: &MutantRow, inspect: &str) -> Vec<Action> {
     let description = match row.status {
+        // A survivor with a reason had a failed test that passed one at a time.
+        Status::Survived if row.reason.is_some() => {
+            "A test failed with this change, and each test passed one at a time. \
+             Inspect the change and the tests that execute it."
+        }
         Status::Survived => {
             "Each test passed with this change. Inspect the change and the tests that execute it."
         }
@@ -107,6 +112,18 @@ pub fn actions_for(row: &MutantRow, inspect: &str) -> Vec<Action> {
         description,
         command: format!("{inspect} {}", row.id),
     }]
+}
+
+/// The SARIF message of a survivor.
+pub fn survivor_message(row: &MutantRow) -> String {
+    let change = format!(
+        "`{}` became `{}` ({})",
+        row.original, row.replacement, row.operator
+    );
+    match &row.reason {
+        Some(reason) => format!("Each test passed one at a time when {change}: {reason}."),
+        None => format!("Each test passed when {change}."),
+    }
 }
 
 /// The outcome of the `surviving-mutants` gate. A run with no survivor and no
@@ -583,6 +600,7 @@ pub struct InspectReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mutation::status::RETRY_PASSED_ALONE;
 
     fn row(file: &str, status: Status) -> MutantRow {
         MutantRow {
@@ -606,6 +624,26 @@ mod tests {
             no_line_data: false,
             actions: Vec::new(),
         }
+    }
+
+    #[test]
+    fn a_survivor_after_a_failed_test_does_not_say_that_each_test_passed() {
+        let mut survivor = row("a.rs", Status::Survived);
+        let plain = &actions_for(&survivor, "inspect")[0].description;
+        assert!(plain.starts_with("Each test passed with this change."));
+        assert_eq!(
+            survivor_message(&survivor),
+            "Each test passed when `a` became `b` (o)."
+        );
+        survivor.reason = Some(RETRY_PASSED_ALONE.to_owned());
+        let after_failure = &actions_for(&survivor, "inspect")[0].description;
+        assert!(after_failure.starts_with("A test failed with this change"));
+        assert_eq!(
+            survivor_message(&survivor),
+            format!(
+                "Each test passed one at a time when `a` became `b` (o): {RETRY_PASSED_ALONE}."
+            )
+        );
     }
 
     fn status_of(statuses: &[Status]) -> GateStatus {

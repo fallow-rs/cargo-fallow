@@ -41,7 +41,7 @@ use crate::mutation::run::{Options, file_selected, millis};
 use crate::mutation::schema::Mode;
 use crate::mutation::schema_build::{SchemaWriter, read_by_build};
 use crate::mutation::selection::{Picked, Selector, write_order};
-use crate::mutation::status::{Status, Tier, Verdict, merge_retry};
+use crate::mutation::status::{OVERLAP, Status, Tier, Verdict, merge_retry};
 use crate::mutation::testrun::{
     BuildMeta, KnownFailures, RunSpec, Suite, SuiteStatus, TestName, TestRun, TestTree,
     build_targets, classify, compare, failures, known_failures, lost_passes, new_failure, prepare,
@@ -1534,10 +1534,11 @@ impl Engine<'_> {
             };
             // A failure in the retry can also come from another test process, so it
             // gets the same second look as a kill in the first run.
-            if second.verdict.status == Status::Killed {
+            let retry_failed = second.verdict.status == Status::Killed;
+            if retry_failed {
                 self.confirm_kill(run, state, &retry, &mut second)?;
             }
-            done.verdict = merge_retry(done.verdict, second.verdict);
+            done.verdict = merge_retry(done.verdict, second.verdict, retry_failed);
             done.retried = true;
             done.tests_run += second.tests_run;
             done.doctests_run += second.doctests_run;
@@ -1585,10 +1586,9 @@ impl Engine<'_> {
         done.tests_run += again.tests_run;
         done.doctests_run += again.doctests_run;
         done.verdict = match again.verdict.status {
-            Status::Survived if self.options.jobs > 1 => Verdict::with_reason(
-                Status::Survived,
-                "a test failed next to another test, and each test passed one at a time",
-            ),
+            Status::Survived if self.options.jobs > 1 => {
+                Verdict::with_reason(Status::Survived, OVERLAP)
+            }
             Status::Survived => Verdict {
                 status: Status::Flaky,
                 reason: Some("the first run failed a test, and the second run passed".to_owned()),

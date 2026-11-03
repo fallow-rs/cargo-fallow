@@ -516,7 +516,9 @@ fn fails_once() {
     let runs: u32 = std::fs::read_to_string(path).ok().and_then(|t| t.parse().ok()).unwrap_or(0) + 1;
     std::fs::write(path, runs.to_string()).unwrap();
     // Each copy has its own count. In the schema copy, run 1 is the baseline and run
-    // 2 is the first mutant.
+    // 2 is the first mutant. The test cannot see if a run is a second look, so this
+    // count follows the order of the runs in the engine: a new run before the
+    // first mutant run moves the failure.
     assert!(runs != 2);
 }
 "#;
@@ -540,6 +542,11 @@ fn fails_once() {
 /// A library whose test fails only in the second run with the mutant. That run is
 /// the retry of a survivor, and its failure does not repeat, as a failure from
 /// overlap with another test process.
+///
+/// The test cannot see if a run is a second look with no other test process: the
+/// engine gives it no marker. So the count follows the order of the mutant runs in
+/// the engine: the first run, the retry, then the second look. A change of that
+/// order moves the failure.
 const FAILS_IN_THE_RETRY: &str = r#"
 pub fn f(a: u8) -> u8 {
     if a > 10 { 1 } else { 0 }
@@ -577,18 +584,103 @@ fn a_retry_failure_that_does_not_repeat_alone_keeps_a_survivor() {
         assert_eq!(mutant["status"], "survived", "{tier}: {}", run.report);
         assert_eq!(mutant["retried"], true, "{tier}: {}", run.report);
         assert_eq!(
-            mutant["reason"],
-            "a test failed next to another test, and each test passed one at a time",
+            mutant["reason"], RETRY_PASSED_ALONE,
+            "{tier}: {}",
+            run.report
+        );
+        assert_eq!(
+            mutant["actions"][0]["description"],
+            "A test failed with this change, and each test passed one at a time. \
+             Inspect the change and the tests that execute it.",
             "{tier}: {}",
             run.report
         );
     }
 }
 
-/// A failed retry of a timeout gets the same second look as a kill. The failure
-/// does not repeat, so the mutant is no kill.
+/// The reason of a survivor whose retry failed a test that passed one at a time.
+const RETRY_PASSED_ALONE: &str = "the retry failed a test, and each test passed one at a time: \
+     the cause is an overlap with another test or a flaky test";
+
+/// With one job no other test process runs next to the retry. A failure that does
+/// not repeat comes from a flaky test.
 #[test]
-fn a_retry_failure_of_a_timeout_that_does_not_repeat_is_no_kill() {
+fn a_retry_failure_that_does_not_repeat_with_one_job_is_flaky() {
+    let run = run(
+        &[("src/lib.rs", FAILS_IN_THE_RETRY)],
+        &[
+            "--tier",
+            "schema",
+            "--no-selection",
+            "-j",
+            "1",
+            "--max-mutants",
+            "1",
+        ],
+    );
+    let mutant = &run.mutants()[0];
+    assert_eq!(mutant["status"], "flaky", "{}", run.report);
+    assert_eq!(mutant["retried"], true, "{}", run.report);
+    assert_eq!(
+        mutant["reason"],
+        "the first run passed each test, the retry failed a test, and a third run passed",
+        "{}",
+        run.report
+    );
+}
+
+/// A failed retry of a survivor that repeats with no other test process makes the
+/// two runs disagree.
+#[test]
+fn a_retry_failure_that_repeats_alone_is_flaky() {
+    let lib = r#"
+pub fn f(a: u8) -> u8 {
+    if a > 10 { 1 } else { 0 }
+}
+#[test]
+fn fails_after_the_first_mutant_run() {
+    if (f(6), f(10), f(11)) == (0, 0, 1) {
+        return;
+    }
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/mutant-runs");
+    let runs: u32 = std::fs::read_to_string(path).ok().and_then(|t| t.parse().ok()).unwrap_or(0) + 1;
+    std::fs::write(path, runs.to_string()).unwrap();
+    assert!(runs < 2);
+}
+"#;
+    for jobs in ["1", "2"] {
+        let run = run(
+            &[("src/lib.rs", lib)],
+            &[
+                "--tier",
+                "schema",
+                "--no-selection",
+                "-j",
+                jobs,
+                "--max-mutants",
+                "1",
+            ],
+        );
+        let mutant = &run.mutants()[0];
+        assert_eq!(mutant["status"], "flaky", "-j {jobs}: {}", run.report);
+        assert_eq!(
+            mutant["reason"], "the first run passed each test, and the retry failed a test",
+            "-j {jobs}: {}",
+            run.report
+        );
+        assert_eq!(
+            mutant["killed_by"], "fixture::fixture fails_after_the_first_mutant_run",
+            "-j {jobs}: {}",
+            run.report
+        );
+    }
+}
+
+/// A failed retry of a timeout gets the same second look as a kill. The failure
+/// does not repeat, so it says nothing about the mutant. The first run timed out,
+/// so the mutant is a timeout.
+#[test]
+fn a_retry_failure_of_a_timeout_that_does_not_repeat_keeps_the_timeout() {
     let lib = r#"
 pub fn f(a: u8) -> u8 {
     if a > 10 { 1 } else { 0 }
@@ -624,7 +716,7 @@ fn slow_then_fails() {
     );
     let mutant = &run.mutants()[0];
     assert_eq!(mutant["retried"], true, "{}", run.report);
-    assert_ne!(mutant["status"], "killed", "{}", run.report);
+    assert_eq!(mutant["status"], "timeout", "{}", run.report);
 }
 
 /// A real kill stays a kill, also with a second run.

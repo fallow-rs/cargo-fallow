@@ -98,30 +98,46 @@ impl Verdict {
     }
 }
 
+/// The reason of a survivor when a test failed next to another test, and each test
+/// passed one at a time.
+pub const OVERLAP: &str = "a test failed next to another test, and each test passed one at a time";
+
+/// The reason of a survivor when its retry failed a test, and each test passed one
+/// at a time.
+pub const RETRY_PASSED_ALONE: &str = "the retry failed a test, and each test passed one at a \
+     time: the cause is an overlap with another test or a flaky test";
+
 /// Merges the first run and its retry.
 ///
 /// A failure in the retry has had a second look with no other test process, as a
-/// kill in the first run has. A failure that does not repeat there arrives as a
-/// survivor with the reason of the overlap, or as flaky with one job.
+/// kill in the first run has. `retry_failed` is true when the retry failed a test,
+/// before that second look. A failure that does not repeat in the second look
+/// arrives as a survivor with more than one job, or as flaky with one job.
 ///
 /// | First | Retry | Result |
 /// | --- | --- | --- |
-/// | survived | survived | survived, with the reason of the retry |
+/// | survived | survived | survived |
+/// | survived | survived after a failure | survived, with the reason of the failure |
 /// | survived | timeout | survived |
 /// | survived | killed | flaky |
 /// | survived | flaky | flaky |
 /// | timeout | timeout | timeout |
+/// | timeout | survived after a failure | timeout |
 /// | timeout | killed | killed |
 /// | any | `runtime_error` | `runtime_error` |
 /// | any | other result | flaky |
-pub fn merge_retry(first: Verdict, retry: Verdict) -> Verdict {
+pub fn merge_retry(first: Verdict, retry: Verdict, retry_failed: bool) -> Verdict {
     match (first.status, retry.status) {
         (_, Status::RuntimeError) | (Status::Timeout, Status::Killed) => retry,
-        (Status::Survived, Status::Survived) => Verdict {
-            reason: first.reason.or(retry.reason),
+        (Status::Survived, Status::Survived) if retry_failed => Verdict {
+            reason: Some(RETRY_PASSED_ALONE.to_owned()),
             ..first
         },
-        (Status::Survived | Status::Timeout, Status::Timeout) => first,
+        // The failure of the retry did not repeat, so it says nothing about the
+        // mutant. The first run timed out for real.
+        (Status::Timeout, Status::Survived) if retry_failed => first,
+        (Status::Survived | Status::Timeout, Status::Timeout)
+        | (Status::Survived, Status::Survived) => first,
         (Status::Survived, Status::Killed) => Verdict {
             reason: Some("the first run passed each test, and the retry failed a test".to_owned()),
             ..retry_flaky(retry)
@@ -157,7 +173,16 @@ mod tests {
     use super::*;
 
     fn merged(first: Status, retry: Status) -> Status {
-        merge_retry(Verdict::new(first), Verdict::new(retry)).status
+        merge_retry(
+            Verdict::new(first),
+            Verdict::new(retry),
+            retry == Status::Killed,
+        )
+        .status
+    }
+
+    fn merged_after_a_failure(first: Status, retry: Status) -> Status {
+        merge_retry(Verdict::new(first), Verdict::new(retry), true).status
     }
 
     #[test]
@@ -173,11 +198,25 @@ mod tests {
         assert_eq!(merged(Timeout, Survived), Flaky);
         assert_eq!(merged(Survived, RuntimeError), RuntimeError);
         assert_eq!(merged(Timeout, RuntimeError), RuntimeError);
+        assert_eq!(merged_after_a_failure(Survived, Survived), Survived);
+        assert_eq!(merged_after_a_failure(Timeout, Survived), Timeout);
+        assert_eq!(merged_after_a_failure(Survived, Flaky), Flaky);
+        assert_eq!(merged_after_a_failure(Timeout, Flaky), Flaky);
+    }
+
+    #[test]
+    fn a_plain_survivor_has_no_reason() {
+        let result = merge_retry(
+            Verdict::new(Status::Survived),
+            Verdict::new(Status::Survived),
+            false,
+        );
+        assert_eq!(result, Verdict::new(Status::Survived));
     }
 
     #[test]
     fn a_flaky_kill_keeps_the_test_name() {
-        let result = merge_retry(Verdict::new(Status::Survived), Verdict::killed("t"));
+        let result = merge_retry(Verdict::new(Status::Survived), Verdict::killed("t"), true);
         assert_eq!(result.status, Status::Flaky);
         assert_eq!(result.killed_by.as_deref(), Some("t"));
         assert!(result.reason.is_some());
@@ -185,12 +224,18 @@ mod tests {
 
     #[test]
     fn a_retry_failure_from_overlap_keeps_a_survivor_with_the_reason() {
-        let overlap = "a test failed next to another test, and each test passed one at a time";
-        let retry = Verdict::with_reason(Status::Survived, overlap);
-        let result = merge_retry(Verdict::new(Status::Survived), retry);
+        let retry = Verdict::with_reason(Status::Survived, OVERLAP);
+        let result = merge_retry(Verdict::new(Status::Survived), retry, true);
         assert_eq!(result.status, Status::Survived);
-        assert_eq!(result.reason.as_deref(), Some(overlap));
+        assert_eq!(result.reason.as_deref(), Some(RETRY_PASSED_ALONE));
         assert_eq!(result.killed_by, None);
+    }
+
+    #[test]
+    fn a_retry_failure_from_overlap_keeps_a_timeout() {
+        let first = Verdict::with_reason(Status::Timeout, "limit");
+        let retry = Verdict::with_reason(Status::Survived, OVERLAP);
+        assert_eq!(merge_retry(first.clone(), retry, true), first);
     }
 
     #[test]
@@ -200,7 +245,7 @@ mod tests {
             reason: Some("the first run failed a test, and the second run passed".to_owned()),
             killed_by: Some("t".to_owned()),
         };
-        let result = merge_retry(Verdict::new(Status::Survived), retry);
+        let result = merge_retry(Verdict::new(Status::Survived), retry, true);
         assert_eq!(result.status, Status::Flaky);
         assert_eq!(result.killed_by.as_deref(), Some("t"));
         assert!(

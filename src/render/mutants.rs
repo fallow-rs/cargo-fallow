@@ -11,7 +11,7 @@ use super::human::{gate_line, plural};
 use super::sarif::{document, level, rule_description};
 use crate::gates::RustGateName;
 use crate::mutation::report::{
-    CoverageState, InspectReport, MapSource, MutantRow, Report, StopReason,
+    CoverageState, InspectReport, MapSource, MutantRow, Report, StopReason, survivor_message,
 };
 use crate::mutation::status::{Status, Tier};
 
@@ -215,10 +215,7 @@ pub fn sarif(report: &Report) -> io::Result<String> {
             json!({
                 "ruleId": name.as_str(),
                 "level": result_level,
-                "message": { "text": format!(
-                    "Each test passed when `{}` became `{}` ({}).",
-                    row.original, row.replacement, row.operator
-                ) },
+                "message": { "text": survivor_message(row) },
                 "locations": [{
                     "physicalLocation": {
                         "artifactLocation": { "uri": row.file },

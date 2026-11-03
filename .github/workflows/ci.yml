@@ -30,6 +30,8 @@ env:
 jobs:
   fmt:
     name: Format
+    # A push to main runs only Clippy and Test: the pull request ran this check.
+    if: github.event_name != 'push'
     runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
@@ -146,6 +148,8 @@ jobs:
   # proc-macro server of the toolchain, which the `rustc` component ships.
   precise:
     name: Precise mode
+    # A push to main runs only Clippy and Test: the pull request ran this check.
+    if: github.event_name != 'push'
     runs-on: ubuntu-26.04
     timeout-minutes: 40
     permissions:
@@ -172,6 +176,8 @@ jobs:
   # docs/release-procedure.md.
   package:
     name: Package
+    # A push to main runs only Clippy and Test: the pull request ran this check.
+    if: github.event_name != 'push'
     runs-on: ubuntu-26.04
     timeout-minutes: 45
     permissions:
@@ -205,6 +211,8 @@ jobs:
 
   doc:
     name: Documentation
+    # A push to main runs only Clippy and Test: the pull request ran this check.
+    if: github.event_name != 'push'
     runs-on: ubuntu-26.04
     timeout-minutes: 15
     permissions:
@@ -223,6 +231,8 @@ jobs:
 
   typos:
     name: Typos
+    # A push to main runs only Clippy and Test: the pull request ran this check.
+    if: github.event_name != 'push'
     runs-on: ubuntu-26.04
     timeout-minutes: 5
     permissions:
@@ -244,6 +254,8 @@ jobs:
   # The same steps as the JS Lint job in fallow.
   scripts:
     name: JS Lint
+    # A push to main runs only Clippy and Test: the pull request ran this check.
+    if: github.event_name != 'push'
     runs-on: ubuntu-26.04
     timeout-minutes: 5
     permissions:
@@ -278,6 +290,8 @@ jobs:
 
   audit:
     name: Security Audit
+    # A push to main runs only Clippy and Test: the pull request ran this check.
+    if: github.event_name != 'push'
     runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
@@ -294,6 +308,8 @@ jobs:
 
   deny:
     name: Cargo Deny
+    # A push to main runs only Clippy and Test: the pull request ran this check.
+    if: github.event_name != 'push'
     runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
@@ -309,6 +325,8 @@ jobs:
 
   shear:
     name: Unused Dependencies
+    # A push to main runs only Clippy and Test: the pull request ran this check.
+    if: github.event_name != 'push'
     runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
@@ -326,6 +344,8 @@ jobs:
 
   zizmor:
     name: Actions Security
+    # A push to main runs only Clippy and Test: the pull request ran this check.
+    if: github.event_name != 'push'
     runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
@@ -346,6 +366,8 @@ jobs:
 
   msrv:
     name: MSRV (1.98)
+    # A push to main runs only Clippy and Test: the pull request ran this check.
+    if: github.event_name != 'push'
     runs-on: ubuntu-26.04
     timeout-minutes: 30
     permissions:

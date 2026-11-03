@@ -1,9 +1,10 @@
 name: Coverage
 
-# Runs on main only, to keep pull request jobs few.
+# This repository is private, so each minute costs money. Coverage runs
+# weekly and on demand, not on each push to main.
 on:
-  push:
-    branches: [main]
+  schedule:
+    - cron: "37 5 * * 1"
   workflow_dispatch:
 
 # Pushes to main share one group, so a newer run cancels the older one. Only

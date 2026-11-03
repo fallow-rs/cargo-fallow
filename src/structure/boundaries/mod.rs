@@ -31,6 +31,7 @@ use crate::gates::parse_edition;
 use crate::modules::{ModuleDecl, TargetRoot, walk};
 use crate::parse::{Edition, with_parsed};
 use crate::render::{Progress, warn};
+use crate::scope::Scope;
 use crate::section::{Section, to_value};
 use crate::structure::BoundariesArgs;
 use crate::structure::config::{
@@ -113,14 +114,21 @@ pub fn run(args: &BoundariesArgs) -> Result<Section, CliError> {
     let progress = Progress::new(args.common.quiet);
     progress.step("Reading cargo metadata");
     let workspace = workspace::load(args.common.manifest_path.as_deref())?;
-    section(&workspace, args.fail_on_violations, progress)
+    let scope = Scope::load(&workspace, args.common.changed_since.as_deref())?;
+    scope.annotate(section(
+        &workspace,
+        args.fail_on_violations,
+        &scope,
+        progress,
+    )?)
 }
 
 /// Checks the rules of the workspace. `enforced` is true when a violation
-/// fails the run.
+/// fails the run. The report keeps only the findings in `scope`.
 pub fn section(
     workspace: &Workspace,
     enforced: bool,
+    scope: &Scope,
     progress: Progress,
 ) -> Result<Section, CliError> {
     let settings: config::Boundaries = config::section(workspace, "boundaries")?;
@@ -140,6 +148,7 @@ pub fn section(
     for rule in &settings.modules {
         findings.extend(module_rule(workspace, rule)?);
     }
+    findings.retain(|finding| scope.keeps(&finding.path));
     findings.sort_by(|a, b| {
         (&a.rule, &a.path, a.line, a.col, &a.to, &a.pattern)
             .cmp(&(&b.rule, &b.path, b.line, b.col, &b.to, &b.pattern))

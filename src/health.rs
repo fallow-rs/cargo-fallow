@@ -194,6 +194,39 @@ pub struct HealthScore {
     pub metrics: Metrics,
 }
 
+/// The health part of a report.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum Health {
+    /// The score of a run on the whole workspace.
+    Score(Box<HealthScore>),
+    /// A run with a scope. The penalties count the whole workspace, so a run
+    /// that keeps only part of the findings gives no score.
+    Scoped(ScopedHealth),
+}
+
+/// The health part of a run with a scope.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ScopedHealth {
+    /// Always `rust`.
+    pub language: &'static str,
+    /// The version of the formula.
+    pub formula_version: u32,
+    /// The scope of the run: `changed` for `--changed-since`.
+    pub scope: &'static str,
+}
+
+impl ScopedHealth {
+    /// The health part of a `--changed-since` run.
+    pub const fn changed() -> Self {
+        Self {
+            language: "rust",
+            formula_version: FORMULA_VERSION,
+            scope: "changed",
+        }
+    }
+}
+
 /// Computes the score, or `None` when no check with a penalty ran. The
 /// score and the grade need each check with a penalty.
 pub fn score(metrics: Metrics) -> Option<HealthScore> {

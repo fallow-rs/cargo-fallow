@@ -48,6 +48,7 @@ use crate::error::{CliError, ErrorCode};
 use crate::finding::{self as shared, Category, Draft, Impact, Location, Severity};
 use crate::gates::RustGateName as Gate;
 use crate::render::Progress;
+use crate::scope::Scope;
 use crate::section::{Section, to_value};
 use crate::structure::DupesArgs;
 pub use crate::structure::config::Mode;
@@ -235,7 +236,8 @@ pub fn run(args: &DupesArgs) -> Result<Section, CliError> {
         clones: args.fail_on_clones,
         threshold: args.threshold.is_some(),
     };
-    section(&loaded, &settings, gates, progress)
+    let scope = Scope::load(&workspace, args.common.changed_since.as_deref())?;
+    scope.annotate(section(&loaded, &settings, gates, &scope, progress)?)
 }
 
 /// The gates of the check that fail the run.
@@ -253,6 +255,7 @@ pub fn section(
     loaded: &Loaded,
     settings: &Duplication,
     enforced: Enforce,
+    scope: &Scope,
     progress: Progress,
 ) -> Result<Section, CliError> {
     let files: Vec<&File> = loaded
@@ -275,21 +278,55 @@ pub fn section(
     let mut skipped_files = loaded.skipped_files();
     skipped_files.extend(found.skipped.iter().cloned());
     skipped_files.sort();
+    // A clone group counts when one of its copies is in a changed file.
+    let groups: Vec<_> = found
+        .groups
+        .into_iter()
+        .filter(|group| {
+            scope.keeps_any(
+                group
+                    .instances
+                    .iter()
+                    .map(|instance| instance.file.as_str()),
+            )
+        })
+        .collect();
+    let mut stats = found.stats;
+    let mut families = found.families;
+    if !scope.is_full() {
+        // The group counts follow the scope. The line, token and file counts
+        // stay those of the whole workspace.
+        let kept: BTreeSet<&str> = groups
+            .iter()
+            .map(|group| group.fingerprint.as_str())
+            .collect();
+        families.retain(|family| {
+            family
+                .groups
+                .iter()
+                .any(|group| kept.contains(group.as_str()))
+        });
+        stats.clone_groups = groups.len();
+        stats.clone_families = families.len();
+        stats.clone_instances = groups.iter().map(|group| group.instances.len()).sum();
+    }
     let summary = Summary {
         mode: settings.mode.as_str(),
         min_tokens: settings.min_tokens,
         min_lines: settings.min_lines,
-        stats: found.stats,
+        stats,
         generated_files: loaded.files.iter().filter(|file| file.skip_metrics).count(),
-        clone_families: found.families,
+        clone_families: families,
         skipped_files,
     };
-    let mut report = Report::new("dupes", summary, found.groups);
+    let mut report = Report::new("dupes", summary, groups);
     report.gate_outcomes.insert(
         Gate::DuplicationFindings,
         count_gate(report.findings.len(), enforced.clones),
     );
-    if settings.threshold > 0.0 {
+    // The percentage counts the whole workspace, so a scoped run does not
+    // judge it.
+    if settings.threshold > 0.0 && scope.is_full() {
         let observed = report.summary.stats.duplication_percentage;
         let status = if observed > settings.threshold {
             fallow_report_protocol::GateStatus::Fail

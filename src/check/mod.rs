@@ -22,8 +22,11 @@ use crate::error::{CliError, ErrorCode};
 use crate::finding::{Action, Category, Draft, Finding, Impact, Location, Severity};
 use crate::gates::{self, RustGateName};
 use crate::graph::{self, Graph, extract::Vis};
-use crate::health::{self, CRITICAL_CYCLOMATIC, LARGE_FUNCTION_LINES, Metrics};
+use crate::health::{
+    self, CRITICAL_CYCLOMATIC, Health, LARGE_FUNCTION_LINES, Metrics, ScopedHealth,
+};
 use crate::render::{self, Progress};
+use crate::scope::Scope;
 use crate::section::Section;
 use crate::structure::complexity::Function;
 use crate::structure::config::{self, matches_prefix};
@@ -97,6 +100,8 @@ pub struct Options {
     pub fail_on_parse_error: bool,
     /// The flags for the `cargo metadata` call of `deps`.
     pub cargo_flags: Vec<String>,
+    /// The ref of `--changed-since`.
+    pub changed_since: Option<String>,
 }
 
 impl Options {
@@ -185,6 +190,7 @@ pub fn execute(options: &Options) -> Result<report::CheckReport, CliError> {
         progress.step("Reading cargo metadata");
         (workspace::load(options.manifest_path.as_deref())?, None)
     };
+    let scope = Scope::load(&workspace, options.changed_since.as_deref())?;
     // Read each configuration table before the work starts, so an invalid
     // table stops the run at once.
     let visibility_options = if runs(CheckName::Visibility) {
@@ -217,22 +223,24 @@ pub fn execute(options: &Options) -> Result<report::CheckReport, CliError> {
     ]
     .into_iter()
     .any(runs);
-    let (graph_part, source_part, boundaries) = thread::scope(|scope| {
+    let (graph_part, source_part, boundaries) = thread::scope(|threads| {
         let graph_thread = needs_graph.then(|| {
-            scope.spawn(|| {
+            threads.spawn(|| {
                 graph_checks(
                     &workspace,
                     metadata.as_ref(),
                     visibility_options.as_ref(),
                     enforced,
+                    &scope,
                     progress,
                 )
             })
         });
-        let source_thread = needs_source
-            .then(|| scope.spawn(|| source_checks(&workspace, &settings, enforced, progress)));
+        let source_thread = needs_source.then(|| {
+            threads.spawn(|| source_checks(&workspace, &settings, enforced, &scope, progress))
+        });
         let boundaries_thread = runs(CheckName::Boundaries)
-            .then(|| scope.spawn(|| boundaries::section(&workspace, enforced, progress)));
+            .then(|| threads.spawn(|| boundaries::section(&workspace, enforced, &scope, progress)));
         let graph_part = join(graph_thread)?;
         let source_part = join(source_thread)?;
         let boundaries = join(boundaries_thread)?;
@@ -241,18 +249,12 @@ pub fn execute(options: &Options) -> Result<report::CheckReport, CliError> {
     let graph_part = graph_part.unwrap_or_default();
     let source_part = source_part.unwrap_or_default();
 
-    let mut metrics = source_part.metrics;
-    metrics.public_items = graph_part.public_items;
-    metrics.dead_public = graph_part.dead_public;
-    metrics.unused_deps = graph_part.unused_deps;
-    metrics.declared_dependencies = graph_part.unused_deps.map(|_| {
-        workspace
-            .members
-            .iter()
-            .map(|member| member.links.len())
-            .sum()
-    });
-    metrics.boundary_violations = boundaries.as_ref().map(|section| section.findings.len());
+    let metrics = run_metrics(
+        &workspace,
+        source_part.metrics,
+        &graph_part,
+        boundaries.as_ref(),
+    );
     let parts = [
         (CheckName::Deps, graph_part.deps),
         (CheckName::Visibility, graph_part.visibility),
@@ -266,11 +268,44 @@ pub fn execute(options: &Options) -> Result<report::CheckReport, CliError> {
             .into_iter()
             .filter_map(|(name, section)| section.map(|section| (name, section))),
     );
-    Ok(report::CheckReport::new(
-        workspace,
-        sections,
-        health::score(metrics),
-    ))
+    Ok(
+        report::CheckReport::new(workspace, sections, scoped_health(metrics, &scope))
+            .with_scope(&scope),
+    )
+}
+
+/// The inputs of the health score: the source counts with the counts of the
+/// graph checks and the boundaries check.
+fn run_metrics(
+    workspace: &Workspace,
+    mut metrics: Metrics,
+    graph_part: &GraphPart,
+    boundaries: Option<&Section>,
+) -> Metrics {
+    metrics.public_items = graph_part.public_items;
+    metrics.dead_public = graph_part.dead_public;
+    metrics.unused_deps = graph_part.unused_deps;
+    metrics.declared_dependencies = graph_part.unused_deps.map(|_| {
+        workspace
+            .members
+            .iter()
+            .map(|member| member.links.len())
+            .sum()
+    });
+    metrics.boundary_violations = boundaries.map(|section| section.findings.len());
+    metrics
+}
+
+/// The health part of the report. The penalties count the whole workspace, so
+/// a scoped run gives no score.
+fn scoped_health(metrics: Metrics, scope: &Scope) -> Option<Health> {
+    health::score(metrics).map(|health| {
+        if scope.is_full() {
+            Health::Score(Box::new(health))
+        } else {
+            Health::Scoped(ScopedHealth::changed())
+        }
+    })
 }
 
 /// The result of a thread, or `None` when the thread did not start. A panic
@@ -302,6 +337,7 @@ fn visibility_flags(options: &Options, enforced: bool) -> VisibilityOptions {
         uniform_fields: false,
         kinds: Vec::new(),
         fail_on_issues: enforced,
+        changed_since: None,
         precise: None,
     }
 }
@@ -312,6 +348,7 @@ fn graph_checks(
     metadata: Option<&cargo_metadata::Metadata>,
     visibility_options: Option<&VisibilityOptions>,
     enforced: bool,
+    scope: &Scope,
     progress: Progress,
 ) -> Result<GraphPart, CliError> {
     progress.step("Building the module graph");
@@ -325,7 +362,7 @@ fn graph_checks(
     let mut part = GraphPart::default();
     if let Some(metadata) = metadata {
         progress.step("Checking the dependencies");
-        let report = deps::report(workspace, metadata, &module_graph, enforced);
+        let report = deps::report(workspace, metadata, &module_graph, enforced, scope);
         part.unused_deps = Some(
             report
                 .findings
@@ -339,7 +376,7 @@ fn graph_checks(
     }
     if let Some(options) = visibility_options {
         progress.step("Checking the visibility");
-        let report = visibility::fast_report(&module_graph, options, workspace);
+        let report = visibility::fast_report(&module_graph, options, workspace, scope);
         part.public_items = Some(public_items(&module_graph, &options.exclude));
         part.dead_public = Some(report.summary.dead_public);
         part.visibility = Some(report.section()?);
@@ -362,6 +399,7 @@ fn source_checks(
     workspace: &Workspace,
     settings: &SourceSettings,
     enforced: bool,
+    scope: &Scope,
     progress: Progress,
 ) -> Result<SourcePart, CliError> {
     progress.step("Reading the source files");
@@ -388,18 +426,19 @@ fn source_checks(
             settings: size,
             changes: None,
             enforced,
+            scope,
         })?);
     }
     if let Some(complexity) = &settings.complexity {
         progress.step("Measuring the complexity");
-        part.complexity = Some(complexity::section(&loaded, complexity, enforced)?);
+        part.complexity = Some(complexity::section(&loaded, complexity, enforced, scope)?);
     }
     if let Some(dupes) = &settings.dupes {
         let gates = dupes::Enforce {
             clones: enforced,
             threshold: enforced,
         };
-        part.dupes = Some(dupes::section(&loaded, dupes, gates, progress)?);
+        part.dupes = Some(dupes::section(&loaded, dupes, gates, scope, progress)?);
         part.metrics.duplication_percentage = part.dupes.as_ref().and_then(|section| {
             section.json["summary"]["stats"]["duplication_percentage"].as_f64()
         });

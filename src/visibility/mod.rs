@@ -113,6 +113,19 @@ impl Analysis {
             .retain(|finding| kinds.contains(&finding.kind));
         self.opaque.retain(|finding| kinds.contains(&finding.kind));
     }
+
+    /// Keeps only the findings and candidates of items in a file of `scope`.
+    /// Call it after [`refine`]: a re-export finding outside the scope still
+    /// holds back its target.
+    pub fn retain_scope(&mut self, graph: &Graph, scope: &crate::scope::Scope) {
+        if scope.is_full() {
+            return;
+        }
+        let keep = |finding: &Finding| scope.keeps(&graph.items[finding.item].file);
+        self.findings.retain(keep);
+        self.undecided.retain(keep);
+        self.opaque.retain(keep);
+    }
 }
 
 /// The options of the analysis for the resolved command options.
@@ -129,10 +142,12 @@ pub fn fast_report(
     graph: &Graph,
     options: &crate::cli::VisibilityOptions,
     workspace: &crate::workspace::Workspace,
+    scope: &crate::scope::Scope,
 ) -> report::VisibilityReport {
     let check_options = check_options(options, workspace.root.clone().into_std_path_buf());
     let mut analysis = analyze(graph, &check_options);
     skip_generated(graph, &mut analysis);
+    analysis.retain_scope(graph, scope);
     analysis.retain_kinds(&options.kinds);
     report::VisibilityReport::new(report::Inputs {
         graph,

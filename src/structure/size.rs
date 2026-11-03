@@ -21,6 +21,7 @@ use crate::error::{CliError, ErrorCode};
 use crate::finding::{self as shared, Category, Draft, Impact, Location, Severity};
 use crate::gates::RustGateName as Gate;
 use crate::render::Progress;
+use crate::scope::Scope;
 use crate::section::{Section, to_value};
 use crate::structure::SizeArgs;
 use crate::structure::config::{self, matches_prefix};
@@ -142,6 +143,7 @@ pub fn run(args: &SizeArgs) -> Result<Section, CliError> {
     progress.step("Reading cargo metadata");
     let workspace = workspace::load(args.common.manifest_path.as_deref())?;
     let settings: config::Size = config::section(&workspace, "size")?;
+    let scope = Scope::load(&workspace, args.common.changed_since.as_deref())?;
     let root = workspace.root.as_std_path();
     let changes = match (&args.base, args.staged) {
         (Some(base), _) => Some(git::since_base(root, base)?),
@@ -156,13 +158,14 @@ pub fn run(args: &SizeArgs) -> Result<Section, CliError> {
             tokens: None,
         },
     );
-    section(&Inputs {
+    scope.annotate(section(&Inputs {
         workspace: &workspace,
         loaded: &loaded,
         settings: &settings,
         changes: changes.as_ref(),
         enforced: args.fail_on_growth || args.fail_on_issues,
-    })
+        scope: &scope,
+    })?)
 }
 
 /// The inputs of one size check.
@@ -173,6 +176,8 @@ pub struct Inputs<'a> {
     pub loaded: &'a Loaded,
     /// The settings.
     pub settings: &'a config::Size,
+    /// The findings that the report keeps.
+    pub scope: &'a Scope,
     /// The changes for the growth rule, or `None` without an old version.
     pub changes: Option<&'a Changes>,
     /// True when a growth finding fails the run.
@@ -188,6 +193,7 @@ pub fn section(inputs: &Inputs<'_>) -> Result<Section, CliError> {
         settings,
         changes,
         enforced,
+        scope,
     } = *inputs;
     let root = workspace.root.as_std_path();
     let mut large_files: Vec<LargeFile> = loaded
@@ -196,6 +202,7 @@ pub fn section(inputs: &Inputs<'_>) -> Result<Section, CliError> {
         .filter(|file| is_checked_path(&file.path) && !file.generated)
         .filter(|file| !matches_prefix(&file.path, &settings.exclude))
         .filter(|file| file.lines > settings.max_file_lines)
+        .filter(|file| scope.keeps(&file.path))
         .map(|file| LargeFile {
             path: file.path.clone(),
             lines: file.lines,
@@ -206,6 +213,7 @@ pub fn section(inputs: &Inputs<'_>) -> Result<Section, CliError> {
         .files
         .iter()
         .filter(|file| !matches_prefix(&file.path, &settings.exclude))
+        .filter(|file| scope.keeps(&file.path))
         .flat_map(|file| {
             file.functions
                 .iter()
@@ -223,10 +231,11 @@ pub fn section(inputs: &Inputs<'_>) -> Result<Section, CliError> {
             .cmp(&a.line_count)
             .then_with(|| (&a.path, a.line).cmp(&(&b.path, b.line)))
     });
-    let (findings, checked) = match changes {
+    let (mut findings, checked) = match changes {
         Some(changes) => growth(root, changes, settings)?,
         None => (Vec::new(), 0),
     };
+    findings.retain(|finding| scope.keeps(&finding.path));
     let mut skipped_files = loaded.skipped_files();
     skipped_files.extend(
         changes

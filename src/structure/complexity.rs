@@ -34,6 +34,7 @@ use crate::error::CliError;
 use crate::finding::{self as shared, Category, Draft, Impact, Location};
 use crate::gates::RustGateName as Gate;
 use crate::render::Progress;
+use crate::scope::Scope;
 use crate::section::{Section, to_value};
 use crate::structure::ComplexityArgs;
 use crate::structure::config::{self, matches_prefix};
@@ -489,7 +490,13 @@ pub fn run(args: &ComplexityArgs) -> Result<Section, CliError> {
             tokens: None,
         },
     );
-    section(&loaded, &settings, args.fail_on_complexity)
+    let scope = Scope::load(&workspace, args.common.changed_since.as_deref())?;
+    scope.annotate(section(
+        &loaded,
+        &settings,
+        args.fail_on_complexity,
+        &scope,
+    )?)
 }
 
 /// Measures each function of `loaded`. `enforced` is true when a function over
@@ -498,6 +505,7 @@ pub fn section(
     loaded: &Loaded,
     settings: &config::Complexity,
     enforced: bool,
+    scope: &Scope,
 ) -> Result<Section, CliError> {
     let mut findings = Vec::new();
     let (mut count, mut suppressed) = (0, 0);
@@ -511,6 +519,9 @@ pub fn section(
             let Some(finding) = finding(&file.path, function, settings) else {
                 continue;
             };
+            if !scope.keeps(&file.path) {
+                continue;
+            }
             if file.suppressed(
                 SUPPRESS_KIND,
                 function.attr_line.saturating_sub(1)..=function.line,

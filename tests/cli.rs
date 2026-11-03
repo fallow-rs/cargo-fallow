@@ -283,6 +283,17 @@ fn human_summary_and_progress() {
 }
 
 #[test]
+fn json_spells_the_lower_severity_warn_and_sarif_keeps_warning() {
+    let fixture = Fixture::new("ws-ok");
+    let json = check(&fixture, &["--format", "json", "--quiet"]).json();
+    let findings = json["findings"].as_array().expect("an array");
+    assert!(!findings.is_empty());
+    assert!(findings.iter().all(|finding| finding["severity"] == "warn"));
+    let sarif = check(&fixture, &["--format", "sarif", "--quiet"]).json();
+    assert_eq!(sarif["runs"][0]["results"][0]["level"], "warning");
+}
+
+#[test]
 fn sarif_log_for_a_clean_workspace() {
     let fixture = Fixture::new("ws-ok");
     let result = check(&fixture, &["--format", "sarif", "--quiet"]);

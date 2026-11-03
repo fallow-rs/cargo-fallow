@@ -467,9 +467,9 @@ needs a dependency that Cargo cannot get fails the run with exit code 2.
 | `unused-build-dependency` | error | The build script does not use the entry. |
 | `misplaced-dependency` | error | Only tests, benches, examples or doc tests use the `[dependencies]` entry. `used_by` names them. |
 | `unused-workspace-dependency` | error | No member inherits the `[workspace.dependencies]` entry, or each member entry that inherits it is unused. |
-| `unused-optional-dependency` | warning | No code uses the optional dependency. A feature enables it. |
-| `feature-only-dependency` | warning | No code uses the dependency, and a feature sets its features (`dep/feature`). |
-| `redundant-ignore` | warning | An ignore entry hides no finding. |
+| `unused-optional-dependency` | warn | No code uses the optional dependency. A feature enables it. |
+| `feature-only-dependency` | warn | No code uses the dependency, and a feature sets its features (`dep/feature`). |
+| `redundant-ignore` | warn | An ignore entry hides no finding. |
 
 Each finding has `package`, `manifest_path`, `line`, `section`, `platform`,
 `dependency` (the key in `Cargo.toml`), `package_name` (for a rename) and an

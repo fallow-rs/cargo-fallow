@@ -22,3 +22,6 @@ GitHub release. Each release needs a `## [X.Y.Z] - YYYY-MM-DD` section.
 
 - A large valid source file no longer counts as too deep. The parse stack is
   sized from the nesting depth of the file, not from its size.
+- The JSON `severity` of a finding is now `warn`, not `warning`. The fallow
+  JSON output and the shared `GateStatus` use `warn`. SARIF keeps its own
+  `warning` level.

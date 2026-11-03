@@ -456,7 +456,7 @@ fn optional_and_feature_only_dependencies_are_warnings() {
             .as_array()
             .expect("an array")
             .iter()
-            .all(|finding| finding["severity"] == "warning")
+            .all(|finding| finding["severity"] == "warn")
     );
 }
 

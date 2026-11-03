@@ -24,7 +24,9 @@ const PART_SEPARATOR: u8 = 0xff;
 pub enum Severity {
     /// A finding that the rule counts as an error.
     Error,
-    /// A finding that the rule counts as a warning.
+    /// A finding that the rule counts as a warning. The JSON value is
+    /// `warn`, the same as in the fallow JSON output. SARIF keeps `warning`.
+    #[serde(rename = "warn")]
     Warning,
 }
 
@@ -292,6 +294,12 @@ mod tests {
             category: Category::BugRisk,
             impact: Impact::Major,
         }
+    }
+
+    #[test]
+    fn severity_serializes_as_error_and_warn() {
+        assert_eq!(json!(Severity::Error), json!("error"));
+        assert_eq!(json!(Severity::Warning), json!("warn"));
     }
 
     #[test]

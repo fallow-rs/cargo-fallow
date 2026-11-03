@@ -97,7 +97,8 @@ impl Rule {
 pub enum Severity {
     /// Counts for the `error-severity-findings` gate.
     Error,
-    /// Does not count for a gate.
+    /// Does not count for a gate. The JSON value is `warn`.
+    #[serde(rename = "warn")]
     Warning,
 }
 

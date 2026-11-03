@@ -385,6 +385,8 @@ mod tests {
 
 /// The mutant `left <= 0` never ends and grows by 1 MiB for each step. A sleep
 /// bounds the rate, so the time limit bounds the memory if the guard is broken.
+/// The limit of the test that uses it leaves room for the baseline: on a CI
+/// runner a clean test process can use more than 100 MiB.
 const GROW: &str = r"
 /// Grows and shrinks.
 pub fn grow(start: i64) -> usize {
@@ -415,7 +417,7 @@ fn the_guard_kills_a_mutant_that_allocates_without_limit() {
             "--tier",
             "schema",
             "--memory-limit",
-            "64",
+            "256",
             "--timeout",
             "60",
         ],
@@ -426,10 +428,10 @@ fn the_guard_kills_a_mutant_that_allocates_without_limit() {
     assert_eq!(mutant["status"], "runtime_error", "{report}");
     let reason = mutant["reason"].as_str().expect("a reason");
     assert!(reason.contains("memory guard"), "{reason}");
-    assert!(reason.contains("over the limit of 64 MiB"), "{reason}");
+    assert!(reason.contains("over the limit of 256 MiB"), "{reason}");
     assert!(report["guard"]["kills"].as_u64() >= Some(1), "{report}");
     assert_eq!(report["guard"]["enabled"], true, "{report}");
-    assert_eq!(report["guard"]["memory_limit_mib"], 64, "{report}");
+    assert_eq!(report["guard"]["memory_limit_mib"], 256, "{report}");
     // The kill comes long before the time limit of 60 s for this mutant.
     assert!(mutant["duration_ms"].as_u64() < Some(60_000), "{report}");
 }

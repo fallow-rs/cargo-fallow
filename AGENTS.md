@@ -32,6 +32,10 @@ cargo metadata -> workspace model -> gates -> report -> render
   imports and references, and the name resolution in `resolve.rs`.
 - `src/visibility/` holds the hidden, experimental `visibility` command of the
   M2 gap measurement. Its output can change without a version step.
+- `src/structure/` holds the `boundaries`, `size`, `complexity` and `dupes`
+  commands. `src/structure/mod.rs` lists its parts. Their configuration is
+  under `[workspace.metadata.fallow]`. `src/structure/git.rs` spawns `git` for
+  the size check, and only reads.
 - `experimental/precise/` is a separate crate with its own lockfile. It is the
   `--precise` prototype on the `ra_ap_*` crates, and the build does not use it.
 - `src/mutation/` holds the `mutants` command. `src/mutation/mod.rs` lists its

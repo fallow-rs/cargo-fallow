@@ -22,6 +22,8 @@ pub enum ErrorCode {
     /// The `mutants` command cannot run: the package does not build, the tests
     /// fail with no mutant, or a file operation or a process failed.
     MutationFailed,
+    /// A table under `[workspace.metadata.fallow]` is not valid.
+    InvalidConfig,
 }
 
 impl ErrorCode {
@@ -33,6 +35,7 @@ impl ErrorCode {
             Self::MetadataFailed => "CARGO_FALLOW_METADATA_FAILED",
             Self::OutputFailed => "CARGO_FALLOW_OUTPUT_FAILED",
             Self::MutationFailed => "CARGO_FALLOW_MUTATION_FAILED",
+            Self::InvalidConfig => "CARGO_FALLOW_INVALID_CONFIG",
         }
     }
 }

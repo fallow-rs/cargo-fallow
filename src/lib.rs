@@ -4,8 +4,8 @@
 //! holds every module, so the `missing_docs` lint checks the public API.
 //! The public API is [`run`] only. The modules are internal.
 
-// Only the workspace loader and the mutation runner spawn a process. See
-// `.clippy.toml`.
+// Only the workspace loader, the mutation runner and the git reader of the
+// structure checks spawn a process. See `.clippy.toml`.
 #![cfg_attr(not(test), deny(clippy::disallowed_methods))]
 
 mod attrs;
@@ -18,6 +18,7 @@ mod mutation;
 mod parse;
 mod render;
 mod report;
+mod structure;
 mod visibility;
 mod workspace;
 
@@ -41,6 +42,7 @@ pub fn run(args: Vec<OsString>) -> ExitCode {
         Parsed::Run(options) => run_check(&options),
         Parsed::Mutants(options) => run_mutants(&options),
         Parsed::Visibility(options) => run_visibility(&options),
+        Parsed::Structure(command) => structure::run(&command),
         Parsed::Watchdog {
             roots,
             sweep,

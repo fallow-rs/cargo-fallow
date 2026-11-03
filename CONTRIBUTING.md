@@ -24,8 +24,9 @@ cargo deny check
 `Cargo.toml` enables the Clippy `pedantic`, `nursery` and `cargo` groups and a
 set of restriction lints. Do not use `#[allow]` without a `reason`. Use
 `writeln!` on a locked stdout or stderr, not `println!`. Do not call
-`std::process::exit`. Only the workspace loader in `src/workspace.rs` and
-`src/mutation/process.rs` can spawn a process. `.clippy.toml` holds that rule.
+`std::process::exit`. Only the workspace loader in `src/workspace.rs`,
+`src/mutation/process.rs` and the git reader in `src/structure/git.rs` can spawn
+a process. `.clippy.toml` holds that rule.
 
 ## Mutants command
 

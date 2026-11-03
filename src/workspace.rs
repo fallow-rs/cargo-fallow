@@ -17,6 +17,9 @@ pub struct Workspace {
     pub target_dir: Utf8PathBuf,
     /// The members, sorted by name.
     pub members: Vec<Member>,
+    /// The `[workspace.metadata]` table of the root manifest, or `null`. It is
+    /// not part of the report.
+    pub metadata: serde_json::Value,
 }
 
 /// One workspace member.
@@ -118,6 +121,7 @@ pub fn load(manifest_path: Option<&Path>) -> Result<Workspace, CliError> {
         root,
         target_dir: metadata.target_directory,
         members,
+        metadata: metadata.workspace_metadata,
     })
 }
 

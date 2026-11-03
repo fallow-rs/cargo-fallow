@@ -80,6 +80,7 @@ mod tests {
             root: "/w".into(),
             target_dir: "/w/target".into(),
             members: Vec::new(),
+            metadata: serde_json::Value::Null,
         };
         let text = render(&CheckReport::new(workspace, outcomes));
         assert!(

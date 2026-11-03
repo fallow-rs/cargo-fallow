@@ -7,9 +7,10 @@ disallowed-types = [
 
 # Process spawning is allowed crate-wide in Cargo.toml, then denied again at
 # the crate root in src/lib.rs, the same pattern as the fallow analysis
-# crates. Two modules spawn a process, and each one carries a narrow expectation
+# crates. Three modules spawn a process, and each one carries a narrow expectation
 # at its one call site: the workspace loader in src/workspace.rs runs
-# `cargo metadata`, and src/mutation/process.rs runs cargo and the memory tools. fallow also bans `glob::glob`. This crate does not depend
+# `cargo metadata`, src/mutation/process.rs runs cargo and the memory tools, and
+# src/structure/git.rs runs `git` to read the changed files. fallow also bans `glob::glob`. This crate does not depend
 # on the glob crate, so that entry does not apply.
 #
 # `MetadataCommand::exec` is in the list because it spawns `cargo` inside the

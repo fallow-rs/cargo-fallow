@@ -410,6 +410,77 @@ With `--format json`, an error goes to stdout as an error document:
 `{ "error": true, "message": "...", "exit_code": 2, "code": "..." }`. In the
 other formats, the error goes to stderr.
 
+## Structure checks
+
+Four commands check the structure of the workspace. Each command has the
+`--manifest-path`, `--format human|json|sarif` and `--quiet` flags, and its own
+gate. A gate is in the report each time, but it fails the run only with its flag.
+
+| Command | Reports | Gate flag | Gate |
+| --- | --- | --- | --- |
+| `cargo fallow boundaries` | Violations of the crate, source and module rules | `--fail-on-violations` | `boundary-violations` |
+| `cargo fallow size` | Files and functions over the line limits, and growth of a large file | `--fail-on-growth`, with `--base <REF>` or `--staged` | `file-growth` |
+| `cargo fallow complexity` | Functions over the cyclomatic or the cognitive limit | `--fail-on-complexity` | `health-findings` |
+| `cargo fallow dupes` | Clone groups on normalized token streams | `--fail-on-clones`, `--threshold <PERCENT>` | `duplication-findings`, `duplication-threshold` |
+
+The configuration is in the root `Cargo.toml`, in one table for each check. Cargo
+already parses the manifest, so the tool reads the tables from `cargo metadata`.
+An unknown key is an error with the code `CARGO_FALLOW_INVALID_CONFIG`.
+
+```toml
+[workspace.metadata.fallow.boundaries.groups]
+protocol = ["app-cli", "app-lsp"]
+
+# A package of `from` must not depend on a package of `deny`. `*` is each
+# workspace package. `kinds` limits the Cargo.toml sections.
+[[workspace.metadata.fallow.boundaries.crates]]
+rule = "core-must-not-depend-on-protocol"
+from = ["app-core"]
+deny = ["@protocol"]
+
+# A file below `paths` must not contain a pattern of `deny`. A pattern matches
+# the same tokens, so a comment or a string does not match. Use
+# `match = "text"` to match the plain text.
+[[workspace.metadata.fallow.boundaries.sources]]
+rule = "process-tree-owned-by-process-crate"
+paths = ["crates/cli/src"]
+deny = ["process_group(0)", "libc::waitid"]
+owner = "app-process"
+
+# A module of `from` must not use a module of `deny`. The rule reads `use`
+# items and paths that start with `crate`, `self` or `super`.
+[[workspace.metadata.fallow.boundaries.modules]]
+rule = "render-does-not-run"
+package = "app-cli"
+from = ["crate::render"]
+deny = ["crate::engine"]
+
+[workspace.metadata.fallow.size]
+max-file-lines = 2000     # a file over this must not grow
+max-function-lines = 60
+
+[workspace.metadata.fallow.complexity]
+max-cyclomatic = 20
+max-cognitive = 15
+
+[workspace.metadata.fallow.duplication]
+mode = "mild"             # strict, mild, weak or semantic
+min-tokens = 50
+min-lines = 5
+threshold = 0.0           # 0 means no limit
+```
+
+The `size` growth rule is the rule of `scripts/check-file-size.mjs` in fallow,
+for `.rs` files: a file over the limit must not grow, and a new file must not be
+over it. Test files, test and snapshot folders, and files with a generator header
+are not checked. `--base <REF>` compares HEAD with the merge base, and
+`--staged` compares the index with HEAD.
+
+The complexity and clone models are the models of fallow for JavaScript. A unit
+is a `fn` with a body or a closure. The `?` operator and code in macro calls add
+no complexity. Put `// fallow-ignore-next-line complexity` above a function, or
+`// fallow-ignore-next-line code-duplication` above a clone, to suppress it.
+
 ## Exit codes
 
 | Code | Meaning |

@@ -315,7 +315,7 @@ struct VisibilityArgs {
     #[arg(long, value_name = "MIB", default_value_t = crate::visibility::precise::DEFAULT_MEMORY_MIB, value_parser = clap::value_parser!(u64).range(1..), requires = "precise")]
     precise_memory_limit: u64,
     /// The largest source file, in KiB, that `--precise` mode searches with name
-    /// resolution. A name in a larger file keeps its item undecided.
+    /// resolution. A candidate whose name is in a larger file keeps its visibility.
     #[arg(long, value_name = "KIB", default_value_t = crate::visibility::precise::DEFAULT_FILE_LIMIT_KIB, value_parser = clap::value_parser!(u64).range(1..), requires = "precise")]
     precise_file_limit: u64,
 }

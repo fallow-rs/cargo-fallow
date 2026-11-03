@@ -464,7 +464,7 @@ standard library source comes from the `rust-src` component.
 | --- | --- | --- |
 | `--precise-timeout <SECONDS>` | 1200 | The time limit of the worker. |
 | `--precise-memory-limit <MIB>` | 8192 | The memory guard stops the worker above this footprint. |
-| `--precise-file-limit <KIB>` | 512 | The largest file that the search reads with name resolution. A candidate whose name is in a larger file stays undecided. |
+| `--precise-file-limit <KIB>` | 1024 | The largest file that the search reads with name resolution. A candidate whose name is in a larger file keeps its visibility, because the search cannot see what the name means there. |
 
 When a limit stops the worker, the decisions that it made stay, and the other
 candidates stay undecided. `precise.status` gives the reason, and a warning

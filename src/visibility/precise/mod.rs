@@ -41,8 +41,9 @@ pub const DEFAULT_TIMEOUT_SECONDS: u64 = 1200;
 /// 4.4 GiB on a workspace of 40 MB of Rust.
 pub const DEFAULT_MEMORY_MIB: u64 = 8192;
 /// The default size limit of a searched file, in KiB. Generated tables are
-/// larger, and a name search in them can take minutes.
-pub const DEFAULT_FILE_LIMIT_KIB: u64 = 512;
+/// larger, and a name search in them can take minutes. A large test file
+/// written by hand stays under the limit.
+pub const DEFAULT_FILE_LIMIT_KIB: u64 = 1024;
 /// The time after the limit that the worker gets to stop by itself.
 const STOP_GRACE: Duration = Duration::from_secs(30);
 /// The most lines of the worker's stderr that a failure shows.
@@ -176,6 +177,8 @@ pub struct PreciseSummary {
     pub reported: usize,
     /// The candidates whose item keeps its visibility.
     pub kept: usize,
+    /// The kept candidates whose name is in a file over the size limit.
+    pub kept_large_file: usize,
     /// The candidates that the database could not find.
     pub unresolved: usize,
     /// The candidates without a decision.
@@ -368,7 +371,12 @@ fn summarize(
                 decided += 1;
                 match decision {
                     Decision::Report { .. } => summary.reported += 1,
-                    Decision::Keep { .. } => summary.kept += 1,
+                    Decision::Keep { reason } => {
+                        summary.kept += 1;
+                        if *reason == KeepReason::LargeFile {
+                            summary.kept_large_file += 1;
+                        }
+                    }
                     Decision::Unresolved => summary.unresolved += 1,
                 }
             }
@@ -584,6 +592,12 @@ mod tests {
         let events = vec![
             Event::Loaded { ms: 1 },
             Event::Decided {
+                id: 1,
+                decision: Decision::Keep {
+                    reason: KeepReason::LargeFile,
+                },
+            },
+            Event::Decided {
                 id: 0,
                 decision: Decision::Report {
                     kind: "dead_public".to_owned(),
@@ -597,8 +611,11 @@ mod tests {
         ];
         let summary = summarize(&candidates, &events, &Exit::Code(Some(0)), Path::new("."));
         assert_eq!(summary.status, "time_limit");
-        assert_eq!((summary.reported, summary.left), (1, 2));
-        let killed = summarize(&candidates, &events[..2], &Exit::TimedOut, Path::new("."));
+        assert_eq!(
+            (summary.reported, summary.kept_large_file, summary.left),
+            (1, 1, 1)
+        );
+        let killed = summarize(&candidates, &events[..3], &Exit::TimedOut, Path::new("."));
         assert_eq!(killed.status, "time_limit");
     }
 }

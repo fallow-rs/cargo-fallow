@@ -142,6 +142,9 @@ const fn file_message(name: RustGateName, file: &GateFile) -> &'static str {
             "The file has a finding with the error severity."
         }
         (RustGateName::SurvivingMutants, _) => "The file has a mutant that no test detects.",
+        (RustGateName::VisibilityFindings, _) => {
+            "The file has an item whose visibility can be smaller."
+        }
     }
 }
 
@@ -150,6 +153,7 @@ pub(super) const fn rule_description(name: RustGateName) -> &'static str {
         RustGateName::ParseError => "A target root file does not parse.",
         RustGateName::ErrorSeverityFindings => "The run has a finding with the error severity.",
         RustGateName::SurvivingMutants => "A mutant survived: each test passed with the change.",
+        RustGateName::VisibilityFindings => "An item has a larger visibility than its uses need.",
     }
 }
 

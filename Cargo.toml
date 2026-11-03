@@ -31,13 +31,35 @@ clap = { version = "4", features = ["derive"] }
 cargo_metadata = "0.23"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
-# The two crates release together about each week, and the API can change in
-# each release. Update both on a fixed schedule, not through Dependabot.
-ra_ap_parser = "=0.0.359"
-ra_ap_syntax = "=0.0.359"
+# The `ra_ap_*` crates release together about each week, and the API can
+# change in each release. Keep every `ra_ap_*` crate on one version, and update
+# them together on a fixed schedule, not through Dependabot. The version is
+# 0.0.358 because `ra_ap_hir` and its siblings have no later release.
+ra_ap_parser = "=0.0.358"
+ra_ap_syntax = "=0.0.358"
+# Only the `precise` feature uses these crates.
+ra_ap_hir = { version = "=0.0.358", optional = true }
+ra_ap_ide_db = { version = "=0.0.358", optional = true }
+ra_ap_load-cargo = { version = "=0.0.358", optional = true }
+ra_ap_paths = { version = "=0.0.358", optional = true }
+ra_ap_project_model = { version = "=0.0.358", optional = true }
+ra_ap_vfs = { version = "=0.0.358", optional = true }
 rustc-hash = "2"
 tempfile = "3"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
+
+[features]
+# `--precise` mode of `cargo fallow visibility`: rust-analyzer as a library,
+# about 150 more crates. The default build has no `ra_ap_*` crate beyond the
+# parser.
+precise = [
+    "dep:ra_ap_hir",
+    "dep:ra_ap_ide_db",
+    "dep:ra_ap_load-cargo",
+    "dep:ra_ap_paths",
+    "dep:ra_ap_project_model",
+    "dep:ra_ap_vfs",
+]
 
 [dev-dependencies]
 assert_cmd = "2"

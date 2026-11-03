@@ -112,6 +112,9 @@ pub struct ItemFlags {
     pub macro_export: bool,
     /// A `#[derive]` attribute is on the item.
     pub derive: bool,
+    /// A derive that is not in the standard library is on the item. Only such
+    /// a derive can declare helper attributes, for example `#[serde(..)]`.
+    pub helper_derive: bool,
     /// The item is in an `impl Trait for Type` block.
     pub trait_impl: bool,
     /// The item is in a `trait` block.
@@ -121,6 +124,20 @@ pub struct ItemFlags {
     /// An attribute macro is on the item, for example `#[wasm_bindgen]`. Its
     /// output can use the item from any place.
     pub attr_macro: bool,
+}
+
+/// A range of text, with one-based lines and columns in characters. The end
+/// is the position after the last character.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Span {
+    /// The line of the first character.
+    pub line: u32,
+    /// The column of the first character.
+    pub column: u32,
+    /// The line of the end.
+    pub end_line: u32,
+    /// The column of the end.
+    pub end_column: u32,
 }
 
 /// One item of a file.
@@ -147,6 +164,8 @@ pub struct RawItem {
     pub column: u32,
     /// The one-based last line of the item.
     pub end_line: u32,
+    /// The written visibility keyword, when the item has one.
+    pub vis_span: Option<Span>,
     /// True when the item exists only in test builds.
     pub test_only: bool,
     /// True when a `cfg` attribute other than a test condition is on the item
@@ -256,6 +275,8 @@ pub struct FileFacts {
     pub modules: Vec<ModuleDecl>,
     /// The files that `#[doc = include_str!(..)]` reads, relative to this file.
     pub doc_includes: Vec<String>,
+    /// True when an inner attribute of the file allows the `dead_code` lint.
+    pub allow_dead: bool,
 }
 
 /// Reads the facts of one file.
@@ -264,6 +285,7 @@ pub fn extract(source: &str, edition: Edition) -> Result<FileFacts, ParseOutcome
         let mut walker = Walker::new(text, edition);
         walker.walk(file.syntax());
         walker.docs(file.syntax());
+        walker.facts.allow_dead = inner_allows_dead(file.syntax());
         walker.facts
     })
 }
@@ -505,6 +527,19 @@ impl<'a> Walker<'a> {
     ) -> usize {
         let (line, column) = self.line_col(name_offset);
         let (end_line, _) = self.line_col(usize::from(node.text_range().end()));
+        let vis_span = ast::AnyHasVisibility::cast(node.clone())
+            .and_then(|owner| owner.visibility())
+            .map(|keyword| {
+                let range = keyword.syntax().text_range();
+                let (line, column) = self.line_col(usize::from(range.start()));
+                let (end_line, end_column) = self.line_col(usize::from(range.end()));
+                Span {
+                    line,
+                    column,
+                    end_line,
+                    end_column,
+                }
+            });
         let flags = self.flags_of(node);
         let parent = self.owner();
         let index = self.facts.items.len();
@@ -519,6 +554,7 @@ impl<'a> Walker<'a> {
             line,
             column,
             end_line,
+            vis_span,
             test_only: self.test_only(),
             under_cfg: self.under_cfg(),
             flags,
@@ -538,10 +574,10 @@ impl<'a> Walker<'a> {
                 flags.external |= matches!(last, "no_mangle" | "export_name" | "used")
                     || body.starts_with("unsafe(no_mangle")
                     || body.starts_with("unsafe(export_name");
-                flags.allow_dead |= (last == "allow" || last == "expect")
-                    && (body.contains("dead_code") || body.contains("unused"));
+                flags.allow_dead |= allows_dead(&body);
                 flags.macro_export |= last == "macro_export";
                 flags.derive |= last == "derive";
+                flags.helper_derive |= last == "derive" && derive_has_helpers(&body);
                 flags.proc_macro |= matches!(
                     last,
                     "proc_macro" | "proc_macro_derive" | "proc_macro_attribute"
@@ -560,8 +596,17 @@ impl<'a> Walker<'a> {
                 | SyntaxKind::TUPLE_FIELD
                 | SyntaxKind::VARIANT
         );
+        // A derive of the standard library declares no helper, so an unknown
+        // attribute next to it is an attribute macro, for example
+        // `#[napi(object)]` with `#[derive(Default)]`.
+        let parent_helpers = self
+            .owner()
+            .is_some_and(|parent| self.facts.items[parent].flags.helper_derive);
         flags.attr_macro =
-            unknown_attr && !(can_have_helpers && (flags.derive || self.owner().is_some()));
+            unknown_attr && !(can_have_helpers && (flags.helper_derive || parent_helpers));
+        if let Some(list) = ast::Module::cast(node.clone()).and_then(|module| module.item_list()) {
+            flags.allow_dead |= inner_allows_dead(list.syntax());
+        }
         for (_, frame) in self.frames.iter().rev() {
             if let Frame::Owner(index) = frame {
                 let parent = &self.facts.items[*index];
@@ -979,10 +1024,56 @@ impl<'a> Walker<'a> {
     }
 }
 
+/// The derives of the standard library. None of them declares a helper
+/// attribute, except `#[default]`, which is a built-in attribute here.
+const STD_DERIVES: [&str; 9] = [
+    "Debug",
+    "Clone",
+    "Copy",
+    "PartialEq",
+    "Eq",
+    "PartialOrd",
+    "Ord",
+    "Hash",
+    "Default",
+];
+
+/// True when the body of a `derive` attribute names a derive outside the
+/// standard library.
+fn derive_has_helpers(body: &str) -> bool {
+    let Some(list) = body
+        .split_once('(')
+        .and_then(|(_, rest)| rest.strip_suffix(')'))
+    else {
+        return true;
+    };
+    list.split(',')
+        .map(|name| name.rsplit("::").next().unwrap_or(name))
+        .filter(|name| !name.is_empty())
+        .any(|name| !STD_DERIVES.contains(&name))
+}
+
+/// True when the attribute body allows or expects the `dead_code` lint.
+fn allows_dead(body: &str) -> bool {
+    let name = body.split(['(', '=']).next().unwrap_or(body);
+    let last = name.rsplit("::").next().unwrap_or(name);
+    (last == "allow" || last == "expect") && (body.contains("dead_code") || body.contains("unused"))
+}
+
+/// True when an inner attribute that is a direct child of `node` allows the
+/// `dead_code` lint: `#![allow(dead_code)]` at the top of a file or a module.
+fn inner_allows_dead(node: &SyntaxNode) -> bool {
+    node.children()
+        .filter_map(ast::Attr::cast)
+        .filter(|attr| attr.excl_token().is_some())
+        .any(|attr| allows_dead(&attr_body(&attr)))
+}
+
 /// True for an attribute that the compiler or a tool defines, not a macro.
 fn is_builtin_attribute(path: &str) -> bool {
-    const BUILTIN: [&str; 38] = [
+    const BUILTIN: [&str; 39] = [
         "cfg",
+        "default",
         "cfg_attr",
         "derive",
         "doc",

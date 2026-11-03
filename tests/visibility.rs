@@ -518,3 +518,175 @@ fn a_glob_cycle_ends_and_resolves() {
         "{text}"
     );
 }
+
+/// An attribute macro such as `#[napi(object)]` reads the fields of its struct,
+/// and it can refuse a field that is not `pub`. A derive of the standard
+/// library has no helper attributes, so the attribute is not a derive helper.
+#[test]
+fn the_members_of_an_item_with_an_attribute_macro_get_credit() {
+    let dir = workspace(&[(
+        "mid/src/lib.rs",
+        "#[napi(object)]\n#[derive(Default, Clone)]\npub struct Options {\n    pub root: Option<String>,\n}\n\
+         #[bindgen]\nimpl Options {\n    pub fn method(&self) {}\n}\n\
+         #[serde(rename_all = \"camelCase\")]\n#[derive(serde::Deserialize)]\npub struct Helped {\n    pub field: u8,\n}\n",
+    )]);
+    let (found, _) = findings(&dir, &[]);
+    assert!(!found.contains("dead_public Options::root"), "{found:?}");
+    assert!(!found.contains("dead_public Options::method"), "{found:?}");
+    assert!(
+        found.contains("unnecessary_public Helped::field"),
+        "{found:?}"
+    );
+}
+
+/// `#![allow(dead_code)]` at the top of a module covers each item in it, the
+/// same as the attribute on one item.
+#[test]
+fn an_inner_dead_code_allow_covers_the_items_of_its_module() {
+    let dir = workspace(&[
+        ("app/src/main.rs", "fn main() { mid::run(); }\n"),
+        (
+            "mid/src/lib.rs",
+            "pub mod util;\nmod inline {\n    #![allow(dead_code)]\n    pub fn kept() {}\n}\n\
+             pub fn run() {}\n",
+        ),
+        (
+            "mid/src/util.rs",
+            "#![allow(dead_code)]\npub struct Position;\nimpl Position {\n    pub fn new() -> Self { Self }\n}\n",
+        ),
+    ]);
+    let (found, _) = findings(&dir, &[]);
+    assert!(
+        !found.iter().any(|row| row.starts_with("dead_public")),
+        "{found:?}"
+    );
+}
+
+/// The raw run: the exit code and the stdout.
+fn run(dir: &TempDir, extra: &[&str]) -> (Option<i32>, String) {
+    let output = Command::cargo_bin("cargo-fallow")
+        .expect("find the binary")
+        .args(["visibility", "--quiet", "--manifest-path"])
+        .arg(dir.path().join("Cargo.toml"))
+        .args(extra)
+        .output()
+        .expect("run the binary");
+    (
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+    )
+}
+
+#[test]
+fn a_finding_fails_the_run_only_with_the_gate_flag() {
+    let dir = workspace(&[("mid/src/lib.rs", "pub fn unused() {}\n")]);
+    let (code, text) = run(&dir, &["--format", "json"]);
+    assert_eq!(code, Some(0));
+    let report: Value = serde_json::from_str(&text).expect("the output is JSON");
+    assert_eq!(report["kind"], "visibility");
+    assert_eq!(report["total_issues"], 1);
+    let gate = &report["gate_outcomes"]["visibility-findings"];
+    assert_eq!(
+        (gate["status"].as_str(), gate["enforced"].as_bool()),
+        (Some("fail"), Some(false))
+    );
+    let (code, _) = run(&dir, &["--format", "json", "--fail-on-issues"]);
+    assert_eq!(code, Some(1));
+    let (code, _) = run(&dir, &["--fail-on-issues", "--kind", "unnecessary-public"]);
+    assert_eq!(code, Some(0));
+}
+
+#[test]
+fn each_finding_has_the_keyword_change_as_its_action() {
+    let dir = workspace(&[(
+        "mid/src/lib.rs",
+        "pub fn unused() {}\nmod inner {\n    pub(crate) fn here() {}\n    fn call() { here(); }\n}\n",
+    )]);
+    let (_, text) = run(&dir, &["--format", "json"]);
+    let report: Value = serde_json::from_str(&text).expect("the output is JSON");
+    let actions: Vec<String> = report["findings"]
+        .as_array()
+        .expect("findings")
+        .iter()
+        .map(|row| {
+            let action = &row["actions"][0];
+            format!(
+                "{} {} [{}] -> [{}] at {}:{}-{}",
+                action["type"].as_str().unwrap_or_default(),
+                row["item"].as_str().unwrap_or_default(),
+                action["from"].as_str().unwrap_or_default(),
+                action["to"].as_str().unwrap_or_default(),
+                action["range"]["line"],
+                action["range"]["column"],
+                action["range"]["end_column"],
+            )
+        })
+        .collect();
+    assert_eq!(
+        actions,
+        [
+            "change-visibility unused [pub] -> [pub(crate)] at 1:1-4",
+            "change-visibility inner::here [pub(crate)] -> [] at 3:5-15",
+        ]
+    );
+}
+
+#[test]
+fn sarif_output_has_one_result_for_each_finding() {
+    let dir = workspace(&[("mid/src/lib.rs", "pub fn unused() {}\n")]);
+    let (code, text) = run(&dir, &["--format", "sarif", "--fail-on-issues"]);
+    assert_eq!(code, Some(1));
+    let log: Value = serde_json::from_str(&text).expect("the output is JSON");
+    let results = log["runs"][0]["results"].as_array().expect("results");
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0]["ruleId"], "dead_public");
+    assert_eq!(results[0]["level"], "error");
+    assert_eq!(
+        results[0]["locations"][0]["physicalLocation"]["artifactLocation"]["uri"],
+        "mid/src/lib.rs"
+    );
+}
+
+#[cfg(not(feature = "precise"))]
+#[test]
+fn precise_mode_without_the_feature_is_an_input_error() {
+    let dir = workspace(&[("mid/src/lib.rs", "pub fn unused() {}\n")]);
+    let (code, text) = run(&dir, &["--format", "json", "--precise"]);
+    assert_eq!(code, Some(2));
+    let error: Value = serde_json::from_str(&text).expect("the output is JSON");
+    assert!(
+        error["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("--precise")),
+        "{error}"
+    );
+}
+
+/// A method call by name keeps each method with that name live in the fast
+/// mode. `--precise` mode resolves the call to one type.
+#[cfg(feature = "precise")]
+#[test]
+fn precise_mode_resolves_a_method_call_to_its_type() {
+    let dir = workspace(&[
+        ("app/src/main.rs", "fn main() { mid::run(); }\n"),
+        (
+            "mid/src/lib.rs",
+            "pub struct A;\nimpl A {\n    pub fn helper(&self) {}\n}\npub struct B;\nimpl B {\n    \
+             pub fn helper(&self) {}\n}\npub fn run() { B.helper(); }\n",
+        ),
+    ]);
+    let (fast, undecided) = findings(&dir, &[]);
+    assert!(fast.contains("unnecessary_public A::helper"), "{fast:?}");
+    assert!(undecided.contains("dead_public A::helper"), "{undecided:?}");
+    let (precise, left) = findings(&dir, &["--precise"]);
+    assert!(precise.contains("dead_public A::helper"), "{precise:?}");
+    assert!(
+        !precise.contains("unnecessary_public A::helper"),
+        "{precise:?}"
+    );
+    assert!(
+        precise.contains("unnecessary_public B::helper"),
+        "{precise:?}"
+    );
+    assert!(left.is_empty(), "{left:?}");
+}

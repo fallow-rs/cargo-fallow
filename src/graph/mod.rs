@@ -150,6 +150,9 @@ pub struct Module {
     pub path: Vec<String>,
     /// The `mod` item that declares the module. The root has none.
     pub item: Option<ItemId>,
+    /// True when an inner attribute of the module file allows the `dead_code`
+    /// lint.
+    pub allow_dead: bool,
 }
 
 /// One item.
@@ -173,6 +176,8 @@ pub struct Item {
     pub column: u32,
     /// The one-based last line.
     pub end_line: u32,
+    /// The written visibility keyword, when the item has one.
+    pub vis_span: Option<crate::graph::extract::Span>,
     /// The enclosing item.
     pub parent: Option<ItemId>,
     /// The self type path of an `impl` block.
@@ -302,6 +307,7 @@ pub fn build(workspace: &Workspace, production: &Production) -> Graph {
             parent: None,
             path: Vec::new(),
             item: None,
+            allow_dead: false,
         });
         graph.crates.push(Crate {
             package: member.name.clone(),
@@ -475,6 +481,10 @@ fn add_files(graph: &mut Graph, root: &Path, krate: CrateId, files: CrateFiles, 
     for file in files.files {
         graph.files += 1;
         let base = file.module_path.clone();
+        if file.facts.allow_dead {
+            let module = module_id(graph, &mut by_path, &base);
+            graph.modules[module].allow_dead = true;
+        }
         let mut ids = Vec::with_capacity(file.facts.items.len());
         for raw in &file.facts.items {
             let mut path = base.clone();
@@ -499,6 +509,7 @@ fn add_files(graph: &mut Graph, root: &Path, krate: CrateId, files: CrateFiles, 
                 line: raw.line,
                 column: raw.column,
                 end_line: raw.end_line,
+                vis_span: raw.vis_span,
                 parent: None,
                 impl_self: raw.impl_self.clone(),
                 impl_trait: raw.impl_trait.is_some(),
@@ -581,6 +592,7 @@ fn module_id(
         parent: Some(parent),
         path: path.to_vec(),
         item: None,
+        allow_dead: false,
     });
     by_path.insert(path.to_vec(), id);
     id

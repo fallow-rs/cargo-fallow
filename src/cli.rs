@@ -39,12 +39,12 @@ pub struct Options {
     pub fail_on_parse_error: bool,
 }
 
-/// The options of the experimental `visibility` command.
+/// The options of the `visibility` command.
 #[derive(Debug, Clone)]
 pub struct VisibilityOptions {
     /// The `Cargo.toml` of the workspace, when the user gave one.
     pub manifest_path: Option<PathBuf>,
-    /// The output format. SARIF is not supported.
+    /// The output format.
     pub format: Format,
     /// True when progress lines stay hidden.
     pub quiet: bool,
@@ -54,6 +54,12 @@ pub struct VisibilityOptions {
     pub exclude: Vec<String>,
     /// True when the fields of one struct change visibility as a group.
     pub uniform_fields: bool,
+    /// The finding kinds to report. Empty means each kind.
+    pub kinds: Vec<crate::visibility::FindingKind>,
+    /// True when a finding fails the run.
+    pub fail_on_issues: bool,
+    /// The limits of `--precise` mode, or `None` for the fast mode.
+    pub precise: Option<crate::visibility::precise::Limits>,
 }
 
 /// The result of argument parsing.
@@ -63,8 +69,10 @@ pub enum Parsed {
     Run(Options),
     /// Run the `mutants` command with these options.
     Mutants(Box<crate::mutation::run::Options>),
-    /// Run the experimental visibility check.
+    /// Run the visibility check.
     Visibility(VisibilityOptions),
+    /// Run the hidden worker of `visibility --precise`.
+    PreciseWorker(crate::visibility::precise::WorkerArgs),
     /// Run the hidden watchdog of the memory guard.
     Watchdog {
         /// The file that lists the root of each process tree.
@@ -99,10 +107,12 @@ enum Command {
     Check(CheckArgs),
     /// Run the tests against small changes in the source of one package.
     Mutants(MutantsArgs),
-    /// Report `pub` items that only their own crate uses. This is an experiment
-    /// for the module graph, and its output can change.
-    #[command(hide = true)]
+    /// Report `pub` and `pub(crate)` items that can have a smaller visibility.
     Visibility(VisibilityArgs),
+    /// The worker of `visibility --precise`. The `visibility` command starts it
+    /// under a time limit and the memory guard.
+    #[command(hide = true, name = "visibility-precise-worker")]
+    PreciseWorker(crate::visibility::precise::WorkerArgs),
     /// Kill the test processes when the parent process dies. The memory guard
     /// starts this command.
     #[command(hide = true, name = "mutation-watchdog")]
@@ -284,6 +294,42 @@ struct VisibilityArgs {
     /// fields have the same written visibility.
     #[arg(long)]
     uniform_fields: bool,
+    /// Report only this finding kind. The flag can repeat.
+    #[arg(long = "kind", value_enum, value_name = "KIND")]
+    kinds: Vec<VisibilityKindArg>,
+    /// Exit 1 when the run has a finding.
+    #[arg(long)]
+    fail_on_issues: bool,
+    /// Decide the findings that the syntax cannot decide with rust-analyzer: method
+    /// calls on an unknown type and the output of proc-macros. This needs a build
+    /// with the `precise` feature, and it runs the build scripts and proc-macros of
+    /// the workspace.
+    #[arg(long)]
+    precise: bool,
+    /// The time limit of `--precise` mode, in seconds. At the limit the undecided
+    /// findings that are left stay unreported.
+    #[arg(long, value_name = "SECONDS", default_value_t = crate::visibility::precise::DEFAULT_TIMEOUT_SECONDS, value_parser = clap::value_parser!(u64).range(1..), requires = "precise")]
+    precise_timeout: u64,
+    /// The memory limit of `--precise` mode, in MiB. Above the limit the guard
+    /// stops the analysis, and the undecided findings that are left stay unreported.
+    #[arg(long, value_name = "MIB", default_value_t = crate::visibility::precise::DEFAULT_MEMORY_MIB, value_parser = clap::value_parser!(u64).range(1..), requires = "precise")]
+    precise_memory_limit: u64,
+    /// The largest source file, in KiB, that `--precise` mode searches with name
+    /// resolution. A name in a larger file keeps its item undecided.
+    #[arg(long, value_name = "KIB", default_value_t = crate::visibility::precise::DEFAULT_FILE_LIMIT_KIB, value_parser = clap::value_parser!(u64).range(1..), requires = "precise")]
+    precise_file_limit: u64,
+}
+
+/// A finding kind of the `visibility` command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum VisibilityKindArg {
+    /// A `pub` item that no code reaches.
+    DeadPublic,
+    /// A `pub` item that only its own crate uses.
+    UnnecessaryPublic,
+    /// A `pub(crate)`, `pub(super)` or `pub(in path)` item that only its own module
+    /// uses.
+    UnnecessaryRestrictedVisibility,
 }
 
 fn parse_production(value: &str) -> Result<(String, String), String> {
@@ -304,6 +350,25 @@ impl From<VisibilityArgs> for VisibilityOptions {
             production: args.production,
             exclude: args.exclude_crate,
             uniform_fields: args.uniform_fields,
+            kinds: args
+                .kinds
+                .into_iter()
+                .map(|kind| match kind {
+                    VisibilityKindArg::DeadPublic => crate::visibility::FindingKind::DeadPublic,
+                    VisibilityKindArg::UnnecessaryPublic => {
+                        crate::visibility::FindingKind::UnnecessaryPublic
+                    }
+                    VisibilityKindArg::UnnecessaryRestrictedVisibility => {
+                        crate::visibility::FindingKind::UnnecessaryRestricted
+                    }
+                })
+                .collect(),
+            fail_on_issues: args.fail_on_issues,
+            precise: args.precise.then_some(crate::visibility::precise::Limits {
+                timeout: Duration::from_secs(args.precise_timeout),
+                memory_mib: args.precise_memory_limit,
+                file_limit_kib: args.precise_file_limit,
+            }),
         }
     }
 }
@@ -350,6 +415,7 @@ pub fn parse(args: &[OsString]) -> Parsed {
         Ok(cli) => match cli.command {
             Some(Command::Mutants(args)) => Parsed::Mutants(Box::new(args.into())),
             Some(Command::Visibility(args)) => Parsed::Visibility(args.into()),
+            Some(Command::PreciseWorker(args)) => Parsed::PreciseWorker(args),
             Some(Command::MutationWatchdog {
                 roots,
                 sweep,

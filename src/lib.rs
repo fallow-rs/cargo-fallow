@@ -41,6 +41,7 @@ pub fn run(args: Vec<OsString>) -> ExitCode {
         Parsed::Run(options) => run_check(&options),
         Parsed::Mutants(options) => run_mutants(&options),
         Parsed::Visibility(options) => run_visibility(&options),
+        Parsed::PreciseWorker(args) => visibility::precise::run_worker_command(&args),
         Parsed::Watchdog {
             roots,
             sweep,
@@ -65,7 +66,7 @@ fn run_check(options: &Options) -> u8 {
     }
 }
 
-/// Runs the experimental `visibility` command and returns the process exit code.
+/// Runs the `visibility` command and returns the process exit code.
 fn run_visibility(options: &cli::VisibilityOptions) -> u8 {
     visibility_report(options).unwrap_or_else(|err| {
         err.emit(options.format);
@@ -74,13 +75,6 @@ fn run_visibility(options: &cli::VisibilityOptions) -> u8 {
 }
 
 fn visibility_report(options: &cli::VisibilityOptions) -> Result<u8, CliError> {
-    if options.format == cli::Format::Sarif {
-        return Err(CliError::new(
-            error::ErrorCode::InvalidArgument,
-            "the `visibility` command has no SARIF output",
-        )
-        .with_help("Use `--format human` or `--format json`."));
-    }
     let progress = render::Progress::new(options.quiet);
     progress.step("Reading cargo metadata");
     let workspace = workspace::load(options.manifest_path.as_deref())?;
@@ -90,20 +84,48 @@ fn visibility_report(options: &cli::VisibilityOptions) -> Result<u8, CliError> {
     };
     let module_graph = graph::build(&workspace, &production);
     progress.step("Checking the visibility");
-    let analysis = visibility::analyze(
+    let mut analysis = visibility::analyze(
         &module_graph,
         &visibility::Options {
             exclude: options.exclude.clone(),
             uniform_fields: options.uniform_fields,
         },
     );
-    let report = visibility::report::VisibilityReport::new(&module_graph, &analysis);
+    analysis.retain_kinds(&options.kinds);
+    let precise = match options.precise {
+        Some(limits) => {
+            progress.step("Deciding the undecided candidates with rust-analyzer");
+            let run = visibility::precise::Run {
+                manifest: workspace.root.join("Cargo.toml").into_std_path_buf(),
+                root: workspace.root.as_std_path(),
+                target_dir: workspace.target_dir.as_std_path(),
+                limits,
+            };
+            let summary = visibility::precise::decide(&module_graph, &mut analysis, &run)?;
+            if summary.left > 0 {
+                render::warn(&summary.human_line());
+            }
+            Some(summary)
+        }
+        None => None,
+    };
+    let report = visibility::report::VisibilityReport::new(visibility::report::Inputs {
+        graph: &module_graph,
+        analysis: &analysis,
+        precise,
+        enforced: options.fail_on_issues,
+    });
     let text = match options.format {
         cli::Format::Json => to_json(&report)?,
-        _ => report.human(),
+        cli::Format::Sarif => to_json(&report.sarif())?,
+        cli::Format::Human => report.human(),
     };
     render::write_stdout(text.trim_end()).map_err(|err| CliError::output(&err))?;
-    Ok(EXIT_OK)
+    Ok(if report.fails_run() {
+        EXIT_GATE_FAILED
+    } else {
+        EXIT_OK
+    })
 }
 
 /// Runs the `mutants` command and returns the process exit code.

@@ -28,6 +28,8 @@ pub enum RustGateName {
     ParseError,
     /// Fails when a mutant survived the tests of a `mutants` run.
     SurvivingMutants,
+    /// Fails when a `visibility` run has a finding.
+    VisibilityFindings,
 }
 
 /// The gate outcomes of one run, sorted by gate name.
@@ -62,6 +64,7 @@ impl RustGateName {
             Self::ErrorSeverityFindings => "error-severity-findings",
             Self::ParseError => "parse-error",
             Self::SurvivingMutants => "surviving-mutants",
+            Self::VisibilityFindings => "visibility-findings",
         }
     }
 }

@@ -39,7 +39,7 @@ mod id;
 mod journal;
 mod plan;
 mod probe;
-mod process;
+pub mod process;
 mod removal;
 pub mod report;
 mod rewrites;

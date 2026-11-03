@@ -56,10 +56,17 @@ const MAX_CHAIN: u32 = 2048;
 /// `ra_ap_syntax` drops each parsed tree on its `ParseNodeDropper` thread,
 /// which has the default stack of 2 MiB. The drop recurses once for each tree
 /// level. A measurement found an overflow at about 4300 levels in a debug
-/// build. A long left chain, such as `1 + 1 + ...` or `a.f().f()...`, passes
-/// the token scan and the parse, but gives one level for each operator. The
-/// deepest shape at [`MAX_NESTING`], 512 nested `Box<`, gives 2566 levels.
-const MAX_TREE_DEPTH: u32 = 3072;
+/// build on macOS. A debug build on Windows has larger frames: CI found an
+/// overflow at about 2900 levels, so that build has a lower limit. A release
+/// build has much smaller frames. A long left chain, such as `1 + 1 + ...` or
+/// `a.f().f()...`, passes the token scan and the parse, but gives one level
+/// for each operator. The deepest shape at [`MAX_NESTING`], 512 nested `Box<`,
+/// gives 2566 levels.
+const MAX_TREE_DEPTH: u32 = if cfg!(all(windows, debug_assertions)) {
+    2600
+} else {
+    3072
+};
 
 /// Stack bytes reserved for each level of the scan depth (see [`Depth`]).
 ///

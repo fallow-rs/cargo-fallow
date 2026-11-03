@@ -663,11 +663,11 @@ mod tests {
     }
 
     /// The walk recurses once for each tree level on the parse stack. These
-    /// shapes give a tree near the depth limit of `crate::parse` with a small
-    /// scan depth for each tree level.
+    /// shapes give a tree near the depth limit of `crate::parse` (2600 levels
+    /// in a debug build on Windows) with a small scan depth for each tree level.
     #[test]
     fn the_walk_of_a_deep_tree_fits_on_the_parse_stack() {
-        let chain = format!("fn f() -> u32 {{ 1{} }}", " + 1".repeat(2900));
+        let chain = format!("fn f() -> u32 {{ 1{} }}", " + 1".repeat(2500));
         assert_eq!(one(&chain).0, 1);
         let branches = format!(
             "fn f(a: bool) {{ if a {{}}{} }}",

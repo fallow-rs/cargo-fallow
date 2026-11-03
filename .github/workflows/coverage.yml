@@ -35,10 +35,11 @@ jobs:
       - name: Set up Rust
         uses: ./.github/actions/setup-rust
 
-      - name: Install cargo-llvm-cov
+      # The mutants CLI tests run `cargo nextest`, so the job needs it too.
+      - name: Install cargo-llvm-cov and cargo-nextest
         uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
-          tool: cargo-llvm-cov
+          tool: cargo-llvm-cov,cargo-nextest
 
       - name: Run tests with coverage
         run: |

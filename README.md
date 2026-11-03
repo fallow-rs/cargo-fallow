@@ -500,6 +500,19 @@ cargo fallow visibility --precise
 | `--fail-on-issues` | Exit 1 when the run has a finding. |
 | `--precise` | Decide the undecided candidates with rust-analyzer. See below. |
 
+The table `[workspace.metadata.fallow.visibility]` in the root `Cargo.toml`
+can set the same options. A flag wins over the table: a list flag replaces the
+list of the table, and `--uniform-fields` turns the option on. An unknown key
+stops the run with exit code 2 and the code `CARGO_FALLOW_INVALID_CONFIG`.
+
+```toml
+[workspace.metadata.fallow.visibility]
+production = ["my-cli:my-cli"]
+exclude-crates = ["my_api"]
+uniform-fields = true
+kinds = ["dead-public", "unnecessary-public"]
+```
+
 The check uses syntax and the module graph of the workspace. When the syntax
 cannot decide, the check gives credit and does not report. Credit goes to:
 
@@ -514,6 +527,13 @@ cannot decide, the check gives credit and does not report. Credit goes to:
 - items behind a glob re-export.
 
 The check does not evaluate `cfg`: each branch counts as code.
+
+The graph cannot read the file of an `include!` with a path that is not a
+literal, for example `include!(concat!(env!("OUT_DIR"), "/gen.rs"))`. That
+code can name the items of its own crate and the `pub` items of its
+dependencies. Those candidates go to `undecided`, not to `findings`. When the
+package has a build script, only the dependencies that the build script names
+as `name::` count, as in `cargo fallow deps`.
 
 ### Output
 
@@ -548,7 +568,18 @@ cargo install --path . --locked --features precise
 ```
 
 The proc-macro server comes from the sysroot of the active toolchain, and the
-standard library source comes from the `rust-src` component.
+standard library source comes from the `rust-src` component. The default
+rustup profile does not install `rust-src`:
+
+```bash
+rustup component add rust-src
+```
+
+Without the standard library source, or when a proc-macro crate does not
+load, rust-analyzer misses uses. Then the run stops with exit code 2 and the
+code `CARGO_FALLOW_PRECISE_FAILED`. The worker runs `cargo check` in the
+`rust-analyzer` folder of the target folder, so it does not wait for the build
+lock of your own builds.
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
@@ -559,10 +590,20 @@ standard library source comes from the `rust-src` component.
 rust-analyzer loads the workspace with all features and with tests. It does not
 see code under a `cfg` that is off in that build, for example a condition for
 another target. A candidate with a use under such a `cfg` stays undecided.
+rust-analyzer does not search the target folder either, so a candidate that
+code from `OUT_DIR` can name stays undecided.
 
-When a limit stops the worker, the decisions that it made stay, and the other
-candidates stay undecided. `precise.status` gives the reason, and a warning
-goes to stderr.
+When a limit or a failure stops the worker, the decisions that it made stay,
+and the other candidates stay undecided. `precise.status` is then `failed`,
+`time_limit` or `memory_limit`, and a warning goes to stderr. The SARIF log
+has `executionSuccessful: false` and a notification with the id
+`visibility-precise`. With `--fail-on-issues`, the run stops with exit code 2
+and the code `CARGO_FALLOW_PRECISE_FAILED`, because a gate must not pass on a
+part of the decisions.
+
+`precise.elapsed_ms`, `precise.load_ms` and `precise.search_ms` are run times,
+so they change from run to run. The other members of the JSON report are the
+same in each run on the same input.
 
 ## Output formats
 

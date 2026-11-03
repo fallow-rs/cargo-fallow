@@ -14,12 +14,15 @@
 //! holds the findings that only an untyped credit stops: a method call, a field
 //! access, or a name in macro tokens, in an attribute or in a doc code block.
 
+pub mod config;
 pub mod precise;
 pub mod report;
 
+use std::path::PathBuf;
+
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::graph::extract::{Binding, ItemFlags, ItemKind, Origin, Vis};
+use crate::graph::extract::{Binding, ItemFlags, ItemKind, Origin, RefKind, Vis};
 use crate::graph::resolve::{Class, Credit, Resolver};
 use crate::graph::{CrateKind, Graph, ItemId, ModuleId};
 
@@ -31,6 +34,8 @@ pub struct Options {
     /// True when the fields of a struct with one written visibility change as
     /// a group, as hawk's `preserve-uniform-field-visibility`.
     pub uniform_fields: bool,
+    /// The workspace root, for the files of the build scripts.
+    pub root: PathBuf,
 }
 
 /// The kind of a finding.
@@ -88,6 +93,11 @@ pub struct Analysis {
     /// rust-analyzer does not see such code when the condition is off, so
     /// `--precise` mode does not decide these items. Sorted.
     pub cfg_used: Vec<ItemId>,
+    /// The undecided candidates that code the graph cannot read can use: the
+    /// output of an `include!` with a path that is not a literal, for example
+    /// a file in `OUT_DIR`. rust-analyzer does not search those files either,
+    /// so `--precise` mode does not decide these candidates. Sorted.
+    pub opaque: Vec<Finding>,
 }
 
 impl Analysis {
@@ -101,6 +111,7 @@ impl Analysis {
             .retain(|finding| kinds.contains(&finding.kind));
         self.undecided
             .retain(|finding| kinds.contains(&finding.kind));
+        self.opaque.retain(|finding| kinds.contains(&finding.kind));
     }
 }
 
@@ -130,11 +141,84 @@ pub fn analyze(graph: &Graph, options: &Options) -> Analysis {
         .collect();
     cfg_used.sort_unstable();
     cfg_used.dedup();
-    Analysis {
+    let mut analysis = Analysis {
         findings,
         undecided,
         cfg_used,
+        opaque: Vec::new(),
+    };
+    hold_opaque(graph, options, &mut analysis);
+    analysis
+}
+
+/// How far code that the graph cannot read reaches into a crate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Reach {
+    /// The code can name each `pub` item of the crate.
+    Public,
+    /// The code is in the crate, so it can name each item.
+    All,
+}
+
+/// The crates that code from an `include!` with a path that the graph cannot
+/// read can name. The code is in the crate of the call, so that crate is open
+/// for each kind. The code can name the `pub` items of each dependency. When
+/// the package has a build script, the generated code can name only the crates
+/// that the build script text names as `name::`, as in the `deps` check.
+fn opaque_crates(graph: &Graph, options: &Options) -> FxHashMap<usize, Reach> {
+    let including: FxHashSet<usize> = graph
+        .refs
+        .iter()
+        .filter(|reference| matches!(&reference.kind, RefKind::Macro(name) if name == "include"))
+        .map(|reference| reference.krate)
+        .collect();
+    let mut open = FxHashMap::default();
+    if including.is_empty() {
+        return open;
     }
+    let generated = crate::deps::usage::build_script_names(graph, &options.root);
+    for krate in including {
+        open.insert(krate, Reach::All);
+        let entry = &graph.crates[krate];
+        let names = generated.get(&entry.package);
+        for dependency in &entry.externs {
+            let Some(target) = dependency.target else {
+                continue;
+            };
+            if names.is_none_or(|names| names.contains(&dependency.name)) {
+                open.entry(target).or_insert(Reach::Public);
+            }
+        }
+    }
+    open
+}
+
+/// Moves each finding that code the graph cannot read can make wrong to the
+/// undecided list, and records those candidates in [`Analysis::opaque`].
+fn hold_opaque(graph: &Graph, options: &Options, analysis: &mut Analysis) {
+    let open = opaque_crates(graph, options);
+    if open.is_empty() {
+        return;
+    }
+    let is_opaque = |finding: &Finding| match open.get(&graph.items[finding.item].krate) {
+        Some(Reach::All) => true,
+        Some(Reach::Public) => finding.kind != FindingKind::UnnecessaryRestricted,
+        None => false,
+    };
+    let (held, kept): (Vec<Finding>, Vec<Finding>) = analysis
+        .findings
+        .drain(..)
+        .partition(|finding| is_opaque(finding));
+    analysis.findings = kept;
+    analysis.undecided.extend(held);
+    analysis.undecided.sort();
+    analysis.undecided.dedup();
+    analysis.opaque = analysis
+        .undecided
+        .iter()
+        .copied()
+        .filter(|finding| is_opaque(finding))
+        .collect();
 }
 
 /// Runs the filters that keep each reported change valid alone, again, after

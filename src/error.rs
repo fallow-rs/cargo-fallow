@@ -26,6 +26,9 @@ pub enum ErrorCode {
     InvalidConfig,
     /// A check did not finish before its time limit.
     TimedOut,
+    /// `visibility --precise` cannot decide: a part of the load is missing, or
+    /// the worker stopped early and the run is a gate.
+    PreciseFailed,
 }
 
 impl ErrorCode {
@@ -39,6 +42,7 @@ impl ErrorCode {
             Self::MutationFailed => "CARGO_FALLOW_MUTATION_FAILED",
             Self::InvalidConfig => "CARGO_FALLOW_INVALID_CONFIG",
             Self::TimedOut => "CARGO_FALLOW_TIMED_OUT",
+            Self::PreciseFailed => "CARGO_FALLOW_PRECISE_FAILED",
         }
     }
 }

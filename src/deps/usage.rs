@@ -134,26 +134,8 @@ pub fn collect(graph: &Graph, root: &Path) -> BTreeMap<String, PackageUsage> {
     for krate in &graph.crates {
         usage.entry(krate.package.clone()).or_default();
     }
-    for (id, krate) in graph.crates.iter().enumerate() {
-        if krate.kind != CrateKind::Build {
-            continue;
-        }
-        let files: BTreeSet<&str> = graph
-            .items
-            .iter()
-            .filter(|item| item.krate == id)
-            .map(|item| item.file.as_str())
-            .collect();
-        let names = usage
-            .entry(krate.package.clone())
-            .or_default()
-            .generated
-            .get_or_insert_default();
-        for file in files {
-            if let Ok(text) = fs::read_to_string(root.join(file)) {
-                names.extend(path_prefixes(&text));
-            }
-        }
+    for (package, names) in build_script_names(graph, root) {
+        usage.entry(package).or_default().generated = Some(names);
     }
     for import in &graph.imports {
         let krate = &graph.crates[import.krate];
@@ -188,6 +170,31 @@ pub fn collect(graph: &Graph, root: &Path) -> BTreeMap<String, PackageUsage> {
         }
     }
     usage
+}
+
+/// The names that the build script of each package can write into generated
+/// code: each `name::` in the text of its files, also in strings. Keyed by
+/// package name. A package without a build script has no entry.
+pub fn build_script_names(graph: &Graph, root: &Path) -> BTreeMap<String, BTreeSet<String>> {
+    let mut names: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for (id, krate) in graph.crates.iter().enumerate() {
+        if krate.kind != CrateKind::Build {
+            continue;
+        }
+        let files: BTreeSet<&str> = graph
+            .items
+            .iter()
+            .filter(|item| item.krate == id)
+            .map(|item| item.file.as_str())
+            .collect();
+        let package = names.entry(krate.package.clone()).or_default();
+        for file in files {
+            if let Ok(text) = fs::read_to_string(root.join(file)) {
+                package.extend(path_prefixes(&text));
+            }
+        }
+    }
+    names
 }
 
 /// Each identifier that `::` follows in the text. A lexical scan, so it also

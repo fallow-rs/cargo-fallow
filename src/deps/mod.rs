@@ -24,7 +24,7 @@
 mod analyze;
 mod manifest;
 pub mod report;
-mod usage;
+pub mod usage;
 
 use std::path::PathBuf;
 

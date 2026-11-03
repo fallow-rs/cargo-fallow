@@ -12,16 +12,21 @@ use std::time::{Duration, Instant};
 
 use ra_ap_hir::{Crate, Semantics};
 use ra_ap_ide_db::RootDatabase;
-use ra_ap_ide_db::base_db::{EditionedFileId, SourceDatabase};
+use ra_ap_ide_db::base_db::{
+    CrateOrigin, EditionedFileId, ProcMacroLoadingError, SourceDatabase, all_crates,
+};
 use ra_ap_ide_db::defs::{Definition, NameClass};
 use ra_ap_ide_db::search::SearchScope;
-use ra_ap_load_cargo::{LoadCargoConfig, ProcMacroServerChoice, load_workspace_at};
+use ra_ap_load_cargo::{LoadCargoConfig, ProcMacroServerChoice, load_workspace};
 use ra_ap_paths::{AbsPathBuf, Utf8PathBuf};
-use ra_ap_project_model::{CargoConfig, CargoFeatures, RustLibSource};
+use ra_ap_project_model::{
+    CargoConfig, CargoFeatures, ProjectManifest, ProjectWorkspace, RustLibSource,
+    TargetDirectoryConfig,
+};
 use ra_ap_syntax::{AstNode, SyntaxKind, SyntaxNode, TextSize, ast};
 use ra_ap_vfs::{FileId, Vfs, VfsPath};
 
-use super::{Candidate, Decision, Event, EventSink, KeepReason, Request};
+use super::{Candidate, Decision, Event, EventSink, Fault, KeepReason, LoadProblem, Request};
 
 /// The worker threads of the load. The machine limit of two parallel jobs
 /// applies.
@@ -45,22 +50,62 @@ pub fn run(request: &Request, sink: &mut EventSink) -> Result<(), String> {
             request.manifest.display()
         )
     })?;
+    let fault = Fault::from_env();
+    // A test fault points rust-analyzer at an empty folder as the source of
+    // the standard library. The folder must live until the load ends.
+    let empty_source = match fault {
+        Some(Fault::NoStdSource) => {
+            Some(tempfile::tempdir().map_err(|err| format!("create a temporary folder: {err}"))?)
+        }
+        _ => None,
+    };
     let cargo = CargoConfig {
         all_targets: true,
         features: CargoFeatures::All,
         sysroot: Some(RustLibSource::Discover),
+        sysroot_src: empty_source
+            .as_ref()
+            .and_then(|folder| abs_path(folder.path())),
         set_test: true,
+        // The `cargo check` of the load uses its own target folder, so it does
+        // not wait for the build lock of the user's target folder.
+        target_dir_config: TargetDirectoryConfig::UseSubdirectory,
         ..CargoConfig::default()
     };
     let load = LoadCargoConfig {
         load_out_dirs_from_check: true,
-        with_proc_macro_server: ProcMacroServerChoice::Sysroot,
+        with_proc_macro_server: if fault == Some(Fault::NoProcMacroServer) {
+            ProcMacroServerChoice::None
+        } else {
+            ProcMacroServerChoice::Sysroot
+        },
         prefill_caches: false,
         num_worker_threads: LOAD_THREADS,
         proc_macro_processes: 1,
     };
-    let (db, vfs, _server) = load_workspace_at(manifest.as_ref(), &cargo, &load, &|_| {})
+    // The steps of `load_workspace_at`, so that the error of `cargo check`
+    // stays visible. rust-analyzer only logs it.
+    let project = ProjectManifest::discover_single(manifest.as_ref())
+        .map_err(|err| format!("find the workspace: {err:#}"))?;
+    let mut workspace = ProjectWorkspace::load(project, &cargo, &|_| {})
         .map_err(|err| format!("load the workspace: {err:#}"))?;
+    let scripts = workspace
+        .run_build_scripts(&cargo, &|_| {})
+        .map_err(|err| format!("run the build scripts: {err:#}"))?;
+    let build_error = scripts.error().map(str::to_owned);
+    workspace.set_build_scripts(scripts);
+    let (db, vfs, _server) = load_workspace(workspace, &cargo.extra_env, &load)
+        .map_err(|err| format!("load the workspace: {err:#}"))?;
+    // A missing part of the load is not an error of the load: rust-analyzer
+    // stores it for each crate. Without it, uses stay hidden, and a decision
+    // can report an item that code uses.
+    if let Some((problem, detail)) = load_problem(&db, build_error.as_deref()) {
+        sink.send(&Event::LoadFailed {
+            problem,
+            detail: detail.clone(),
+        })?;
+        return Err(detail);
+    }
     sink.send(&Event::Loaded {
         ms: millis(start.elapsed()),
     })?;
@@ -86,6 +131,49 @@ pub fn run(request: &Request, sink: &mut EventSink) -> Result<(), String> {
     sink.send(&Event::Done {
         ms: millis(search_start.elapsed()),
         large_files,
+    })
+}
+
+/// The first part of the load that is missing: the source of the standard
+/// library, or the expansion of a proc-macro crate. `build_error` is the error
+/// of the `cargo check` that builds the proc-macro crates and runs the build
+/// scripts.
+fn load_problem(db: &RootDatabase, build_error: Option<&str>) -> Option<(LoadProblem, String)> {
+    let crates = all_crates(db);
+    let has_std_source = crates
+        .iter()
+        .any(|krate| matches!(krate.data(db).origin, CrateOrigin::Lang(_)));
+    if !has_std_source {
+        return Some((
+            LoadProblem::MissingStdSource,
+            "rust-analyzer found no source of the standard library".to_owned(),
+        ));
+    }
+    crates.iter().find_map(|&krate| {
+        if !krate.data(db).is_proc_macro {
+            return None;
+        }
+        let error = ra_ap_hir::ProcMacros::get_for_crate(db, krate)
+            .as_ref()
+            .and_then(|macros| macros.get_error())
+            // A successful `cargo check` builds each proc-macro crate that the
+            // build needs, so a crate that it did not build expands no code.
+            // After a failed `cargo check`, a needed crate can be missing.
+            .filter(|error| {
+                !matches!(error, ProcMacroLoadingError::NotYetBuilt) || build_error.is_some()
+            })?;
+        let name = krate
+            .extra_data(db)
+            .display_name
+            .as_ref()
+            .map_or_else(|| "a crate".to_owned(), |name| format!("`{name}`"));
+        let cause = build_error.map_or_else(String::new, |text| {
+            format!(". `cargo check --all-targets --all-features` failed: {text}")
+        });
+        Some((
+            LoadProblem::ProcMacro,
+            format!("rust-analyzer cannot expand the proc-macro crate {name}: {error}{cause}"),
+        ))
     })
 }
 

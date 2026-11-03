@@ -288,22 +288,23 @@ impl VisibilityReport {
         let mut text = String::new();
         let _ = writeln!(text, "cargo fallow visibility ({} mode)", self.mode);
         for finding in &self.findings {
-            let to = if finding.suggested.is_empty() {
-                "private"
+            let change = if removes(finding) {
+                "remove the variant".to_owned()
+            } else if finding.suggested.is_empty() {
+                format!("{} -> private", finding.visibility)
             } else {
-                finding.suggested.as_str()
+                format!("{} -> {}", finding.visibility, finding.suggested)
             };
             let _ = writeln!(
                 text,
-                "  {}:{}:{} {} {} `{}`: {} -> {}{}",
+                "  {}:{}:{} {} {} `{}`: {}{}",
                 finding.file,
                 finding.line,
                 finding.column,
                 finding.kind,
                 finding.item_kind,
                 finding.item,
-                finding.visibility,
-                to,
+                change,
                 if finding.test_only {
                     " (only tests use it)"
                 } else {
@@ -388,7 +389,23 @@ impl VisibilityReport {
             .into_iter()
             .map(|kind| json!({ "id": kind, "shortDescription": { "text": rule_text(kind) } }))
             .collect();
-        crate::render::sarif_document(&rules, &self.gate_outcomes, &results)
+        let mut log = crate::render::sarif_document(&rules, &self.gate_outcomes, &results);
+        if let Some(precise) = self.precise.as_ref().filter(|precise| precise.incomplete()) {
+            // The fast findings are in the log, but the worker did not decide
+            // each candidate, so the run did not do all that it was asked.
+            let invocation = &mut log["runs"][0]["invocations"][0];
+            invocation["executionSuccessful"] = json!(false);
+            let note = json!({
+                "level": "warning",
+                "message": { "text": precise.human_line() },
+                "descriptor": { "id": "visibility-precise" },
+            });
+            match invocation["toolExecutionNotifications"].as_array_mut() {
+                Some(notes) => notes.push(note),
+                None => invocation["toolExecutionNotifications"] = json!([note]),
+            }
+        }
+        log
     }
 }
 
@@ -413,7 +430,22 @@ fn crate_row(graph: &Graph, entry: &crate::graph::Crate) -> CrateRow {
     }
 }
 
+/// True when the step of the finding removes the item.
+fn removes(finding: &FindingRow) -> bool {
+    finding
+        .actions
+        .first()
+        .is_some_and(|action| action.kind == REMOVE_ACTION)
+}
+
 fn message(finding: &FindingRow) -> String {
+    if removes(finding) {
+        return format!(
+            "No code reaches the {} `{}`. An enum variant has no visibility keyword. Remove \
+             the variant when no code needs it.",
+            finding.item_kind, finding.item
+        );
+    }
     let to = if finding.suggested.is_empty() {
         "private".to_owned()
     } else {

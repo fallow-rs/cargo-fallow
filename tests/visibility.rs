@@ -982,3 +982,452 @@ fn a_precise_finding_waits_for_its_reexport() {
         "fast {fast:?} undecided {undecided:?} precise {precise:?}"
     );
 }
+
+/// The manifest of `app` with a dependency on `mid` and on `base`.
+const APP_WITH_TWO_DEPENDENCIES: &str = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\
+     edition = \"2024\"\npublish = false\n\n[dependencies]\nmid = { path = \"../mid\" }\n\
+     base = { path = \"../base\" }\n";
+
+/// A build script that writes code into `OUT_DIR`. The code names `mid`.
+const GENERATING_BUILD_SCRIPT: &str = "fn main() {\n    let out = std::env::var(\"OUT_DIR\").unwrap();\n    \
+     std::fs::write(format!(\"{out}/g.rs\"), \"pub fn generated() { mid::from_generated(); }\")\n        \
+     .unwrap();\n}\n";
+
+/// The files of a workspace whose binary includes code from `OUT_DIR`.
+fn generated_code_files() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("app/Cargo.toml", APP_WITH_TWO_DEPENDENCIES),
+        ("app/build.rs", GENERATING_BUILD_SCRIPT),
+        (
+            "app/src/main.rs",
+            "include!(concat!(env!(\"OUT_DIR\"), \"/g.rs\"));\nfn main() { generated(); }\n\
+             mod inner {\n    pub(super) fn helper() {}\n    pub(super) fn call() { helper(); }\n}\n",
+        ),
+        ("mid/src/lib.rs", "pub fn from_generated() {}\n"),
+        ("base/src/lib.rs", "pub fn unrelated() {}\n"),
+    ]
+}
+
+/// The graph cannot read code that a build script writes. An item that this
+/// code can name is undecided, not a finding: a smaller visibility can break
+/// the build. The build script names only `mid`, so `base` keeps its findings.
+#[test]
+fn an_item_that_generated_code_can_name_is_undecided() {
+    let dir = workspace(&generated_code_files());
+    let (found, undecided) = findings(&dir, &[]);
+    assert!(found.contains("dead_public unrelated"), "{found:?}");
+    assert!(
+        !found
+            .iter()
+            .any(|row| row.ends_with("from_generated") || row.ends_with("inner::helper")),
+        "{found:?}"
+    );
+    assert!(
+        undecided.contains("dead_public from_generated"),
+        "{undecided:?}"
+    );
+    assert!(
+        undecided.contains("unnecessary_restricted_visibility inner::helper"),
+        "{undecided:?}"
+    );
+}
+
+/// Without a build script, an `include!` with a path that is not a literal can
+/// read any file, so each dependency is open to it.
+#[test]
+fn an_include_without_a_literal_path_opens_each_dependency() {
+    let dir = workspace(&[
+        ("app/Cargo.toml", APP_WITH_TWO_DEPENDENCIES),
+        (
+            "app/src/main.rs",
+            "include!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/gen.rs\"));\nfn main() {}\n",
+        ),
+        ("app/gen.rs", "pub fn g() { mid::a(); base::b(); }\n"),
+        ("mid/src/lib.rs", "pub fn a() {}\n"),
+        ("base/src/lib.rs", "pub fn b() {}\n"),
+    ]);
+    let (found, undecided) = findings(&dir, &[]);
+    assert!(found.is_empty(), "{found:?}");
+    assert_eq!(undecided, set(&["dead_public a", "dead_public b"]));
+}
+
+/// rust-analyzer does not search the files in the target folder, so `--precise`
+/// mode must not decide an item that generated code can name.
+#[cfg(feature = "precise")]
+#[test]
+fn precise_mode_leaves_an_item_that_generated_code_can_name_undecided() {
+    let mut files = generated_code_files();
+    // A method call in `base` gives the worker one candidate to decide.
+    files.push((
+        "base/src/lib.rs",
+        "pub struct A;\nimpl A {\n    pub fn helper(&self) {}\n}\npub struct B;\nimpl B {\n    \
+         pub fn helper(&self) {}\n}\npub fn run() { B.helper(); }\n",
+    ));
+    files.push((
+        "app/src/main.rs",
+        "include!(concat!(env!(\"OUT_DIR\"), \"/g.rs\"));\nfn main() { generated(); base::run(); }\n",
+    ));
+    let dir = workspace(&files);
+    let (code, text) = run(&dir, &["--format", "json", "--precise"]);
+    assert_eq!(code, Some(0), "{text}");
+    let report: Value = serde_json::from_str(&text).expect("the output is JSON");
+    assert_eq!(report["precise"]["status"], "complete", "{report}");
+    let (found, undecided) = findings(&dir, &["--precise"]);
+    assert!(
+        !found
+            .iter()
+            .any(|row| row.ends_with("from_generated") || row.ends_with("inner::helper")),
+        "{found:?}"
+    );
+    assert!(
+        undecided.contains("dead_public from_generated"),
+        "{undecided:?}"
+    );
+}
+
+/// The workspace of the method call case: one candidate for `--precise`.
+#[cfg(feature = "precise")]
+fn method_call_files() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("app/src/main.rs", "fn main() { mid::run(); }\n"),
+        (
+            "mid/src/lib.rs",
+            "pub struct A;\nimpl A {\n    pub fn helper(&self) {}\n}\npub struct B;\nimpl B {\n    \
+             pub fn helper(&self) {}\n}\npub fn run() { B.helper(); }\n",
+        ),
+    ]
+}
+
+/// The output of a `--precise` run with extra environment variables.
+#[cfg(feature = "precise")]
+fn precise_run(dir: &TempDir, extra: &[&str], env: &[(&str, &str)]) -> (Option<i32>, String) {
+    let mut command = Command::cargo_bin("cargo-fallow").expect("find the binary");
+    command
+        .args(["visibility", "--quiet", "--precise", "--manifest-path"])
+        .arg(dir.path().join("Cargo.toml"))
+        .args(extra)
+        .env_remove("CARGO_TARGET_DIR");
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    let output = command.output().expect("run the binary");
+    (
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+    )
+}
+
+/// The environment variable that makes the worker simulate a fault. Only the
+/// tests set it.
+#[cfg(feature = "precise")]
+const FAULT: &str = "CARGO_FALLOW_PRECISE_TEST_FAULT";
+
+/// Without the source of the standard library, rust-analyzer does not know
+/// the standard types, and it misses uses. The run stops with exit code 2.
+#[cfg(feature = "precise")]
+#[test]
+fn precise_mode_without_the_standard_library_source_is_an_error() {
+    let dir = workspace(&method_call_files());
+    let (code, text) = precise_run(&dir, &["--format", "json"], &[(FAULT, "no-std-source")]);
+    assert_eq!(code, Some(2), "{text}");
+    let error: Value = serde_json::from_str(&text).expect("the output is JSON");
+    assert_eq!(error["code"], "CARGO_FALLOW_PRECISE_FAILED", "{error}");
+    assert!(
+        error["help"]
+            .as_str()
+            .is_some_and(|help| help.contains("rustup component add rust-src")),
+        "{error}"
+    );
+}
+
+/// Without a proc-macro server, rust-analyzer does not see the output of a
+/// proc-macro, and it misses uses. The run stops with exit code 2.
+#[cfg(feature = "precise")]
+#[test]
+fn precise_mode_without_a_proc_macro_server_is_an_error() {
+    let mut files = method_call_files();
+    files.extend([
+        (
+            "app/Cargo.toml",
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n\
+             [dependencies]\nmid = { path = \"../mid\" }\npm = { path = \"../pm\" }\n",
+        ),
+        ("app/src/main.rs", "pm::make!();\nfn main() { mid::run(); }\n"),
+        (
+            "Cargo.toml",
+            "[workspace]\nmembers = [\"app\", \"mid\", \"base\", \"testing\", \"pm\"]\n\
+             resolver = \"3\"\n",
+        ),
+        (
+            "pm/Cargo.toml",
+            "[package]\nname = \"pm\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n\
+             [lib]\nproc-macro = true\n",
+        ),
+        (
+            "pm/src/lib.rs",
+            "use proc_macro::TokenStream;\n#[proc_macro]\n\
+             pub fn make(_input: TokenStream) -> TokenStream { TokenStream::new() }\n",
+        ),
+    ]);
+    let dir = workspace(&files);
+    let (code, text) = precise_run(
+        &dir,
+        &["--format", "json"],
+        &[(FAULT, "no-proc-macro-server")],
+    );
+    assert_eq!(code, Some(2), "{text}");
+    let error: Value = serde_json::from_str(&text).expect("the output is JSON");
+    assert_eq!(error["code"], "CARGO_FALLOW_PRECISE_FAILED", "{error}");
+    assert!(
+        error["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("proc-macro")),
+        "{error}"
+    );
+}
+
+/// The worker runs `cargo check` in its own target folder, so it does not wait
+/// for the build lock of the user's target folder.
+#[cfg(feature = "precise")]
+#[test]
+fn precise_mode_builds_in_its_own_target_folder() {
+    let dir = workspace(&method_call_files());
+    let (code, text) = precise_run(&dir, &["--format", "json"], &[]);
+    assert_eq!(code, Some(0), "{text}");
+    let target = dir.path().join("target");
+    assert!(target.join("rust-analyzer").is_dir(), "{target:?}");
+    assert!(!target.join("debug").exists(), "{target:?}");
+}
+
+/// A worker that fails makes the run fail with `--fail-on-issues`, and SARIF
+/// marks the run as not successful.
+#[cfg(feature = "precise")]
+#[test]
+fn a_failed_worker_is_visible_in_the_exit_code_and_in_sarif() {
+    let dir = workspace(&method_call_files());
+    let (code, text) = precise_run(
+        &dir,
+        &["--format", "json", "--fail-on-issues"],
+        &[(FAULT, "abort")],
+    );
+    assert_eq!(code, Some(2), "{text}");
+    let error: Value = serde_json::from_str(&text).expect("the output is JSON");
+    assert_eq!(error["code"], "CARGO_FALLOW_PRECISE_FAILED", "{error}");
+    let (code, text) = precise_run(&dir, &["--format", "json"], &[(FAULT, "abort")]);
+    assert_eq!(code, Some(0), "{text}");
+    let report: Value = serde_json::from_str(&text).expect("the output is JSON");
+    assert_eq!(report["precise"]["status"], "failed", "{report}");
+    let (_, text) = precise_run(&dir, &["--format", "sarif"], &[(FAULT, "abort")]);
+    let log: Value = serde_json::from_str(&text).expect("the output is JSON");
+    let invocation = &log["runs"][0]["invocations"][0];
+    assert_eq!(invocation["executionSuccessful"], false, "{invocation}");
+    assert!(
+        invocation["toolExecutionNotifications"]
+            .as_array()
+            .is_some_and(|list| list
+                .iter()
+                .any(|note| note["descriptor"]["id"] == "visibility-precise")),
+        "{invocation}"
+    );
+}
+
+/// A worker that hangs stops at the time limit. The run reports the limit, and
+/// no worker process stays.
+#[cfg(all(feature = "precise", unix))]
+#[test]
+fn a_hung_worker_stops_at_the_time_limit_and_leaves_no_process() {
+    let dir = workspace(&method_call_files());
+    let pid_file = dir.path().join("worker.pid");
+    let pid_text = pid_file.to_string_lossy().into_owned();
+    let (code, text) = precise_run(
+        &dir,
+        &["--format", "json", "--precise-timeout", "1"],
+        &[
+            (FAULT, "hang"),
+            ("CARGO_FALLOW_PRECISE_TEST_PID_FILE", &pid_text),
+        ],
+    );
+    assert_eq!(code, Some(0), "{text}");
+    let report: Value = serde_json::from_str(&text).expect("the output is JSON");
+    assert_eq!(report["precise"]["status"], "time_limit", "{report}");
+    let pid = fs::read_to_string(&pid_file).expect("the worker wrote its process id");
+    let alive = std::process::Command::new("ps")
+        .args(["-o", "pid=", "-p", pid.trim()])
+        .output()
+        .is_ok_and(|output| !output.stdout.is_empty());
+    assert!(!alive, "the worker {pid} still runs");
+}
+
+/// The JSON report is the same in each run, except the run times.
+#[cfg(feature = "precise")]
+#[test]
+fn the_precise_report_is_the_same_in_each_run() {
+    let dir = workspace(&method_call_files());
+    let report = || -> Value {
+        let (code, text) = precise_run(&dir, &["--format", "json"], &[]);
+        assert_eq!(code, Some(0), "{text}");
+        let mut report: Value = serde_json::from_str(&text).expect("the output is JSON");
+        for key in ["elapsed_ms", "load_ms", "search_ms"] {
+            report["precise"][key] = Value::Null;
+        }
+        report
+    };
+    let first = report();
+    assert_eq!(first["precise"]["status"], "complete", "{first}");
+    assert_eq!(first, report());
+}
+
+/// An enum variant has no keyword. The text of a variant finding tells the
+/// user to remove the variant, as the action does.
+#[test]
+fn the_text_of_a_variant_finding_matches_its_action() {
+    let dir = workspace(&[
+        (
+            "app/src/main.rs",
+            "fn main() { let _ = mid::Kind::Used; }\n",
+        ),
+        (
+            "mid/src/lib.rs",
+            "pub enum Kind {\n    Used,\n    Unused,\n}\n",
+        ),
+    ]);
+    let (_, text) = run(&dir, &["--format", "json"]);
+    let report: Value = serde_json::from_str(&text).expect("the output is JSON");
+    let rows = report["findings"].as_array().expect("findings");
+    assert_eq!(rows.len(), 1, "{report}");
+    assert_eq!(rows[0]["actions"][0]["type"], "remove-item");
+    let (_, human) = run(&dir, &[]);
+    let line = human
+        .lines()
+        .find(|line| line.contains("Kind::Unused"))
+        .expect("a line for the variant");
+    assert!(!line.contains("private"), "{line}");
+    assert!(line.contains("remove"), "{line}");
+    let (_, text) = run(&dir, &["--format", "sarif"]);
+    let log: Value = serde_json::from_str(&text).expect("the output is JSON");
+    let message = log["runs"][0]["results"][0]["message"]["text"]
+        .as_str()
+        .expect("a message");
+    assert!(!message.contains("private"), "{message}");
+    assert!(message.contains("Remove"), "{message}");
+}
+
+/// The root manifest of the shared workspace with a visibility table.
+fn manifest_with_table(table: &str) -> String {
+    format!(
+        "[workspace]\nmembers = [\"app\", \"mid\", \"base\", \"testing\"]\nresolver = \"3\"\n\n\
+         [workspace.metadata.fallow.visibility]\n{table}"
+    )
+}
+
+/// `[workspace.metadata.fallow.visibility]` sets the options, and a flag on
+/// the command line wins over the table.
+#[test]
+fn the_visibility_table_sets_the_options() {
+    let manifest = manifest_with_table(
+        "exclude-crates = [\"mid\"]\nkinds = [\"dead-public\"]\nuniform-fields = true\n\
+         production = [\"app:app\"]\n",
+    );
+    let dir = workspace(&[
+        ("Cargo.toml", manifest.as_str()),
+        ("mid/src/lib.rs", "pub fn in_mid() {}\n"),
+        (
+            "base/src/lib.rs",
+            "pub fn in_base() {}\nmod m {\n    pub(crate) fn here() {}\n    \
+             fn call() { here(); }\n}\n",
+        ),
+    ]);
+    let (found, _) = findings(&dir, &[]);
+    assert_eq!(found, set(&["dead_public in_base"]));
+    let (found, _) = findings(
+        &dir,
+        &[
+            "--exclude-crate",
+            "base",
+            "--kind",
+            "unnecessary-restricted-visibility",
+        ],
+    );
+    assert_eq!(found, set(&[]));
+    let (found, _) = findings(&dir, &["--exclude-crate", "testing"]);
+    assert!(found.contains("dead_public in_mid"), "{found:?}");
+}
+
+/// An unknown key in the table is a configuration error.
+#[test]
+fn an_unknown_key_in_the_visibility_table_is_an_error() {
+    let manifest = manifest_with_table("exclude = [\"mid\"]\n");
+    let dir = workspace(&[("Cargo.toml", manifest.as_str())]);
+    let (code, text) = run(&dir, &["--format", "json"]);
+    assert_eq!(code, Some(2), "{text}");
+    let error: Value = serde_json::from_str(&text).expect("the output is JSON");
+    assert_eq!(error["code"], "CARGO_FALLOW_INVALID_CONFIG", "{error}");
+}
+
+/// `cargo check` builds the library of a proc-macro crate only when a crate
+/// that it checks needs it. rust-analyzer lists a crate without dependents as
+/// not built. It expands no code, so the run goes on.
+#[cfg(feature = "precise")]
+#[test]
+fn precise_mode_accepts_a_proc_macro_crate_that_the_build_does_not_need() {
+    let mut files = method_call_files();
+    files.extend([
+        (
+            "Cargo.toml",
+            "[workspace]\nmembers = [\"app\", \"mid\", \"base\", \"testing\", \"pm\"]\n\
+             resolver = \"3\"\n",
+        ),
+        (
+            "pm/Cargo.toml",
+            "[package]\nname = \"pm\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n\
+             [lib]\nproc-macro = true\n",
+        ),
+        (
+            "pm/src/lib.rs",
+            "use proc_macro::TokenStream;\n#[proc_macro]\n\
+             pub fn make(_input: TokenStream) -> TokenStream { TokenStream::new() }\n",
+        ),
+    ]);
+    let dir = workspace(&files);
+    let (code, text) = precise_run(&dir, &["--format", "json"], &[]);
+    assert_eq!(code, Some(0), "{text}");
+    let report: Value = serde_json::from_str(&text).expect("the output is JSON");
+    assert_eq!(report["precise"]["status"], "complete", "{report}");
+}
+
+/// After a failed `cargo check`, a proc-macro crate that the build needs can
+/// be missing, and its output stays hidden. The run stops with exit code 2.
+#[cfg(feature = "precise")]
+#[test]
+fn precise_mode_with_a_proc_macro_crate_that_does_not_build_is_an_error() {
+    let mut files = method_call_files();
+    files.extend([
+        (
+            "Cargo.toml",
+            "[workspace]\nmembers = [\"app\", \"mid\", \"base\", \"testing\", \"pm\"]\n\
+             resolver = \"3\"\n",
+        ),
+        (
+            "app/Cargo.toml",
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n\
+             [dependencies]\nmid = { path = \"../mid\" }\npm = { path = \"../pm\" }\n",
+        ),
+        ("app/src/main.rs", "pm::make!();\nfn main() { mid::run(); }\n"),
+        (
+            "pm/Cargo.toml",
+            "[package]\nname = \"pm\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n\
+             [lib]\nproc-macro = true\n",
+        ),
+        (
+            "pm/src/lib.rs",
+            "use proc_macro::TokenStream;\n#[proc_macro]\n\
+             pub fn make(_input: TokenStream) -> TokenStream { let _n: u8 = \"text\"; \
+             TokenStream::new() }\n",
+        ),
+    ]);
+    let dir = workspace(&files);
+    let (code, text) = precise_run(&dir, &["--format", "json"], &[]);
+    assert_eq!(code, Some(2), "{text}");
+    let error: Value = serde_json::from_str(&text).expect("the output is JSON");
+    assert_eq!(error["code"], "CARGO_FALLOW_PRECISE_FAILED", "{error}");
+}

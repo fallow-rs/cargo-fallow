@@ -8,7 +8,7 @@
 
 mod boundaries;
 mod complexity;
-mod config;
+pub mod config;
 mod dupes;
 mod git;
 mod report;

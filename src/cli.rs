@@ -345,7 +345,7 @@ enum VisibilityKindArg {
     UnnecessaryRestrictedVisibility,
 }
 
-fn parse_production(value: &str) -> Result<(String, String), String> {
+pub fn parse_production(value: &str) -> Result<(String, String), String> {
     match value.split_once(':') {
         Some((package, bin)) if !package.is_empty() && !bin.is_empty() => {
             Ok((package.to_owned(), bin.to_owned()))

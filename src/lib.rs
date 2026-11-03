@@ -82,6 +82,7 @@ fn visibility_report(options: &cli::VisibilityOptions) -> Result<u8, CliError> {
     let progress = render::Progress::new(options.quiet);
     progress.step("Reading cargo metadata");
     let workspace = workspace::load(options.manifest_path.as_deref())?;
+    let options = &visibility::config::resolve(&workspace, options)?;
     progress.step("Building the module graph");
     let production = graph::Production {
         bins: options.production.clone(),
@@ -91,6 +92,7 @@ fn visibility_report(options: &cli::VisibilityOptions) -> Result<u8, CliError> {
     let check_options = visibility::Options {
         exclude: options.exclude.clone(),
         uniform_fields: options.uniform_fields,
+        root: workspace.root.clone().into_std_path_buf(),
     };
     let mut analysis = visibility::analyze(&module_graph, &check_options);
     let precise = match options.precise {
@@ -104,6 +106,20 @@ fn visibility_report(options: &cli::VisibilityOptions) -> Result<u8, CliError> {
             };
             let summary = visibility::precise::decide(&module_graph, &mut analysis, &run)?;
             visibility::refine(&module_graph, &check_options, &mut analysis);
+            // A gate must not pass on a part of the decisions.
+            if options.fail_on_issues && summary.incomplete() {
+                return Err(error::CliError::new(
+                    error::ErrorCode::PreciseFailed,
+                    format!(
+                        "`--precise` did not decide each candidate. {}",
+                        summary.human_line()
+                    ),
+                )
+                .with_help(
+                    "Raise `--precise-timeout` or `--precise-memory-limit`, or run without \
+                     `--precise`.",
+                ));
+            }
             if summary.left > 0 {
                 render::warn(&summary.human_line());
             }

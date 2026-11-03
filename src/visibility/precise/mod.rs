@@ -21,7 +21,7 @@ mod engine;
 use std::fs;
 #[cfg(feature = "precise")]
 use std::io::Write;
-use std::io::{self, BufRead, BufReader};
+use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -48,6 +48,8 @@ pub const DEFAULT_FILE_LIMIT_KIB: u64 = 1024;
 const STOP_GRACE: Duration = Duration::from_secs(30);
 /// The most lines of the worker's stderr that a failure shows.
 const STDERR_LINES: usize = 20;
+/// The most bytes at the end of the worker's stderr that a failure reads.
+const STDERR_TAIL_BYTES: u64 = 8 * 1024;
 
 /// The limits of one run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -123,6 +125,14 @@ pub enum Event {
     },
     /// The worker reached the time limit, and it stopped the search.
     TimeLimit,
+    /// A part of the load is missing, so the worker cannot decide. The worker
+    /// stops after this event.
+    LoadFailed {
+        /// The missing part.
+        problem: LoadProblem,
+        /// The text for the user.
+        detail: String,
+    },
     /// The worker ended the search.
     Done {
         /// The milliseconds of the search.
@@ -130,6 +140,70 @@ pub enum Event {
         /// The workspace files over the size limit.
         large_files: usize,
     },
+}
+
+/// A missing part of the load.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LoadProblem {
+    /// The toolchain has no source of the standard library (`rust-src`).
+    MissingStdSource,
+    /// A proc-macro crate did not load: no proc-macro server, or the crate
+    /// did not build.
+    ProcMacro,
+}
+
+impl LoadProblem {
+    /// The help text of the error.
+    const fn help(self) -> &'static str {
+        match self {
+            Self::MissingStdSource => {
+                "Install the source of the standard library with `rustup component add \
+                 rust-src`, or run without `--precise`."
+            }
+            Self::ProcMacro => {
+                "Make sure that `cargo check --all-targets --all-features` builds the \
+                 proc-macro crates, and that the toolchain has the proc-macro server of the \
+                 `rustc` component. Or run without `--precise`."
+            }
+        }
+    }
+}
+
+/// A fault that the worker simulates, for the tests. Only a debug build reads
+/// the `CARGO_FALLOW_PRECISE_TEST_FAULT` environment variable.
+#[cfg(feature = "precise")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fault {
+    /// The worker stops at once with a failure.
+    Abort,
+    /// The worker writes its process id to the file in
+    /// `CARGO_FALLOW_PRECISE_TEST_PID_FILE` and then waits forever.
+    Hang,
+    /// The load uses an empty folder as the source of the standard library.
+    NoStdSource,
+    /// The load starts no proc-macro server.
+    NoProcMacroServer,
+}
+
+#[cfg(feature = "precise")]
+impl Fault {
+    /// The fault of this process, or `None`.
+    pub fn from_env() -> Option<Self> {
+        if !cfg!(debug_assertions) {
+            return None;
+        }
+        match std::env::var("CARGO_FALLOW_PRECISE_TEST_FAULT")
+            .ok()?
+            .as_str()
+        {
+            "abort" => Some(Self::Abort),
+            "hang" => Some(Self::Hang),
+            "no-std-source" => Some(Self::NoStdSource),
+            "no-proc-macro-server" => Some(Self::NoProcMacroServer),
+            _ => None,
+        }
+    }
 }
 
 /// The decision for one candidate.
@@ -196,6 +270,12 @@ pub struct PreciseSummary {
 }
 
 impl PreciseSummary {
+    /// True when the worker stopped before it decided each candidate: a
+    /// failure, the time limit or the memory limit.
+    pub fn incomplete(&self) -> bool {
+        !matches!(self.status, "complete" | "nothing_to_decide")
+    }
+
     /// One line for a person.
     pub fn human_line(&self) -> String {
         let seconds = self.elapsed_ms as f64 / 1000.0;
@@ -203,7 +283,11 @@ impl PreciseSummary {
             "Precise mode: {}, {} candidates, {} reported, {} kept, {} left, in {seconds:.1} s.",
             self.status, self.candidates, self.reported, self.kept, self.left
         );
-        if let Some(message) = &self.message {
+        if let Some(message) = self
+            .message
+            .as_deref()
+            .filter(|text| !text.trim().is_empty())
+        {
             line.push(' ');
             line.push_str(message);
         }
@@ -245,6 +329,7 @@ pub fn decide(
         .iter()
         .enumerate()
         .filter(|(_, finding)| analysis.cfg_used.binary_search(&finding.item).is_err())
+        .filter(|(_, finding)| analysis.opaque.binary_search(finding).is_err())
         .map(|(id, finding)| candidate(graph, id, finding))
         .collect();
     if candidates.is_empty() {
@@ -269,6 +354,16 @@ pub fn decide(
     fs::write(&input, text).map_err(|err| failure("write the request", &err))?;
     let exit = run_worker(folder.path(), &input, &output, run.limits)?;
     let events = read_events(&output);
+    if let Some((problem, detail)) = events.iter().find_map(|event| match event {
+        Event::LoadFailed { problem, detail } => Some((*problem, detail)),
+        _ => None,
+    }) {
+        return Err(CliError::new(
+            ErrorCode::PreciseFailed,
+            format!("`--precise` cannot decide: {detail}"),
+        )
+        .with_help(problem.help()));
+    }
     let mut summary = summarize(&request.candidates, &events, &exit, folder.path());
     let decisions: FxHashMap<usize, Decision> = events
         .into_iter()
@@ -384,6 +479,7 @@ fn summarize(
                 }
             }
             Event::TimeLimit => time_limit = true,
+            Event::LoadFailed { .. } => {}
             Event::Done { ms, large_files } => {
                 summary.search_ms = Some(*ms);
                 summary.large_files = *large_files;
@@ -416,8 +512,25 @@ fn summarize(
     summary
 }
 
+/// The last lines of the worker's stderr. Only the end of the file is read, so
+/// a large log does not fill the memory.
 fn stderr_tail(path: &Path) -> String {
-    let text = fs::read_to_string(path).unwrap_or_default();
+    let Ok(mut file) = fs::File::open(path) else {
+        return String::new();
+    };
+    let size = file.metadata().map_or(0, |meta| meta.len());
+    let start = size.saturating_sub(STDERR_TAIL_BYTES);
+    let mut bytes = Vec::new();
+    if file.seek(SeekFrom::Start(start)).is_err() || file.read_to_end(&mut bytes).is_err() {
+        return String::new();
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    // The first line can start in the middle, so it does not count.
+    let text = if start > 0 {
+        text.split_once('\n').map_or("", |(_, rest)| rest)
+    } else {
+        &text
+    };
     let lines: Vec<&str> = text.lines().collect();
     let start = lines.len().saturating_sub(STDERR_LINES);
     lines[start..].join("\n")
@@ -477,6 +590,11 @@ pub fn run_worker_command(args: &WorkerArgs) -> u8 {
 
 #[cfg(feature = "precise")]
 fn worker(args: &WorkerArgs) -> Result<(), String> {
+    match Fault::from_env() {
+        Some(Fault::Abort) => return Err("the test fault stopped the worker".to_owned()),
+        Some(Fault::Hang) => hang(),
+        _ => {}
+    }
     let text = fs::read_to_string(&args.input).map_err(|err| format!("read the request: {err}"))?;
     let request: Request =
         serde_json::from_str(&text).map_err(|err| format!("parse the request: {err}"))?;
@@ -487,6 +605,18 @@ fn worker(args: &WorkerArgs) -> Result<(), String> {
 #[cfg(not(feature = "precise"))]
 fn worker(_args: &WorkerArgs) -> Result<(), String> {
     Err("this build has no `precise` feature".to_owned())
+}
+
+/// Writes the process id for the test, and then waits forever.
+#[cfg(feature = "precise")]
+fn hang() -> ! {
+    if let Some(path) = std::env::var_os("CARGO_FALLOW_PRECISE_TEST_PID_FILE") {
+        // The test reads the file. A failed write makes the test fail.
+        let _ = fs::write(path, std::process::id().to_string());
+    }
+    loop {
+        std::thread::sleep(Duration::from_secs(60));
+    }
 }
 
 /// Writes each event as one line, and flushes it at once.
@@ -533,6 +663,7 @@ mod tests {
                 finding(FindingKind::DeadPublic, 5),
             ],
             cfg_used: Vec::new(),
+            opaque: Vec::new(),
         };
         let decisions: FxHashMap<usize, Decision> = [
             (
@@ -599,6 +730,39 @@ mod tests {
                     decision: Decision::Unresolved
                 }
             ]
+        );
+    }
+
+    #[test]
+    fn the_stderr_tail_reads_only_the_end_of_a_large_file() {
+        let Ok(dir) = tempfile::tempdir() else {
+            panic!("a temporary directory");
+        };
+        let path = dir.path().join("stderr.log");
+        // Bytes that are not UTF-8 at the start, far before the tail.
+        let mut text = vec![0xff, 0xfe, b'\n'];
+        for line in 0..100_000 {
+            text.extend_from_slice(format!("line {line}\n").as_bytes());
+        }
+        let Ok(()) = fs::write(&path, text) else {
+            panic!("write the file");
+        };
+        let tail = stderr_tail(&path);
+        assert_eq!(tail.lines().count(), STDERR_LINES);
+        assert!(tail.ends_with("line 99999"), "{tail}");
+    }
+
+    #[test]
+    fn an_empty_message_adds_no_space_to_the_line() {
+        let summary = PreciseSummary {
+            status: "failed",
+            message: Some(String::new()),
+            ..PreciseSummary::default()
+        };
+        assert!(
+            summary.human_line().ends_with(" s."),
+            "{}",
+            summary.human_line()
         );
     }
 

@@ -235,9 +235,9 @@ assert_equals "$OUT" "sub/tests/cli.rs sub/tests/structure.rs" "each location an
 echo "analyze.sh"
 run_analyze INPUT_COMMAND=check STUB_JSON="$FIXTURES/check-clean.json" STUB_SARIF="$FIXTURES/check-clean.sarif"
 assert_equals "$CODE" "0" "check: the step passes"
-assert_equals "$(call_args 1)" "check --fail-on-parse-error --format json " "check: the JSON run has the gate flag"
-assert_equals "$(call_args 2)" "check --fail-on-parse-error --format sarif --quiet " "check: the SARIF run"
-assert_equals "$(call_args 3)" "check --fail-on-parse-error --format human --quiet " "check: the human run for format human"
+assert_equals "$(call_args 1)" "check --fail-on-issues --format json " "check: the JSON run has the gate flag"
+assert_equals "$(call_args 2)" "check --fail-on-issues --format sarif --quiet " "check: the SARIF run"
+assert_equals "$(call_args 3)" "check --fail-on-issues --format human --quiet " "check: the human run for format human"
 assert_contains "$OUT" "stub progress line" "the log shows the stderr of the JSON run"
 assert_contains "$OUT" "stub human report" "the log shows the human report"
 assert_equals "$(output_of exit-code)" "0" "check: exit-code output"
@@ -246,7 +246,7 @@ assert_equals "$(output_of results)" "$(cd "$CASE_DIR/artifacts" && pwd -P)/carg
 assert_equals "$(output_of report)" "$(cd "$CASE_DIR/artifacts" && pwd -P)/cargo-fallow-report.txt" "check: report output is the human report"
 assert_equals "$(output_of path-prefix)" "" "check: no cargo, so no prefix"
 
-for pair in check:--fail-on-parse-error deps:--fail-on-issues visibility:--fail-on-issues \
+for pair in check:--fail-on-issues deps:--fail-on-issues visibility:--fail-on-issues \
   boundaries:--fail-on-violations size:--fail-on-growth complexity:--fail-on-complexity \
   dupes:--fail-on-clones; do
   run_analyze INPUT_COMMAND="${pair%%:*}" INPUT_FORMAT=json
@@ -311,7 +311,7 @@ assert_contains "$OUT" "The 'base' input applies only to size and mutants" "comp
 assert_contains "$OUT" "The mutants-* inputs apply only to command: mutants" "complexity: mutants inputs give a warning"
 
 run_analyze INPUT_COMMAND=check INPUT_MANIFEST_PATH="crates/a b/Cargo.toml" INPUT_FORMAT=json
-assert_equals "$(call_args 1)" "check --manifest-path crates/a b/Cargo.toml --fail-on-parse-error --format json " "a manifest path with a space stays one argument"
+assert_equals "$(call_args 1)" "check --manifest-path crates/a b/Cargo.toml --fail-on-issues --format json " "a manifest path with a space stays one argument"
 
 run_analyze INPUT_COMMAND=check STUB_JSON="$FIXTURES/error.json" STUB_EXIT=2
 assert_equals "$CODE" "0" "exit code 2: the step itself passes"

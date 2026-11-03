@@ -73,12 +73,13 @@ jobs:
         with:
           tool: cargo-nextest
 
-      - name: check (install from source)
+      - name: check (install from source, report only)
         id: check
         uses: ./
         with:
           command: check
           install: source
+          fail-on-issues: 'false'
 
       - name: deps
         id: deps
@@ -149,6 +150,7 @@ jobs:
           CHECK_METHOD: ${{ steps.check.outputs.install-method }}
           CHECK_EXIT: ${{ steps.check.outputs.exit-code }}
           CHECK_ISSUES: ${{ steps.check.outputs.issues }}
+          CHECK_RESULTS: ${{ steps.check.outputs.results }}
           DEPS_METHOD: ${{ steps.deps.outputs.install-method }}
           DEPS_REPORT: ${{ steps.deps.outputs.report }}
           DEPS_RESULTS: ${{ steps.deps.outputs.results }}
@@ -179,7 +181,9 @@ jobs:
           }
           expect "check: install method" "$CHECK_METHOD" "source"
           expect "check: exit code" "$CHECK_EXIT" "0"
-          expect "check: issues" "$CHECK_ISSUES" "0"
+          expect "check: issues match the findings" "$CHECK_ISSUES" "$(jq '.findings | length' "$CHECK_RESULTS")"
+          expect "check: sections" "$(jq -c '.sections | keys' "$CHECK_RESULTS")" '["boundaries","complexity","deps","dupes","size","visibility"]'
+          expect "check: health language" "$(jq -r .health.language "$CHECK_RESULTS")" "rust"
           expect "deps: install method" "$DEPS_METHOD" "path"
           expect "deps: format json reports the JSON file" "$DEPS_REPORT" "$DEPS_RESULTS"
           expect "deps: kind" "$(jq -r .kind "$DEPS_RESULTS")" "deps"

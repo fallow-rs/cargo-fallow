@@ -111,8 +111,7 @@ The `mutants-*` inputs apply only to `command: mutants`. For other flags, use
 
 | Command | Flag |
 | --- | --- |
-| `check` | `--fail-on-parse-error` |
-| `deps`, `visibility` | `--fail-on-issues` |
+| `check`, `deps`, `visibility` | `--fail-on-issues` |
 | `boundaries` | `--fail-on-violations` |
 | `size` | `--fail-on-growth` |
 | `complexity` | `--fail-on-complexity` |

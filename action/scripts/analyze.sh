@@ -34,8 +34,7 @@ fail() {
 # The flag that turns the gate of each command into exit code 1.
 fail_flag() {
   case "$1" in
-    check) echo "--fail-on-parse-error" ;;
-    deps | visibility) echo "--fail-on-issues" ;;
+    check | deps | visibility) echo "--fail-on-issues" ;;
     boundaries) echo "--fail-on-violations" ;;
     size) echo "--fail-on-growth" ;;
     complexity) echo "--fail-on-complexity" ;;

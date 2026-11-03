@@ -104,6 +104,51 @@ pub fn only_in_tests(condition: &str) -> bool {
     false
 }
 
+/// The value of a `cfg` condition with no whitespace in a build with all
+/// features and with tests, or `None` when it depends on the target or on
+/// another setting. `--precise` mode loads the workspace with those settings.
+pub fn cfg_value_all_features(condition: &str) -> Option<bool> {
+    if condition.starts_with("feature=") || matches!(condition, "test" | "debug_assertions") {
+        return Some(true);
+    }
+    let list = |prefix: &str| {
+        condition
+            .strip_prefix(prefix)
+            .and_then(|rest| rest.strip_suffix(')'))
+            .map(|inner| {
+                split_list(inner)
+                    .into_iter()
+                    .map(cfg_value_all_features)
+                    .collect::<Vec<_>>()
+            })
+    };
+    if let Some(values) = list("all(") {
+        if values.contains(&Some(false)) {
+            return Some(false);
+        }
+        return values
+            .iter()
+            .all(|value| *value == Some(true))
+            .then_some(true);
+    }
+    if let Some(values) = list("any(") {
+        if values.contains(&Some(true)) {
+            return Some(true);
+        }
+        return values
+            .iter()
+            .all(|value| *value == Some(false))
+            .then_some(false);
+    }
+    if let Some(inner) = condition
+        .strip_prefix("not(")
+        .and_then(|rest| rest.strip_suffix(')'))
+    {
+        return cfg_value_all_features(inner).map(|value| !value);
+    }
+    None
+}
+
 /// Splits a comma list at the top level of its parentheses and square brackets.
 pub fn split_list(text: &str) -> Vec<&str> {
     let (mut parts, mut depth, mut start) = (Vec::new(), 0_u32, 0);
@@ -136,4 +181,26 @@ pub fn plain_name(name: &ast::Name) -> String {
     let text = name.syntax().text().to_string();
     text.strip_prefix("r#")
         .map_or_else(|| text.clone(), str::to_owned)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cfg_value_all_features;
+
+    #[test]
+    fn a_cfg_is_on_only_when_features_and_tests_decide_it() {
+        assert_eq!(cfg_value_all_features("feature=\"a\""), Some(true));
+        assert_eq!(
+            cfg_value_all_features("all(test,feature=\"a\")"),
+            Some(true)
+        );
+        assert_eq!(cfg_value_all_features("not(feature=\"a\")"), Some(false));
+        assert_eq!(
+            cfg_value_all_features("any(windows,feature=\"a\")"),
+            Some(true)
+        );
+        assert_eq!(cfg_value_all_features("all(windows,feature=\"a\")"), None);
+        assert_eq!(cfg_value_all_features("target_os=\"none\""), None);
+        assert_eq!(cfg_value_all_features("not(windows)"), None);
+    }
 }

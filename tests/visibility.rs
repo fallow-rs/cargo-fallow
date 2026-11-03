@@ -936,14 +936,23 @@ fn precise_mode_leaves_a_candidate_with_a_use_under_cfg_undecided() {
     let dir = workspace(&[
         ("app/src/main.rs", "fn main() { mid::run(); }\n"),
         (
+            "mid/Cargo.toml",
+            "[package]\nname = \"mid\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n\
+             [features]\nextra = []\n\n[dependencies]\nbase = { path = \"../base\" }\n",
+        ),
+        (
             "mid/src/lib.rs",
             "pub struct A;\nimpl A {\n    pub fn helper(&self) {}\n}\n\
-             #[cfg(target_os = \"none\")]\npub fn other() { A.helper(); }\npub fn run() {}\n",
+             pub fn run() {\n    #[cfg(target_os = \"none\")]\n    A.helper();\n    \
+             #[cfg(feature = \"extra\")]\n    B.seen();\n}\n\
+             pub struct B;\nimpl B {\n    pub fn seen(&self) {}\n}\n",
         ),
     ]);
     let (precise, left) = findings(&dir, &["--precise"]);
     assert!(!precise.contains("dead_public A::helper"), "{precise:?}");
     assert!(left.contains("dead_public A::helper"), "{left:?}");
+    // A feature is on in precise mode, so the use under it is in its view.
+    assert!(!left.contains("dead_public B::seen"), "{left:?}");
 }
 
 /// A precise finding goes through the same filters as a fast finding: the

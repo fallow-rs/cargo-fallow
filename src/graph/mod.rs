@@ -228,8 +228,9 @@ pub struct Ref {
     pub origin: Origin,
     /// True in test code.
     pub test_only: bool,
-    /// True when a `cfg` attribute other than a test condition is on the code
-    /// or on its file.
+    /// True when a `cfg` that can be off in a build with all features and
+    /// tests is on the code, or when any `cfg` other than a test condition is on
+    /// its file.
     pub under_cfg: bool,
 }
 

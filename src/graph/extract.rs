@@ -260,8 +260,8 @@ pub struct RawRef {
     pub origin: Origin,
     /// True in test code.
     pub test_only: bool,
-    /// True when a `cfg` attribute other than a test condition is on an
-    /// enclosing node.
+    /// True when a `cfg` that can be off in a build with all features and
+    /// tests is on an enclosing node.
     pub under_cfg: bool,
 }
 
@@ -353,6 +353,8 @@ enum Frame {
     Body,
     Test,
     Cfg,
+    /// A `cfg` that can be off in a build with all features and tests.
+    CfgUnsure,
     LocalItems,
 }
 
@@ -400,6 +402,9 @@ impl<'a> Walker<'a> {
                 AttrClass::Test => self.push(node, Frame::Test),
                 AttrClass::Cfg => self.push(node, Frame::Cfg),
                 AttrClass::Other => {}
+            }
+            if cfg_can_be_off(&owner) {
+                self.push(node, Frame::CfgUnsure);
             }
             self.attr_refs(&owner);
         }
@@ -818,7 +823,10 @@ impl<'a> Walker<'a> {
             kind,
             origin,
             test_only: self.test_only(),
-            under_cfg: self.under_cfg(),
+            under_cfg: self
+                .frames
+                .iter()
+                .any(|(_, frame)| matches!(frame, Frame::CfgUnsure)),
         });
     }
 
@@ -1059,6 +1067,17 @@ impl<'a> Walker<'a> {
             self.facts.refs.extend(refs);
         }
     }
+}
+
+/// True when a `cfg` attribute of the node can be off in a build with all
+/// features and tests.
+fn cfg_can_be_off(owner: &ast::AnyHasAttrs) -> bool {
+    owner.attrs().any(|attr| {
+        let body = attr_body(&attr);
+        body.strip_prefix("cfg(")
+            .and_then(|rest| rest.strip_suffix(')'))
+            .is_some_and(|condition| crate::attrs::cfg_value_all_features(condition) != Some(true))
+    })
 }
 
 /// The field name of a [`RefKind::RecordField`] that stands for each field of

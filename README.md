@@ -466,6 +466,10 @@ standard library source comes from the `rust-src` component.
 | `--precise-memory-limit <MIB>` | 8192 | The memory guard stops the worker above this footprint. |
 | `--precise-file-limit <KIB>` | 1024 | The largest file that the search reads with name resolution. A candidate whose name is in a larger file keeps its visibility, because the search cannot see what the name means there. |
 
+rust-analyzer loads the workspace with all features and with tests. It does not
+see code under a `cfg` that is off in that build, for example a condition for
+another target. A candidate with a use under such a `cfg` stays undecided.
+
 When a limit stops the worker, the decisions that it made stay, and the other
 candidates stay undecided. `precise.status` gives the reason, and a warning
 goes to stderr.

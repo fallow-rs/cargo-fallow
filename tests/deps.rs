@@ -721,3 +721,104 @@ fn json_output_is_stable_between_runs() {
         .collect();
     assert_eq!(keys, ["gamma", "alpha", "beta"]);
 }
+
+#[test]
+fn local_include_gives_credit_to_the_names_of_the_included_file() {
+    let deps = format!(
+        "[dependencies]\n{}{}{}",
+        path_dep("alpha"),
+        path_dep("beta"),
+        path_dep("gamma")
+    );
+    let dir = workspace(
+        &deps,
+        &[
+            ("app/build.rs", "fn main() {}\n"),
+            ("app/src/lib.rs", "include!(\"inc.rs\");\n"),
+            (
+                "app/src/inc.rs",
+                "pub fn t() { alpha::f(); }\ninclude!(\"nested/more.rs\");\n",
+            ),
+            (
+                "app/src/nested/more.rs",
+                "use gamma::f;\npub fn u() { f(); }\n",
+            ),
+        ],
+    );
+    let (_, report) = run(&dir, &[]);
+    assert_eq!(
+        findings(&report),
+        set(&["unused-dependency app dependencies beta"])
+    );
+}
+
+#[test]
+fn local_include_without_a_build_script_gives_credit_only_to_its_names() {
+    let deps = format!("[dependencies]\n{}{}", path_dep("alpha"), path_dep("beta"));
+    let dir = workspace(
+        &deps,
+        &[
+            ("app/src/lib.rs", "include!(\"inc.rs\");\n"),
+            ("app/src/inc.rs", "pub fn t() { alpha::f(); }\n"),
+        ],
+    );
+    let (_, report) = run(&dir, &[]);
+    assert_eq!(
+        findings(&report),
+        set(&["unused-dependency app dependencies beta"])
+    );
+}
+
+#[test]
+fn local_include_of_a_missing_file_gives_credit_to_each_dependency() {
+    let deps = format!("[dependencies]\n{}", path_dep("alpha"));
+    let dir = workspace(&deps, &[("app/src/lib.rs", "include!(\"missing.rs\");\n")]);
+    let (_, report) = run(&dir, &[]);
+    assert_eq!(findings(&report), set(&[]));
+}
+
+/// A lock file that names no package. Cargo rewrites it when it resolves.
+const STALE_LOCK: &str = "# stale\nversion = 4\n";
+
+#[test]
+fn run_does_not_create_a_lock_file() {
+    let dir = workspace(&format!("[dependencies]\n{}", path_dep("alpha")), &[]);
+    let (code, _) = run(&dir, &[]);
+    assert_eq!(code, 0);
+    assert!(!dir.path().join("Cargo.lock").exists());
+}
+
+#[test]
+fn run_does_not_change_an_existing_lock_file() {
+    let dir = workspace(&format!("[dependencies]\n{}", path_dep("alpha")), &[]);
+    write(dir.path(), "Cargo.lock", STALE_LOCK);
+    let (code, _) = run(&dir, &[]);
+    assert_eq!(code, 0);
+    let lock = fs::read_to_string(dir.path().join("Cargo.lock")).expect("read the lock file");
+    assert_eq!(lock, STALE_LOCK);
+}
+
+#[test]
+fn locked_and_frozen_flags_reach_cargo() {
+    for flag in ["--locked", "--frozen"] {
+        let dir = workspace(&format!("[dependencies]\n{}", path_dep("alpha")), &[]);
+        write(dir.path(), "Cargo.lock", STALE_LOCK);
+        let (code, report) = run(&dir, &[flag]);
+        assert_eq!(code, 2, "{flag}: {report}");
+        assert!(
+            report["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("cargo metadata")),
+            "{flag}: {report}"
+        );
+        let lock = fs::read_to_string(dir.path().join("Cargo.lock")).expect("read the lock file");
+        assert_eq!(lock, STALE_LOCK, "{flag}");
+    }
+}
+
+#[test]
+fn offline_flag_reaches_cargo() {
+    let dir = workspace(&format!("[dependencies]\n{}", path_dep("alpha")), &[]);
+    let (code, report) = run(&dir, &["--offline"]);
+    assert_eq!(code, 0, "{report}");
+}

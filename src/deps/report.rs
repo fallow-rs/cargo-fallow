@@ -92,7 +92,7 @@ impl Rule {
 }
 
 /// The severity of a finding.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Severity {
     /// Counts for the `error-severity-findings` gate.
@@ -183,7 +183,8 @@ pub struct DepsReport {
     pub members: usize,
     /// The number of findings.
     pub total_issues: usize,
-    /// The findings, sorted by manifest, line, table, key, platform and rule.
+    /// The findings, sorted by manifest, line, table, key, platform, rule,
+    /// package and severity.
     pub findings: Vec<Finding>,
     /// The packages that the run did not judge.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -208,6 +209,8 @@ impl DepsReport {
                 &a.dependency,
                 &a.platform,
                 a.rule,
+                &a.package,
+                a.severity,
             )
                 .cmp(&(
                     &b.manifest_path,
@@ -216,6 +219,8 @@ impl DepsReport {
                     &b.dependency,
                     &b.platform,
                     b.rule,
+                    &b.package,
+                    b.severity,
                 ))
         });
         let mut gate_outcomes = BTreeMap::new();
@@ -236,5 +241,54 @@ impl DepsReport {
     /// True when an enforced gate failed.
     pub fn fails_run(&self) -> bool {
         self.gate_outcomes.values().any(GateOutcome::fails_run)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn finding(package: Option<&str>, severity: Severity) -> Finding {
+        Finding {
+            rule: Rule::UnusedDependency,
+            severity,
+            package: package.map(str::to_owned),
+            manifest_path: "Cargo.toml".to_owned(),
+            line: Some(3),
+            section: "dependencies".to_owned(),
+            platform: None,
+            dependency: "alpha".to_owned(),
+            package_name: None,
+            optional: false,
+            used_by: Vec::new(),
+            in_dev: false,
+            actions: Vec::new(),
+        }
+    }
+
+    fn order(findings: Vec<Finding>) -> Vec<(Option<String>, Severity)> {
+        DepsReport::new(
+            1,
+            findings,
+            Vec::new(),
+            GateOutcome::new(fallow_report_protocol::GateStatus::Pass, false),
+        )
+        .findings
+        .into_iter()
+        .map(|found| (found.package, found.severity))
+        .collect()
+    }
+
+    #[test]
+    fn findings_that_differ_only_in_package_or_severity_have_a_fixed_order() {
+        let all = vec![
+            finding(Some("b"), Severity::Error),
+            finding(None, Severity::Error),
+            finding(Some("a"), Severity::Warning),
+            finding(Some("a"), Severity::Error),
+        ];
+        let mut reversed = all.clone();
+        reversed.reverse();
+        assert_eq!(order(all), order(reversed));
     }
 }

@@ -399,10 +399,17 @@ cargo fallow deps --fail-on-issues --format sarif --quiet
 | `--format human\|json\|sarif` | The output format. The default is `human`. |
 | `--quiet` | Hide the progress lines on stderr. |
 | `--fail-on-issues` | Exit 1 when a finding has the `error` severity. |
+| `--locked` | Give `--locked` to `cargo metadata`. |
+| `--offline` | Give `--offline` to `cargo metadata`. |
+| `--frozen` | Give `--frozen` to `cargo metadata`. |
 
-The command runs `cargo metadata` with all features and without `--no-deps`,
-so it gets the library name and the `links` key of each dependency. Cargo can
-use the network and update `Cargo.lock`, the same as for `cargo check`.
+The command resolves the dependencies: it runs `cargo metadata` with all
+features and without `--no-deps`, so it gets the library name and the `links`
+key of each dependency. Cargo can use the network for this. Use `--offline` or
+`--frozen` to prevent it. The command keeps `Cargo.lock` as it was before the
+run: it removes a lock file that Cargo created and writes back the old bytes
+of a lock file that Cargo changed. All features are on, so a feature that
+needs a dependency that Cargo cannot get fails the run with exit code 2.
 
 | Rule | Severity | Meaning |
 | --- | --- | --- |
@@ -425,10 +432,14 @@ The check stays silent where the code can use a dependency without a name:
 
 - A dependency with a `links` key gets no error, because it can link a native
   library. An optional one gets the warning.
-- `include!` can add code that the check cannot read. When the package has a
-  build script, the included code can use each `name::` in the text of the
-  build script and the runtime crate of an `X-build` or `X-codegen` build
-  dependency. Without a build script, it can use each dependency.
+- `include!("path")` with one string literal adds the code of that file, and
+  the check reads it like the other code. Another `include!`, for example
+  `include!(concat!(env!("OUT_DIR"), "/gen.rs"))`, can add code that the check
+  cannot read. When the package has a build script, that code can use each
+  `name::` in the text of the build script and the runtime crate of an
+  `X-build` or `X-codegen` build dependency. Without a build script, it can
+  use each dependency. A literal path that the check cannot read or parse
+  gets the same credit.
 - A package with a file that does not parse is not judged. The report lists
   it in `skipped`.
 - A dev-dependency that repeats a normal dependency is not reported. It often
@@ -436,8 +447,12 @@ The check stays silent where the code can use a dependency without a name:
 - A package with `trybuild`, `macrotest`, `ui_test` or `compiletest_rs` in
   `[dev-dependencies]` gets no dev-dependency findings. These harnesses build
   test files that no target declares.
-- When code uses `X_derive` or `X_macros`, the crate `X` is in use too,
-  because the macro output names it (`serde_derive` and `serde`).
+- When code uses a macro crate `X_derive`, `X_derives`, `X_macro`,
+  `X_macros`, `X_impl`, `X_internal` or `X_attributes`, the crate `X` is in
+  use too, because the macro output names it (`serde_derive` and `serde`).
+  Two pairs with other names are known: `num-derive` gives credit to
+  `num-traits`, and `serde_repr` gives credit to `serde`. For another pair,
+  add the runtime crate to the `ignored` list.
 - Every `cfg` branch counts, so a `[target.'cfg(..)'.dependencies]` entry that
   `#[cfg(..)]` code uses is in use.
 

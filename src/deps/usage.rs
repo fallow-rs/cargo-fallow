@@ -68,8 +68,8 @@ impl Context {
 pub struct PackageUsage {
     /// The first segment of each path and import, with the contexts that use it.
     pub names: BTreeMap<String, BTreeSet<Context>>,
-    /// The contexts with an `include!` call. Code that the graph cannot see can
-    /// use the names in [`PackageUsage::generated`] there, or any name when the
+    /// The contexts with an `include!` call that the graph cannot read. Its code
+    /// can use the names in [`PackageUsage::generated`], or any name when the
     /// package has no build script.
     pub included: BTreeSet<Context>,
     /// The names that the code of the build script can write: each `name::`
@@ -84,8 +84,17 @@ impl PackageUsage {
         let mut contexts = self.names.get(name).cloned().unwrap_or_default();
         // The output of a derive or macro crate names its runtime crate, for
         // example `serde_derive` output names `serde`.
-        for suffix in MACRO_SUFFIXES {
-            if let Some(used) = self.names.get(&format!("{name}{suffix}")) {
+        let macro_crates = MACRO_SUFFIXES
+            .iter()
+            .map(|suffix| format!("{name}{suffix}"))
+            .chain(
+                MACRO_PAIRS
+                    .iter()
+                    .filter(|(_, runtime)| *runtime == name)
+                    .map(|(macro_crate, _)| (*macro_crate).to_owned()),
+            );
+        for macro_crate in macro_crates {
+            if let Some(used) = self.names.get(&macro_crate) {
                 contexts.extend(used.iter().copied());
             }
         }
@@ -100,8 +109,23 @@ impl PackageUsage {
     }
 }
 
-/// The suffixes of a macro crate whose output uses the crate without the suffix.
-const MACRO_SUFFIXES: [&str; 2] = ["_derive", "_macros"];
+/// The suffixes of a macro crate whose output uses the crate without the suffix,
+/// for example `tracing_attributes` and `tracing`.
+const MACRO_SUFFIXES: [&str; 7] = [
+    "_derive",
+    "_derives",
+    "_macro",
+    "_macros",
+    "_impl",
+    "_internal",
+    "_attributes",
+];
+
+/// Macro crates whose output uses a runtime crate with a different name, as
+/// `(macro crate, runtime crate)`. The documentation of each macro crate
+/// tells the user to add the runtime crate. A pair that is not here needs an
+/// entry in the `ignored` list.
+const MACRO_PAIRS: [(&str, &str); 2] = [("num_derive", "num_traits"), ("serde_repr", "serde")];
 
 /// The usage of each package, keyed by package name. `root` is the
 /// workspace root, for the files of the build scripts.
@@ -133,7 +157,10 @@ pub fn collect(graph: &Graph, root: &Path) -> BTreeMap<String, PackageUsage> {
     }
     for import in &graph.imports {
         let krate = &graph.crates[import.krate];
-        let context = context_of(krate.kind, is_test_module(graph, import.module), false);
+        let Some(context) = context_of(krate.kind, is_test_module(graph, import.module), false)
+        else {
+            continue;
+        };
         if let Some(first) = import.path.first() {
             add(&mut usage, &krate.package, first, context);
         }
@@ -141,7 +168,9 @@ pub fn collect(graph: &Graph, root: &Path) -> BTreeMap<String, PackageUsage> {
     for reference in &graph.refs {
         let krate = &graph.crates[reference.krate];
         let test = reference.test_only || is_test_module(graph, reference.module);
-        let context = context_of(krate.kind, test, reference.origin == Origin::Doc);
+        let Some(context) = context_of(krate.kind, test, reference.origin == Origin::Doc) else {
+            continue;
+        };
         match &reference.kind {
             RefKind::Path { segments, .. } | RefKind::RecordField { segments, .. } => {
                 if let Some(first) = segments.first() {
@@ -196,18 +225,23 @@ fn add(usage: &mut BTreeMap<String, PackageUsage>, package: &str, name: &str, co
         .insert(context);
 }
 
-const fn context_of(kind: CrateKind, test: bool, doc: bool) -> Context {
-    match kind {
+/// The context of code in a crate of `kind`. `doc` marks a code block in the
+/// documentation. rustdoc tests only the code blocks of a library, so the
+/// documentation of another crate kind has no context.
+const fn context_of(kind: CrateKind, test: bool, doc: bool) -> Option<Context> {
+    let context = match kind {
+        CrateKind::Lib | CrateKind::ProcMacro if doc => Context::Doctest,
+        _ if doc => return None,
         CrateKind::Build => Context::Build,
         CrateKind::Test => Context::Test,
         CrateKind::Bench => Context::Bench,
         CrateKind::Example => Context::Example,
-        _ if doc => Context::Doctest,
         _ if test => Context::UnitTest,
         CrateKind::Lib => Context::Lib,
         CrateKind::ProcMacro => Context::ProcMacro,
         CrateKind::Bin => Context::Bin,
-    }
+    };
+    Some(context)
 }
 
 /// True when the module or a parent module exists only in test builds.
@@ -235,5 +269,66 @@ mod tests {
             path_prefixes("use std::fs;\nlet s = \"pub fn g() { alpha::f(); ::beta::X }\"; 1::x");
         let found: Vec<&str> = found.iter().map(String::as_str).collect();
         assert_eq!(found, ["alpha", "beta", "std"]);
+    }
+
+    fn usage_of(names: &[(&str, Context)]) -> PackageUsage {
+        let mut usage = PackageUsage::default();
+        for (name, context) in names {
+            usage
+                .names
+                .entry((*name).to_owned())
+                .or_default()
+                .insert(*context);
+        }
+        usage
+    }
+
+    #[test]
+    fn macro_crate_suffixes_give_credit_to_the_runtime_crate() {
+        for suffix in [
+            "_derive",
+            "_derives",
+            "_macro",
+            "_macros",
+            "_impl",
+            "_internal",
+            "_attributes",
+        ] {
+            let usage = usage_of(&[(&format!("alpha{suffix}"), Context::Lib)]);
+            assert_eq!(
+                usage.contexts("alpha"),
+                BTreeSet::from([Context::Lib]),
+                "{suffix}"
+            );
+        }
+    }
+
+    #[test]
+    fn known_macro_crate_pairs_give_credit_to_the_runtime_crate() {
+        let usage = usage_of(&[("num_derive", Context::Lib), ("serde_repr", Context::Test)]);
+        assert_eq!(usage.contexts("num_traits"), BTreeSet::from([Context::Lib]));
+        assert_eq!(usage.contexts("serde"), BTreeSet::from([Context::Test]));
+        assert!(usage.contexts("alpha").is_empty());
+    }
+
+    #[test]
+    fn documentation_of_a_crate_that_rustdoc_does_not_test_gives_no_credit() {
+        for kind in [
+            CrateKind::Bin,
+            CrateKind::Test,
+            CrateKind::Bench,
+            CrateKind::Example,
+            CrateKind::Build,
+        ] {
+            assert_eq!(context_of(kind, false, true), None, "{kind:?}");
+        }
+        assert_eq!(
+            context_of(CrateKind::Lib, false, true),
+            Some(Context::Doctest)
+        );
+        assert_eq!(
+            context_of(CrateKind::Bin, true, false),
+            Some(Context::UnitTest)
+        );
     }
 }

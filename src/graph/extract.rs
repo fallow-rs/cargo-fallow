@@ -256,6 +256,19 @@ pub struct FileFacts {
     pub modules: Vec<ModuleDecl>,
     /// The files that `#[doc = include_str!(..)]` reads, relative to this file.
     pub doc_includes: Vec<String>,
+    /// The `include!("path")` calls with one string literal.
+    pub code_includes: Vec<CodeInclude>,
+}
+
+/// An `include!` call with one string literal: the compiler reads the file
+/// relative to the file of the call.
+#[derive(Debug, Clone)]
+pub struct CodeInclude {
+    /// The path in the string literal.
+    pub path: String,
+    /// The `include` macro reference at the call. The graph uses it when it
+    /// cannot read or parse the file.
+    pub site: RawRef,
 }
 
 /// Reads the facts of one file.
@@ -883,6 +896,14 @@ impl<'a> Walker<'a> {
                 self.add_ref(RefKind::Path { segments, global }, Origin::Macro);
             }
             self.add_ref(RefKind::Macro(name.text().to_string()), Origin::Macro);
+            if name.text() == "include"
+                && let Some(file) = call.token_tree().as_ref().and_then(single_string)
+                && let Some(site) = self.facts.refs.pop()
+            {
+                self.facts
+                    .code_includes
+                    .push(CodeInclude { path: file, site });
+            }
         }
         if let Some(tree) = call.token_tree() {
             self.token_refs(tree.syntax(), Origin::Macro);
@@ -1055,6 +1076,26 @@ fn is_builtin_attribute(path: &str) -> bool {
     ];
     let first = path.split("::").next().unwrap_or(path);
     BUILTIN.contains(&first) || matches!(first, "rustfmt" | "clippy" | "rustdoc")
+}
+
+/// The value of a token tree with one string literal and no other token,
+/// for example `("inc.rs")`.
+fn single_string(tree: &ast::TokenTree) -> Option<String> {
+    let mut tokens = tree
+        .syntax()
+        .children_with_tokens()
+        .filter_map(ra_ap_syntax::NodeOrToken::into_token)
+        .filter(|token| {
+            !token.kind().is_trivia()
+                && !matches!(token.kind(), SyntaxKind::L_PAREN | SyntaxKind::R_PAREN)
+        });
+    let token = tokens.next()?;
+    if tokens.next().is_some() || tree.syntax().children().next().is_some() {
+        return None;
+    }
+    let literal = ast::String::cast(token)?;
+    let value = literal.value().ok()?.into_owned();
+    Some(value)
 }
 
 fn string_literals(node: &SyntaxNode) -> Vec<String> {

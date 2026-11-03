@@ -21,8 +21,8 @@ use std::thread;
 
 use crate::gates::parse_edition;
 use crate::graph::extract::{
-    Binding, FileFacts, ItemFlags, ItemKind, Origin, RawRef, RefKind, Vis, doc_refs_of_markdown,
-    extract,
+    Binding, CodeInclude, FileFacts, ItemFlags, ItemKind, Origin, RawRef, RefKind, Vis,
+    doc_refs_of_markdown, extract,
 };
 use crate::modules::{SkippedFile, TargetRoot, normalize, walk};
 use crate::parse::Edition;
@@ -526,6 +526,13 @@ fn add_files(graph: &mut Graph, root: &Path, krate: CrateId, files: CrateFiles, 
             });
         }
         let mut refs = file.facts.refs;
+        refs.extend(included_code(
+            root,
+            &file.path,
+            file.facts.code_includes,
+            edition,
+            MAX_INCLUDE_DEPTH,
+        ));
         if doctest {
             refs.extend(included_docs(
                 root,
@@ -584,6 +591,75 @@ fn module_id(
     });
     by_path.insert(path.to_vec(), id);
     id
+}
+
+/// The maximum depth of nested `include!` files. A deeper file, or a cycle,
+/// keeps the `include` reference at the call.
+const MAX_INCLUDE_DEPTH: u32 = 8;
+
+/// The references of the files that `include!("path")` reads. The code of the
+/// file is part of the module of the call, so each reference gets the inline
+/// modules, the owner and the test state of the call. An import of the file
+/// becomes a path reference, because the graph does not add the items of the
+/// file. When the file cannot be read or parsed, the `include` reference at
+/// the call stays.
+fn included_code(
+    root: &Path,
+    file: &str,
+    includes: Vec<CodeInclude>,
+    edition: Edition,
+    depth: u32,
+) -> Vec<RawRef> {
+    let folder = Path::new(file).parent().unwrap_or_else(|| Path::new(""));
+    let mut refs = Vec::new();
+    for include in includes {
+        let path = normalize(&folder.join(&include.path));
+        let facts = path.as_ref().filter(|_| depth > 0).and_then(|path| {
+            let source = fs::read_to_string(root.join(path)).ok()?;
+            extract(&source, edition).ok()
+        });
+        let (Some(path), Some(facts)) = (path, facts) else {
+            refs.push(include.site);
+            continue;
+        };
+        let site = include.site;
+        let at_site = |inline: Vec<String>, kind: RefKind, origin: Origin, test_only: bool| {
+            let mut full = site.inline.clone();
+            full.extend(inline);
+            RawRef {
+                inline: full,
+                owner: site.owner,
+                kind,
+                origin,
+                test_only: test_only || site.test_only,
+            }
+        };
+        for import in facts.uses {
+            let kind = RefKind::Path {
+                segments: import.path,
+                global: import.global,
+            };
+            refs.push(at_site(import.inline, kind, Origin::Body, false));
+        }
+        for raw in facts.refs {
+            refs.push(at_site(raw.inline, raw.kind, raw.origin, raw.test_only));
+        }
+        let nested = facts
+            .code_includes
+            .into_iter()
+            .map(|nested| CodeInclude {
+                path: nested.path,
+                site: at_site(
+                    nested.site.inline,
+                    nested.site.kind,
+                    nested.site.origin,
+                    nested.site.test_only,
+                ),
+            })
+            .collect();
+        refs.extend(included_code(root, &path, nested, edition, depth - 1));
+    }
+    refs
 }
 
 fn included_docs(root: &Path, file: &str, includes: &[String], edition: Edition) -> Vec<RawRef> {

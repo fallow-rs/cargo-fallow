@@ -9,9 +9,10 @@
 //! syntax does not show:
 //! - a dependency with a `links` key, which can link a native library or give
 //!   its build script facts to the build script of the package,
-//! - in a target with an `include!` call, each `name::` in the text of the
-//!   build script and the runtime crate of an `X-build` build dependency, or
-//!   each dependency when the package has no build script,
+//! - in a target with an `include!` call that the graph cannot read, each
+//!   `name::` in the text of the build script and the runtime crate of an
+//!   `X-build` build dependency, or each dependency when the package has no
+//!   build script. The graph reads the file of `include!("path")`,
 //! - each dependency of a package with a file that did not parse,
 //! - a dev-dependency that repeats a normal dependency,
 //! - each dev-dependency of a package with a compile-test harness, such as
@@ -50,13 +51,16 @@ pub struct Options {
     pub quiet: bool,
     /// True when an `error` finding fails the run.
     pub fail_on_issues: bool,
+    /// The flags for `cargo metadata`: `--locked`, `--offline`, `--frozen`.
+    pub cargo_flags: Vec<String>,
 }
 
 /// Runs the analysis and builds the report.
 pub fn run(options: &Options) -> Result<DepsReport, CliError> {
     let progress = render::Progress::new(options.quiet);
     progress.step("Resolving the workspace with cargo metadata");
-    let (workspace, metadata) = workspace::load_resolved(options.manifest_path.as_deref())?;
+    let (workspace, metadata) =
+        workspace::load_resolved(options.manifest_path.as_deref(), &options.cargo_flags)?;
     progress.step("Building the module graph");
     let module_graph = graph::build(&workspace, &Production::default());
     progress.step("Checking the dependencies");

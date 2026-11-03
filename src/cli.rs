@@ -102,6 +102,11 @@ enum Command {
     /// Run the tests against small changes in the source of one package.
     Mutants(MutantsArgs),
     /// Report dependencies in Cargo.toml that no code uses.
+    ///
+    /// The command resolves the dependencies with `cargo metadata` and all
+    /// features on, so Cargo can use the network. The command keeps
+    /// `Cargo.lock` as it was before the run. Use `--offline`, `--locked` or
+    /// `--frozen` to control the resolution.
     Deps(DepsArgs),
     /// Report `pub` items that only their own crate uses. This is an experiment
     /// for the module graph, and its output can change.
@@ -326,15 +331,35 @@ struct DepsArgs {
     /// Exit 1 when a finding has the `error` severity. A warning does not count.
     #[arg(long)]
     fail_on_issues: bool,
+    /// Give `--locked` to `cargo metadata`: fail when `Cargo.lock` must change.
+    #[arg(long)]
+    locked: bool,
+    /// Give `--offline` to `cargo metadata`: do not use the network.
+    #[arg(long)]
+    offline: bool,
+    /// Give `--frozen` to `cargo metadata`: the same as `--locked` and
+    /// `--offline`.
+    #[arg(long)]
+    frozen: bool,
 }
 
 impl From<DepsArgs> for crate::deps::Options {
     fn from(args: DepsArgs) -> Self {
+        let cargo_flags = [
+            (args.locked, "--locked"),
+            (args.offline, "--offline"),
+            (args.frozen, "--frozen"),
+        ]
+        .into_iter()
+        .filter(|(on, _)| *on)
+        .map(|(_, flag)| flag.to_owned())
+        .collect();
         Self {
             manifest_path: args.manifest_path,
             format: args.format,
             quiet: args.quiet,
             fail_on_issues: args.fail_on_issues,
+            cargo_flags,
         }
     }
 }

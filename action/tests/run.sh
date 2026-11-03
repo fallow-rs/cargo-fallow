@@ -248,7 +248,7 @@ assert_equals "$(output_of results)" "$(cd "$CASE_DIR/artifacts" && pwd -P)/carg
 assert_equals "$(output_of report)" "$(cd "$CASE_DIR/artifacts" && pwd -P)/cargo-fallow-report.txt" "check: report output is the human report"
 assert_equals "$(output_of path-prefix)" "" "check: no cargo, so no prefix"
 
-for pair in check:--fail-on-issues deps:--fail-on-issues visibility:--fail-on-issues \
+for pair in check:--fail-on-issues deps:--fail-on-issues files:--fail-on-issues visibility:--fail-on-issues \
   boundaries:--fail-on-violations size:--fail-on-growth complexity:--fail-on-complexity \
   dupes:--fail-on-clones; do
   run_analyze INPUT_COMMAND="${pair%%:*}" INPUT_FORMAT=json

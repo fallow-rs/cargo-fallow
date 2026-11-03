@@ -13,6 +13,7 @@ mod check;
 mod cli;
 mod deps;
 mod error;
+mod files;
 mod finding;
 mod gates;
 mod graph;
@@ -47,6 +48,7 @@ pub fn run(args: Vec<OsString>) -> ExitCode {
         Parsed::Run(options) => check::run(&options),
         Parsed::Mutants(options) => run_mutants(&options),
         Parsed::Deps(options) => run_deps(&options),
+        Parsed::Files(args) => run_files(&args),
         Parsed::Visibility(options) => run_visibility(&options),
         Parsed::PreciseWorker(args) => visibility::precise::run_worker_command(&args),
         Parsed::Structure(command) => structure::run(&command),
@@ -126,6 +128,16 @@ fn visibility_report(options: &cli::VisibilityOptions) -> Result<u8, CliError> {
         enforced: options.fail_on_issues,
     });
     report.section()?.write(options.format)
+}
+
+/// Runs the `files` command and returns the process exit code.
+fn run_files(args: &files::FilesArgs) -> u8 {
+    files::run(args)
+        .and_then(|section| section.write(args.format()))
+        .unwrap_or_else(|err| {
+            err.emit(args.format());
+            EXIT_INVALID_INPUT
+        })
 }
 
 /// Runs the `deps` command and returns the process exit code.

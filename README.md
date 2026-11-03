@@ -41,7 +41,7 @@ cargo fallow check --skip dupes --format codeclimate > gl-code-quality.json
 You can also run the binary directly: `cargo-fallow check`.
 
 `cargo fallow check` runs the static checks in one run: `parse`, `deps`,
-`visibility` (fast mode), `boundaries`, `size`, `complexity` and `dupes`. The
+`files`, `visibility` (fast mode), `boundaries`, `size`, `complexity` and `dupes`. The
 run reads `cargo metadata` once, builds the module graph once and parses each
 source file once for the structure checks. Each check gives the same result as
 its own command, and keeps its own gate. `mutants` and `visibility --precise`
@@ -569,6 +569,63 @@ The command also reads `ignored` in `[package.metadata.cargo-shear]` and
 `[workspace.metadata.cargo-shear]`, so a workspace can move from cargo-shear
 without a change. Only the cargo-fallow lists get `redundant-ignore` findings.
 
+## Unused files
+
+`cargo fallow files` reports each `.rs` file in a target folder of a package
+that no target compiles. The compiler never reads such a file, so its code is
+dead and no other check sees it.
+
+```bash
+cargo fallow files
+cargo fallow files --format json --fail-on-issues
+```
+
+A file counts as used when one of these reaches it from a target root:
+
+- a `mod name;` item, also in an inline module and in the tokens of a macro
+  call such as `cfg_if!`,
+- a `#[path = "..."]` attribute or a `path` value in a `cfg_attr` attribute,
+- a literal `include!`, `include_str!` or `include_bytes!` call,
+- a Cargo target: a library, a binary, a test, a benchmark, an example or a
+  build script.
+
+The check gives credit when the syntax cannot decide:
+
+- It reads only `src/`, `tests/`, `benches/`, `examples/` and the folder of
+  each target root that is not the package folder.
+- It skips a folder with no reached `.rs` file, for example the inputs of a
+  compile test. So a folder of old modules with no `mod` item is not reported:
+  only the file that names the folder is.
+- It skips each folder with one of these names: `fixture`, `fixtures`,
+  `testdata`, `test-data`, `test_data`, `data`, `snapshots`, `ui`,
+  `compile-fail`, `compile_fail`, `corpus`, `samples`, `inputs` and
+  `resources`.
+- It skips a folder with its own `Cargo.toml`, a hidden folder, `target`, and
+  a file with a generator header or an `@generated` comment.
+- A `.rs` string literal in a macro call counts as an include, because a
+  macro can give it to `include_str!`.
+- It skips each file of a package when the syntax cannot follow the code: a
+  computed `include!` path (an `OUT_DIR` path is not a source file), a file
+  that `include!` reads and that declares a module, a `path` attribute on an
+  inline module, a module in a function body, a module form in a macro that
+  the scan cannot read, or a file that does not parse. A macro that declares a
+  module from its input skips each package of the workspace.
+  `summary.skipped_packages` names each such package with the reason.
+
+The check cannot see a module that a macro of another crate, for example a
+dependency, declares. Add such a file to `exclude`.
+
+Each finding has the rule `unused-file`, the `warning` severity and a
+`delete-file` action with `auto_fixable: false`. `--fail-on-issues` enforces
+the `unused-files` gate. The health score does not change.
+
+```toml
+[workspace.metadata.fallow.files]
+exclude = ["crates/app/src/scratch.rs"]
+```
+
+`exclude` lists files and folders that the check skips.
+
 ## Visibility
 
 `cargo fallow visibility` reports items whose visibility is larger than their
@@ -735,11 +792,12 @@ dependency key, or the crate and the item path, so an edit above a finding does
 not change its id. The hash is the same as in the JavaScript CLI.
 
 The gates of `check` are the gates of the checks that ran: `parse-error`,
-`error-severity-findings` (deps), `visibility-findings`, `boundary-violations`,
-`file-growth` (size), `health-findings` (complexity), `duplication-findings`
-and `duplication-threshold` (dupes). They use the same names as the gates of
-the JavaScript CLI. A gate fails the run when its `status` is `fail` and
-`enforced` is `true`.
+`error-severity-findings` (deps), `unused-files` (files),
+`visibility-findings`, `boundary-violations`, `file-growth` (size),
+`health-findings` (complexity), `duplication-findings` and
+`duplication-threshold` (dupes). Each gate except `unused-files` has the same
+name as a gate of the JavaScript CLI. A gate fails the run when its `status`
+is `fail` and `enforced` is `true`.
 
 The tool parses each target root file on a thread with a stack that is sized
 from the file length, so deep nesting cannot crash the run. A file that needs

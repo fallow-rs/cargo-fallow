@@ -82,7 +82,7 @@ Complexity findings in code scanning, without a failed job:
 
 | Input | Default | Meaning |
 | --- | --- | --- |
-| `command` | `check` | `check`, `deps`, `visibility`, `boundaries`, `size`, `complexity`, `dupes` or `mutants`. |
+| `command` | `check` | `check`, `deps`, `files`, `visibility`, `boundaries`, `size`, `complexity`, `dupes` or `mutants`. |
 | `working-directory` | `.` | The folder in which the command runs. |
 | `manifest-path` | empty | The `Cargo.toml` of the workspace, relative to `working-directory`. |
 | `format` | `human` | The report in the log and in the `report` output: `human`, `json` or `sarif`. |
@@ -111,7 +111,7 @@ The `mutants-*` inputs apply only to `command: mutants`. For other flags, use
 
 | Command | Flag |
 | --- | --- |
-| `check`, `deps`, `visibility` | `--fail-on-issues` |
+| `check`, `deps`, `files`, `visibility` | `--fail-on-issues` |
 | `boundaries` | `--fail-on-violations` |
 | `size` | `--fail-on-growth` |
 | `complexity` | `--fail-on-complexity` |

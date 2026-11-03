@@ -64,6 +64,8 @@ pub enum Parsed {
     PreciseWorker(crate::visibility::precise::WorkerArgs),
     /// Run the unused dependency check.
     Deps(crate::deps::Options),
+    /// Run the unused file check.
+    Files(crate::files::FilesArgs),
     /// Run one structure check: boundaries, size, complexity or dupes.
     Structure(Box<crate::structure::Command>),
     /// Run the hidden watchdog of the memory guard.
@@ -96,8 +98,8 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Run the static checks in one run: parse, deps, visibility, boundaries,
-    /// size, complexity and dupes. This is the default command.
+    /// Run the static checks in one run: parse, deps, files, visibility,
+    /// boundaries, size, complexity and dupes. This is the default command.
     ///
     /// The run reads the workspace once and writes one report with a section
     /// for each check. Each check keeps its own gate. `mutants` and `visibility
@@ -115,6 +117,13 @@ enum Command {
     /// `Cargo.lock` as it was before the run. Use `--offline`, `--locked` or
     /// `--frozen` to control the resolution.
     Deps(DepsArgs),
+    /// Report `.rs` files in the target folders that no target compiles.
+    ///
+    /// A file counts as used when a `mod` item, a `#[path]` attribute, a
+    /// literal `include!` call or a Cargo target reaches it. The check skips
+    /// test data folders, generated files and packages whose files the syntax
+    /// cannot decide.
+    Files(crate::files::FilesArgs),
     /// Report `pub` and `pub(crate)` items that can have a smaller visibility.
     Visibility(VisibilityArgs),
     /// The worker of `visibility --precise`. The `visibility` command starts it
@@ -460,8 +469,9 @@ struct CheckArgs {
     #[arg(long, value_enum, value_name = "CHECK", value_delimiter = ',')]
     skip: Vec<crate::check::CheckName>,
     /// Exit 1 when the gate of a check that ran fails: parse-error,
-    /// error-severity-findings (deps), visibility-findings, boundary-violations,
-    /// health-findings (complexity) and duplication-findings (dupes).
+    /// error-severity-findings (deps), unused-files, visibility-findings,
+    /// boundary-violations, health-findings (complexity) and
+    /// duplication-findings (dupes).
     #[arg(long)]
     fail_on_issues: bool,
     /// Exit 1 when a target root file does not parse.
@@ -523,6 +533,7 @@ pub fn parse(args: &[OsString]) -> Parsed {
             Some(Command::Visibility(args)) => Parsed::Visibility(args.into()),
             Some(Command::PreciseWorker(args)) => Parsed::PreciseWorker(args),
             Some(Command::Deps(args)) => Parsed::Deps(args.into()),
+            Some(Command::Files(args)) => Parsed::Files(args),
             Some(Command::Structure(command)) => Parsed::Structure(Box::new(command)),
             Some(Command::MutationWatchdog {
                 roots,

@@ -138,7 +138,8 @@ pub(super) const fn file_message(name: RustGateName, file: &GateFile) -> &'stati
             | RustGateName::DuplicationFindings
             | RustGateName::DuplicationThreshold
             | RustGateName::FileGrowth
-            | RustGateName::HealthFindings,
+            | RustGateName::HealthFindings
+            | RustGateName::UnusedFiles,
             _,
         ) => "The file has a finding of the gate.",
     }

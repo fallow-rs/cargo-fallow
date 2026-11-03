@@ -11,8 +11,8 @@ pub mod complexity;
 pub mod config;
 pub mod dupes;
 mod git;
-mod report;
-mod sarif;
+pub mod report;
+pub mod sarif;
 pub mod size;
 pub mod source;
 

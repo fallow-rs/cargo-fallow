@@ -34,7 +34,7 @@ fail() {
 # The flag that turns the gate of each command into exit code 1.
 fail_flag() {
   case "$1" in
-    check | deps | visibility) echo "--fail-on-issues" ;;
+    check | deps | files | visibility) echo "--fail-on-issues" ;;
     boundaries) echo "--fail-on-violations" ;;
     size) echo "--fail-on-growth" ;;
     complexity) echo "--fail-on-complexity" ;;
@@ -94,7 +94,7 @@ path_prefix() {
 
 COMMAND="$INPUT_COMMAND"
 FLAG="$(fail_flag "$COMMAND")" \
-  || fail "Invalid 'command' input: ${COMMAND}. Use check, deps, visibility, boundaries, size, complexity, dupes or mutants."
+  || fail "Invalid 'command' input: ${COMMAND}. Use check, deps, files, visibility, boundaries, size, complexity, dupes or mutants."
 case "$INPUT_FORMAT" in
   human | json | sarif) ;;
   *) fail "Invalid 'format' input: ${INPUT_FORMAT}. Use human, json or sarif." ;;

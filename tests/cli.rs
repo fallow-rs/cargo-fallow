@@ -115,6 +115,7 @@ fn assert_ok_report(report: &Value) {
         serde_json::json!([
             "parse",
             "deps",
+            "files",
             "visibility",
             "boundaries",
             "size",
@@ -142,6 +143,7 @@ fn assert_ok_report(report: &Value) {
         sections,
         [
             "deps",
+            "files",
             "visibility",
             "boundaries",
             "size",
@@ -455,7 +457,7 @@ fn only_and_skip_that_leave_no_check_exit_2() {
             "json",
             "--quiet",
             "--skip",
-            "parse,deps,visibility,boundaries,size,complexity,dupes",
+            "parse,deps,files,visibility,boundaries,size,complexity,dupes",
         ],
     );
     assert_json_error(&result, "CARGO_FALLOW_INVALID_ARGUMENT");

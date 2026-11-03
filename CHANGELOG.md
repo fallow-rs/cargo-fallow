@@ -20,9 +20,14 @@ GitHub release. Each release needs a `## [X.Y.Z] - YYYY-MM-DD` section.
 - Each release archive has an Ed25519 signature (`.sig`). The GitHub Action
   installer checks it before the SHA-256 and fails closed. The installer now
   downloads the archive names that the release workflow writes.
+- `cargo fallow files` reports each `.rs` file in a target folder that no
+  target compiles, with the rule `unused-file` and the gate `unused-files`.
+  `check` runs it by default.
 
 ### Fixed
 
+- A `#[path]` attribute in an inline module now resolves from the module
+  folder plus the inline module names, the same as rustc.
 - A large valid source file no longer counts as too deep. The parse stack is
   sized from the nesting depth of the file, not from its size.
 - The JSON `severity` of a finding is now `warn`, not `warning`. The fallow

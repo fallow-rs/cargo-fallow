@@ -2,8 +2,9 @@
 //!
 //! One run reads `cargo metadata` once. The module graph and the source walk
 //! run on two threads: the graph feeds `deps` and `visibility`, and the walk
-//! feeds `size`, `complexity` and `dupes`. Each check gives the same section
-//! as its own command, with its own gates. [`report`] joins the sections.
+//! feeds `size`, `complexity` and `dupes`. `files` and `boundaries` read the
+//! source on their own threads. Each check gives the same section as its own
+//! command, with its own gates. [`report`] joins the sections.
 //!
 //! `mutants` and `visibility --precise` are not part of the run: they build
 //! and run the tests or rust-analyzer, and take minutes.
@@ -30,7 +31,7 @@ use crate::structure::config::{self, matches_prefix};
 use crate::structure::source::{self, Loaded, Needs};
 use crate::structure::{boundaries, complexity, dupes, size};
 use crate::workspace::{self, Workspace};
-use crate::{deps, visibility};
+use crate::{deps, files, visibility};
 
 /// One check of the run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Serialize)]
@@ -40,6 +41,8 @@ pub enum CheckName {
     Parse,
     /// Unused dependencies, the same as `cargo fallow deps`.
     Deps,
+    /// Unused source files, the same as `cargo fallow files`.
+    Files,
     /// Visibility in the fast mode, the same as `cargo fallow visibility`.
     Visibility,
     /// Boundary rules, the same as `cargo fallow boundaries`.
@@ -54,9 +57,10 @@ pub enum CheckName {
 
 impl CheckName {
     /// Each check, in run and report order.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Parse,
         Self::Deps,
+        Self::Files,
         Self::Visibility,
         Self::Boundaries,
         Self::Size,
@@ -69,6 +73,7 @@ impl CheckName {
         match self {
             Self::Parse => "parse",
             Self::Deps => "deps",
+            Self::Files => "files",
             Self::Visibility => "visibility",
             Self::Boundaries => "boundaries",
             Self::Size => "size",
@@ -217,7 +222,7 @@ pub fn execute(options: &Options) -> Result<report::CheckReport, CliError> {
     ]
     .into_iter()
     .any(runs);
-    let (graph_part, source_part, boundaries) = thread::scope(|scope| {
+    let (graph_part, source_part, boundaries, files) = thread::scope(|scope| {
         let graph_thread = needs_graph.then(|| {
             scope.spawn(|| {
                 graph_checks(
@@ -233,28 +238,26 @@ pub fn execute(options: &Options) -> Result<report::CheckReport, CliError> {
             .then(|| scope.spawn(|| source_checks(&workspace, &settings, enforced, progress)));
         let boundaries_thread = runs(CheckName::Boundaries)
             .then(|| scope.spawn(|| boundaries::section(&workspace, enforced, progress)));
+        let files_thread = runs(CheckName::Files)
+            .then(|| scope.spawn(|| files::section(&workspace, enforced, progress)));
         let graph_part = join(graph_thread)?;
         let source_part = join(source_thread)?;
         let boundaries = join(boundaries_thread)?;
-        Ok::<_, CliError>((graph_part, source_part, boundaries))
+        let files = join(files_thread)?;
+        Ok::<_, CliError>((graph_part, source_part, boundaries, files))
     })?;
     let graph_part = graph_part.unwrap_or_default();
     let source_part = source_part.unwrap_or_default();
 
-    let mut metrics = source_part.metrics;
-    metrics.public_items = graph_part.public_items;
-    metrics.dead_public = graph_part.dead_public;
-    metrics.unused_deps = graph_part.unused_deps;
-    metrics.declared_dependencies = graph_part.unused_deps.map(|_| {
-        workspace
-            .members
-            .iter()
-            .map(|member| member.links.len())
-            .sum()
-    });
-    metrics.boundary_violations = boundaries.as_ref().map(|section| section.findings.len());
+    let metrics = health_metrics(
+        &workspace,
+        &graph_part,
+        source_part.metrics,
+        boundaries.as_ref(),
+    );
     let parts = [
         (CheckName::Deps, graph_part.deps),
+        (CheckName::Files, files),
         (CheckName::Visibility, graph_part.visibility),
         (CheckName::Boundaries, boundaries),
         (CheckName::Size, source_part.size),
@@ -271,6 +274,27 @@ pub fn execute(options: &Options) -> Result<report::CheckReport, CliError> {
         sections,
         health::score(metrics),
     ))
+}
+
+/// The inputs of the health score from the parts of the run.
+fn health_metrics(
+    workspace: &Workspace,
+    graph_part: &GraphPart,
+    mut metrics: Metrics,
+    boundaries: Option<&Section>,
+) -> Metrics {
+    metrics.public_items = graph_part.public_items;
+    metrics.dead_public = graph_part.dead_public;
+    metrics.unused_deps = graph_part.unused_deps;
+    metrics.declared_dependencies = graph_part.unused_deps.map(|_| {
+        workspace
+            .members
+            .iter()
+            .map(|member| member.links.len())
+            .sum()
+    });
+    metrics.boundary_violations = boundaries.map(|section| section.findings.len());
+    metrics
 }
 
 /// The result of a thread, or `None` when the thread did not start. A panic

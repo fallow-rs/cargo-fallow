@@ -1,0 +1,224 @@
+name: GitHub Action
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Deny all permissions by default, grant per-job as needed
+permissions: {}
+
+concurrency:
+  group: action-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  scripts:
+    name: Action scripts (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-26.04, macos-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: ShellCheck
+        if: runner.os == 'Linux'
+        run: |
+          if ! command -v shellcheck > /dev/null 2>&1; then
+            sudo apt-get update -q && sudo apt-get install -y -q shellcheck
+          fi
+          shellcheck -x action/scripts/*.sh action/tests/run.sh
+      - name: Test the scripts and the jq filters
+        run: bash action/tests/run.sh
+
+  # Run the action of this checkout on this repository. The first step builds
+  # cargo-fallow from source (install: source). Each later step finds that
+  # binary on the PATH (install: auto).
+  self-test:
+    name: Action self-test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      # The sarif: true step checks code scanning and uploads when it can.
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-26.04, macos-latest, windows-latest]
+    env:
+      # `cargo install` builds in this folder, so the Rust cache keeps it.
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # `base: auto` compares with the base commit of the pull request.
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-rust
+        with:
+          components: llvm-tools
+          cache-key: action-self-test
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
+        with:
+          tool: cargo-nextest
+
+      - name: check (install from source)
+        id: check
+        uses: ./
+        with:
+          command: check
+          install: source
+
+      - name: deps
+        id: deps
+        uses: ./
+        with:
+          command: deps
+          format: json
+
+      - name: boundaries
+        id: boundaries
+        uses: ./
+        with:
+          command: boundaries
+
+      - name: size
+        id: size
+        uses: ./
+        with:
+          command: size
+          base: auto
+
+      - name: visibility
+        id: visibility
+        uses: ./
+        with:
+          command: visibility
+          fail-on-issues: 'false'
+
+      - name: complexity (report only, with SARIF)
+        id: complexity
+        uses: ./
+        with:
+          command: complexity
+          fail-on-issues: 'false'
+          format: sarif
+          sarif: 'true'
+          max-annotations: '5'
+
+      - name: dupes (the gate must fail)
+        id: dupes
+        continue-on-error: true
+        uses: ./
+        with:
+          command: dupes
+          annotations: 'false'
+
+      - name: An invalid manifest (exit code 2)
+        id: broken
+        continue-on-error: true
+        uses: ./
+        with:
+          command: check
+          manifest-path: does-not-exist/Cargo.toml
+
+      - name: mutants on a fixture crate
+        id: mutants
+        if: runner.os == 'Linux'
+        uses: ./
+        with:
+          command: mutants
+          working-directory: tests/fixtures/action-mutants
+          fail-on-issues: 'false'
+          mutants-jobs: '2'
+
+      - name: Check the outputs
+        shell: bash
+        env:
+          CHECK_METHOD: ${{ steps.check.outputs.install-method }}
+          CHECK_EXIT: ${{ steps.check.outputs.exit-code }}
+          CHECK_ISSUES: ${{ steps.check.outputs.issues }}
+          DEPS_METHOD: ${{ steps.deps.outputs.install-method }}
+          DEPS_REPORT: ${{ steps.deps.outputs.report }}
+          DEPS_RESULTS: ${{ steps.deps.outputs.results }}
+          BOUNDARIES_EXIT: ${{ steps.boundaries.outputs.exit-code }}
+          SIZE_EXIT: ${{ steps.size.outputs.exit-code }}
+          VISIBILITY_EXIT: ${{ steps.visibility.outputs.exit-code }}
+          COMPLEXITY_ISSUES: ${{ steps.complexity.outputs.issues }}
+          COMPLEXITY_SARIF: ${{ steps.complexity.outputs.sarif }}
+          COMPLEXITY_REPORT: ${{ steps.complexity.outputs.report }}
+          COMPLEXITY_FAILED: ${{ steps.complexity.outputs.gates-failed }}
+          DUPES_OUTCOME: ${{ steps.dupes.outcome }}
+          DUPES_EXIT: ${{ steps.dupes.outputs.exit-code }}
+          BROKEN_OUTCOME: ${{ steps.broken.outcome }}
+          BROKEN_EXIT: ${{ steps.broken.outputs.exit-code }}
+          BROKEN_CODE: ${{ steps.broken.outputs.error-code }}
+          MUTANTS_SCORE: ${{ steps.mutants.outputs.mutation-score }}
+          MUTANTS_SARIF: ${{ steps.mutants.outputs.sarif }}
+          MUTANTS_FAILED: ${{ steps.mutants.outputs.gates-failed }}
+        run: |
+          failures=0
+          expect() {
+            if [ "$2" = "$3" ]; then
+              echo "ok   $1"
+            else
+              echo "::error::$1: expected '$3', got '$2'"
+              failures=$((failures + 1))
+            fi
+          }
+          expect "check: install method" "$CHECK_METHOD" "source"
+          expect "check: exit code" "$CHECK_EXIT" "0"
+          expect "check: issues" "$CHECK_ISSUES" "0"
+          expect "deps: install method" "$DEPS_METHOD" "path"
+          expect "deps: format json reports the JSON file" "$DEPS_REPORT" "$DEPS_RESULTS"
+          expect "deps: kind" "$(jq -r .kind "$DEPS_RESULTS")" "deps"
+          expect "boundaries: exit code" "$BOUNDARIES_EXIT" "0"
+          expect "size: exit code" "$SIZE_EXIT" "0"
+          expect "visibility: exit code" "$VISIBILITY_EXIT" "0"
+          expect "complexity: report is the SARIF log" "$COMPLEXITY_REPORT" "$COMPLEXITY_SARIF"
+          expect "complexity: SARIF version" "$(jq -r .version "$COMPLEXITY_SARIF")" "2.1.0"
+          expect "complexity: SARIF results match issues" "$(jq '.runs[0].results | length' "$COMPLEXITY_SARIF")" "$COMPLEXITY_ISSUES"
+          expect "complexity: failed gate" "$COMPLEXITY_FAILED" "health-findings"
+          expect "dupes: the gate fails the step" "$DUPES_OUTCOME" "failure"
+          expect "dupes: exit code" "$DUPES_EXIT" "1"
+          expect "broken: the step fails" "$BROKEN_OUTCOME" "failure"
+          expect "broken: exit code" "$BROKEN_EXIT" "2"
+          expect "broken: error code" "$BROKEN_CODE" "CARGO_FALLOW_MANIFEST_NOT_FOUND"
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            expect "mutants: score" "$MUTANTS_SCORE" "66.7"
+            expect "mutants: failed gate" "$MUTANTS_FAILED" "surviving-mutants"
+            expect "mutants: SARIF path from the repository root" \
+              "$(jq -r '.runs[0].results[0].locations[0].physicalLocation.artifactLocation.uri' "$MUTANTS_SARIF")" \
+              "tests/fixtures/action-mutants/src/lib.rs"
+          fi
+          exit "$failures"
+
+  action-success:
+    name: Action checks passed
+    if: always()
+    needs: [scripts, self-test]
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: All checks passed
+        env:
+          RESULTS: ${{ toJSON(needs.*.result) }}
+        run: |
+          for result in $(echo "$RESULTS" | jq -r '.[]'); do
+            if [ "$result" != "success" ]; then
+              echo "::error::Job failed with result: $result"
+              exit 1
+            fi
+          done

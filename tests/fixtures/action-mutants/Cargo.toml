@@ -1,0 +1,9 @@
+# The self-test of the GitHub Action runs `mutants` on this package. One
+# mutant survives, so the run has a finding to report.
+[package]
+name = "action-mutants"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]

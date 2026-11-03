@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "cargo-fallow",
+          "version": "0.0.0",
+          "informationUri": "https://github.com/fallow-rs/cargo-fallow",
+          "rules": []
+        }
+      },
+      "invocations": [
+        {
+          "executionSuccessful": true
+        }
+      ],
+      "results": []
+    }
+  ]
+}

@@ -1,0 +1,218 @@
+name: 'cargo-fallow'
+description: 'Codebase analysis for Rust workspaces in CI: unused dependencies, visibility, boundaries, size, complexity, duplication and mutation testing.'
+author: 'Bart Waardenburg'
+
+branding:
+  icon: 'search'
+  color: 'orange'
+
+# The job must install a Rust toolchain before this action: each command runs
+# `cargo metadata`. `mutants` also needs cargo-nextest and the llvm-tools
+# component. action/README.md has examples.
+
+inputs:
+  command:
+    description: 'The command to run: check, deps, visibility, boundaries, size, complexity, dupes or mutants.'
+    required: false
+    default: 'check'
+  working-directory:
+    description: 'The folder in which the command runs, relative to the workspace of the job.'
+    required: false
+    default: '.'
+  manifest-path:
+    description: 'The Cargo.toml of the workspace, relative to working-directory. When empty, Cargo finds the manifest from working-directory.'
+    required: false
+    default: ''
+  format:
+    description: 'The report that the action writes to the log and to the `report` output: human, json or sarif. The action always writes the JSON report and, when it can, the SARIF log.'
+    required: false
+    default: 'human'
+  fail-on-issues:
+    description: 'Fail the job when the gate of the command fails. The action gives the gate flag of the command: --fail-on-parse-error (check), --fail-on-issues (deps, visibility), --fail-on-violations (boundaries), --fail-on-growth (size), --fail-on-complexity (complexity), --fail-on-clones (dupes) or --fail-on-survivors (mutants). An execution error (exit code 2) always fails the job.'
+    required: false
+    default: 'true'
+  args:
+    description: 'More arguments for the command, separated by spaces. The action does no shell expansion on them. Do not put --format or --quiet here.'
+    required: false
+    default: ''
+  base:
+    description: 'The git ref to compare with: size gets it as --base, and mutants as --in-diff. `auto` takes the base commit of the pull request. The checkout needs the history of that ref (fetch-depth: 0).'
+    required: false
+    default: ''
+  install:
+    description: 'How the action gets cargo-fallow: auto (the PATH, then a release binary, then a build of the action source), path, release, cargo (cargo install from crates.io) or source (cargo install --path on the action source).'
+    required: false
+    default: 'auto'
+  version:
+    description: 'The cargo-fallow version for install: release and install: cargo. When empty, the action uses the version of its own ref.'
+    required: false
+    default: ''
+  sarif:
+    description: 'Upload the SARIF log to GitHub code scanning. Needs `permissions: security-events: write`. A private repository also needs GitHub Advanced Security.'
+    required: false
+    default: 'false'
+  sarif-category:
+    description: 'The code scanning category of the upload. When empty, the action uses cargo-fallow-<command>. Give each call its own category when two calls run the same command on other workspaces, else the second upload replaces the alerts of the first.'
+    required: false
+    default: ''
+  annotations:
+    description: 'Show each finding as an annotation on its line.'
+    required: false
+    default: 'true'
+  max-annotations:
+    description: 'The most annotations, and the most findings in the job summary. The errors come first. GitHub shows at most 10 annotations of each level for a step.'
+    required: false
+    default: '50'
+  summary:
+    description: 'Write the gates and the findings to the job summary.'
+    required: false
+    default: 'true'
+  artifacts-dir:
+    description: 'The folder for the report files. When empty, each call of the action gets a new folder in RUNNER_TEMP.'
+    required: false
+    default: ''
+  github-token:
+    description: 'The token for the code scanning check and the SARIF upload.'
+    required: false
+    default: ${{ github.token }}
+  mutants-package:
+    description: 'mutants only: the package to mutate (--package).'
+    required: false
+    default: ''
+  mutants-max-mutants:
+    description: 'mutants only: run at most this many mutants (--max-mutants).'
+    required: false
+    default: ''
+  mutants-time-budget:
+    description: 'mutants only: stop after this many seconds (--time-budget).'
+    required: false
+    default: ''
+  mutants-jobs:
+    description: 'mutants only: the test processes that run at the same time (--jobs).'
+    required: false
+    default: ''
+  mutants-timeout:
+    description: 'mutants only: the time limit of each mutant run, in seconds (--timeout).'
+    required: false
+    default: ''
+
+outputs:
+  exit-code:
+    description: 'The exit code of the JSON run: 0 (no enforced gate failed), 1 (an enforced gate failed) or 2 (an execution error).'
+    value: ${{ steps.analyze.outputs.exit-code }}
+  results:
+    description: 'The path of the JSON report, or of the JSON error document.'
+    value: ${{ steps.analyze.outputs.results }}
+  sarif:
+    description: 'The path of the SARIF log. Its paths are relative to the repository root. Empty when the run has no SARIF log.'
+    value: ${{ steps.analyze.outputs.sarif }}
+  report:
+    description: 'The path of the report in the format input. Empty when that form is missing.'
+    value: ${{ steps.analyze.outputs.report }}
+  issues:
+    description: 'The `total_issues` of the report. Empty after an execution error.'
+    value: ${{ steps.analyze.outputs.issues }}
+  gates-failed:
+    description: 'The names of the gates with status fail, separated by commas.'
+    value: ${{ steps.analyze.outputs.gates-failed }}
+  gates-warned:
+    description: 'The names of the gates with status warn, separated by commas.'
+    value: ${{ steps.analyze.outputs.gates-warned }}
+  gates-passed:
+    description: 'The names of the gates with status pass, separated by commas.'
+    value: ${{ steps.analyze.outputs.gates-passed }}
+  gates-skipped:
+    description: 'The names of the gates with status skipped, separated by commas.'
+    value: ${{ steps.analyze.outputs.gates-skipped }}
+  mutation-score:
+    description: 'mutants only: the mutation score in percent, with one decimal.'
+    value: ${{ steps.analyze.outputs.mutation-score }}
+  error-code:
+    description: 'The `code` of the JSON error document after an execution error, else empty.'
+    value: ${{ steps.analyze.outputs.error-code }}
+  install-method:
+    description: 'The install method that the action used: path, release, cargo or source.'
+    value: ${{ steps.install.outputs.method }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Install cargo-fallow
+      id: install
+      shell: bash
+      env:
+        INPUT_INSTALL: ${{ inputs.install }}
+        INPUT_VERSION: ${{ inputs.version }}
+      run: bash "${GITHUB_ACTION_PATH}/action/scripts/install.sh"
+
+    - name: Run cargo fallow
+      id: analyze
+      shell: bash
+      env:
+        ACTION_JQ_DIR: ${{ github.action_path }}/action/jq
+        INPUT_COMMAND: ${{ inputs.command }}
+        INPUT_WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        INPUT_MANIFEST_PATH: ${{ inputs.manifest-path }}
+        INPUT_FORMAT: ${{ inputs.format }}
+        INPUT_FAIL_ON_ISSUES: ${{ inputs.fail-on-issues }}
+        INPUT_ARGS: ${{ inputs.args }}
+        INPUT_BASE: ${{ inputs.base }}
+        INPUT_ARTIFACTS_DIR: ${{ inputs.artifacts-dir }}
+        INPUT_PACKAGE: ${{ inputs.mutants-package }}
+        INPUT_MAX_MUTANTS: ${{ inputs.mutants-max-mutants }}
+        INPUT_TIME_BUDGET: ${{ inputs.mutants-time-budget }}
+        INPUT_JOBS: ${{ inputs.mutants-jobs }}
+        INPUT_TIMEOUT: ${{ inputs.mutants-timeout }}
+        PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      run: bash "${GITHUB_ACTION_PATH}/action/scripts/analyze.sh"
+
+    - name: Write the job summary
+      if: always() && inputs.summary == 'true' && steps.analyze.outputs.results != ''
+      shell: bash
+      env:
+        ACTION_JQ_DIR: ${{ github.action_path }}/action/jq
+        RESULTS_FILE: ${{ steps.analyze.outputs.results }}
+        SARIF_FILE: ${{ steps.analyze.outputs.sarif }}
+        FALLOW_COMMAND: ${{ inputs.command }}
+        EXIT_CODE: ${{ steps.analyze.outputs.exit-code }}
+        MAX_FINDINGS: ${{ inputs.max-annotations }}
+      run: bash "${GITHUB_ACTION_PATH}/action/scripts/summary.sh"
+
+    - name: Annotate the findings
+      if: always() && inputs.annotations == 'true' && steps.analyze.outputs.sarif != ''
+      shell: bash
+      env:
+        ACTION_JQ_DIR: ${{ github.action_path }}/action/jq
+        SARIF_FILE: ${{ steps.analyze.outputs.sarif }}
+        MAX_ANNOTATIONS: ${{ inputs.max-annotations }}
+      run: bash "${GITHUB_ACTION_PATH}/action/scripts/annotate.sh"
+
+    - name: Check code scanning
+      id: code-scanning
+      if: always() && inputs.sarif == 'true' && steps.analyze.outputs.sarif != ''
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        GH_REPO: ${{ github.repository }}
+        IS_FORK: ${{ github.event.pull_request.head.repo.fork }}
+      run: bash "${GITHUB_ACTION_PATH}/action/scripts/code-scanning.sh"
+
+    - name: Upload SARIF
+      if: always() && steps.code-scanning.outputs.available == 'true'
+      uses: github/codeql-action/upload-sarif@1fc58d04a4d4374f921bdac573c3811c240f9c26 # v4.39.2
+      with:
+        sarif_file: ${{ steps.analyze.outputs.sarif }}
+        category: ${{ inputs.sarif-category || format('cargo-fallow-{0}', inputs.command) }}
+        token: ${{ inputs.github-token }}
+
+    # The gate runs after a failed report step too, so the log always gives
+    # the verdict of the run.
+    - name: Apply the gate
+      if: ${{ !cancelled() && steps.analyze.outcome == 'success' }}
+      shell: bash
+      env:
+        EXIT_CODE: ${{ steps.analyze.outputs.exit-code }}
+        FALLOW_COMMAND: ${{ inputs.command }}
+        GATES_FAILED: ${{ steps.analyze.outputs.gates-failed }}
+        ERROR_CODE: ${{ steps.analyze.outputs.error-code }}
+      run: bash "${GITHUB_ACTION_PATH}/action/scripts/gate.sh"

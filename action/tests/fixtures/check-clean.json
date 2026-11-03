@@ -1,0 +1,112 @@
+{
+  "schema_version": 1,
+  "version": "0.0.0",
+  "kind": "check",
+  "language": "rust",
+  "workspace": {
+    "members": [
+      {
+        "name": "cargo-fallow",
+        "version": "0.0.0",
+        "manifest_path": "Cargo.toml",
+        "targets": [
+          {
+            "name": "cargo-fallow",
+            "kind": [
+              "bin"
+            ],
+            "src_path": "src/main.rs",
+            "edition": "2024"
+          },
+          {
+            "name": "cargo_fallow",
+            "kind": [
+              "lib"
+            ],
+            "src_path": "src/lib.rs",
+            "edition": "2024"
+          },
+          {
+            "name": "cli",
+            "kind": [
+              "test"
+            ],
+            "src_path": "tests/cli.rs",
+            "edition": "2024"
+          },
+          {
+            "name": "deps",
+            "kind": [
+              "test"
+            ],
+            "src_path": "tests/deps.rs",
+            "edition": "2024"
+          },
+          {
+            "name": "mutants_cli",
+            "kind": [
+              "test"
+            ],
+            "src_path": "tests/mutants_cli.rs",
+            "edition": "2024"
+          },
+          {
+            "name": "mutation",
+            "kind": [
+              "test"
+            ],
+            "src_path": "tests/mutation.rs",
+            "edition": "2024"
+          },
+          {
+            "name": "mutation_schema",
+            "kind": [
+              "test"
+            ],
+            "src_path": "tests/mutation_schema.rs",
+            "edition": "2024"
+          },
+          {
+            "name": "mutation_verdicts",
+            "kind": [
+              "test"
+            ],
+            "src_path": "tests/mutation_verdicts.rs",
+            "edition": "2024"
+          },
+          {
+            "name": "structure",
+            "kind": [
+              "test"
+            ],
+            "src_path": "tests/structure.rs",
+            "edition": "2024"
+          },
+          {
+            "name": "visibility",
+            "kind": [
+              "test"
+            ],
+            "src_path": "tests/visibility.rs",
+            "edition": "2024"
+          }
+        ]
+      }
+    ]
+  },
+  "total_issues": 0,
+  "findings": [],
+  "gate_outcomes": {
+    "error-severity-findings": {
+      "status": "pass",
+      "enforced": true,
+      "observed": 0.0,
+      "threshold_label": "error"
+    },
+    "parse-error": {
+      "status": "pass",
+      "enforced": false,
+      "observed": 0.0
+    }
+  }
+}

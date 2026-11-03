@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "version": "0.0.0",
+  "kind": "visibility",
+  "language": "rust",
+  "mode": "fast",
+  "total_issues": 1,
+  "summary": {
+    "dead_public": 0,
+    "unnecessary_public": 1,
+    "unnecessary_restricted_visibility": 0,
+    "undecided": 0
+  },
+  "gate_outcomes": {
+    "visibility-findings": {
+      "status": "fail",
+      "enforced": false,
+      "observed": 1.0,
+      "threshold": 0.0,
+      "files": [
+        {
+          "path": "src/mutation/coverage.rs",
+          "error_count": 1,
+          "panicked": false
+        }
+      ]
+    }
+  },
+  "precise": null,
+  "findings": [
+    {
+      "kind": "unnecessary_public",
+      "package": "cargo-fallow",
+      "crate": "cargo_fallow",
+      "item": "mutation::coverage::parse_test_map",
+      "item_kind": "function",
+      "file": "src/mutation/coverage.rs",
+      "line": 479,
+      "column": 8,
+      "end_line": 486,
+      "visibility": "pub",
+      "suggested": "pub(crate)",
+      "test_only": true,
+      "actions": [
+        {
+          "type": "change-visibility",
+          "auto_fixable": false,
+          "description": "Make the item `pub(crate)`.",
+          "from": "pub",
+          "to": "pub(crate)",
+          "range": {
+            "line": 479,
+            "column": 1,
+            "end_line": 479,
+            "end_column": 4
+          }
+        }
+      ]
+    }
+  ]
+}

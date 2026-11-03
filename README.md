@@ -739,6 +739,19 @@ The growth rule of `size` runs git with a clean environment: it removes
 git to another repository. `--base` must name a commit. A value that starts with
 `-` is an error. A changed path that is not UTF-8 text is in `skipped_files`.
 
+## GitHub Action
+
+The repository is also a GitHub Action. It runs one command, writes the job
+summary, shows each finding as an annotation, and can upload the SARIF log to
+code scanning. [action/README.md](action/README.md) lists the inputs and the
+outputs.
+
+```yaml
+- uses: fallow-rs/cargo-fallow@<sha>
+  with:
+    command: check
+```
+
 ## Exit codes
 
 | Code | Meaning |

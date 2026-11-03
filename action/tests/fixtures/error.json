@@ -1,0 +1,7 @@
+{
+  "error": true,
+  "message": "the manifest `/nonexistent/Cargo.toml` does not exist",
+  "exit_code": 2,
+  "code": "CARGO_FALLOW_MANIFEST_NOT_FOUND",
+  "help": "Pass the path to a Cargo.toml file with --manifest-path."
+}

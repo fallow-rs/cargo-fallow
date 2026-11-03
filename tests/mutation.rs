@@ -881,6 +881,94 @@ fn an_invalid_mutant_record_aborts_the_test_process() {
     assert!(test("short").status.success());
 }
 
+/// On macOS a `stat` of `/dev/fd/9` can fail with `EBADF` while another process
+/// does the same lookup, also when the descriptor is open. The switch must then
+/// still see the mutant: each test process of a mutant run reads the record at
+/// the same time as the other test processes.
+#[test]
+fn the_switch_sees_the_mutant_while_other_processes_read_their_record() {
+    const READERS: usize = 200;
+    const AT_ONCE: usize = 4;
+    const NOISE: usize = 4;
+    let run = run(&[("src/lib.rs", CHECK)], &["--tier", "schema", "--no-run"]);
+    assert_eq!(run.code, Some(0), "{}", run.stderr);
+    let killed = run
+        .mutants()
+        .iter()
+        .find(|m| m["line"] == 4 && m["operator"] == "relational-operator")
+        .and_then(|m| m["id"].as_str())
+        .expect("the mutant that the test kills");
+    let record = run.work.path().join("record");
+    fs::write(&record, format!("fallow-mutant:{killed}")).expect("write the record");
+    let deps = run.work.path().join("run/target-schema/debug/deps");
+    let binary = fs::read_dir(&deps)
+        .expect("the schema has test binaries")
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("fixture-") && !name.contains('.'))
+        })
+        .expect("the test binary of the fixture");
+    let with_record = |program: &[&str]| {
+        let mut command = Process::new("sh");
+        command
+            .args(["-c", "exec 9<\"$1\"; shift; exec \"$@\"", "sh"])
+            .arg(&record)
+            .args(program)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        command
+    };
+    // Each of these processes does the same lookup in a loop. The guard stops
+    // them also when the test panics.
+    struct Noise(Vec<std::process::Child>);
+    impl Drop for Noise {
+        fn drop(&mut self) {
+            for process in &mut self.0 {
+                let _ = process.kill();
+                let _ = process.wait();
+            }
+        }
+    }
+    let _noise = Noise(
+        std::iter::repeat_with(|| {
+            with_record(&["sh", "-c", "while :; do [ -e /dev/fd/9 ]; done"])
+                .stdout(Stdio::null())
+                .spawn()
+                .expect("start a process that reads its record")
+        })
+        .take(NOISE)
+        .collect(),
+    );
+    let binary = binary.to_str().expect("a UTF-8 path");
+    let mut misses = 0;
+    for _ in 0..READERS / AT_ONCE {
+        let readers: Vec<_> = std::iter::repeat_with(|| {
+            with_record(&[binary, "--exact", "tests::check_works"])
+                .spawn()
+                .expect("start the test binary")
+        })
+        .take(AT_ONCE)
+        .collect();
+        for reader in readers {
+            let output = reader.wait_with_output().expect("the test binary ends");
+            // Only a failed assertion shows that the process saw the mutant.
+            if !String::from_utf8_lossy(&output.stdout)
+                .contains("test tests::check_works ... FAILED")
+            {
+                misses += 1;
+            }
+        }
+    }
+    assert_eq!(
+        misses, 0,
+        "{misses} of {READERS} test processes did not see the mutant"
+    );
+}
+
 #[test]
 fn the_memory_guard_can_be_switched_off_only_by_a_flag() {
     let run = run(

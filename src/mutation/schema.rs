@@ -112,18 +112,38 @@ mod __fallow_schema {
         const PREFIX: &[u8] = b"fallow-mutant:";
         const SIZE: usize = 30;
         const PATH: &str = "/dev/fd/9";
-        match self::fallow_std::fs::metadata(PATH) {
+        const EBADF: i32 = 9;
+        let file = match self::fallow_std::fs::metadata(PATH) {
+            self::fallow_std::result::Result::Ok(data) => {
+                if !data.is_file() || data.len() != SIZE as u64 {
+                    return 0;
+                }
+                match self::fallow_std::fs::File::open(PATH) {
+                    self::fallow_std::result::Result::Ok(file) => file,
+                    self::fallow_std::result::Result::Err(_) => invalid(),
+                }
+            }
+            // On macOS this lookup can fail with EBADF while another process does
+            // the same lookup, also when the descriptor is open. An open of the
+            // path does not fail in that case. It makes a copy of the descriptor
+            // and does not wait for a writer. On Linux a closed descriptor gives
+            // ENOENT, so this branch does not open a pipe there.
+            self::fallow_std::result::Result::Err(error) if error.raw_os_error() == self::fallow_std::option::Option::Some(EBADF) => {
+                match self::fallow_std::fs::File::open(PATH) {
+                    self::fallow_std::result::Result::Ok(file) => file,
+                    self::fallow_std::result::Result::Err(_) => return 0,
+                }
+            }
+            self::fallow_std::result::Result::Err(_) => return 0,
+        };
+        match file.metadata() {
             self::fallow_std::result::Result::Ok(data) => {
                 if !data.is_file() || data.len() != SIZE as u64 {
                     return 0;
                 }
             }
-            self::fallow_std::result::Result::Err(_) => return 0,
-        }
-        let file = match self::fallow_std::fs::File::open(PATH) {
-            self::fallow_std::result::Result::Ok(file) => file,
             self::fallow_std::result::Result::Err(_) => invalid(),
-        };
+        }
         let mut bytes = [0_u8; SIZE];
         let read = self::fallow_std::os::unix::fs::FileExt::read_exact_at(&file, &mut bytes, 0);
         if read.is_err() {

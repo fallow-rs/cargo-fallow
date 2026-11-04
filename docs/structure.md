@@ -1,15 +1,20 @@
 # Structure checks
 
-Four commands check the structure of the workspace. Each command has the
-`--manifest-path`, `--format human|json|sarif|codeclimate|compact|markdown|github-annotations|github-summary` and `--quiet` flags,
-the [`--changed-since <REF>`](adoption.md#changed-files), [`--package`](adoption.md#packages) and
-[baseline](adoption.md#baselines) flags,
-and its own
-gate. A gate is in the report each time, but it fails the run only with its flag.
-Each command accepts `--fail-on-issues` as its gate flag. The older flag of
-each command is the same flag. `size` has no growth gate without `--base` or
-`--staged`, so `size --fail-on-issues` alone exits 0. `size --fail-on-growth`
-alone exits 2, because that flag asks for the growth gate.
+The `boundaries`, `size`, `complexity` and `dupes` commands check the
+structure of the workspace. They have these flags:
+
+- `--manifest-path`, `--format human|json|sarif|codeclimate|compact|markdown|github-annotations|github-summary` and `--quiet`,
+- [`--changed-since <REF>`](adoption.md#changed-files) and [`--package`](adoption.md#packages),
+- the [baseline](adoption.md#baselines) flags.
+
+Each command also has its own gate. The report always shows the gate, but the
+gate fails the run only when you give its flag. `--fail-on-issues` is the
+gate flag of each command. The older gate flag of a command, for example
+`--fail-on-violations`, does the same thing, with one exception for `size`.
+
+Without `--base` or `--staged`, the growth gate of `size` does not run. Thus
+`size --fail-on-issues` alone exits 0. `size --fail-on-growth` alone exits 2,
+because that flag asks for the growth gate.
 
 | Command | Reports | Gate flag | Gate |
 | --- | --- | --- | --- |
@@ -18,10 +23,11 @@ alone exits 2, because that flag asks for the growth gate.
 | `cargo fallow complexity` | Functions over the cyclomatic or the cognitive limit | `--fail-on-issues` or `--fail-on-complexity` | `health-findings` |
 | `cargo fallow dupes` | Clone groups on normalized token streams | `--fail-on-issues` or `--fail-on-clones`, and `--threshold <PERCENT>` | `duplication-findings`, `duplication-threshold` |
 
-The configuration is in the root `Cargo.toml`, in one table for each check. The
-name of each table is the name of its command. Cargo
-already parses the manifest, so the tool reads the tables from `cargo metadata`.
-An unknown key is an error with the code `CARGO_FALLOW_INVALID_CONFIG`.
+You configure the checks in the root `Cargo.toml`, with one table for each
+check. A table has the name of its command. cargo-fallow reads the tables
+from the output of `cargo metadata`, because Cargo already parses the
+manifest. An unknown key gives an error with the code
+`CARGO_FALLOW_INVALID_CONFIG`.
 
 ```toml
 [workspace.metadata.fallow.boundaries.groups]
@@ -66,53 +72,60 @@ min-lines = 5
 threshold = 0.0           # 0 means no limit
 ```
 
-A `threshold` in the table puts the `duplication-threshold` gate in the
-report. The gate fails the run only with `--threshold`, or with
-`--fail-on-issues` for `check`, the same as each other gate.
+When the table sets `threshold`, the report shows the
+`duplication-threshold` gate. As with the other gates, this gate fails the
+run only when you give a flag. The flag is `--threshold` for `dupes`, or
+`--fail-on-issues` for `check`.
 
 `cargo fallow dupes --trace <FINGERPRINT>` shows the instances of one clone
 group. See [Trace](trace.md).
 
-The `size` growth rule is the rule of `scripts/check-file-size.mjs` in fallow,
-for `.rs` files: a file over the limit must not grow, and a new file must not be
-over it. Test files, test and snapshot folders, and files with a generator header
-are not checked. `--base <REF>` compares HEAD with the merge base, and
-`--staged` compares the index with HEAD.
+The growth rule of `size` is the rule of `scripts/check-file-size.mjs` in
+fallow, applied to `.rs` files. A file over the limit must not grow, and a new
+file must not be over the limit. The rule does not check test files, files in
+test and snapshot folders, or files with a generator header. `--base <REF>`
+compares HEAD with the merge base. `--staged` compares the index with HEAD.
 
-The complexity and clone models are the models of fallow for JavaScript. A unit
-is a `fn` with a body or a closure. Put `// fallow-ignore-next-line complexity`
-above a function, or `// fallow-ignore-next-line code-duplication` above a
-clone, to suppress it. See [Suppressions](adoption.md#suppressions).
+`complexity` and `dupes` use the same models as fallow for JavaScript. A
+unit is a `fn` with a body, or a closure. To suppress a complexity finding,
+put `// fallow-ignore-next-line complexity` above the function. To suppress a
+clone, put `// fallow-ignore-next-line code-duplication` above the clone. See
+[Suppressions](adoption.md#suppressions).
 
 The complexity counts have these known differences from other tools:
 
 - Code in a macro call adds nothing. The parser keeps the arguments of a macro
-  call as tokens, so a condition in `assert!(a && b)` or in `vec![...]` is not
-  visible.
+  call as tokens, so `complexity` does not count a condition in
+  `assert!(a && b)` or in `vec![...]`.
 - The `?` operator adds nothing, although it is an early return.
 - `loop` adds 1 to the cyclomatic count and 1 plus the nesting level to the
   cognitive count, the same as `while` and `for`.
-- The cognitive count of a sequence of logical operators keeps the last
-  operator through a group in parentheses. So `a && (b && c)` adds 1, and
-  `a && (b || c)` adds 2. A sequence ends at an operand with no logical
-  operator in it, so `(a && b) || (c && d)` adds 3. This is the model of
-  fallow for JavaScript.
+- In the cognitive count, a sequence of logical operators continues into a
+  group in parentheses. A sequence of the same operator adds 1, and each
+  change of the operator adds 1 more. Thus `a && (b && c)` adds 1, and `a && (b || c)` adds 2. A
+  sequence ends at an operand with no logical operator in it, so
+  `(a && b) || (c && d)` adds 3. fallow for JavaScript uses the same model.
 
-`skipped_files` in the summary of `size`, `complexity` and `dupes` lists each
-skipped file with its `path` and a `reason`. These limits keep each run bounded:
+The summary of `size`, `complexity` and `dupes` has a `skipped_files` list.
+It gives the `path` and a `reason` for each skipped file. These limits put a
+bound on the time and the memory of a run:
 
-- The parse refuses a file that nests too deep, has a postfix chain of more than
-  2048 steps (for example `a.x.x` or `a???`), or gives a syntax tree deeper than
-  3072 levels (for example a `1 + 1 + ...` chain). The reason is
+- The parser rejects a file in these cases. The reason is
   `the file nests too deep for the parser`.
+  - The file nests too deep.
+  - The file has a postfix chain of more than 2048 steps, for example
+    `a.x.x` or `a???`.
+  - The syntax tree of the file is deeper than 3072 levels, for example for a
+    `1 + 1 + ...` chain. A debug build on Windows has a limit of 2600 levels.
 - `dupes` skips a file with more than 250000 tokens.
-- In a run of a repeated pattern of up to 4 tokens, such as a data table, `dupes`
-  compares only the first 256 tokens.
-- A clone group keeps at most 128 instances.
+- A data table can give a long run of a repeated pattern of up to 4 tokens.
+  In such a run, `dupes` compares only the first 256 tokens.
+- A clone group has at most 128 instances.
 - `dupes` stops with exit code 2 and the code `CARGO_FALLOW_TIMED_OUT` after
   300 s.
 
-The growth rule of `size` runs git with a clean environment: it removes
-`GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` and the other variables that move
-git to another repository. `--base` must name a commit. A value that starts with
-`-` is an error. A changed path that is not UTF-8 text is in `skipped_files`.
+For the growth rule, `size` runs git with a clean environment. The command
+removes `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` and the other variables
+that point git to another repository. `--base` must name a commit, and a value
+that starts with `-` is an error. A changed path that is not UTF-8 text goes
+in `skipped_files`.

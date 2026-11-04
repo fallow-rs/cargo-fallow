@@ -1,6 +1,6 @@
 # cargo-fallow documentation
 
-The [README](../README.md) gives the overview. These pages are the reference
+The [README](../README.md) is the overview. The pages below are the reference
 for each command.
 
 ## Commands
@@ -9,12 +9,12 @@ for each command.
 | --- | --- |
 | [The check command](check.md) | Flags of `check`, and the health score |
 | [Adoption](adoption.md) | Changed files, packages, rule severity, baselines, `init` and suppressions |
-| [Unused dependencies](dependencies.md) | Rules of `deps`, and how it gives credit |
-| [Fix](fix.md) | What `cargo fallow fix` changes, and how it checks the result |
+| [Unused dependencies](dependencies.md) | Rules of `deps`, and the cases where it counts a dependency as used |
+| [Fix](fix.md) | What `cargo fallow fix` changes, and how the command checks the result |
 | [Unused files](unused-files.md) | How `files` finds the files that no target compiles |
 | [Visibility](visibility.md) | Kinds of `visibility`, and precise mode |
 | [Structure checks](structure.md) | `boundaries`, `size`, `complexity` and `dupes` |
-| [Trace](trace.md) | `--trace` of `visibility`, `deps` and `dupes`: why a check keeps or reports one item |
+| [Trace](trace.md) | `--trace` of `visibility`, `deps` and `dupes`, to see why a check reports one item or does not |
 | [Mutation testing](mutation-testing.md) | `mutants`: tiers, status, test selection and safety |
 | [Output formats](output.md) | Each format, the JSON Schema, `explain` and the exit codes |
 | [GitHub Action](../action/README.md) | Inputs, outputs and install methods of the action |

@@ -2,5 +2,6 @@
 tests/fixtures/**/target
 tests/fixtures/**/Cargo.lock
 node_modules/
+.plans/
 fuzz/artifacts/
 fuzz/target/

@@ -6,7 +6,9 @@ This file is the router for agents and contributors. Keep it short.
 
 1. Read `README.md` for the CLI contract, and `docs/` for each command.
 2. Read `CONTRIBUTING.md` for the build, the checks and the DCO.
-3. Load a workflow from `.agents/skills/` when one exists.
+3. Load the workflow from `.agents/skills/<name>/SKILL.md`. Each objective
+   goes through `implement`, `review`, `ship` and `sweep`. The objective is
+   done only when the definition of done in `implement` is true.
 
 Before you edit, check the branch and the worktree. Other agents can work in
 the same checkout. Read a file again immediately before you edit it.
@@ -73,6 +75,13 @@ cargo deny check
 
 The Quality gates section in `CONTRIBUTING.md` lists every gate.
 `hk run pre-commit --all` and `hk run pre-push --all` run the hook gates.
+
+## Skills
+
+`.agents/skills/` holds the source of each skill. `.claude/skills/` holds
+the Claude adapters. `scripts/generate-agent-adapters.mjs` writes them.
+Edit only the source, then run `npm run generate:agent-adapters`. CI runs
+`npm run check:agent-adapters`.
 
 ## Git
 

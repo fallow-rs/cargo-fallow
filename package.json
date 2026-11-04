@@ -7,7 +7,9 @@
     "lint:js": "node scripts/assert-local-resolution.mjs oxlint && oxlint --disable-nested-config scripts .github/scripts commitlint.config.mjs",
     "fmt:js": "node scripts/assert-local-resolution.mjs oxfmt && oxfmt --disable-nested-config scripts .github/scripts commitlint.config.mjs",
     "fmt:js:check": "node scripts/assert-local-resolution.mjs oxfmt && oxfmt --check --disable-nested-config scripts .github/scripts commitlint.config.mjs",
-    "test:scripts": "node --test scripts/*.test.mjs .github/scripts/*.test.mjs"
+    "test:scripts": "node --test scripts/*.test.mjs .github/scripts/*.test.mjs",
+    "generate:agent-adapters": "node scripts/generate-agent-adapters.mjs",
+    "check:agent-adapters": "node scripts/generate-agent-adapters.mjs --check"
   },
   "engines": {
     "node": ">=22.12.0"

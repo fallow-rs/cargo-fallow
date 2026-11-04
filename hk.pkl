@@ -70,6 +70,13 @@ hooks {
         glob = List("CHANGELOG.md", "changelog.d/**")
         check = "if command -v node >/dev/null 2>&1; then sh scripts/hook-changelog-fragments.sh; else sh scripts/hook-tool-hint.sh node; fi"
       }
+      // .claude/skills/ is a generated copy of .agents/skills/. See
+      // scripts/generate-agent-adapters.mjs.
+      ["agent-adapters"] {
+        glob = List(".agents/skills/**", ".claude/skills/**")
+        check = "if command -v node >/dev/null 2>&1; then node scripts/generate-agent-adapters.mjs --check; else sh scripts/hook-tool-hint.sh node; fi"
+        fix = "node scripts/generate-agent-adapters.mjs"
+      }
       // fallow also runs miri-cfg here. This repository has no Miri job, so
       // that step does not apply.
     }

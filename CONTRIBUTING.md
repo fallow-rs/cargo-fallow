@@ -69,6 +69,7 @@ hooks.
 | JS lint | `npm run lint:js` | pre-commit | `ci.yml` |
 | JS format | `npm run fmt:js:check` | pre-commit | `ci.yml` |
 | Script tests | `npm run test:scripts` | none | `ci.yml` |
+| Agent adapters | `npm run check:agent-adapters` | pre-commit | `ci.yml` |
 | Dependency policy | `cargo deny check` | none | `ci.yml` |
 | Security advisories | `cargo audit` | none | `ci.yml` |
 | Unused dependencies | `cargo shear` | pre-push | `ci.yml` |

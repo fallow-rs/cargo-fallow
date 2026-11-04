@@ -280,6 +280,9 @@ jobs:
         run: node scripts/check-comment-quality.mjs --all
       - name: Script tests
         run: node --test scripts/*.test.mjs .github/scripts/*.test.mjs
+      # .claude/skills/ is a generated copy of .agents/skills/.
+      - name: Agent adapters
+        run: npm run check:agent-adapters
       # A pull request adds a fragment to changelog.d/ and does not edit the
       # [Unreleased] section of CHANGELOG.md. See changelog.d/README.md.
       - name: Changelog fragments

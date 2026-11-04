@@ -7,7 +7,8 @@ merge of one does not make the other conflict.
 ## Write a fragment
 
 1. Make one file for each pull request, for example
-   `changelog.d/<branch-name>.md`. Use a name that no other open pull request
+   `changelog.d/<branch-name>.md`, with `-` for each `/`. The check reads
+   only the top level of this directory. Use a name that no other open pull request
    uses.
 2. Start each group of entries with a `###` heading. Use only these headings:
    `Breaking`, `Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`,

@@ -181,6 +181,13 @@ fn workspace_that_does_not_build_before_the_edits_changes_nothing() {
             .is_some_and(|message| message.contains("before the edits")),
         "{error}"
     );
+    // The help names a way forward, not only the state.
+    assert!(
+        error["help"]
+            .as_str()
+            .is_some_and(|help| help.contains("--dry-run")),
+        "{error}"
+    );
     assert_eq!(read(&dir, "core/src/lib.rs"), CORE);
 }
 
@@ -296,4 +303,59 @@ fn edit_that_the_compiler_names_is_left_out_and_the_rest_stays() {
         read(&dir, "core/src/lib.rs"),
         "pub fn used() { helper(); other(); }\npub fn helper() {}\npub(crate) fn other() {}\n"
     );
+}
+
+/// The items of the dry run, by `fix` with the extra root manifest text and
+/// the arguments.
+fn planned_items(root_extra: &str, args: &[&str]) -> Vec<String> {
+    let dir = workspace(CORE, APP);
+    let manifest = read(&dir, "Cargo.toml");
+    write(dir.path(), "Cargo.toml", &format!("{manifest}{root_extra}"));
+    let mut all = vec!["--dry-run", "--format", "json", "--quiet"];
+    all.extend_from_slice(args);
+    let (code, stdout, stderr) = fix(&dir, &all, None);
+    assert_eq!(code, 0, "{stderr}");
+    json(&stdout)["fixes"]
+        .as_array()
+        .expect("fixes is an array")
+        .iter()
+        .filter_map(|fix| fix["item"].as_str().map(str::to_owned))
+        .collect()
+}
+
+#[test]
+fn a_visibility_rule_at_off_gets_no_edit_and_warn_or_error_keep_it() {
+    let rules = |level: &str| {
+        format!("\n[workspace.metadata.fallow.rules]\nunnecessary_public = \"{level}\"\n")
+    };
+    assert_eq!(planned_items("", &[]), ["helper"]);
+    assert_eq!(planned_items(&rules("off"), &[]), Vec::<String>::new());
+    assert_eq!(planned_items(&rules("warn"), &[]), ["helper"]);
+    assert_eq!(planned_items(&rules("error"), &[]), ["helper"]);
+}
+
+#[test]
+fn package_keeps_only_the_visibility_edits_of_the_named_member() {
+    assert_eq!(planned_items("", &["--package", "core-lib"]), ["helper"]);
+    assert_eq!(planned_items("", &["-p", "app"]), Vec::<String>::new());
+}
+
+#[test]
+fn a_suppression_comment_keeps_its_item_out_of_the_edits() {
+    let dir = workspace(
+        "pub fn used() { helper(); }\n// fallow-ignore-next-line visibility\npub fn helper() {}\n",
+        APP,
+    );
+    let (code, stdout, stderr) = fix(&dir, &["--dry-run", "--format", "json", "--quiet"], None);
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(json(&stdout)["fixes"], Value::Array(Vec::new()));
+}
+
+#[test]
+fn a_configured_baseline_that_is_missing_does_not_stop_fix() {
+    let items = planned_items(
+        "\n[workspace.metadata.fallow]\nbaseline = \"missing.json\"\n",
+        &[],
+    );
+    assert_eq!(items, ["helper"]);
 }

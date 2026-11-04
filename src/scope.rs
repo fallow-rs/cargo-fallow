@@ -247,8 +247,25 @@ pub struct Scope {
 }
 
 impl Scope {
+    /// The scope of `fix`: the members of `--package`, the rules table and
+    /// the suppression comments. A baseline does not hide an edit, because
+    /// `fix` must change the old findings too.
+    pub fn for_fix(workspace: &Workspace, packages: &[String]) -> Result<Self, CliError> {
+        let args = ScopeArgs {
+            packages: packages.to_vec(),
+            ..ScopeArgs::default()
+        };
+        Self::read(workspace, &args, false)
+    }
+
     /// The scope of the flags.
     pub fn load(workspace: &Workspace, args: &ScopeArgs) -> Result<Self, CliError> {
+        Self::read(workspace, args, true)
+    }
+
+    /// The scope of the flags. `baselines` is false when the run reads no
+    /// baseline.
+    fn read(workspace: &Workspace, args: &ScopeArgs, baselines: bool) -> Result<Self, CliError> {
         Ok(Self {
             changed: args
                 .changed_since
@@ -261,7 +278,11 @@ impl Scope {
                 Some(Packages::new(workspace, &args.packages)?)
             },
             baseline: {
-                let path = baseline_path(workspace, args)?;
+                let path = if baselines {
+                    baseline_path(workspace, args)?
+                } else {
+                    None
+                };
                 if args.fail_on_stale_baseline && path.is_none() {
                     return Err(CliError::new(
                         crate::error::ErrorCode::InvalidArgument,

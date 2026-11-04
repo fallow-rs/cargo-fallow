@@ -61,6 +61,10 @@ pub struct FixArgs {
     /// Give `--frozen` to the `cargo metadata` call of the analysis.
     #[arg(long)]
     frozen: bool,
+    /// Apply only the edits in the files of this workspace member. The flag
+    /// can repeat. The analysis still reads the whole workspace.
+    #[arg(long = "package", short = 'p', value_name = "NAME")]
+    packages: Vec<String>,
 }
 
 impl FixArgs {
@@ -227,6 +231,7 @@ fn plan(
             trace: None,
         },
     )?;
+    let scope = Scope::for_fix(workspace, &args.packages)?;
     progress.step("Building the module graph");
     // Only the visibility check reads the production selection.
     let production = crate::graph::Production {
@@ -234,7 +239,6 @@ fn plan(
     };
     let module_graph = crate::graph::build(workspace, &production);
     progress.step("Checking the dependencies");
-    let scope = Scope::default();
     let report = crate::deps::report(workspace, metadata, &module_graph, false, &scope);
     let deps_edits = deps::plan(&report);
     progress.step("Checking the visibility");
@@ -261,7 +265,12 @@ fn plan(
                 .saturating_sub(fixable_rows),
         deps: deps_edits,
         visibility: visibility_edits,
-        skipped_packages: report.skipped,
+        // A package outside `--package` gets no edit, so its skip is no news.
+        skipped_packages: report
+            .skipped
+            .into_iter()
+            .filter(|skipped| args.packages.is_empty() || args.packages.contains(&skipped.package))
+            .collect(),
     })
 }
 
@@ -367,11 +376,15 @@ fn baseline(manifest: Option<&Path>, root: &Path, flags: &[String]) -> Result<bo
     workspace::cargo_check(manifest, root, flags, false)
         .map(|()| false)
         .map_err(|message| {
-            unchanged(&format!(
+            failed(&format!(
                 "the workspace does not build before the edits, so `fix` cannot judge them: \
                  {}",
                 first_lines(&message)
             ))
+            .with_help(
+                "No file changed. Make `cargo check --workspace --all-targets` pass, or run \
+                 `cargo fallow fix --dry-run` and make the edits by hand.",
+            )
         })
 }
 

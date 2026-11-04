@@ -104,6 +104,9 @@ GitHub release. Each release needs a `## [X.Y.Z] - YYYY-MM-DD` section.
   the dupes section no longer says "No clones found" when a baseline hides
   each clone group. `fix`, `init` and `explain` list only `human` and `json`
   in the help of `--format`.
+- `fix` honors the rules table: a rule at `off` gets no edit. `fix` takes
+  `--package` (`-p`) to keep only the edits of the named members. When the
+  workspace does not build before the edits, the help names the next step.
 - `size` skips a file whose first lines hold an `@generated` comment, as the
   `complexity`, `dupes`, `files` and `visibility` checks do.
 - `init` does not write `max-file-lines`, because a larger limit only turns

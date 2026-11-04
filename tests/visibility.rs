@@ -1879,3 +1879,72 @@ fn an_intra_doc_link_from_a_reported_item_holds_nothing() {
         set(&["dead-public dead_doc", "unnecessary-public Target"])
     );
 }
+
+/// In a private module, `pub` already gives crate visibility, and
+/// `clippy::redundant_pub_crate` rejects `pub(crate)` there. A test helper
+/// in such a module gets no `pub(crate)` change. When only its own module
+/// uses it, it can be private.
+#[test]
+fn a_test_helper_in_a_private_module_gets_no_pub_crate_change() {
+    let dir = workspace(&[
+        ("app/src/main.rs", "fn main() { mid::run(); }\n"),
+        (
+            "mid/src/lib.rs",
+            "mod protocol;\npub mod open;\npub fn run() { protocol::send(); }\n\
+             #[cfg(test)]\nmod tests { #[test] fn t() { crate::protocol::shared(); crate::open::exposed(); } }\n",
+        ),
+        (
+            "mid/src/protocol.rs",
+            "pub fn send() {}\n#[cfg(test)]\npub fn shared() {}\n#[cfg(test)]\npub fn local() {}\n\
+             #[cfg(test)]\nmod tests { #[test] fn t() { super::local(); } }\n",
+        ),
+        ("mid/src/open.rs", "#[cfg(test)]\npub fn exposed() {}\n"),
+    ]);
+    let (found, _) = findings(&dir, &[]);
+    assert_eq!(
+        found,
+        set(&[
+            "unnecessary-public open",
+            "unnecessary-public open::exposed",
+            "unnecessary-restricted-visibility protocol::local",
+        ])
+    );
+}
+
+/// rustc rejects a `use` that re-exports an item with more visibility than
+/// the item has, so a re-exported item keeps its visibility.
+#[test]
+fn an_item_that_a_visible_use_re_exports_keeps_its_visibility() {
+    let dir = workspace(&[
+        ("app/src/main.rs", "fn main() { mid::run(); }\n"),
+        ("mid/src/lib.rs", "mod a;\npub fn run() { a::x(); }\n"),
+        (
+            "mid/src/a.rs",
+            "pub fn x() { y(); }\n#[cfg(test)]\npub fn helper() {}\n#[cfg(test)]\npub use self::helper as alias;\n\
+             pub(crate) fn inner() {}\npub(crate) use self::inner as y;\n\
+             #[cfg(test)]\nmod t { #[test] fn t() { super::alias(); } }\n",
+        ),
+    ]);
+    let (found, _) = findings(&dir, &[]);
+    assert_eq!(found, set(&[]));
+}
+
+/// A method call from another module is a use from that module, also when
+/// only the name of the method is known.
+#[test]
+fn a_test_helper_method_that_another_module_calls_keeps_pub() {
+    let dir = workspace(&[
+        ("app/src/main.rs", "fn main() { mid::run(); }\n"),
+        (
+            "mid/src/lib.rs",
+            "mod a;\npub fn run() { let _ = a::Foo; }\n\
+             #[cfg(test)]\nmod tests { #[test] fn t() { crate::a::Foo.helper(); } }\n",
+        ),
+        (
+            "mid/src/a.rs",
+            "pub struct Foo;\n#[cfg(test)]\nimpl Foo { pub fn helper(&self) {} }\n",
+        ),
+    ]);
+    let (found, _) = findings(&dir, &[]);
+    assert_eq!(found, set(&[]));
+}

@@ -9,6 +9,8 @@
 //! valid path counts as a link, also when rustdoc does not resolve it. A link
 //! can continue on the next line of its paragraph.
 
+use rustc_hash::FxHashSet;
+
 /// One link path: the segments, and true when the path starts with `::`.
 pub type LinkPath = (Vec<String>, bool);
 
@@ -17,7 +19,10 @@ pub type LinkPath = (Vec<String>, bool);
 /// at the start of each line.
 pub fn link_paths(text: &str) -> Vec<(usize, LinkPath)> {
     let mut paths = Vec::new();
-    let mut paragraph = Paragraph::default();
+    let mut paragraph = Paragraph {
+        urls: url_labels(text),
+        ..Paragraph::default()
+    };
     let mut fence: Option<(char, usize)> = None;
     for (index, raw) in text.lines().enumerate() {
         let line = strip_marker(raw);
@@ -37,10 +42,6 @@ pub fn link_paths(text: &str) -> Vec<(usize, LinkPath)> {
             paragraph.flush(&mut paths);
             continue;
         }
-        // An indented code block starts after a blank line.
-        if paragraph.text.is_empty() && line.starts_with("    ") {
-            continue;
-        }
         if let Some(target) = definition(trimmed) {
             paragraph.flush(&mut paths);
             paths.extend(path_of(target).map(|path| (index, path)));
@@ -58,6 +59,9 @@ struct Paragraph {
     text: String,
     /// The offset in `text` where each line starts, and its line index.
     starts: Vec<(usize, usize)>,
+    /// The labels of the reference definitions with a target that is no
+    /// path, for example a URL. A link to such a label is no intra-doc link.
+    urls: FxHashSet<String>,
 }
 
 impl Paragraph {
@@ -70,7 +74,7 @@ impl Paragraph {
     }
 
     fn flush(&mut self, paths: &mut Vec<(usize, LinkPath)>) {
-        for (offset, path) in scan(&self.text) {
+        for (offset, path) in scan(&self.text, &self.urls) {
             let at = self.starts.partition_point(|(start, _)| *start <= offset);
             let line = self
                 .starts
@@ -104,6 +108,21 @@ fn fence_of(line: &str) -> Option<(char, usize)> {
     (run >= 3).then_some((mark, run))
 }
 
+/// The labels of the reference definitions of the text whose target is no
+/// path, in lower case.
+fn url_labels(text: &str) -> FxHashSet<String> {
+    text.lines()
+        .map(|line| strip_marker(line).trim_start())
+        .filter_map(|line| {
+            let target = definition(line)?;
+            let label = line.strip_prefix('[')?.split_once("]:")?.0;
+            path_of(target)
+                .is_none()
+                .then(|| label.trim().to_lowercase())
+        })
+        .collect()
+}
+
 /// The target of a reference definition `[label]: target "title"`. A line
 /// with other text after the target is no definition.
 fn definition(line: &str) -> Option<&str> {
@@ -124,8 +143,12 @@ fn definition(line: &str) -> Option<&str> {
 }
 
 /// The paths of the links in one paragraph, with the offset of each link.
-fn scan(text: &str) -> Vec<(usize, LinkPath)> {
+/// The next `[` and `]` stay cached, so the scan is linear in the text.
+fn scan(text: &str, urls: &FxHashSet<String>) -> Vec<(usize, LinkPath)> {
     let mut paths = Vec::new();
+    let next_of = |from: usize, mark: char| text[from..].find(mark).map(|found| from + found);
+    let mut next_close: Option<usize> = None;
+    let mut next_open: Option<usize> = None;
     let mut at = 0;
     while let Some(found) = text[at..].find(['[', '`']) {
         let open = at + found;
@@ -140,14 +163,24 @@ fn scan(text: &str) -> Vec<(usize, LinkPath)> {
             continue;
         }
         let content_start = open + 1;
-        let Some(close) = closing_bracket(&text[content_start..]) else {
+        if next_close.is_none_or(|close| close < content_start) {
+            next_close = next_of(content_start, ']');
+        }
+        if next_open.is_none_or(|inner| inner < content_start) {
+            next_open = next_of(content_start, '[');
+        }
+        let Some(close) = next_close else {
+            break;
+        };
+        if next_open.is_some_and(|inner| inner < close) {
             // An inner `[` starts a new bracket.
             at = content_start;
             continue;
-        };
-        let content = &text[content_start..content_start + close];
-        let after = content_start + close + 1;
+        }
+        let content = &text[content_start..close];
+        let after = close + 1;
         let rest = &text[after..];
+        let known = |label: &str| !urls.contains(&label.trim().trim_matches('`').to_lowercase());
         if let Some(inner) = rest.strip_prefix('(') {
             let end = inner.find(')').unwrap_or(inner.len());
             paths.extend(path_of(inline_target(&inner[..end])).map(|path| (open, path)));
@@ -156,10 +189,14 @@ fn scan(text: &str) -> Vec<(usize, LinkPath)> {
             let end = inner.find(']').unwrap_or(inner.len());
             let label = &inner[..end];
             let target = if label.is_empty() { content } else { label };
-            paths.extend(path_of(target).map(|path| (open, path)));
+            if known(target) {
+                paths.extend(path_of(target).map(|path| (open, path)));
+            }
             at = after + 1 + end;
         } else {
-            paths.extend(path_of(content).map(|path| (open, path)));
+            if known(content) {
+                paths.extend(path_of(content).map(|path| (open, path)));
+            }
             at = after;
         }
     }
@@ -176,16 +213,6 @@ fn inline_target(text: &str) -> &str {
         return &inner[..end];
     }
     text.split_whitespace().next().unwrap_or("")
-}
-
-/// The offset of the `]` that closes a bracket, or `None` when a `[` comes
-/// first.
-fn closing_bracket(text: &str) -> Option<usize> {
-    let close = text.find(']')?;
-    match text.find('[') {
-        Some(open) if open < close => None,
-        _ => Some(close),
-    }
 }
 
 /// The path of a link target, or `None` when the target is not a path, for
@@ -213,7 +240,13 @@ fn path_of(target: &str) -> Option<LinkPath> {
         Some(rest) => (rest, true),
         None => (text.as_str(), false),
     };
-    let segments: Vec<String> = body.split("::").map(str::to_owned).collect();
+    // A turbofish such as `Gen::<u8>::new` leaves an empty segment.
+    let segments: Vec<String> = body
+        .split("::")
+        .enumerate()
+        .filter(|(index, segment)| *index == 0 || !segment.is_empty())
+        .map(|(_, segment)| segment.to_owned())
+        .collect();
     segments
         .iter()
         .all(|segment| is_identifier(segment))
@@ -313,10 +346,29 @@ mod tests {
     }
 
     #[test]
-    fn indented_code_and_long_fences_hold_no_link() {
-        let text = "/// Text.\n///\n///     let x = [a];\n///\n/// ````\n/// ```\n/// [b]\n\
+    fn long_fences_hold_no_link_and_an_indented_line_does() {
+        let text = "/// Text.\n///\n///     more [a].\n///\n/// ````\n/// ```\n/// [b]\n\
                     /// ````\n/// [c]\n";
-        assert_eq!(paths(text), ["c"]);
+        assert_eq!(paths(text), ["a", "c"]);
+    }
+
+    #[test]
+    fn a_turbofish_keeps_the_path() {
+        assert_eq!(paths("/// [`Gen::<u8>::new`]\n"), ["Gen::new"]);
+    }
+
+    #[test]
+    fn a_label_with_a_url_definition_is_no_link() {
+        let text = "/// Uses [tokio] and [`Item`].\n///\n/// [tokio]: https://tokio.rs\n";
+        assert_eq!(paths(text), ["Item"]);
+    }
+
+    #[test]
+    fn many_open_brackets_scan_in_linear_time() {
+        let text = format!("/// {}x{}\n", "[".repeat(200_000), "]".repeat(200_000));
+        let start = std::time::Instant::now();
+        let _ = link_paths(&text);
+        assert!(start.elapsed() < std::time::Duration::from_secs(2));
     }
 
     #[test]

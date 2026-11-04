@@ -353,9 +353,13 @@ pub fn build(workspace: &Workspace, production: &Production) -> Graph {
         graph
             .generated_files
             .extend(generated.map(|file| file.path.clone()));
+        let package = Path::new(&member.manifest_path)
+            .parent()
+            .unwrap_or_else(|| Path::new(""));
         add_files(
             &mut graph,
             root,
+            package,
             id,
             files,
             kind.is_library() && target.doctest,
@@ -505,7 +509,14 @@ fn externs_of(
     names
 }
 
-fn add_files(graph: &mut Graph, root: &Path, krate: CrateId, files: CrateFiles, doctest: bool) {
+fn add_files(
+    graph: &mut Graph,
+    root: &Path,
+    package: &Path,
+    krate: CrateId,
+    files: CrateFiles,
+    doctest: bool,
+) {
     graph.skipped.extend(files.skipped);
     graph.unreached += files.unreached;
     let root_module = graph.crates[krate].root_module;
@@ -570,7 +581,7 @@ fn add_files(graph: &mut Graph, root: &Path, krate: CrateId, files: CrateFiles, 
             uses: Vec::new(),
             ..file.facts
         };
-        let refs = file_refs(root, &file.path, rest, edition, doctest);
+        let refs = file_refs(root, package, &file.path, rest, edition, doctest);
         for raw in refs {
             if raw.origin == Origin::Doc && !doctest {
                 continue;
@@ -597,6 +608,7 @@ fn add_files(graph: &mut Graph, root: &Path, krate: CrateId, files: CrateFiles, 
 /// includes as code or as documentation.
 fn file_refs(
     root: &Path,
+    package: &Path,
     path: &str,
     facts: FileFacts,
     edition: Edition,
@@ -614,7 +626,12 @@ fn file_refs(
     if doctest {
         refs.extend(included_docs(root, path, &facts.doc_includes, edition));
     }
-    refs.extend(included_doc_links(root, path, facts.doc_link_includes));
+    refs.extend(included_doc_links(
+        root,
+        package,
+        path,
+        facts.doc_link_includes,
+    ));
     refs
 }
 
@@ -799,12 +816,24 @@ fn included_docs(root: &Path, file: &str, includes: &[String], edition: Edition)
 
 /// The intra-doc links of the files that `#[doc = include_str!(..)]` reads.
 /// Each link gets the module, the owner and the line of the attribute.
-fn included_doc_links(root: &Path, file: &str, includes: Vec<DocInclude>) -> Vec<RawRef> {
+/// A path of the folder of the package starts with `/`, as in
+/// `concat!(env!("CARGO_MANIFEST_DIR"), "/README.md")`.
+fn included_doc_links(
+    root: &Path,
+    package: &Path,
+    file: &str,
+    includes: Vec<DocInclude>,
+) -> Vec<RawRef> {
     let folder = Path::new(file).parent().unwrap_or_else(|| Path::new(""));
     let mut refs = Vec::new();
     for include in includes {
-        let Some(markdown) = normalize(&folder.join(&include.path))
-            .and_then(|path| fs::read_to_string(root.join(path)).ok())
+        let path = if include.from_package {
+            package.join(include.path.trim_start_matches(['/', '\\']))
+        } else {
+            folder.join(&include.path)
+        };
+        let Some(markdown) =
+            normalize(&path).and_then(|path| fs::read_to_string(root.join(path)).ok())
         else {
             continue;
         };

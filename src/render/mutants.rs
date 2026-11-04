@@ -251,7 +251,7 @@ pub fn findings(report: &Report) -> Vec<crate::finding::Finding> {
             Finding::new(Draft {
                 check: "mutants",
                 rule: SURVIVING_RULE,
-                severity: Severity::Warning,
+                severity: Severity::Error,
                 message: survivor_message(row),
                 location: Location {
                     path: row.file.clone(),

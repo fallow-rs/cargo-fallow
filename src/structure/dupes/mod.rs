@@ -433,7 +433,7 @@ fn shared_findings(report: &Report<Summary, CloneGroup>) -> Vec<shared::Finding>
                 shared::Finding::new(Draft {
                     check: "dupes",
                     rule: DUPES_RULE,
-                    severity: Severity::Warning,
+                    severity: Severity::Error,
                     message: format!(
                         "Clone {}: {} lines, {} tokens, {} instances.",
                         group.fingerprint,

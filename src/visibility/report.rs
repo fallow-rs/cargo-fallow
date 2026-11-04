@@ -378,7 +378,7 @@ impl VisibilityReport {
                 Finding::new(Draft {
                     check: KIND,
                     rule: finding.kind,
-                    severity: Severity::Warning,
+                    severity: Severity::Error,
                     message: message(finding),
                     location: Location {
                         path: finding.file.clone(),

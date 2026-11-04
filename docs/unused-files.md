@@ -61,7 +61,7 @@ file. The command does not report a file in these cases:
 The command cannot find a module that a macro of another crate declares, for
 example a macro of a dependency. Add such a file to `exclude`.
 
-Each finding has the rule `unused-file`, the `warning` severity and a
+Each finding has the rule `unused-file`, the `error` severity and a
 `delete-file` action with `auto_fixable: false`. The `unused-files` gate fails
 the run only when you give `--fail-on-issues`. The findings do not change the
 health score.

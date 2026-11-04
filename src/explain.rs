@@ -152,7 +152,7 @@ pub const RULES: &[Explanation] = &[
     Explanation {
         rule: "unused-file",
         check: "files",
-        severity: "warn",
+        severity: "error",
         meaning: "A `.rs` file in a target folder that no target compiles. No `mod` item, `#[path]` attribute or `include!` call reaches it.",
         example: "src/old.rs, with no `mod old;` in src/lib.rs.",
         fix: "Delete the file, or declare it with a `mod` item.",
@@ -161,7 +161,7 @@ pub const RULES: &[Explanation] = &[
     Explanation {
         rule: "dead-public",
         check: "visibility",
-        severity: "warn",
+        severity: "error",
         meaning: "A `pub` item that no code of the workspace reaches.",
         example: "`pub fn helper()` in a library that no crate calls.",
         fix: "Make the item `pub(crate)`, or run `cargo fallow fix`. When no code of the crate uses it, the compiler then reports dead code.",
@@ -170,7 +170,7 @@ pub const RULES: &[Explanation] = &[
     Explanation {
         rule: "unnecessary-public",
         check: "visibility",
-        severity: "warn",
+        severity: "error",
         meaning: "A `pub` item that only its own crate uses.",
         example: "`pub fn parse()` in a library, called only from the same library.",
         fix: "Make the item `pub(crate)`, or run `cargo fallow fix`.",
@@ -179,7 +179,7 @@ pub const RULES: &[Explanation] = &[
     Explanation {
         rule: "unnecessary-restricted-visibility",
         check: "visibility",
-        severity: "warn",
+        severity: "error",
         meaning: "A `pub(crate)`, `pub(super)` or `pub(in path)` item that only its own module uses.",
         example: "`pub(crate) fn step()` that only its own module calls.",
         fix: "Remove the visibility keyword, or run `cargo fallow fix`.",
@@ -188,7 +188,7 @@ pub const RULES: &[Explanation] = &[
     Explanation {
         rule: "boundaries",
         check: "boundaries",
-        severity: "warn",
+        severity: "error",
         meaning: "A rule of [workspace.metadata.fallow.boundaries] found a violation. The finding has the name of the rule. The kind is crate-dependency, source-pattern or module-path.",
         example: "A source rule `no-exit` that denies `std::process::exit` in crates/core, and a call in crates/core/src/run.rs.",
         fix: "Move the code or the dependency, or change the rule.",
@@ -197,7 +197,7 @@ pub const RULES: &[Explanation] = &[
     Explanation {
         rule: "crate-dependency",
         check: "boundaries",
-        severity: "warn",
+        severity: "error",
         meaning: "A workspace package depends on a workspace package that a crate rule denies. The finding has the name of the rule.",
         example: "A rule `from = [\"core\"]`, `deny = [\"cli\"]`, and `cli` in the [dependencies] of `core`.",
         fix: "Remove the dependency, or change the rule in [workspace.metadata.fallow.boundaries].",
@@ -206,7 +206,7 @@ pub const RULES: &[Explanation] = &[
     Explanation {
         rule: "source-pattern",
         check: "boundaries",
-        severity: "warn",
+        severity: "error",
         meaning: "A file under the paths of a source rule contains a pattern that the rule denies. The finding has the name of the rule.",
         example: "A rule that denies `std::process::exit` in crates/core, and a call in crates/core/src/run.rs.",
         fix: "Move the code to the package that owns the pattern, or change the rule.",
@@ -215,7 +215,7 @@ pub const RULES: &[Explanation] = &[
     Explanation {
         rule: "module-path",
         check: "boundaries",
-        severity: "warn",
+        severity: "error",
         meaning: "A module uses a module of the same package that a module rule denies. The finding has the name of the rule.",
         example: "A rule `from = [\"crate::parse\"]`, `deny = [\"crate::render\"]`, and `use crate::render::x` in src/parse.rs.",
         fix: "Move the code, or change the rule.",
@@ -224,7 +224,7 @@ pub const RULES: &[Explanation] = &[
     Explanation {
         rule: "grown-file",
         check: "size",
-        severity: "warn",
+        severity: "error",
         meaning: "A file over the line limit has more lines than its version at the base.",
         example: "src/big.rs has 2400 lines at the base and 2450 lines now, with a limit of 2000.",
         fix: "Split the file, or move the new code to another file.",
@@ -233,7 +233,7 @@ pub const RULES: &[Explanation] = &[
     Explanation {
         rule: "new-large-file",
         check: "size",
-        severity: "warn",
+        severity: "error",
         meaning: "A new file is over the line limit.",
         example: "A new file src/gen.rs with 2100 lines, with a limit of 2000.",
         fix: "Split the file. A file with a generator header or an `@generated` comment does not count.",
@@ -242,7 +242,7 @@ pub const RULES: &[Explanation] = &[
     Explanation {
         rule: "complexity",
         check: "complexity",
-        severity: "warn",
+        severity: "error",
         meaning: "A function over the cyclomatic or the cognitive complexity limit.",
         example: "A `fn` with a cyclomatic complexity of 25, with a limit of 20.",
         fix: "Split the function, or put `// fallow-ignore-next-line complexity` above it.",
@@ -251,7 +251,7 @@ pub const RULES: &[Explanation] = &[
     Explanation {
         rule: "code-duplication",
         check: "dupes",
-        severity: "warn",
+        severity: "error",
         meaning: "A group of two or more copies of the same normalized token sequence.",
         example: "The same 60-token loop in src/a.rs and src/b.rs.",
         fix: "Move the code to one function, or put `// fallow-ignore-next-line code-duplication` above a copy.",
@@ -269,7 +269,7 @@ pub const RULES: &[Explanation] = &[
     Explanation {
         rule: "surviving-mutant",
         check: "mutants",
-        severity: "warn",
+        severity: "error",
         meaning: "A small change in the source that each test passes with: no test detects it.",
         example: "`a > b` becomes `a >= b`, and each test still passes.",
         fix: "Add a test that fails with the change, or remove the code when no test can need it.",

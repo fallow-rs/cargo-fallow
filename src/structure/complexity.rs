@@ -613,7 +613,7 @@ fn shared_findings(report: &Report<Summary, Finding>) -> Vec<shared::Finding> {
             shared::Finding::new(Draft {
                 check: "complexity",
                 rule: RULE,
-                severity: shared::Severity::Warning,
+                severity: shared::Severity::Error,
                 message: format!(
                     "`{}` has cyclomatic complexity {} and cognitive complexity {}.",
                     finding.name, finding.cyclomatic, finding.cognitive

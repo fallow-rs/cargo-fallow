@@ -256,7 +256,7 @@ fn shared_findings(report: &Report<Summary, Finding>) -> Vec<shared::Finding> {
             shared::Finding::new(Draft {
                 check: "boundaries",
                 rule: &finding.rule,
-                severity: Severity::Warning,
+                severity: Severity::Error,
                 message: finding.message.clone(),
                 location: Location::at(finding.path.clone(), finding.line, finding.col),
                 identity: &[&finding.path, &finding.to, pattern, &index],

@@ -314,7 +314,7 @@ fn shared_findings(report: &Report<Summary, Finding>) -> Vec<shared::Finding> {
             shared::Finding::new(Draft {
                 check: "size",
                 rule: rule(finding.kind),
-                severity: Severity::Warning,
+                severity: Severity::Error,
                 message: finding.message.clone(),
                 location: Location::at(finding.path.clone(), 1, 1),
                 identity: &[&finding.path],

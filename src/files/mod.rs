@@ -438,7 +438,7 @@ fn shared_findings(report: &Report<Summary, Finding>) -> Vec<shared::Finding> {
             shared::Finding::new(Draft {
                 check: "files",
                 rule: finding.rule,
-                severity: Severity::Warning,
+                severity: Severity::Error,
                 message: finding.message.clone(),
                 location: Location {
                     path: finding.path.clone(),

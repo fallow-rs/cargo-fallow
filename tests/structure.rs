@@ -1697,6 +1697,35 @@ impl Fixture {
 }
 
 #[test]
+fn a_finding_that_counts_for_a_gate_is_an_error_and_a_warn_rule_is_not() {
+    let fixture = Fixture::new();
+    let (_, report) = fixture.json(&["check", "--only", "visibility,complexity,dupes"]);
+    let findings = report["findings"].as_array().expect("findings");
+    assert!(!findings.is_empty(), "{report:#}");
+    for finding in findings {
+        assert_eq!(finding["severity"], "error", "{finding:#}");
+    }
+    let fixture = Fixture::new();
+    fixture.rules(
+        "dead-public = \"warn\"\nunnecessary-public = \"warn\"\n\
+         unnecessary-restricted-visibility = \"warn\"\ncomplexity = \"warn\"\n\
+         code-duplication = \"warn\"",
+    );
+    let (code, report) = fixture.json(&[
+        "check",
+        "--only",
+        "visibility,complexity,dupes",
+        "--fail-on-issues",
+    ]);
+    let findings = report["findings"].as_array().expect("findings");
+    assert!(!findings.is_empty(), "{report:#}");
+    for finding in findings {
+        assert_eq!(finding["severity"], "warn", "{finding:#}");
+    }
+    assert_eq!(code, 0, "a warning fails no gate: {report:#}");
+}
+
+#[test]
 fn a_rule_level_turns_a_rule_off_or_changes_its_gate() {
     // `off` removes the findings of the rule.
     let fixture = Fixture::new();

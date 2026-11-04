@@ -103,6 +103,11 @@ GitHub release. Each release needs a `## [X.Y.Z] - YYYY-MM-DD` section.
 
 ### Changed
 
+- A finding that counts for a gate has the severity `error`: each finding of
+  `files`, `visibility`, `boundaries`, `size`, `complexity`, `dupes` and the
+  surviving mutants of `mutants`. Before, these findings had `warn` and still
+  failed their gate. A rule set to `warn` in the rules table keeps the finding
+  as a warning, and the warning does not fail the gate.
 - The `visibility` rule ids are kebab-case in each output format:
   `dead-public`, `unnecessary-public` and `unnecessary-restricted-visibility`.
   The rules table, `kinds`, a suppression comment and `cargo fallow explain`

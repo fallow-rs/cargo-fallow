@@ -285,12 +285,17 @@ fn human_summary_and_progress() {
 }
 
 #[test]
-fn json_spells_the_lower_severity_warn_and_sarif_keeps_warning() {
+fn a_gate_finding_is_an_error_in_json_and_sarif_follows_the_gate() {
     let fixture = Fixture::new("ws-ok");
     let json = check(&fixture, &["--format", "json", "--quiet"]).json();
     let findings = json["findings"].as_array().expect("an array");
     assert!(!findings.is_empty());
-    assert!(findings.iter().all(|finding| finding["severity"] == "warn"));
+    assert!(
+        findings
+            .iter()
+            .all(|finding| finding["severity"] == "error")
+    );
+    // No gate is enforced, so the SARIF result is a warning.
     let sarif = check(&fixture, &["--format", "sarif", "--quiet"]).json();
     assert_eq!(sarif["runs"][0]["results"][0]["level"], "warning");
 }

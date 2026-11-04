@@ -144,6 +144,10 @@ pub struct Finding {
     /// so `fix` does not change the entry. It is not part of the report.
     #[serde(skip)]
     pub sets_features: bool,
+    /// True for a workspace entry that a member entry with `sets_features`
+    /// inherits. `fix` keeps it. It is not part of the report.
+    #[serde(skip)]
+    pub kept_by_member: bool,
     /// The next steps. `cargo fallow fix` applies a step with `auto_fixable`.
     pub actions: Vec<Action>,
 }
@@ -264,6 +268,7 @@ mod tests {
             used_by: Vec::new(),
             in_dev: false,
             sets_features: false,
+            kept_by_member: false,
             actions: Vec::new(),
         }
     }

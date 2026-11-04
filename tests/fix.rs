@@ -287,3 +287,16 @@ fn entry_that_turns_on_features_stays_for_a_person() {
     assert_eq!(report["skipped"], 1, "{report}");
     assert_eq!(read(&dir, "app/Cargo.toml"), before);
 }
+
+#[test]
+fn workspace_entry_that_a_kept_member_entry_inherits_stays() {
+    let root = "\n[workspace.dependencies]\nbeta = { path = \"libs/beta\" }\n";
+    let manifest = "[dependencies]\nalpha = { path = \"../libs/alpha\" }\nbeta = { workspace = true, features = [\"extra\"] }\n";
+    let dir = workspace(root, manifest, &[]);
+    let before = read(&dir, "Cargo.toml");
+    let (code, stdout, stderr) = fix(&dir, &["--yes", "--format", "json", "--quiet"], &[]);
+    assert_eq!(code, 0, "{stderr} {stdout}");
+    let report = json(&stdout);
+    assert_eq!(report["total_fixed"], 0, "{report}");
+    assert_eq!(read(&dir, "Cargo.toml"), before);
+}

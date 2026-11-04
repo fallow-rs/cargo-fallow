@@ -98,6 +98,9 @@ pub fn analyze(workspace: &Workspace, metadata: &Metadata, graph: &Graph) -> Ana
     let mut workspace_ignores = IgnoreList::from_metadata(&metadata.workspace_metadata);
     let mut member_keys: BTreeSet<String> = BTreeSet::new();
     let empty = PackageUsage::default();
+    // The workspace keys that a member entry inherits, where `fix` keeps the
+    // member entry. Without the workspace entry, that member entry breaks.
+    let mut kept_inherited: BTreeSet<String> = BTreeSet::new();
     for package in metadata.workspace_packages() {
         let manifest_path = workspace::relative_path(&workspace.root, &package.manifest_path);
         let text = match fs::read_to_string(&package.manifest_path) {
@@ -145,6 +148,18 @@ pub fn analyze(workspace: &Workspace, metadata: &Metadata, graph: &Graph) -> Ana
             analysis.findings.push(finding);
         }
         member_keys.extend(inherited_keys(&entries, &removed));
+        kept_inherited.extend(
+            entries
+                .iter()
+                .filter(|entry| entry.inherits)
+                .filter(|entry| {
+                    removed.iter().any(|finding| {
+                        finding.sets_features
+                            && line_of(std::slice::from_ref(*entry), finding).is_some()
+                    })
+                })
+                .map(|entry| entry.key.clone()),
+        );
         for name in ignores.redundant() {
             analysis.findings.push(redundant_ignore(
                 Some(package.name.to_string()),
@@ -174,6 +189,7 @@ pub fn analyze(workspace: &Workspace, metadata: &Metadata, graph: &Graph) -> Ana
             );
             finding.manifest_path.clone_from(&root_path);
             finding.line = Some(entry.line);
+            finding.kept_by_member = kept_inherited.contains(&entry.key);
             finding.actions = actions(&finding);
             analysis.findings.push(finding);
         }
@@ -481,6 +497,7 @@ fn finding(
         used_by: Vec::new(),
         in_dev: false,
         sets_features: false,
+        kept_by_member: false,
         actions: Vec::new(),
     }
 }
@@ -565,12 +582,17 @@ fn actions(finding: &Finding) -> Vec<Action> {
             "{description} The entry turns on features, and another dependency can need them, \
              so `cargo fallow fix` does not change it."
         )
+    } else if finding.kept_by_member {
+        format!(
+            "{description} A member entry that inherits it turns on features, so \
+             `cargo fallow fix` does not change it."
+        )
     } else {
         description
     };
     vec![Action {
         kind,
-        auto_fixable: fixes(finding.rule) && !finding.sets_features,
+        auto_fixable: fixes(finding.rule) && !finding.sets_features && !finding.kept_by_member,
         description,
         file: finding.manifest_path.clone(),
         line: finding.line,

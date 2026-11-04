@@ -166,12 +166,14 @@ pub fn fast_report(
     skip_generated(graph, &mut analysis);
     analysis.retain_kinds(&options.kinds);
     analysis.retain_scope(graph, scope);
-    report::VisibilityReport::new(report::Inputs {
+    let mut report = report::VisibilityReport::new(report::Inputs {
         graph,
         analysis: &analysis,
         precise: None,
         enforced: options.fail_on_issues,
-    })
+    });
+    report.regate(scope.rules());
+    report
 }
 
 /// Runs the check.

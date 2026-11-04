@@ -4,7 +4,7 @@ This file is the router for agents and contributors. Keep it short.
 
 ## Start here
 
-1. Read `README.md` for the CLI contract.
+1. Read `README.md` for the CLI contract, and `docs/` for each command.
 2. Read `CONTRIBUTING.md` for the build, the checks and the DCO.
 3. Load a workflow from `.agents/skills/` when one exists.
 

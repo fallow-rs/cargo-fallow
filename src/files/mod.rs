@@ -195,7 +195,14 @@ pub fn section(
     report.retain_baseline(scope, &mut findings);
     report.gate_outcomes.insert(
         Gate::UnusedFiles,
-        count_gate(report.findings.len(), enforced),
+        count_gate(
+            if scope.rules().counts(&[RULE], true) {
+                report.findings.len()
+            } else {
+                0
+            },
+            enforced,
+        ),
     );
     let rules = BTreeMap::from([(RULE.to_owned(), "No target compiles the file.".to_owned())]);
     Ok(Section {

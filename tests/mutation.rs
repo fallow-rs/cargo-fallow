@@ -1251,7 +1251,7 @@ fn the_fastest_test_runs_first() {
 
 /// With the mutant, the slow test fails and the fast test never ends. The order
 /// decides which one the run sees first. Both results count as detected, so the
-/// score is the same. The README documents this one difference.
+/// score is the same. `docs/mutation-testing.md` documents this one difference.
 #[test]
 fn the_order_decides_between_a_kill_and_a_timeout() {
     let lib = "pub fn check(a: u8) -> bool {\n    a == 1\n}\n\n#[test]\nfn a_fails() {\n    std::thread::sleep(std::time::Duration::from_millis(300));\n    assert!(check(1));\n}\n\n#[test]\nfn z_hangs() {\n    while !check(1) {\n        std::thread::sleep(std::time::Duration::from_millis(50));\n    }\n}\n";

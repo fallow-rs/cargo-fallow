@@ -324,6 +324,7 @@ fn attach_suppressions(scope: &Scope, sections: &mut [(CheckName, Section)]) {
     for (name, section) in sections {
         if *name != CheckName::Parse {
             scope.attach_suppressions(section);
+            scope.apply_rules(section);
         }
     }
 }

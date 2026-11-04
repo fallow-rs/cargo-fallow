@@ -273,7 +273,12 @@ pub fn section(inputs: &Inputs<'_>) -> Result<Section, CliError> {
     let mut findings = shared_findings(&report);
     report.retain_baseline(scope, &mut findings);
     let outcome = if changes.is_some() {
-        count_gate(report.findings.len(), enforced)
+        let counted = report
+            .findings
+            .iter()
+            .filter(|finding| scope.rules().counts(&[rule(finding.kind)], true))
+            .count();
+        count_gate(counted, enforced)
     } else {
         GateOutcome::new(GateStatus::Skipped, false)
     };

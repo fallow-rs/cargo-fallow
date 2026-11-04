@@ -1,7 +1,7 @@
 # Health score calibration
 
 This page records how the Rust health score got its `unit_size` weight, and
-why a partial run has no score. `README.md` describes the score for users.
+why a partial run has no score. `check.md` describes the score for users.
 `src/health.rs` holds the formula.
 
 ## The problem

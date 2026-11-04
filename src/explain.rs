@@ -17,8 +17,8 @@ use crate::error::{CliError, ErrorCode};
 use crate::render;
 use crate::section::{pretty, to_value};
 
-/// The base address of the documentation.
-const DOCS: &str = "https://github.com/fallow-rs/cargo-fallow#";
+/// The base address of the documentation pages. `README.md` there is the index.
+const DOCS: &str = "https://github.com/fallow-rs/cargo-fallow/blob/main/docs/";
 
 /// The flags of `explain`.
 #[derive(Debug, Clone, Args)]
@@ -66,7 +66,7 @@ pub const RULES: &[Explanation] = &[
         meaning: "A target root file does not parse, or it nests too deep to parse with a safe stack.",
         example: "src/lib.rs has `fn f( {`: the parser stops at the missing `)`.",
         fix: "Fix the syntax error. The other checks cannot judge a file that does not parse.",
-        docs: "https://github.com/fallow-rs/cargo-fallow#usage",
+        docs: "https://github.com/fallow-rs/cargo-fallow/blob/main/docs/check.md",
     },
     Explanation {
         rule: "unused-dependency",
@@ -75,7 +75,7 @@ pub const RULES: &[Explanation] = &[
         meaning: "A [dependencies] entry that no code of the package uses.",
         example: "`serde = \"1\"` in [dependencies], with no `serde` name in the code.",
         fix: "Remove the entry, or run `cargo fallow fix`. Add the key to `ignored` when a tool needs it with no name in the code.",
-        docs: "https://github.com/fallow-rs/cargo-fallow#unused-dependencies",
+        docs: "https://github.com/fallow-rs/cargo-fallow/blob/main/docs/dependencies.md",
     },
     Explanation {
         rule: "unused-dev-dependency",
@@ -84,7 +84,7 @@ pub const RULES: &[Explanation] = &[
         meaning: "A [dev-dependencies] entry that no test, bench or example uses.",
         example: "`proptest = \"1\"` in [dev-dependencies], with no test that names it.",
         fix: "Remove the entry, or run `cargo fallow fix`.",
-        docs: "https://github.com/fallow-rs/cargo-fallow#unused-dependencies",
+        docs: "https://github.com/fallow-rs/cargo-fallow/blob/main/docs/dependencies.md",
     },
     Explanation {
         rule: "unused-build-dependency",
@@ -93,7 +93,7 @@ pub const RULES: &[Explanation] = &[
         meaning: "A [build-dependencies] entry that the build script does not use.",
         example: "`cc = \"1\"` in [build-dependencies], with a build.rs that does not name `cc`.",
         fix: "Remove the entry, or run `cargo fallow fix`.",
-        docs: "https://github.com/fallow-rs/cargo-fallow#unused-dependencies",
+        docs: "https://github.com/fallow-rs/cargo-fallow/blob/main/docs/dependencies.md",
     },
     Explanation {
         rule: "unused-workspace-dependency",
@@ -102,7 +102,7 @@ pub const RULES: &[Explanation] = &[
         meaning: "A [workspace.dependencies] entry that no member inherits with `workspace = true`.",
         example: "`regex = \"1\"` in the root [workspace.dependencies], with no member entry `regex = { workspace = true }`.",
         fix: "Remove the entry from the root Cargo.toml, or run `cargo fallow fix`.",
-        docs: "https://github.com/fallow-rs/cargo-fallow#unused-dependencies",
+        docs: "https://github.com/fallow-rs/cargo-fallow/blob/main/docs/dependencies.md",
     },
     Explanation {
         rule: "misplaced-dependency",
@@ -111,7 +111,7 @@ pub const RULES: &[Explanation] = &[
         meaning: "A [dependencies] entry that only tests, benches or examples use.",
         example: "`tempfile` in [dependencies], with a use only in tests/it.rs.",
         fix: "Move the entry to [dev-dependencies], or run `cargo fallow fix`.",
-        docs: "https://github.com/fallow-rs/cargo-fallow#unused-dependencies",
+        docs: "https://github.com/fallow-rs/cargo-fallow/blob/main/docs/dependencies.md",
     },
     Explanation {
         rule: "unused-optional-dependency",
@@ -120,7 +120,7 @@ pub const RULES: &[Explanation] = &[
         meaning: "An optional dependency that no code uses. A feature enables it.",
         example: "`json = [\"dep:serde_json\"]`, with no `serde_json` name in the code.",
         fix: "Remove the entry and its feature values, or use the dependency under its feature.",
-        docs: "https://github.com/fallow-rs/cargo-fallow#unused-dependencies",
+        docs: "https://github.com/fallow-rs/cargo-fallow/blob/main/docs/dependencies.md",
     },
     Explanation {
         rule: "feature-only-dependency",
@@ -129,7 +129,7 @@ pub const RULES: &[Explanation] = &[
         meaning: "A dependency that no code uses, and that a feature of the package configures.",
         example: "`std = [\"log/std\"]`, with no `log` name in the code.",
         fix: "Remove the entry and its feature values. Add the key to `ignored` when the feature must set the features of the dependency.",
-        docs: "https://github.com/fallow-rs/cargo-fallow#unused-dependencies",
+        docs: "https://github.com/fallow-rs/cargo-fallow/blob/main/docs/dependencies.md",
     },
     Explanation {
         rule: "redundant-ignore",
@@ -138,7 +138,7 @@ pub const RULES: &[Explanation] = &[
         meaning: "An entry of an `ignored` list that hides no finding.",
         example: "`ignored = [\"serde\"]`, while the code uses `serde`.",
         fix: "Remove the entry from the `ignored` list.",
-        docs: "https://github.com/fallow-rs/cargo-fallow#unused-dependencies",
+        docs: "https://github.com/fallow-rs/cargo-fallow/blob/main/docs/dependencies.md",
     },
     Explanation {
         rule: "unused-file",
@@ -147,7 +147,7 @@ pub const RULES: &[Explanation] = &[
         meaning: "A `.rs` file in a target folder that no target compiles. No `mod` item, `#[path]` attribute or `include!` call reaches it.",
         example: "src/old.rs, with no `mod old;` in src/lib.rs.",
         fix: "Delete the file, or declare it with a `mod` item.",
-        docs: "https://github.com/fallow-rs/cargo-fallow#unused-files",
+        docs: "https://github.com/fallow-rs/cargo-fallow/blob/main/docs/unused-files.md",
     },
     Explanation {
         rule: "dead_public",
@@ -156,7 +156,7 @@ pub const RULES: &[Explanation] = &[
         meaning: "A `pub` item that no code of the workspace reaches.",
         example: "`pub fn helper()` in a library that no crate calls.",
         fix: "Make the item `pub(crate)`, or run `cargo fallow fix`. When no code of the crate uses it, the compiler then reports dead code.",
-        docs: "https://github.com/fallow-rs/cargo-fallow#visibility",
+        docs: "https://github.com/fallow-rs/cargo-fallow/blob/main/docs/visibility.md",
     },
     Explanation {
         rule: "unnecessary_public",
@@ -165,7 +165,7 @@ pub const RULES: &[Explanation] = &[
         meaning: "A `pub` item that only its own crate uses.",
         example: "`pub fn parse()` in a library, called only from the same library.",
         fix: "Make the item `pub(crate)`, or run `cargo fallow fix`.",
-        docs: "https://github.com/fallow-rs/cargo-fallow#visibility",
+        docs: "https://github.com/fallow-rs/cargo-fallow/blob/main/docs/visibility.md",
     },
     Explanation {
         rule: "unnecessary_restricted_visibility",
@@ -174,7 +174,7 @@ pub const RULES: &[Explanation] = &[
         meaning: "A `pub(crate)`, `pub(super)` or `pub(in path)` item that only its own module uses.",
         example: "`pub(crate) fn step()` that only its own module calls.",
         fix: "Remove the visibility keyword, or run `cargo fallow fix`.",
-        docs: "https://github.com/fallow-rs/cargo-fallow#visibility",
+        docs: "https://github.com/fallow-rs/cargo-fallow/blob/main/docs/visibility.md",
     },
     Explanation {
         rule: "boundaries",
@@ -183,7 +183,7 @@ pub const RULES: &[Explanation] = &[
         meaning: "A rule of [workspace.metadata.fallow.boundaries] found a violation. The finding has the name of the rule. The kind is crate-dependency, source-pattern or module-path.",
         example: "A source rule `no-exit` that denies `std::process::exit` in crates/core, and a call in crates/core/src/run.rs.",
         fix: "Move the code or the dependency, or change the rule.",
-        docs: "https://github.com/fallow-rs/cargo-fallow#structure-checks",
+        docs: "https://github.com/fallow-rs/cargo-fallow/blob/main/docs/structure.md",
     },
     Explanation {
         rule: "crate-dependency",
@@ -192,7 +192,7 @@ pub const RULES: &[Explanation] = &[
         meaning: "A workspace package depends on a workspace package that a crate rule denies. The finding has the name of the rule.",
         example: "A rule `from = [\"core\"]`, `deny = [\"cli\"]`, and `cli` in the [dependencies] of `core`.",
         fix: "Remove the dependency, or change the rule in [workspace.metadata.fallow.boundaries].",
-        docs: "https://github.com/fallow-rs/cargo-fallow#structure-checks",
+        docs: "https://github.com/fallow-rs/cargo-fallow/blob/main/docs/structure.md",
     },
     Explanation {
         rule: "source-pattern",
@@ -201,7 +201,7 @@ pub const RULES: &[Explanation] = &[
         meaning: "A file under the paths of a source rule contains a pattern that the rule denies. The finding has the name of the rule.",
         example: "A rule that denies `std::process::exit` in crates/core, and a call in crates/core/src/run.rs.",
         fix: "Move the code to the package that owns the pattern, or change the rule.",
-        docs: "https://github.com/fallow-rs/cargo-fallow#structure-checks",
+        docs: "https://github.com/fallow-rs/cargo-fallow/blob/main/docs/structure.md",
     },
     Explanation {
         rule: "module-path",
@@ -210,7 +210,7 @@ pub const RULES: &[Explanation] = &[
         meaning: "A module uses a module of the same package that a module rule denies. The finding has the name of the rule.",
         example: "A rule `from = [\"crate::parse\"]`, `deny = [\"crate::render\"]`, and `use crate::render::x` in src/parse.rs.",
         fix: "Move the code, or change the rule.",
-        docs: "https://github.com/fallow-rs/cargo-fallow#structure-checks",
+        docs: "https://github.com/fallow-rs/cargo-fallow/blob/main/docs/structure.md",
     },
     Explanation {
         rule: "grown-file",
@@ -219,7 +219,7 @@ pub const RULES: &[Explanation] = &[
         meaning: "A file over the line limit has more lines than its version at the base.",
         example: "src/big.rs has 2400 lines at the base and 2450 lines now, with a limit of 2000.",
         fix: "Split the file, or move the new code to another file.",
-        docs: "https://github.com/fallow-rs/cargo-fallow#structure-checks",
+        docs: "https://github.com/fallow-rs/cargo-fallow/blob/main/docs/structure.md",
     },
     Explanation {
         rule: "new-large-file",
@@ -228,7 +228,7 @@ pub const RULES: &[Explanation] = &[
         meaning: "A new file is over the line limit.",
         example: "A new file src/gen.rs with 2100 lines, with a limit of 2000.",
         fix: "Split the file. A generated file with a generator header does not count.",
-        docs: "https://github.com/fallow-rs/cargo-fallow#structure-checks",
+        docs: "https://github.com/fallow-rs/cargo-fallow/blob/main/docs/structure.md",
     },
     Explanation {
         rule: "complexity",
@@ -237,7 +237,7 @@ pub const RULES: &[Explanation] = &[
         meaning: "A function over the cyclomatic or the cognitive complexity limit.",
         example: "A `fn` with a cyclomatic complexity of 25, with a limit of 20.",
         fix: "Split the function, or put `// fallow-ignore-next-line complexity` above it.",
-        docs: "https://github.com/fallow-rs/cargo-fallow#structure-checks",
+        docs: "https://github.com/fallow-rs/cargo-fallow/blob/main/docs/structure.md",
     },
     Explanation {
         rule: "code-duplication",
@@ -246,7 +246,7 @@ pub const RULES: &[Explanation] = &[
         meaning: "A group of two or more copies of the same normalized token sequence.",
         example: "The same 60-token loop in src/a.rs and src/b.rs.",
         fix: "Move the code to one function, or put `// fallow-ignore-next-line code-duplication` above a copy.",
-        docs: "https://github.com/fallow-rs/cargo-fallow#structure-checks",
+        docs: "https://github.com/fallow-rs/cargo-fallow/blob/main/docs/structure.md",
     },
     Explanation {
         rule: "stale-suppression",
@@ -255,7 +255,7 @@ pub const RULES: &[Explanation] = &[
         meaning: "A suppression comment with a kind of a check that ran hides no finding.",
         example: "`// fallow-ignore-next-line visibility` above a private function.",
         fix: "Remove the comment. The finding that it hid is gone.",
-        docs: "https://github.com/fallow-rs/cargo-fallow#suppressions",
+        docs: "https://github.com/fallow-rs/cargo-fallow/blob/main/docs/adoption.md#suppressions",
     },
     Explanation {
         rule: "surviving-mutant",
@@ -264,7 +264,7 @@ pub const RULES: &[Explanation] = &[
         meaning: "A small change in the source that each test passes with: no test detects it.",
         example: "`a > b` becomes `a >= b`, and each test still passes.",
         fix: "Add a test that fails with the change, or remove the code when no test can need it.",
-        docs: "https://github.com/fallow-rs/cargo-fallow#mutation-testing",
+        docs: "https://github.com/fallow-rs/cargo-fallow/blob/main/docs/mutation-testing.md",
     },
 ];
 
@@ -336,7 +336,7 @@ pub fn meta<'a>(findings: impl IntoIterator<Item = (&'a str, &'a str)>) -> Resul
     }
     let mut meta = Map::new();
     meta.insert("rules".to_owned(), Value::Object(found));
-    meta.insert("docs".to_owned(), Value::from(DOCS));
+    meta.insert("docs".to_owned(), Value::from(format!("{DOCS}README.md")));
     Ok(Value::Object(meta))
 }
 
@@ -344,6 +344,31 @@ pub fn meta<'a>(findings: impl IntoIterator<Item = (&'a str, &'a str)>) -> Resul
 #[expect(clippy::expect_used, reason = "a test fails loudly")]
 mod tests {
     use super::*;
+
+    /// Each `docs` address names a page and an anchor that the repository has.
+    #[test]
+    fn each_docs_address_names_a_page_of_the_repository() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs");
+        assert!(
+            root.join("README.md").is_file(),
+            "docs/README.md is missing"
+        );
+        for rule in RULES {
+            let page = rule.docs.strip_prefix(DOCS).expect("a docs address");
+            let (file, anchor) = page.split_once('#').unwrap_or((page, ""));
+            let text = std::fs::read_to_string(root.join(file))
+                .unwrap_or_else(|error| panic!("{}: docs/{file}: {error}", rule.rule));
+            if !anchor.is_empty() {
+                let heading = anchor.replace('-', " ");
+                assert!(
+                    text.lines().any(|line| line.starts_with('#')
+                        && line.trim_start_matches('#').trim().to_lowercase() == heading),
+                    "{}: docs/{file} has no heading for #{anchor}",
+                    rule.rule
+                );
+            }
+        }
+    }
 
     #[test]
     fn each_rule_of_each_check_has_an_entry() {

@@ -18,6 +18,7 @@ use crate::error::{CliError, ErrorCode};
 use crate::finding::Finding;
 use crate::gates::RustGateName;
 use crate::render;
+use crate::rules::{Level, Rules};
 use crate::section::{Section, to_value};
 use crate::suppress::Registry;
 use crate::workspace::Workspace;
@@ -241,6 +242,8 @@ pub struct Scope {
     marked_files: Vec<String>,
     /// The folder of each member, by package name.
     member_folders: BTreeMap<String, String>,
+    /// The levels of `[workspace.metadata.fallow.rules]`.
+    rules: Rules,
 }
 
 impl Scope {
@@ -274,6 +277,7 @@ impl Scope {
             fail_on_stale: args.fail_on_stale_baseline,
             narrowed: false,
             explain: args.explain,
+            rules: Rules::load(workspace, &boundary_rules(workspace))?,
             suppressions: Registry::new(workspace.root.as_std_path(), boundary_rules(workspace)),
             marked_files: marked_files(workspace),
             member_folders: workspace
@@ -432,6 +436,10 @@ impl Scope {
     /// True when the baseline does not hold the entry. The entry then goes to
     /// the baseline file of `--save-baseline`.
     pub fn keeps_entry(&self, entry: Entry) -> bool {
+        // A rule that is off gives no finding, so a baseline does not hold it.
+        if self.rules.is_off(&[&entry.rule]) {
+            return false;
+        }
         if self
             .baseline
             .as_ref()
@@ -449,7 +457,7 @@ impl Scope {
     /// A run without a baseline and without `--save-baseline` builds no
     /// entry.
     pub fn keeps_entry_of(&self, entry: impl FnOnce() -> Entry) -> bool {
-        if self.baseline.is_none() && self.recorder.is_none() {
+        if self.baseline.is_none() && self.recorder.is_none() && self.rules.is_empty() {
             return true;
         }
         self.keeps_entry(entry())
@@ -457,7 +465,7 @@ impl Scope {
 
     /// True when the baseline does not hold the finding.
     pub fn keeps_finding(&self, finding: &Finding) -> bool {
-        if self.baseline.is_none() && self.recorder.is_none() {
+        if self.baseline.is_none() && self.recorder.is_none() && self.rules.is_empty() {
             return true;
         }
         self.keeps_entry(Entry::of(finding))
@@ -481,6 +489,52 @@ impl Scope {
         items.retain(|_| flags.next().copied().unwrap_or(true));
         let mut flags = keep.iter();
         shared.retain(|_| flags.next().copied().unwrap_or(true));
+    }
+
+    /// Keeps the items for which `keep` is true. `shared` has one finding for
+    /// each item, in the same order, and loses the same entries.
+    pub fn retain_where<T>(
+        items: &mut Vec<T>,
+        shared: &mut Vec<Finding>,
+        keep: impl Fn(&T) -> bool,
+    ) {
+        let flags: Vec<bool> = items.iter().map(&keep).collect();
+        let mut kept = flags.iter();
+        items.retain(|_| kept.next().copied().unwrap_or(true));
+        let mut kept = flags.iter();
+        shared.retain(|_| kept.next().copied().unwrap_or(true));
+    }
+
+    /// The levels of `[workspace.metadata.fallow.rules]`.
+    pub const fn rules(&self) -> &Rules {
+        &self.rules
+    }
+
+    /// Gives each finding of a configured rule its level: the severity of the
+    /// finding in the shared shape, and the level of its SARIF result.
+    pub fn apply_rules(&self, section: &mut Section) {
+        if self.rules.is_empty() {
+            return;
+        }
+        self.rules.apply(&mut section.findings);
+        let Some(runs) = section.sarif["runs"].as_array_mut() else {
+            return;
+        };
+        for result in runs
+            .iter_mut()
+            .filter_map(|run| run["results"].as_array_mut())
+            .flatten()
+        {
+            let level = result["ruleId"]
+                .as_str()
+                .and_then(|rule| self.rules.level(&[rule]));
+            let text = match level {
+                Some(Level::Error) => "error",
+                Some(Level::Warn) => "warning",
+                _ => continue,
+            };
+            result["level"] = Value::from(text);
+        }
     }
 
     /// The `baseline` member of a report on `checks`, or `None` without
@@ -517,6 +571,7 @@ impl Scope {
     /// The section of one command with the scope in its JSON and human
     /// output. The `kind` of the JSON report names the check.
     pub fn annotate(&self, mut section: Section) -> Result<Section, CliError> {
+        self.apply_rules(&mut section);
         if let Some(meta) = self.meta(&section.findings)? {
             insert(&mut section.json, "_meta", meta);
         }

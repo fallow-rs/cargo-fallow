@@ -363,25 +363,24 @@ pub fn section(
     let mut report = Report::new("dupes", summary, groups);
     report.gate_outcomes.insert(
         Gate::DuplicationFindings,
-        count_gate(report.findings.len(), enforced.clones),
+        count_gate(
+            if scope.rules().counts(&[DUPES_RULE], true) {
+                report.findings.len()
+            } else {
+                0
+            },
+            enforced.clones,
+        ),
     );
     // The percentage counts the whole workspace, so a scoped run does not
     // judge it.
-    if settings.threshold > 0.0 && scope.is_full() {
+    // An `off` rule gives no finding, so the run does not judge the
+    // percentage either.
+    if settings.threshold > 0.0 && scope.is_full() && !scope.rules().is_off(&[DUPES_RULE]) {
         let observed = report.summary.stats.duplication_percentage;
-        let status = if observed > settings.threshold {
-            fallow_report_protocol::GateStatus::Fail
-        } else {
-            fallow_report_protocol::GateStatus::Pass
-        };
         report.gate_outcomes.insert(
             Gate::DuplicationThreshold,
-            fallow_report_protocol::GateOutcome::measured(
-                status,
-                enforced.threshold,
-                observed,
-                settings.threshold,
-            ),
+            threshold_gate(observed, settings.threshold, enforced.threshold),
         );
     }
     let findings = shared_findings(&report);
@@ -392,6 +391,21 @@ pub fn section(
         findings,
         gates: report.gate_outcomes,
     })
+}
+
+/// The `duplication-threshold` gate: it fails when the duplicated lines are
+/// over the percentage.
+fn threshold_gate(
+    observed: f64,
+    threshold: f64,
+    enforced: bool,
+) -> fallow_report_protocol::GateOutcome {
+    let status = if observed > threshold {
+        fallow_report_protocol::GateStatus::Fail
+    } else {
+        fallow_report_protocol::GateStatus::Pass
+    };
+    fallow_report_protocol::GateOutcome::measured(status, enforced, observed, threshold)
 }
 
 fn place(instance: &Instance) -> Location {

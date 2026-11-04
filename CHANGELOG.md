@@ -72,11 +72,20 @@ GitHub release. Each release needs a `## [X.Y.Z] - YYYY-MM-DD` section.
   `path:line:col: rule: message`, and `--format markdown` gives a gate table
   and one table for each check. Each command has both formats, except `fix`
   and `mutants --inspect`.
+- `[workspace.metadata.fallow.rules]` sets a rule to `error`, `warn` or `off`.
+  The severity, the SARIF level and the gate count of its findings follow
+  the level.
 - `--format github-annotations` writes GitHub workflow commands, at most 50,
   the errors first, with paths from the repository root.
   `--format github-summary` writes a GitHub job summary. The annotations are
   the same text as the jq filter of the GitHub Action, and the summary shows
   the same in GitHub.
+
+### Changed
+
+- The reference for each command moved from the README to `docs/`. The
+  README is now an overview with a logo. The `docs` address of
+  `cargo fallow explain` and `_meta.docs` point to the new pages.
 
 ### Fixed
 

@@ -5,6 +5,7 @@
     reason = "a test fails loudly when its setup does not work"
 )]
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
@@ -1662,5 +1663,174 @@ fn github_summary_has_the_gates_and_the_findings() {
             .starts_with("### cargo fallow\n\nThe run failed with exit code 2: "),
         "{}",
         summary.stdout
+    );
+}
+
+impl Fixture {
+    /// Adds a `[workspace.metadata.fallow.rules]` table to the root manifest.
+    fn rules(&self, table: &str) {
+        let manifest = fs::read_to_string(self.manifest()).expect("read the manifest");
+        self.write(
+            "Cargo.toml",
+            &format!("{manifest}\n[workspace.metadata.fallow.rules]\n{table}\n"),
+        );
+    }
+}
+
+#[test]
+fn a_rule_level_turns_a_rule_off_or_changes_its_gate() {
+    // `off` removes the findings of the rule.
+    let fixture = Fixture::new();
+    fixture.rules("complexity = \"off\"");
+    let (code, report) = fixture.json(&["complexity", "--fail-on-issues"]);
+    assert_eq!(
+        (code, report["total_issues"].as_u64()),
+        (0, Some(0)),
+        "{report:#}"
+    );
+
+    // `warn` keeps the findings, and the gate does not count them.
+    let fixture = Fixture::new();
+    fixture.rules("complexity = \"warning\"\nprocess-stays-a-leaf = \"warn\"");
+    let (code, report) = fixture.json(&["complexity", "--fail-on-issues"]);
+    assert_eq!(code, 0, "{report:#}");
+    assert_eq!(report["total_issues"], 1);
+    assert_eq!(report["gate_outcomes"]["health-findings"]["status"], "pass");
+    let (code, report) = fixture.json(&["boundaries", "--fail-on-issues"]);
+    assert_eq!(code, 1, "the other rules still count: {report:#}");
+    assert_eq!(
+        report["gate_outcomes"]["boundary-violations"]["observed"],
+        3.0
+    );
+
+    // A boundary kind names each rule of the kind.
+    let fixture = Fixture::new();
+    fixture.rules("module-path = \"off\"");
+    let (_, report) = fixture.json(&["boundaries"]);
+    assert_eq!(
+        strings(&report, "rule"),
+        ["process-stays-a-leaf", "process-tree-in-process"],
+        "{report:#}"
+    );
+
+    // `error` gives the error severity in the shared shape and in SARIF.
+    let fixture = Fixture::new();
+    fixture.rules("dead_public = \"error\"\nunused-dev-dependency = \"warn\"");
+    let (_, report) = fixture.json(&["check", "--only", "visibility,deps"]);
+    let severities: BTreeSet<(String, String)> = report["findings"]
+        .as_array()
+        .expect("findings")
+        .iter()
+        .map(|finding| {
+            (
+                finding["rule"].as_str().unwrap_or_default().to_owned(),
+                finding["severity"].as_str().unwrap_or_default().to_owned(),
+            )
+        })
+        .collect();
+    assert!(
+        severities.contains(&("dead_public".to_owned(), "error".to_owned())),
+        "{severities:?}"
+    );
+    assert!(
+        severities.contains(&("unused-dev-dependency".to_owned(), "warn".to_owned())),
+        "{severities:?}"
+    );
+    // The deps gate counts the errors: the dev-dependency is a warning now.
+    assert_eq!(
+        report["gate_outcomes"]["error-severity-findings"]["observed"],
+        2.0
+    );
+    let sarif = fixture.run(&["visibility", "--format", "sarif"]);
+    let log: Value = serde_json::from_str(&sarif.stdout).expect("SARIF");
+    assert!(
+        log["runs"][0]["results"]
+            .as_array()
+            .expect("results")
+            .iter()
+            .all(|result| result["level"] == "error"),
+        "{log:#}"
+    );
+}
+
+#[test]
+fn an_unknown_rule_or_level_is_an_invalid_config_error() {
+    for table in [
+        "no-such-rule = \"off\"",
+        "complexity = \"loud\"",
+        "parse-error = \"off\"",
+    ] {
+        let fixture = Fixture::new();
+        fixture.rules(table);
+        let (code, report) = fixture.json(&["complexity"]);
+        assert_eq!(code, 2, "{table}: {report:#}");
+        assert_eq!(report["code"], "CARGO_FALLOW_INVALID_CONFIG", "{table}");
+    }
+    // A boundary rule name from the configuration is a rule.
+    let fixture = Fixture::new();
+    fixture.rules("render-does-not-run = \"off\"");
+    let (code, report) = fixture.json(&["boundaries"]);
+    assert_eq!(code, 0, "{report:#}");
+    assert_eq!(report["total_issues"], 2);
+}
+
+#[test]
+fn a_boundary_kind_level_sets_the_severity_the_sarif_level_and_the_baseline() {
+    let fixture = Fixture::new();
+    fixture.rules("source-pattern = \"error\"\nmodule-path = \"off\"");
+    let (_, report) = fixture.json(&["check", "--only", "boundaries"]);
+    let pattern = report["findings"]
+        .as_array()
+        .expect("findings")
+        .iter()
+        .find(|finding| finding["rule"] == "process-tree-in-process")
+        .expect("the source rule finding");
+    assert_eq!(pattern["severity"], "error", "{report:#}");
+    let sarif = fixture.run(&["boundaries", "--format", "sarif"]);
+    let log: Value = serde_json::from_str(&sarif.stdout).expect("SARIF");
+    let levels: Vec<(&str, &str)> = log["runs"][0]["results"]
+        .as_array()
+        .expect("results")
+        .iter()
+        .map(|result| {
+            (
+                result["ruleId"].as_str().unwrap_or_default(),
+                result["level"].as_str().unwrap_or_default(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        levels,
+        [
+            ("process-stays-a-leaf", "warning"),
+            ("process-tree-in-process", "error")
+        ]
+    );
+    // The baseline of a run has no entry of a rule that is off.
+    let path = fixture.root().join("baseline.json");
+    let (_, _) = fixture.json(&[
+        "boundaries",
+        "--save-baseline",
+        path.to_str().expect("UTF-8"),
+    ]);
+    let saved = fs::read_to_string(&path).expect("read the baseline");
+    assert!(!saved.contains("render-does-not-run"), "{saved}");
+
+    // `boundaries` names each boundary rule.
+    let fixture = Fixture::new();
+    fixture.rules("boundaries = \"off\"");
+    let (_, report) = fixture.json(&["boundaries"]);
+    assert_eq!(report["total_issues"], 0, "{report:#}");
+}
+
+#[test]
+fn an_off_duplication_rule_has_no_threshold_gate() {
+    let fixture = Fixture::new();
+    fixture.rules("code-duplication = \"off\"");
+    let (code, report) = fixture.json(&["dupes", "--min-tokens", "30", "--threshold", "1"]);
+    assert_eq!(code, 0, "{report:#}");
+    assert!(
+        report["gate_outcomes"]["duplication-threshold"].is_null(),
+        "{report:#}"
     );
 }

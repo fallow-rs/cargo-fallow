@@ -325,12 +325,23 @@ pub struct CodeInclude {
 
 /// Reads the facts of one file.
 pub fn extract(source: &str, edition: Edition) -> Result<FileFacts, ParseOutcome> {
+    extract_and(source, edition, |_| ()).map(|(facts, ())| facts)
+}
+
+/// The facts of a file, and the result of `also` on the same syntax tree. A
+/// second reader of the file then needs no second parse.
+pub fn extract_and<T: Send>(
+    source: &str,
+    edition: Edition,
+    also: impl FnOnce(&ast::SourceFile) -> T + Send,
+) -> Result<(FileFacts, T), ParseOutcome> {
     with_parsed(source, edition, |file, text| {
         let mut walker = Walker::new(text, edition);
         walker.walk(file.syntax());
         walker.docs(file.syntax());
         walker.facts.allow_dead = inner_allows_dead(file.syntax());
-        walker.facts
+        let other = also(file);
+        (walker.facts, other)
     })
 }
 

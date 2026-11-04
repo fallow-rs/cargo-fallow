@@ -20,10 +20,11 @@ use std::fs;
 use std::path::Path;
 use std::thread;
 
+use crate::files::{FileScans, Scan, scan_file, skips_the_parse};
 use crate::gates::parse_edition;
 use crate::graph::extract::{
     Binding, CodeInclude, DocInclude, FileFacts, ItemFlags, ItemKind, Origin, RawRef, RefKind, Vis,
-    doc_refs_of_markdown, extract,
+    doc_refs_of_markdown, extract, extract_and,
 };
 use crate::modules::{SkippedFile, TargetRoot, normalize, walk};
 use crate::parse::Edition;
@@ -290,27 +291,45 @@ struct ParsedFile {
     cfg_off: bool,
     generated: bool,
     facts: FileFacts,
+    /// The scan of the `files` check, from the same parse.
+    scan: Option<Scan>,
 }
 
 /// Builds the graph of a workspace.
 pub fn build(workspace: &Workspace, production: &Production) -> Graph {
+    build_inner(workspace, production, false).0
+}
+
+/// Builds the graph, and gives the scan of the `files` check for each file
+/// that the graph parses. The `files` check then needs no second parse.
+pub fn build_with_scans(workspace: &Workspace, production: &Production) -> (Graph, FileScans) {
+    build_inner(workspace, production, true)
+}
+
+fn build_inner(workspace: &Workspace, production: &Production, scan: bool) -> (Graph, FileScans) {
     let root = workspace.root.as_std_path();
     let targets: Vec<(&Member, &Target)> = workspace
         .members
         .iter()
         .flat_map(|member| member.targets.iter().map(move |target| (member, target)))
         .collect();
-    let parsed = parse_all(root, &targets);
+    let parsed = parse_all(root, &targets, scan);
     let mut graph = Graph::default();
+    let mut scans = FileScans::default();
     let libs: BTreeMap<&str, CrateId> = targets
         .iter()
         .enumerate()
         .filter(|(_, (_, target))| CrateKind::of(target).is_library())
         .map(|(id, (member, _))| (member.name.as_str(), id))
         .collect();
-    for (id, ((member, target), files)) in targets.iter().zip(parsed).enumerate() {
+    for (id, ((member, target), mut files)) in targets.iter().zip(parsed).enumerate() {
         let kind = CrateKind::of(target);
         let edition = parse_edition(&target.edition);
+        for file in &mut files.files {
+            if let Some(found) = file.scan.take() {
+                scans.entry((file.path.clone(), edition)).or_insert(found);
+            }
+        }
         let production = kind == CrateKind::Bin
             && (production.bins.is_empty()
                 || production
@@ -365,11 +384,11 @@ pub fn build(workspace: &Workspace, production: &Production) -> Graph {
             kind.is_library() && target.doctest,
         );
     }
-    graph
+    (graph, scans)
 }
 
 /// Parses the files of each target. The targets run on parallel threads.
-fn parse_all(root: &Path, targets: &[(&Member, &Target)]) -> Vec<CrateFiles> {
+fn parse_all(root: &Path, targets: &[(&Member, &Target)], scan: bool) -> Vec<CrateFiles> {
     let workers = thread::available_parallelism()
         .map_or(1, usize::from)
         .clamp(1, 8);
@@ -387,7 +406,7 @@ fn parse_all(root: &Path, targets: &[(&Member, &Target)]) -> Vec<CrateFiles> {
                     let Some((_, target)) = targets.get(index) else {
                         break;
                     };
-                    let files = parse_target(root, target);
+                    let files = parse_target(root, target, scan);
                     if let Ok(mut slots) = results.lock() {
                         slots[index] = Some(files);
                     }
@@ -409,7 +428,7 @@ fn parse_all(root: &Path, targets: &[(&Member, &Target)]) -> Vec<CrateFiles> {
         .collect()
 }
 
-fn parse_target(root: &Path, target: &Target) -> CrateFiles {
+fn parse_target(root: &Path, target: &Target, want_scan: bool) -> CrateFiles {
     let edition = parse_edition(&target.edition);
     let roots = [TargetRoot {
         path: target.src_path.clone(),
@@ -418,8 +437,15 @@ fn parse_target(root: &Path, target: &Target) -> CrateFiles {
     let walked = walk(root, &roots, |visit| {
         let source = fs::read_to_string(root.join(&visit.path))
             .map_err(|err| format!("cannot read the file: {err}"))?;
-        let facts = extract(&source, visit.edition)
-            .map_err(|outcome| format!("the parse failed: {outcome:?}"))?;
+        let generated = is_generated(&source) || has_generated_marker(&source);
+        // The `files` walk gives no parse to a file that it skips, so its scan
+        // of such a file is empty.
+        let skip = want_scan && skips_the_parse(&source, generated);
+        let (facts, scan) = extract_and(&source, visit.edition, |file| {
+            (want_scan && !skip).then(|| scan_file(file, &visit.path))
+        })
+        .map_err(|outcome| format!("the parse failed: {outcome:?}"))?;
+        let scan = if skip { Some(Scan::default()) } else { scan };
         let modules = facts.modules.clone();
         Ok((
             ParsedFile {
@@ -427,8 +453,9 @@ fn parse_target(root: &Path, target: &Target) -> CrateFiles {
                 module_path: visit.module_path.clone(),
                 under_cfg: visit.under_cfg,
                 cfg_off: visit.cfg_off,
-                generated: is_generated(&source) || has_generated_marker(&source),
+                generated,
                 facts,
+                scan,
             },
             modules,
         ))

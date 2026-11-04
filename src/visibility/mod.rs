@@ -330,6 +330,9 @@ struct Surface {
     glob_exported: FxHashSet<ItemId>,
     reexport_targets: FxHashMap<ItemId, Vec<ItemId>>,
     modules_with_reexports: FxHashSet<ModuleId>,
+    /// The items that a named `use` with a written visibility re-exports.
+    /// rustc rejects the `use` when the item becomes less visible.
+    use_targets: FxHashSet<ItemId>,
     excluded: FxHashSet<usize>,
     /// The library crates whose exported items are an external API: the
     /// excluded crates and the libraries that a registry can publish.
@@ -377,6 +380,7 @@ impl Surface {
             glob_exported: FxHashSet::default(),
             reexport_targets: FxHashMap::default(),
             modules_with_reexports: FxHashSet::default(),
+            use_targets: FxHashSet::default(),
             excluded,
             api,
             types: FxHashMap::default(),
@@ -402,6 +406,11 @@ impl Surface {
             surface.grow(graph, resolver);
             if before == surface.exported_modules.len() {
                 break;
+            }
+        }
+        for (index, import) in graph.imports.iter().enumerate() {
+            if import.vis != Vis::Private && import.binding != Binding::Glob {
+                surface.use_targets.extend(resolver.import_items(index).0);
             }
         }
         surface.exported = (0..graph.items.len())
@@ -532,10 +541,22 @@ impl Surface {
         {
             return false;
         }
-        if entry.test_only && entry.vis == Vis::Public && !matches!(entry.kind, ItemKind::Use) {
-            return true;
-        }
         self.exported(item)
+    }
+
+    /// True for a `pub` item of a library that other crates cannot name, so
+    /// its effective visibility is the crate. `pub(crate)` adds nothing there,
+    /// and `clippy::redundant_pub_crate` rejects it. The item can only become
+    /// private, as a restricted item.
+    fn crate_public(&self, graph: &Graph, item: ItemId) -> bool {
+        let entry = &graph.items[item];
+        entry.vis == Vis::Public
+            && graph.crates[entry.krate].kind == CrateKind::Lib
+            && !self.exported(item)
+            && entry
+                .parent
+                .is_none_or(|parent| graph.items[parent].kind == ItemKind::Impl)
+            && restricted_kind(entry)
     }
 }
 
@@ -673,8 +694,12 @@ fn judge(
             }
         }
         let excluded = surface.excluded.contains(&entry.krate);
+        // A test helper is the only `pub` item that the check judges outside
+        // the exported surface.
+        let crate_public = entry.test_only && surface.crate_public(graph, item);
         if !excluded
-            && restricted_candidate(entry)
+            && (restricted_candidate(entry) || crate_public)
+            && !surface.use_targets.contains(&item)
             && !surface.macro_covered[item]
             && !uses[item].exposed
             && !uses[item].cross_crate
@@ -722,12 +747,15 @@ fn signature_visible(graph: &Graph, owner: ItemId) -> bool {
 }
 
 fn restricted_candidate(entry: &crate::graph::Item) -> bool {
-    entry.vis.is_restricted()
-        && !matches!(
-            entry.kind,
-            ItemKind::Use | ItemKind::Impl | ItemKind::Variant | ItemKind::Macro
-        )
-        && !entry.flags.trait_impl
+    entry.vis.is_restricted() && restricted_kind(entry)
+}
+
+/// True for an item kind with a visibility keyword that a change can remove.
+fn restricted_kind(entry: &crate::graph::Item) -> bool {
+    !matches!(
+        entry.kind,
+        ItemKind::Use | ItemKind::Impl | ItemKind::Variant | ItemKind::Macro
+    ) && !entry.flags.trait_impl
 }
 
 /// True when each use of the item is in the module of the item or below it.

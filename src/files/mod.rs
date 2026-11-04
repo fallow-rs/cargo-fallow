@@ -19,6 +19,12 @@
 
 mod scan;
 
+pub use scan::{Scan, scan as scan_file};
+
+/// The scan of each file that the module graph parsed, by the path and the
+/// edition of the parse.
+pub type FileScans = rustc_hash::FxHashMap<(String, crate::parse::Edition), Scan>;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::fs;
@@ -142,22 +148,30 @@ pub fn run(args: &FilesArgs) -> Result<Section, CliError> {
         &args.common.cargo.flags(),
     )?;
     let scope = Scope::load(&workspace, &args.common.scope)?;
-    scope.annotate(section(&workspace, args.fail_on_issues, &scope, progress)?)
+    scope.annotate(section(
+        &workspace,
+        args.fail_on_issues,
+        &scope,
+        progress,
+        None,
+    )?)
 }
 
 /// Finds the unused files of the workspace. `enforced` is true when a finding
-/// fails the run.
+/// fails the run. `scans` holds the scans of an earlier parse, for example of
+/// the module graph. The walk parses each other file itself.
 pub fn section(
     workspace: &Workspace,
     enforced: bool,
     scope: &Scope,
     progress: Progress,
+    scans: Option<FileScans>,
 ) -> Result<Section, CliError> {
     let settings: Settings = config::section(workspace, "files")?;
     progress.step("Walking the module trees");
     let root = workspace.root.as_std_path();
     let packages = Packages::new(workspace);
-    let reached = reach(root, workspace, &packages);
+    let reached = reach(root, workspace, &packages, scans.unwrap_or_default());
     let candidates = candidates(root, workspace);
     let reached_folders: BTreeSet<&str> = reached.files.iter().map(|path| parent(path)).collect();
     let mut findings = Vec::new();
@@ -256,7 +270,12 @@ struct Reached {
     skipped: BTreeMap<String, String>,
 }
 
-fn reach(root: &Path, workspace: &Workspace, packages: &Packages<'_>) -> Reached {
+fn reach(
+    root: &Path,
+    workspace: &Workspace,
+    packages: &Packages<'_>,
+    mut scans: FileScans,
+) -> Reached {
     let roots: Vec<TargetRoot> = workspace
         .members
         .iter()
@@ -269,20 +288,10 @@ fn reach(root: &Path, workspace: &Workspace, packages: &Packages<'_>) -> Reached
     let mut skipped = BTreeMap::new();
     let mut files: BTreeSet<String> = BTreeSet::new();
     let walked = walk(root, &roots, |visit| {
-        let source = fs::read_to_string(root.join(&visit.path))
-            .map_err(|err| format!("cannot read the file: {err}"))?;
-        // A generator can write a file with millions of tokens. When its text
-        // cannot hold a module, an include or a `.rs` literal, the scan finds
-        // nothing, so the walk does not parse it.
-        let found = if (is_generated(&source) || has_generated_marker(&source))
-            && scan::reaches_nothing(&source)
-        {
-            scan::Scan::default()
-        } else {
-            with_parsed(&source, visit.edition, |file, _| {
-                scan::scan(file, &visit.path)
-            })
-            .map_err(parse_reason)?
+        // A scan from an earlier parse needs no read of the file.
+        let found = match scans.remove(&(visit.path.clone(), visit.edition)) {
+            Some(found) => found,
+            None => scan_text(root, &visit.path, visit.edition)?,
         };
         let modules = found.modules.clone();
         Ok(((visit.path.clone(), found), modules))
@@ -325,6 +334,27 @@ fn reach(root: &Path, workspace: &Workspace, packages: &Packages<'_>) -> Reached
         }
     }
     Reached { files, skipped }
+}
+
+/// The scan of one file from its text.
+fn scan_text(root: &Path, path: &str, edition: crate::parse::Edition) -> Result<Scan, String> {
+    let source = fs::read_to_string(root.join(path))
+        .map_err(|err| format!("cannot read the file: {err}"))?;
+    if skips_the_parse(
+        &source,
+        is_generated(&source) || has_generated_marker(&source),
+    ) {
+        return Ok(Scan::default());
+    }
+    with_parsed(&source, edition, |file, _| scan::scan(file, path)).map_err(parse_reason)
+}
+
+/// True when the scan of `source` finds nothing without a parse. A generator
+/// can write a file with millions of tokens. When its text cannot hold a
+/// module, an include or a `.rs` literal, the scan finds nothing, so the walk
+/// does not parse it. `generated` tells if the text has a generated marker.
+pub fn skips_the_parse(source: &str, generated: bool) -> bool {
+    generated && scan::reaches_nothing(source)
 }
 
 /// The reason when an included `.rs` file reaches more files: its modules and
@@ -475,4 +505,151 @@ fn human(report: &Report<Summary, Finding>) -> String {
     }
     text.push_str(&gates_text(&report.gate_outcomes));
     text
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fmt::Debug;
+
+    use super::*;
+    use crate::graph::{self, Production};
+    use crate::modules::ModuleDecl;
+    use crate::parse::Edition;
+
+    fn ok<T, E: Debug>(result: Result<T, E>, what: &str) -> T {
+        match result {
+            Ok(value) => value,
+            Err(err) => panic!("{what}: {err:?}"),
+        }
+    }
+
+    /// A package with `files` written into a temporary folder.
+    fn package(files: &[(&str, &str)]) -> (tempfile::TempDir, Workspace) {
+        let dir = ok(tempfile::tempdir(), "a temporary directory");
+        let manifest = "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\
+                        publish = false\n\n[workspace]\n";
+        for (path, text) in std::iter::once(&("Cargo.toml", manifest)).chain(files) {
+            let full = dir.path().join(path);
+            if let Some(parent) = full.parent() {
+                ok(fs::create_dir_all(parent), "a folder");
+            }
+            ok(fs::write(full, text), "a file");
+        }
+        let workspace = ok(
+            workspace::load(Some(&dir.path().join("Cargo.toml")), &[]),
+            "the workspace",
+        );
+        (dir, workspace)
+    }
+
+    #[test]
+    fn the_graph_parse_gives_the_scan_of_each_file() {
+        let lib = "mod a;\nmacro_rules! m { () => {} }\nm! { mod b; }\n\
+                   const T: &str = include_str!(\"t.txt\");\n";
+        let (_dir, workspace) = package(&[
+            ("src/lib.rs", lib),
+            ("src/a.rs", "pub fn f() {}\n"),
+            ("src/t.txt", ""),
+        ]);
+        let (_, scans) = graph::build_with_scans(&workspace, &Production::default());
+        let edition = Edition::Edition2024;
+        let mut paths: Vec<&str> = scans.keys().map(|(path, _)| path.as_str()).collect();
+        paths.sort_unstable();
+        assert_eq!(paths, ["src/a.rs", "src/lib.rs"]);
+        let own = ok(
+            with_parsed(lib, edition, |file, _| scan_file(file, "src/lib.rs")),
+            "the parse",
+        );
+        assert_eq!(scans.get(&("src/lib.rs".to_owned(), edition)), Some(&own));
+        assert_eq!(own.includes, ["src/t.txt"]);
+        assert!(own.modules.iter().any(|module| module.name == "b"));
+    }
+
+    #[test]
+    fn the_walk_finds_the_stored_scans_of_the_graph_parse() {
+        // The bin target has another edition and reaches `shared.rs` too.
+        let manifest_bin =
+            "[[bin]]\nname = \"tool\"\npath = \"src/bin/tool.rs\"\nedition = \"2018\"\n";
+        let (dir, _) = package(&[
+            ("src/lib.rs", "mod shared;\nmod tables;\n"),
+            ("src/shared.rs", ""),
+            ("src/extra.rs", ""),
+            (
+                "src/tables.rs",
+                "// @generated by a tool\npub static W: &[&str] = &[\"a\"];\n",
+            ),
+            (
+                "src/bin/tool.rs",
+                "#[path = \"../shared.rs\"]\nmod shared;\n",
+            ),
+        ]);
+        let manifest = dir.path().join("Cargo.toml");
+        let text = ok(fs::read_to_string(&manifest), "the manifest");
+        ok(
+            fs::write(&manifest, format!("{text}{manifest_bin}")),
+            "the manifest",
+        );
+        let workspace = ok(workspace::load(Some(&manifest), &[]), "the workspace");
+        let (_, mut scans) = graph::build_with_scans(&workspace, &Production::default());
+        for edition in [Edition::Edition2024, Edition::Edition2018] {
+            assert!(
+                scans.contains_key(&("src/shared.rs".to_owned(), edition)),
+                "{edition:?}: {:?}",
+                scans.keys()
+            );
+        }
+        // The walk gives no parse to a generated file that reaches nothing.
+        let generated = ("src/tables.rs".to_owned(), Edition::Edition2024);
+        assert_eq!(scans.get(&generated), Some(&Scan::default()));
+        // A stored scan with one more module reaches `extra.rs`, so the walk
+        // reads the stored scans by their real keys.
+        let lib = ("src/lib.rs".to_owned(), Edition::Edition2024);
+        let Some(scan) = scans.get_mut(&lib) else {
+            panic!("no scan of lib.rs: {:?}", scans.keys());
+        };
+        scan.modules.push(ModuleDecl {
+            name: "extra".to_owned(),
+            inline_path: Vec::new(),
+            path_attr: None,
+            under_cfg: false,
+            cfg_off: false,
+        });
+        let reached = reach(dir.path(), &workspace, &Packages::new(&workspace), scans);
+        assert!(
+            reached.files.contains("src/extra.rs"),
+            "{:?}",
+            reached.files
+        );
+    }
+
+    #[test]
+    fn the_walk_uses_a_given_scan_and_does_not_parse_the_file() {
+        // The text of `lib.rs` declares no module. The given scan does, so the
+        // walk reaches `extra.rs` only when it reads the scan.
+        let (dir, workspace) = package(&[("src/lib.rs", ""), ("src/extra.rs", "")]);
+        let scan = Scan {
+            modules: vec![ModuleDecl {
+                name: "extra".to_owned(),
+                inline_path: Vec::new(),
+                path_attr: None,
+                under_cfg: false,
+                cfg_off: false,
+            }],
+            ..Scan::default()
+        };
+        let scans = FileScans::from_iter([(("src/lib.rs".to_owned(), Edition::Edition2024), scan)]);
+        let packages = Packages::new(&workspace);
+        let reached = reach(dir.path(), &workspace, &packages, scans);
+        assert!(
+            reached.files.contains("src/extra.rs"),
+            "{:?}",
+            reached.files
+        );
+        let reached = reach(dir.path(), &workspace, &packages, FileScans::default());
+        assert!(
+            !reached.files.contains("src/extra.rs"),
+            "{:?}",
+            reached.files
+        );
+    }
 }

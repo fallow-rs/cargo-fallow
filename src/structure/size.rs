@@ -143,7 +143,9 @@ pub fn run(args: &SizeArgs) -> Result<Section, CliError> {
     progress.step("Reading cargo metadata");
     let workspace = workspace::load(args.common.manifest_path.as_deref())?;
     let settings: config::Size = config::section(&workspace, "size")?;
-    let scope = Scope::load(&workspace, args.common.changed_since.as_deref())?;
+    // A growth finding depends on the old version of the run, so the run
+    // does not judge stale baseline entries.
+    let scope = Scope::load(&workspace, &args.common.scope)?.narrowed(true);
     let root = workspace.root.as_std_path();
     let changes = match (&args.base, args.staged) {
         (Some(base), _) => Some(git::since_base(root, base)?),
@@ -259,13 +261,14 @@ pub fn section(inputs: &Inputs<'_>) -> Result<Section, CliError> {
         skipped_files,
     };
     let mut report = Report::new("size", summary, findings);
+    let mut findings = shared_findings(&report);
+    report.retain_baseline(scope, &mut findings);
     let outcome = if changes.is_some() {
         count_gate(report.findings.len(), enforced)
     } else {
         GateOutcome::new(GateStatus::Skipped, false)
     };
     report.gate_outcomes.insert(Gate::FileGrowth, outcome);
-    let findings = shared_findings(&report);
     Ok(Section {
         human: human(&report),
         json: to_value(&report)?,

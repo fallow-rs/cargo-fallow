@@ -30,9 +30,15 @@ GitHub release. Each release needs a `## [X.Y.Z] - YYYY-MM-DD` section.
   `dupes` accept `--changed-since <REF>`. The report keeps only the findings
   in the files that changed since the fork point of the ref. The JSON report
   has a `changed_since` member.
+- `--save-baseline <PATH>` and `--baseline <PATH>` on the same commands. A run
+  with a baseline leaves out the saved findings, and the
+  `stale-baseline` gate (`--fail-on-stale-baseline`) fails on an entry with no
+  finding.
 
 ### Fixed
 
+- The `fingerprint` of a `dupes` clone group now depends only on the tokens of
+  the group. Before, a new token in another file changed it.
 - A `#[path]` attribute in an inline module now resolves from the module
   folder plus the inline module names, the same as rustc.
 - A large valid source file no longer counts as too deep. The parse stack is

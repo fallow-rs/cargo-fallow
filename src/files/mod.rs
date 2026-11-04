@@ -134,7 +134,7 @@ pub fn run(args: &FilesArgs) -> Result<Section, CliError> {
     let progress = Progress::new(args.common.quiet);
     progress.step("Reading cargo metadata");
     let workspace = workspace::load(args.common.manifest_path.as_deref())?;
-    let scope = Scope::load(&workspace, args.common.changed_since.as_deref())?;
+    let scope = Scope::load(&workspace, &args.common.scope)?;
     scope.annotate(section(&workspace, args.fail_on_issues, &scope, progress)?)
 }
 
@@ -187,11 +187,12 @@ pub fn section(
             .collect(),
     };
     let mut report = Report::new("files", summary, findings);
+    let mut findings = shared_findings(&report);
+    report.retain_baseline(scope, &mut findings);
     report.gate_outcomes.insert(
         Gate::UnusedFiles,
         count_gate(report.findings.len(), enforced),
     );
-    let findings = shared_findings(&report);
     let rules = BTreeMap::from([(RULE.to_owned(), "No target compiles the file.".to_owned())]);
     Ok(Section {
         human: human(&report),

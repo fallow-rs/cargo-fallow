@@ -560,6 +560,17 @@ const fn description(kind: FindingKind) -> &'static str {
     }
 }
 
+/// The baseline entry of a finding: the same id as its finding in the shared
+/// shape.
+pub fn baseline_entry(graph: &Graph, finding: &Finding) -> crate::baseline::Entry {
+    let row = row(graph, finding);
+    crate::baseline::Entry {
+        check: KIND.to_owned(),
+        rule: row.kind.to_owned(),
+        id: crate::finding::fingerprint(&[KIND, row.kind, &row.krate, &row.item, row.item_kind]),
+    }
+}
+
 fn row(graph: &Graph, finding: &Finding) -> FindingRow {
     let item = &graph.items[finding.item];
     let krate = &graph.crates[item.krate];

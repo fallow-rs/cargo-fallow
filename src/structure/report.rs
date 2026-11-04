@@ -7,6 +7,7 @@ use serde::Serialize;
 
 use crate::gates::RustGateName as Gate;
 use crate::report::TOOL_VERSION;
+use crate::scope::Scope;
 
 /// The version of the report shape of the structure checks. A change that
 /// removes a member or changes its type increments it.
@@ -46,6 +47,16 @@ impl<S, F> Report<S, F> {
             findings,
             gate_outcomes: BTreeMap::new(),
         }
+    }
+}
+
+impl<S, F> Report<S, F> {
+    /// Removes the findings that the baseline of `scope` holds. `shared` has
+    /// one finding in the shared shape for each finding, in the same order,
+    /// and loses the same entries. Call it before the gates count.
+    pub fn retain_baseline(&mut self, scope: &Scope, shared: &mut Vec<crate::finding::Finding>) {
+        scope.retain_pairs(&mut self.findings, shared);
+        self.total_issues = self.findings.len();
     }
 }
 

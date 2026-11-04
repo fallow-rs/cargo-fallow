@@ -114,7 +114,7 @@ pub fn run(args: &BoundariesArgs) -> Result<Section, CliError> {
     let progress = Progress::new(args.common.quiet);
     progress.step("Reading cargo metadata");
     let workspace = workspace::load(args.common.manifest_path.as_deref())?;
-    let scope = Scope::load(&workspace, args.common.changed_since.as_deref())?;
+    let scope = Scope::load(&workspace, &args.common.scope)?;
     scope.annotate(section(
         &workspace,
         args.fail_on_violations,
@@ -161,11 +161,12 @@ pub fn section(
         source_files,
     };
     let mut report = Report::new("boundaries", summary, findings);
+    let mut findings = shared_findings(&report);
+    report.retain_baseline(scope, &mut findings);
     report.gate_outcomes.insert(
         Gate::BoundaryViolations,
         count_gate(report.findings.len(), enforced),
     );
-    let findings = shared_findings(&report);
     Ok(Section {
         human: human(&report),
         json: to_value(&report)?,

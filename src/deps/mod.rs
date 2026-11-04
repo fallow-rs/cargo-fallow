@@ -30,6 +30,7 @@ use std::path::PathBuf;
 
 use fallow_report_protocol::{GateOutcome, GateStatus};
 
+use crate::baseline::Entry;
 use crate::cli::Format;
 use crate::error::CliError;
 use crate::graph::{self, Production};
@@ -54,8 +55,8 @@ pub struct Options {
     pub fail_on_issues: bool,
     /// The flags for `cargo metadata`: `--locked`, `--offline`, `--frozen`.
     pub cargo_flags: Vec<String>,
-    /// The ref of `--changed-since`.
-    pub changed_since: Option<String>,
+    /// The scope flags: `--changed-since` and the baseline flags.
+    pub scope: crate::scope::ScopeArgs,
 }
 
 /// Runs the analysis and builds the section of the report.
@@ -66,7 +67,7 @@ pub fn run(options: &Options) -> Result<crate::section::Section, CliError> {
         workspace::load_resolved(options.manifest_path.as_deref(), &options.cargo_flags)?;
     progress.step("Building the module graph");
     let module_graph = graph::build(&workspace, &Production::default());
-    let scope = Scope::load(&workspace, options.changed_since.as_deref())?;
+    let scope = Scope::load(&workspace, &options.scope)?;
     progress.step("Checking the dependencies");
     let report = report(
         &workspace,
@@ -93,6 +94,9 @@ pub fn report(
     analysis
         .findings
         .retain(|finding| scope.keeps(&finding.manifest_path));
+    analysis.findings.retain(|finding| {
+        scope.keeps_entry_of(|| Entry::of(&render::deps::shared_finding(finding)))
+    });
     for skipped in &analysis.skipped {
         render::warn(&format!(
             "the `deps` command does not judge the package `{}`: {}",

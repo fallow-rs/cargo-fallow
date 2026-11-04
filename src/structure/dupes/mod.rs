@@ -44,6 +44,7 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use xxhash_rust::xxh3::xxh3_64;
 
+use crate::baseline::Entry;
 use crate::error::{CliError, ErrorCode};
 use crate::finding::{self as shared, Category, Draft, Impact, Location, Severity};
 use crate::gates::RustGateName as Gate;
@@ -58,6 +59,8 @@ use crate::structure::sarif;
 use crate::structure::source::{self, File, Loaded, Needs, Skipped};
 use crate::workspace;
 
+/// The rule of a clone group.
+const DUPES_RULE: &str = "code-duplication";
 /// The comment kind that suppresses a clone instance.
 const SUPPRESS_KIND: &str = "code-duplication";
 /// The suppression comment.
@@ -236,7 +239,9 @@ pub fn run(args: &DupesArgs) -> Result<Section, CliError> {
         clones: args.fail_on_clones,
         threshold: args.threshold.is_some(),
     };
-    let scope = Scope::load(&workspace, args.common.changed_since.as_deref())?;
+    // A flag that changes the clone search narrows the findings.
+    let scope = Scope::load(&workspace, &args.common.scope)?
+        .narrowed(args.mode.is_some() || args.min_tokens.is_some() || args.min_lines.is_some());
     scope.annotate(section(&loaded, &settings, gates, &scope, progress)?)
 }
 
@@ -279,6 +284,7 @@ pub fn section(
     skipped_files.extend(found.skipped.iter().cloned());
     skipped_files.sort();
     // A clone group counts when one of its copies is in a changed file.
+    let found_groups = found.groups.len();
     let groups: Vec<_> = found
         .groups
         .into_iter()
@@ -290,12 +296,20 @@ pub fn section(
                     .map(|instance| instance.file.as_str()),
             )
         })
+        // A clone group has one baseline entry: its fingerprint.
+        .filter(|group| {
+            scope.keeps_entry(Entry {
+                check: "dupes".to_owned(),
+                rule: DUPES_RULE.to_owned(),
+                id: group.fingerprint.clone(),
+            })
+        })
         .collect();
     let mut stats = found.stats;
     let mut families = found.families;
-    if !scope.is_full() {
-        // The group counts follow the scope. The line, token and file counts
-        // stay those of the whole workspace.
+    if groups.len() != found_groups {
+        // The group counts follow the scope and the baseline. The line, token
+        // and file counts stay those of the whole workspace.
         let kept: BTreeSet<&str> = groups
             .iter()
             .map(|group| group.fingerprint.as_str())
@@ -374,7 +388,7 @@ fn shared_findings(report: &Report<Summary, CloneGroup>) -> Vec<shared::Finding>
                 let line = instance.start_line.to_string();
                 shared::Finding::new(Draft {
                     check: "dupes",
-                    rule: "code-duplication",
+                    rule: DUPES_RULE,
                     severity: Severity::Warning,
                     message: format!(
                         "Clone {}: {} lines, {} tokens, {} instances.",
@@ -463,7 +477,7 @@ pub fn detect(files: &[&File], settings: &Duplication, limits: &Limits) -> Resul
     clock.check()?;
     let mut groups: Vec<(CloneGroup, u64)> = kept
         .iter()
-        .filter_map(|group| line_group(files, &text, &starts, group, settings))
+        .filter_map(|group| line_group(files, group, settings))
         .collect();
     clock.check()?;
     drop_line_subsets(&mut groups);
@@ -762,13 +776,7 @@ impl LineCoverage {
 
 /// The group with lines and columns, or `None` when a line rule drops it. The
 /// second value is the hash of the normalized tokens.
-fn line_group(
-    files: &[&File],
-    text: &[u32],
-    starts: &[usize],
-    group: &Raw,
-    settings: &Duplication,
-) -> Option<(CloneGroup, u64)> {
+fn line_group(files: &[&File], group: &Raw, settings: &Duplication) -> Option<(CloneGroup, u64)> {
     let mut instances: Vec<Instance> = group
         .places
         .iter()
@@ -820,11 +828,13 @@ fn line_group(
     if joined.len() < 2 {
         return None;
     }
+    // The hash reads the hash of each normalized token, not its rank. A rank
+    // depends on each token of the workspace, so a change in another file
+    // would change the fingerprint.
     let first = group.places[0];
-    let start = starts[first.file] + first.start;
-    let mut bytes = Vec::with_capacity(group.length * 4);
-    for value in &text[start..start + group.length] {
-        bytes.extend_from_slice(&value.to_le_bytes());
+    let mut bytes = Vec::with_capacity(group.length * 8);
+    for token in &files[first.file].tokens[first.start..first.start + group.length] {
+        bytes.extend_from_slice(&token.hash.to_le_bytes());
     }
     Some((
         CloneGroup {

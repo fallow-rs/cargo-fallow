@@ -61,6 +61,7 @@ and take minutes. Run them as separate commands.
 | `--fail-on-issues` | Enforce the gate of each check that ran. |
 | `--fail-on-parse-error` | Enforce only the `parse-error` gate. |
 | `--changed-since <REF>` | Report only the findings in the files that changed since the fork point of `REF`. See [Changed files](#changed-files). |
+| `--save-baseline <PATH>`, `--baseline <PATH>`, `--fail-on-stale-baseline` | Save the findings, or leave out the saved findings. See [Baselines](#baselines). |
 | `--locked`, `--offline`, `--frozen` | Give the flag to the `cargo metadata` call of `deps`. |
 
 The `deps` check resolves the dependencies with `cargo metadata`, so Cargo can
@@ -108,6 +109,45 @@ cargo fallow check --changed-since origin/main --fail-on-issues
 - An unknown ref, a ref that starts with `-`, a shallow clone without the fork
   point, or a run outside a git work tree exits 2. The run never falls back to
   the whole workspace.
+
+### Baselines
+
+A baseline lets a workspace with old findings turn on the gates now. The run
+then fails only on new findings. The flags are on the same commands as
+`--changed-since`.
+
+```bash
+cargo fallow check --save-baseline fallow-baseline.json
+cargo fallow check --baseline fallow-baseline.json --fail-on-issues
+```
+
+- `--save-baseline <PATH>` writes the `id`, the `check` and the `rule` of each
+  finding to a JSON file, and the run exits 0. Commit the file.
+- `--baseline <PATH>` leaves out each finding whose id is in the file, before
+  the gates count. A clone group of `dupes` has one entry: the `fingerprint` of
+  the group.
+- The ids do not use line numbers, so an edit above a finding keeps its id.
+- The JSON report has a `baseline` member with `path`, `matched` (the entries
+  that a finding matched) and `stale` (the entries of the checks that ran with
+  no finding in the run). The human output has a `Baseline:` line.
+- The `stale-baseline` gate fails when an entry is stale.
+  `--fail-on-stale-baseline` enforces it. Save the baseline again to remove
+  the stale entries.
+- A run with `--changed-since` does not judge stale entries, so the gate is
+  `skipped`. A flag that narrows the findings has the same effect:
+  `visibility --kind`, the `--mode`, `--min-tokens` and `--min-lines` flags of
+  `dupes`, the limit flags of `complexity`, and each `size` run. A `check` run
+  judges only the entries of the checks that ran. `--save-baseline` cannot go with `--changed-since` or with
+  `--baseline`.
+- A missing file, a file that is not a baseline, or a file of another version
+  exits 2.
+- A `check` run with `--baseline` has no health score: its `health` object has
+  `scope: "baseline"` and no penalties.
+- A run with `--save-baseline` enforces no gate: each gate has
+  `enforced: false`.
+
+The file has `schema_version` 1, the `kind` of the command that saved it,
+`language: "rust"`, the key scheme in `identity` and the sorted `findings`.
 
 ### Health score
 
@@ -538,6 +578,7 @@ cargo fallow deps --fail-on-issues --format sarif --quiet
 | `--quiet` | Hide the progress lines on stderr. |
 | `--fail-on-issues` | Exit 1 when a finding has the `error` severity. |
 | `--changed-since <REF>` | Report only the findings in the files that changed since the fork point of `REF`. See [Changed files](#changed-files). |
+| `--save-baseline <PATH>`, `--baseline <PATH>`, `--fail-on-stale-baseline` | Save the findings, or leave out the saved findings. See [Baselines](#baselines). |
 | `--locked` | Give `--locked` to `cargo metadata`. |
 | `--offline` | Give `--offline` to `cargo metadata`. |
 | `--frozen` | Give `--frozen` to `cargo metadata`. |
@@ -694,6 +735,7 @@ cargo fallow visibility --precise
 | `--kind <KIND>` | Report only this kind: `dead-public`, `unnecessary-public` or `unnecessary-restricted-visibility`. The flag can repeat. |
 | `--fail-on-issues` | Exit 1 when the run has a finding. |
 | `--changed-since <REF>` | Report only the findings in the files that changed since the fork point of `REF`. See [Changed files](#changed-files). |
+| `--save-baseline <PATH>`, `--baseline <PATH>`, `--fail-on-stale-baseline` | Save the findings, or leave out the saved findings. See [Baselines](#baselines). |
 | `--precise` | Decide the undecided candidates with rust-analyzer. See below. |
 
 The table `[workspace.metadata.fallow.visibility]` in the root `Cargo.toml`
@@ -857,8 +899,9 @@ other formats, the error goes to stderr.
 ## Structure checks
 
 Four commands check the structure of the workspace. Each command has the
-`--manifest-path`, `--format human|json|sarif|codeclimate`, `--quiet` and
-[`--changed-since <REF>`](#changed-files) flags, and its own
+`--manifest-path`, `--format human|json|sarif|codeclimate` and `--quiet` flags,
+the [`--changed-since <REF>`](#changed-files) and [baseline](#baselines) flags,
+and its own
 gate. A gate is in the report each time, but it fails the run only with its flag.
 Each command accepts `--fail-on-issues` as its gate flag. The older flag of
 each command is the same flag. `size` has no growth gate without `--base` or

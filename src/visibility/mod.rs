@@ -114,17 +114,17 @@ impl Analysis {
         self.opaque.retain(|finding| kinds.contains(&finding.kind));
     }
 
-    /// Keeps only the findings and candidates of items in a file of `scope`.
-    /// Call it after [`refine`]: a re-export finding outside the scope still
-    /// holds back its target.
+    /// Keeps only the findings and candidates of items in a file of `scope`,
+    /// and the findings that the baseline of `scope` does not hold. Call it
+    /// after [`refine`] and [`Self::retain_kinds`]: a re-export finding
+    /// outside the scope still holds back its target.
     pub fn retain_scope(&mut self, graph: &Graph, scope: &crate::scope::Scope) {
-        if scope.is_full() {
-            return;
-        }
-        let keep = |finding: &Finding| scope.keeps(&graph.items[finding.item].file);
-        self.findings.retain(keep);
-        self.undecided.retain(keep);
-        self.opaque.retain(keep);
+        let in_files = |finding: &Finding| scope.keeps(&graph.items[finding.item].file);
+        self.findings.retain(|finding| {
+            in_files(finding) && scope.keeps_entry_of(|| report::baseline_entry(graph, finding))
+        });
+        self.undecided.retain(in_files);
+        self.opaque.retain(in_files);
     }
 }
 
@@ -147,8 +147,8 @@ pub fn fast_report(
     let check_options = check_options(options, workspace.root.clone().into_std_path_buf());
     let mut analysis = analyze(graph, &check_options);
     skip_generated(graph, &mut analysis);
-    analysis.retain_scope(graph, scope);
     analysis.retain_kinds(&options.kinds);
+    analysis.retain_scope(graph, scope);
     report::VisibilityReport::new(report::Inputs {
         graph,
         analysis: &analysis,

@@ -212,11 +212,21 @@ pub struct ScopedHealth {
     pub language: &'static str,
     /// The version of the formula.
     pub formula_version: u32,
-    /// The scope of the run: `changed` for `--changed-since`.
+    /// The scope of the run: `changed` for `--changed-since`, `baseline` for
+    /// `--baseline`.
     pub scope: &'static str,
 }
 
 impl ScopedHealth {
+    /// The health part of a `--baseline` run.
+    pub const fn baseline() -> Self {
+        Self {
+            language: "rust",
+            formula_version: FORMULA_VERSION,
+            scope: "baseline",
+        }
+    }
+
     /// The health part of a `--changed-since` run.
     pub const fn changed() -> Self {
         Self {

@@ -996,3 +996,272 @@ fn deps_and_visibility_with_changed_since_keep_the_findings_of_the_changed_packa
     assert_eq!(manifests, ["crates/process/Cargo.toml"], "{report:#}");
     assert_eq!(report["total_issues"], 1);
 }
+
+#[test]
+fn a_saved_baseline_hides_its_findings_and_a_new_finding_stays() {
+    let fixture = Fixture::new();
+    let path = fixture.root().join("baseline.json");
+    let path = path.to_str().expect("UTF-8 path");
+    let (code, saved) = fixture.json(&[
+        "check",
+        "--skip",
+        "deps",
+        "--fail-on-issues",
+        "--save-baseline",
+        path,
+    ]);
+    assert_eq!(code, 0, "a run that saves a baseline exits 0: {saved:#}");
+    let file: Value =
+        serde_json::from_str(&fs::read_to_string(path).expect("read the baseline")).expect("JSON");
+    assert_eq!(file["kind"], "check");
+    assert_eq!(file["schema_version"], 1);
+    let entries = file["findings"].as_array().expect("entries");
+    assert!(!entries.is_empty(), "{file:#}");
+    assert!(
+        entries.iter().any(|entry| entry["check"] == "dupes"),
+        "{file:#}"
+    );
+
+    let (code, report) = fixture.json(&[
+        "check",
+        "--skip",
+        "deps",
+        "--fail-on-issues",
+        "--baseline",
+        path,
+    ]);
+    assert_eq!(code, 0, "{report:#}");
+    assert_eq!(report["total_issues"], 0, "{report:#}");
+    assert_eq!(report["baseline"]["matched"], entries.len());
+    assert_eq!(report["baseline"]["stale"], serde_json::json!([]));
+    assert_eq!(report["gate_outcomes"]["stale-baseline"]["status"], "pass");
+
+    // A blank line above each finding keeps each id.
+    for file in [
+        "crates/core/src/lib.rs",
+        "crates/app/src/lib.rs",
+        "crates/app/src/render.rs",
+        "crates/process/src/lib.rs",
+        "crates/process/Cargo.toml",
+    ] {
+        let text = fs::read_to_string(fixture.root().join(file)).expect("read");
+        fixture.write(file, &format!("\n{text}"));
+    }
+    let (code, report) = fixture.json(&[
+        "check",
+        "--skip",
+        "deps",
+        "--fail-on-issues",
+        "--baseline",
+        path,
+    ]);
+    assert_eq!(code, 0, "{report:#}");
+    assert_eq!(report["total_issues"], 0, "{report:#}");
+
+    // A new finding stays, and the run fails on it.
+    let core = fs::read_to_string(fixture.root().join("crates/core/src/lib.rs")).expect("read");
+    fixture.write(
+        "crates/core/src/lib.rs",
+        &format!("{core}\npub fn twisty(a: u8) -> u8 {{ if a > 1 {{ if a > 2 {{ if a > 3 {{ if a > 4 {{ if a > 5 {{ 1 }} else {{ 2 }} }} else {{ 3 }} }} else {{ 4 }} }} else {{ 5 }} }} else {{ 6 }} }}\n"),
+    );
+    let (code, report) = fixture.json(&["complexity", "--fail-on-issues", "--baseline", path]);
+    assert_eq!(code, 1, "{report:#}");
+    assert_eq!(strings(&report, "name"), ["twisty"], "{report:#}");
+    assert_eq!(report["baseline"]["path"], path);
+}
+
+#[test]
+fn a_removed_finding_gives_a_stale_entry_and_the_flag_fails_on_it() {
+    let fixture = Fixture::new();
+    let path = fixture.root().join("baseline.json");
+    let path = path.to_str().expect("UTF-8 path");
+    let (code, _) = fixture.json(&["complexity", "--save-baseline", path]);
+    assert_eq!(code, 0);
+    let core = fs::read_to_string(fixture.root().join("crates/core/src/lib.rs")).expect("read");
+    let start = core.find("pub fn branchy").expect("the function");
+    let end = start + core[start..].find("\n}\n").expect("its end") + 3;
+    fixture.write(
+        "crates/core/src/lib.rs",
+        &format!("{}{}", &core[..start], &core[end..]),
+    );
+
+    let (code, report) = fixture.json(&["complexity", "--baseline", path]);
+    assert_eq!(code, 0, "{report:#}");
+    let stale = report["baseline"]["stale"].as_array().expect("stale");
+    assert_eq!(stale.len(), 1, "{report:#}");
+    assert_eq!(stale[0]["check"], "complexity");
+    assert_eq!(report["gate_outcomes"]["stale-baseline"]["status"], "fail");
+    assert_eq!(report["gate_outcomes"]["stale-baseline"]["enforced"], false);
+
+    let (code, report) =
+        fixture.json(&["complexity", "--baseline", path, "--fail-on-stale-baseline"]);
+    assert_eq!(code, 1, "{report:#}");
+    let human = fixture.run(&["complexity", "--baseline", path, "--fail-on-stale-baseline"]);
+    assert_eq!(human.code, 1);
+    assert!(human.stdout.contains("1 stale"), "{}", human.stdout);
+
+    // A check that did not run does not judge its entries.
+    let (code, report) = fixture.json(&["dupes", "--baseline", path, "--fail-on-stale-baseline"]);
+    assert_eq!(code, 0, "{report:#}");
+    assert_eq!(report["baseline"]["stale"], serde_json::json!([]));
+}
+
+#[test]
+fn a_corrupt_or_missing_baseline_exits_2() {
+    let fixture = Fixture::new();
+    let path = fixture.root().join("baseline.json");
+    for text in [
+        "not json",
+        "{\"schema_version\": 1}",
+        "{\"schema_version\": 9, \"kind\": \"check\", \"language\": \"rust\", \"identity\": \"x\", \"findings\": []}",
+    ] {
+        fs::write(&path, text).expect("write");
+        let (code, report) = fixture.json(&["size", "--baseline", path.to_str().expect("UTF-8")]);
+        assert_eq!(code, 2, "{text}: {report:#}");
+        assert_eq!(report["code"], "CARGO_FALLOW_INVALID_ARGUMENT", "{text}");
+    }
+    let missing = fixture.root().join("missing.json");
+    let (code, _) = fixture.json(&["size", "--baseline", missing.to_str().expect("UTF-8")]);
+    assert_eq!(code, 2);
+    // A scoped save would hide the old findings outside the scope.
+    let (code, _) = fixture.json(&[
+        "size",
+        "--save-baseline",
+        "x.json",
+        "--changed-since",
+        "main",
+    ]);
+    assert_eq!(code, 2);
+    let (code, _) = fixture.json(&["size", "--fail-on-stale-baseline"]);
+    assert_eq!(code, 2);
+}
+
+#[test]
+fn deps_and_visibility_read_a_baseline() {
+    let fixture = Fixture::new();
+    let path = fixture.root().join("baseline.json");
+    let path = path.to_str().expect("UTF-8 path");
+    for command in ["deps", "visibility"] {
+        let (code, full) = fixture.json(&[command, "--fail-on-issues", "--save-baseline", path]);
+        assert_eq!(code, 0, "{command}: {full:#}");
+        assert!(
+            full["total_issues"].as_u64() > Some(0),
+            "{command}: {full:#}"
+        );
+        let (code, report) = fixture.json(&[command, "--fail-on-issues", "--baseline", path]);
+        assert_eq!(code, 0, "{command}: {report:#}");
+        assert_eq!(report["total_issues"], 0, "{command}: {report:#}");
+        assert_eq!(
+            report["baseline"]["matched"], full["total_issues"],
+            "{command}"
+        );
+    }
+}
+
+#[test]
+fn a_baseline_with_changed_since_does_not_judge_stale_entries() {
+    let fixture = committed();
+    let path = fixture.root().join("../baseline.json");
+    let path = path.to_str().expect("UTF-8 path");
+    let (code, _) = fixture.json(&["complexity", "--save-baseline", path]);
+    assert_eq!(code, 0);
+    let (code, report) = fixture.json(&[
+        "complexity",
+        "--baseline",
+        path,
+        "--changed-since",
+        "main",
+        "--fail-on-stale-baseline",
+    ]);
+    assert_eq!(code, 0, "{report:#}");
+    assert_eq!(
+        report["gate_outcomes"]["stale-baseline"]["status"],
+        "skipped"
+    );
+}
+
+#[test]
+fn a_clone_fingerprint_stays_when_another_file_gets_new_tokens() {
+    let fixture = Fixture::new();
+    let fingerprints = |fixture: &Fixture| -> Vec<String> {
+        let (_, report) = fixture.json(&["dupes", "--min-tokens", "30"]);
+        strings(&report, "fingerprint")
+    };
+    let before = fingerprints(&fixture);
+    assert!(!before.is_empty());
+    let engine = fs::read_to_string(fixture.root().join("crates/app/src/engine.rs")).expect("read");
+    fixture.write(
+        "crates/app/src/engine.rs",
+        &format!("{engine}\npub fn zebra_quux(alpha_beta: u64) -> u64 {{ alpha_beta ^ 0x5eed }}\n"),
+    );
+    assert_eq!(fingerprints(&fixture), before);
+}
+
+#[test]
+fn a_narrowing_flag_or_a_save_does_not_judge_or_enforce_the_baseline() {
+    let fixture = Fixture::new();
+    let path = fixture.root().join("baseline.json");
+    let path = path.to_str().expect("UTF-8 path");
+    let (_, _) = fixture.json(&["visibility", "--save-baseline", path]);
+    // Each saved entry is `dead_public`, so a run on another kind sees none of
+    // them, and none is stale.
+    let (code, report) = fixture.json(&[
+        "visibility",
+        "--kind",
+        "unnecessary-public",
+        "--baseline",
+        path,
+        "--fail-on-stale-baseline",
+    ]);
+    assert_eq!(code, 0, "{report:#}");
+    assert_eq!(
+        report["gate_outcomes"]["stale-baseline"]["status"],
+        "skipped"
+    );
+    let (_, _) = fixture.json(&["dupes", "--min-tokens", "30", "--save-baseline", path]);
+    let (code, report) = fixture.json(&[
+        "dupes",
+        "--min-tokens",
+        "100",
+        "--baseline",
+        path,
+        "--fail-on-stale-baseline",
+    ]);
+    assert_eq!(code, 0, "{report:#}");
+
+    // The stale gate is in the gate block and in the SARIF log.
+    let (_, _) = fixture.json(&["complexity", "--save-baseline", path]);
+    fixture.write("crates/core/src/lib.rs", "pub fn small() {}\n");
+    let human = fixture.run(&["complexity", "--baseline", path]);
+    assert!(
+        human
+            .stdout
+            .contains("  stale-baseline: fail, not enforced"),
+        "{}",
+        human.stdout
+    );
+    let sarif = fixture.run(&["complexity", "--baseline", path, "--format", "sarif"]);
+    assert!(
+        sarif.stdout.contains("The `stale-baseline` gate failed"),
+        "{}",
+        sarif.stdout
+    );
+
+    // A save run reports no enforced gate, also in the sections of `check`.
+    let (code, report) = fixture.json(&[
+        "check",
+        "--skip",
+        "deps",
+        "--fail-on-issues",
+        "--save-baseline",
+        path,
+    ]);
+    assert_eq!(code, 0);
+    let text = report.to_string();
+    assert!(!text.contains("\"enforced\":true"), "{report:#}");
+
+    // A run with a baseline gives no health score.
+    let (_, report) = fixture.json(&["check", "--skip", "deps", "--baseline", path]);
+    assert_eq!(report["health"]["scope"], "baseline", "{report:#}");
+    assert!(report["health"]["penalties"].is_null());
+}

@@ -67,6 +67,22 @@ pub enum Kind {
     ModulePath,
 }
 
+impl Kind {
+    /// Each kind.
+    #[cfg(test)]
+    pub const ALL: [Self; 3] = [Self::CrateDependency, Self::SourcePattern, Self::ModulePath];
+
+    /// The kind in the report.
+    #[cfg(test)]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::CrateDependency => "crate-dependency",
+            Self::SourcePattern => "source-pattern",
+            Self::ModulePath => "module-path",
+        }
+    }
+}
+
 /// One violation of a rule.
 #[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 #[schemars(rename = "BoundariesFinding")]

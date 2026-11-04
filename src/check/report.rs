@@ -63,6 +63,9 @@ pub struct CheckReport {
     /// the JSON report of the command of the same name. The parse gate has no
     /// report of its own.
     #[schemars(with = "Sections")]
+    /// The meaning of each rule with a finding, with `--explain`.
+    #[serde(rename = "_meta", skip_serializing_if = "Option::is_none")]
+    pub meta: Option<Value>,
     pub sections: Map<String, Value>,
     /// The text and SARIF forms of each section. They are not part of the
     /// JSON report.
@@ -162,6 +165,7 @@ impl CheckReport {
             gate_outcomes,
             changed_since: None,
             baseline: None,
+            meta: None,
             sections,
             parts,
         }
@@ -171,6 +175,7 @@ impl CheckReport {
     /// with `--save-baseline` writes the file here, and enforces no gate.
     pub fn with_scope(mut self, scope: &Scope) -> Result<Self, CliError> {
         self.changed_since.clone_from(&scope.changed);
+        self.meta = scope.meta(&self.findings)?;
         let checks: Vec<&str> = self.checks.iter().map(|name| name.as_str()).collect();
         if let Some(summary) = scope.baseline_summary(&checks) {
             self.gate_outcomes

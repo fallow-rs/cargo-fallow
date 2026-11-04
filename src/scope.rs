@@ -42,6 +42,10 @@ pub struct ScopeArgs {
     /// Exit 1 when the baseline has an entry with no finding in the run.
     #[arg(long, requires = "baseline")]
     pub fail_on_stale_baseline: bool,
+    /// Add `_meta` to the JSON report: the meaning, an example and the fix of
+    /// each rule with a finding. `cargo fallow explain <rule>` gives one rule.
+    #[arg(long)]
+    pub explain: bool,
 }
 
 /// The line of the human output that names the changed files.
@@ -85,6 +89,8 @@ pub struct Scope {
     /// `visibility --kind`. A baseline entry then can be stale with no change
     /// of the code, so the run does not judge stale entries.
     narrowed: bool,
+    /// True when the JSON report gets `_meta` with the rules of its findings.
+    explain: bool,
 }
 
 impl Scope {
@@ -100,6 +106,7 @@ impl Scope {
             recorder: args.save_baseline.clone().map(Recorder::new),
             fail_on_stale: args.fail_on_stale_baseline,
             narrowed: false,
+            explain: args.explain,
         })
     }
 
@@ -114,6 +121,15 @@ impl Scope {
     /// filter and no flag that narrows the findings.
     const fn judges_stale(&self) -> bool {
         self.is_full() && !self.narrowed
+    }
+
+    /// The `_meta` member of a JSON report with these findings, when the run
+    /// has `--explain`.
+    pub fn meta(&self, findings: &[Finding]) -> Result<Option<Value>, CliError> {
+        if !self.explain {
+            return Ok(None);
+        }
+        crate::explain::meta(findings.iter().map(|finding| finding.rule.as_str())).map(Some)
     }
 
     /// True when the run removes the findings of a baseline.
@@ -231,6 +247,9 @@ impl Scope {
     /// The section of one command with the scope in its JSON and human
     /// output. The `kind` of the JSON report names the check.
     pub fn annotate(&self, mut section: Section) -> Result<Section, CliError> {
+        if let Some(meta) = self.meta(&section.findings)? {
+            insert(&mut section.json, "_meta", meta);
+        }
         let check = section.json["kind"].as_str().unwrap_or_default().to_owned();
         let check = check.as_str();
         let mut lines = String::new();

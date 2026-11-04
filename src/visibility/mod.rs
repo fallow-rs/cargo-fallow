@@ -50,6 +50,14 @@ pub enum FindingKind {
 }
 
 impl FindingKind {
+    /// Each kind.
+    #[cfg(test)]
+    pub const ALL: [Self; 3] = [
+        Self::DeadPublic,
+        Self::UnnecessaryPublic,
+        Self::UnnecessaryRestricted,
+    ];
+
     /// The name in the report. The names are the same as in hawk.
     pub const fn label(self) -> &'static str {
         match self {

@@ -273,10 +273,19 @@ fn reach(root: &Path, workspace: &Workspace, packages: &Packages<'_>) -> Reached
     let walked = walk(root, &roots, |visit| {
         let source = fs::read_to_string(root.join(&visit.path))
             .map_err(|err| format!("cannot read the file: {err}"))?;
-        let found = with_parsed(&source, visit.edition, |file, _| {
-            scan::scan(file, &visit.path)
-        })
-        .map_err(parse_reason)?;
+        // A generator can write a file with millions of tokens. When its text
+        // cannot hold a module, an include or a `.rs` literal, the scan finds
+        // nothing, so the walk does not parse it.
+        let found = if (is_generated(&source) || has_generated_marker(&source))
+            && scan::reaches_nothing(&source)
+        {
+            scan::Scan::default()
+        } else {
+            with_parsed(&source, visit.edition, |file, _| {
+                scan::scan(file, &visit.path)
+            })
+            .map_err(parse_reason)?
+        };
         let modules = found.modules.clone();
         Ok(((visit.path.clone(), found), modules))
     });

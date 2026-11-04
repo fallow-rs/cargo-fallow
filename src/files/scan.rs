@@ -7,7 +7,7 @@
 use std::path::Path;
 
 use ra_ap_syntax::ast::{self, HasAttrs, HasModuleItem, HasName};
-use ra_ap_syntax::{AstNode, AstToken, NodeOrToken, SyntaxKind, SyntaxToken};
+use ra_ap_syntax::{AstNode, AstToken, NodeOrToken, SyntaxKind, SyntaxToken, WalkEvent};
 
 use crate::attrs::{attr_body, path_attribute, plain_name};
 use crate::modules::{ModuleDecl, normalize};
@@ -50,6 +50,59 @@ impl Scan {
     }
 }
 
+/// True when the scan of `text` can find nothing, also when the text does
+/// not parse: the text has no `mod` word, no call of an include macro, no
+/// `.rs` string literal and no escape that can hide one. The walk then needs
+/// no parse of the file.
+pub fn reaches_nothing(text: &str) -> bool {
+    !has_word(text, "mod", |_| true)
+        && !INCLUDE_MACROS
+            .iter()
+            .any(|name| has_word(text, name, |rest| skip_comments(rest).starts_with('!')))
+        && !text.contains(".rs\"")
+        && !has_hiding_escape(text)
+}
+
+/// True when `word` occurs in `text` as a whole identifier, and `after`
+/// accepts the text that follows it.
+fn has_word(text: &str, word: &str, after: impl Fn(&str) -> bool) -> bool {
+    let is_ident = |c: char| c.is_alphanumeric() || c == '_';
+    text.match_indices(word).any(|(at, _)| {
+        let rest = &text[at + word.len()..];
+        !text[..at].chars().next_back().is_some_and(is_ident)
+            && !rest.chars().next().is_some_and(is_ident)
+            && after(rest)
+    })
+}
+
+/// The text after the white space and the comments at its start.
+fn skip_comments(mut text: &str) -> &str {
+    loop {
+        text = text.trim_start();
+        if let Some(rest) = text.strip_prefix("//") {
+            text = rest.split_once('\n').map_or("", |(_, after)| after);
+        } else if let Some(rest) = text.strip_prefix("/*") {
+            // A nested comment ends later. The first `*/` can then only find
+            // a `!` too many, and that makes the walk parse the file.
+            text = rest.split_once("*/").map_or("", |(_, after)| after);
+        } else {
+            return text;
+        }
+    }
+}
+
+/// True when `text` has an escape that can write a letter or a `.` in a
+/// string, for example `\x73` or `\u{2e}`, or a line continuation. Only
+/// `\"`, `\\`, `\'`, `\n`, `\r`, `\t` and `\0` are safe.
+fn has_hiding_escape(text: &str) -> bool {
+    text.match_indices('\\').any(|(at, _)| {
+        !text[at + 1..]
+            .chars()
+            .next()
+            .is_some_and(|next| matches!(next, '"' | '\\' | '\'' | 'n' | 'r' | 't' | '0'))
+    })
+}
+
 /// Scans the parsed file at `path`, relative to the workspace root.
 pub fn scan(file: &ast::SourceFile, path: &str) -> Scan {
     let mut found = Scan::default();
@@ -70,27 +123,48 @@ pub fn scan(file: &ast::SourceFile, path: &str) -> Scan {
     if in_block {
         found.undecide("a function or a block declares a module");
     }
-    let tokens: Vec<SyntaxToken> = file
-        .syntax()
-        .descendants_with_tokens()
-        .filter_map(NodeOrToken::into_token)
-        .filter(|token| !token.kind().is_trivia())
-        .collect();
     let folder = Path::new(path).parent().unwrap_or_else(|| Path::new(""));
-    for (index, token) in tokens.iter().enumerate() {
-        let rest = &tokens[index + 1..];
-        if INCLUDE_MACROS.contains(&token.text()) {
-            include_call(token.text(), rest, folder, &mut found);
+    // An include call and macro tokens occur only in a macro call, a macro
+    // definition, the token tree of an attribute or code that does not
+    // parse, so the scan reads only
+    // the tokens of these nodes. A file that a generator wrote can have
+    // millions of other tokens.
+    let mut walk = file.syntax().preorder();
+    while let Some(event) = walk.next() {
+        let WalkEvent::Enter(node) = event else {
+            continue;
+        };
+        if !matches!(
+            node.kind(),
+            SyntaxKind::MACRO_CALL
+                | SyntaxKind::MACRO_RULES
+                | SyntaxKind::MACRO_DEF
+                | SyntaxKind::ATTR
+                | SyntaxKind::ERROR
+        ) {
+            continue;
         }
-        if in_macro_tokens(token) {
-            macro_tokens(token, rest, &mut found);
-            // A macro can give a literal to an include call, so a `.rs`
-            // literal in macro tokens counts as an include.
-            if token.kind() == SyntaxKind::STRING
-                && let Some(value) = string_value(token)
-                && is_rust_path(&value)
-            {
-                found.credited.extend(normalize(&folder.join(value)));
+        walk.skip_subtree();
+        let tokens: Vec<SyntaxToken> = node
+            .descendants_with_tokens()
+            .filter_map(NodeOrToken::into_token)
+            .filter(|token| !token.kind().is_trivia())
+            .collect();
+        for (index, token) in tokens.iter().enumerate() {
+            let rest = &tokens[index + 1..];
+            if INCLUDE_MACROS.contains(&token.text()) {
+                include_call(token.text(), rest, folder, &mut found);
+            }
+            if in_macro_tokens(token) {
+                macro_tokens(token, rest, &mut found);
+                // A macro can give a literal to an include call, so a `.rs`
+                // literal in macro tokens counts as an include.
+                if token.kind() == SyntaxKind::STRING
+                    && let Some(value) = string_value(token)
+                    && is_rust_path(&value)
+                {
+                    found.credited.extend(normalize(&folder.join(value)));
+                }
             }
         }
     }
@@ -309,6 +383,44 @@ fn string_value(token: &SyntaxToken) -> Option<String> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_text_without_a_module_an_include_or_a_rs_literal_reaches_nothing() {
+        assert!(reaches_nothing(
+            "// This file is @generated by codegen.rs\npub static WORDS: &[&str] = &[\"include\", \"model\"];\n"
+        ));
+        assert!(!reaches_nothing("mod tables;\n"));
+        assert!(!reaches_nothing("pub(crate) mod\ttables;\n"));
+        assert!(!reaches_nothing(
+            "const T: &str = include_str!(\"t.txt\");\n"
+        ));
+        assert!(!reaches_nothing("include !(\"code.rs\");\n"));
+        assert!(!reaches_nothing(
+            "const B: &[u8] = include_bytes!(\"b.bin\");\n"
+        ));
+        assert!(!reaches_nothing("m!(\"other.rs\");\n"));
+        assert!(!reaches_nothing(
+            "const T: &str = include_str /* c */ !(\"a.txt\");\n"
+        ));
+        assert!(!reaches_nothing(
+            "const T: &str = include_str // c\n!(\"a.txt\");\n"
+        ));
+        assert!(!reaches_nothing("m!(\"a.r\\x73\");\n"));
+        assert!(!reaches_nothing("m!(\"a\\u{2e}rs\");\n"));
+        assert!(!reaches_nothing("m!(\"a.rs\\\n\");\n"));
+        assert!(reaches_nothing("const Q: &str = \"say \\\"hi\\\"\\n\";\n"));
+        // A word that only starts or ends with a keyword is no keyword.
+        assert!(reaches_nothing(
+            "fn modify() { let unmod = 1; let includes = 2; }\n"
+        ));
+    }
+
+    #[test]
+    fn a_text_that_reaches_nothing_scans_to_nothing() {
+        let text = "pub static WORDS: &[&str] = &[\"include\", \"x.rs\"];\nfn modify() {}\n";
+        // `x.rs` is a literal outside macro tokens, so the scan credits nothing.
+        assert_eq!(scan(&parse(text), "src/lib.rs"), Scan::default());
+    }
+
     /// Parses a snippet.
     fn parse(text: &str) -> ast::SourceFile {
         ast::SourceFile::parse(text, ra_ap_syntax::Edition::Edition2024).tree()
@@ -348,6 +460,16 @@ mod tests {
         let found = scan(&file, "src/x/mod.rs");
         assert_eq!(found.includes, ["src/b.rs", "src/x/a.rs"]);
         assert_eq!(found.undecided, None);
+    }
+
+    #[test]
+    fn an_include_in_an_attribute_token_tree_counts() {
+        let file = parse(
+            "#![cfg_attr(docsrs, doc = include_str!(\"extra.rs\"))]\n\
+             #[my_attr(include!(\"more.rs\"))]\nfn f() {}\n",
+        );
+        let found = scan(&file, "src/lib.rs");
+        assert_eq!(found.includes, ["src/extra.rs", "src/more.rs"]);
     }
 
     #[test]

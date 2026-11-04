@@ -7,6 +7,7 @@
     reason = "a test fails loudly when its setup does not work"
 )]
 
+use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
 
@@ -375,4 +376,125 @@ fn a_configured_baseline_that_is_missing_does_not_stop_fix() {
         &[],
     );
     assert_eq!(items, ["helper"]);
+}
+
+/// A fake cargo whose `check` passes, and prints a JSON warning for each
+/// `(pattern, lint, message)` when the library file holds the pattern.
+#[cfg(unix)]
+fn warning_cargo(dir: &TempDir, warnings: &[(&str, &str, &str)]) -> String {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let real = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
+    let lib = dir.path().join("core/src/lib.rs");
+    let mut body = String::new();
+    for (pattern, lint, message) in warnings {
+        let _ = writeln!(
+            body,
+            "  if grep -q '{pattern}' '{lib}'; then echo '{{\"reason\":\"compiler-message\",\"message\":{{\"level\":\"warning\",\"message\":\"{message}\",\"code\":{{\"code\":\"{lint}\"}},\"spans\":[{{\"file_name\":\"core/src/lib.rs\",\"line_start\":2,\"column_start\":1,\"is_primary\":true}}]}}}}'; fi",
+            lib = lib.display()
+        );
+    }
+    let script = dir.path().join("fake-cargo");
+    fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = check ] || [ \"$2\" = check ]; then\n{body}  exit 0\nfi\nexec '{real}' \"$@\"\n"
+        ),
+    )
+    .expect("write the script");
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).expect("make it executable");
+    script.to_str().expect("the path is UTF-8").to_owned()
+}
+
+/// An edit that adds a compiler warning is left out, the same as an edit
+/// that adds an error. A new `dead_code` warning is the purpose of a
+/// `dead-public` edit, so it does not count.
+#[cfg(unix)]
+#[test]
+fn edit_that_adds_a_warning_is_left_out_and_dead_code_does_not_count() {
+    let core = "pub fn used() { helper(); other(); }\npub fn helper() {}\npub fn other() {}\npub fn dead() {}\n";
+    let dir = workspace(core, APP);
+    let script = warning_cargo(
+        &dir,
+        &[
+            (
+                "pub(crate) fn helper",
+                "private_interfaces",
+                "type `Data` is more private than the item `helper`",
+            ),
+            (
+                "pub(crate) fn dead",
+                "dead_code",
+                "function `dead` is never used",
+            ),
+        ],
+    );
+    let (code, stdout, stderr) = fix(
+        &dir,
+        &["--yes", "--format", "json", "--quiet"],
+        Some(&script),
+    );
+    assert_eq!(code, 0, "{stderr} {stdout}");
+    assert_eq!(json(&stdout)["total_fixed"], 2, "{stdout}");
+    assert_eq!(
+        read(&dir, "core/src/lib.rs"),
+        "pub fn used() { helper(); other(); }\npub fn helper() {}\npub(crate) fn other() {}\n\
+         pub(crate) fn dead() {}\n"
+    );
+}
+
+/// A warning that the workspace has before the edits is no new warning.
+#[cfg(unix)]
+#[test]
+fn a_warning_from_before_the_edits_keeps_each_edit() {
+    let dir = workspace(CORE, APP);
+    let script = warning_cargo(
+        &dir,
+        &[("used", "unused_mut", "variable does not need to be mutable")],
+    );
+    let (code, stdout, stderr) = fix(
+        &dir,
+        &["--yes", "--format", "json", "--quiet"],
+        Some(&script),
+    );
+    assert_eq!(code, 0, "{stderr} {stdout}");
+    assert_eq!(json(&stdout)["total_fixed"], 1, "{stdout}");
+}
+
+/// When `rustfmt` formatted a file before the edits, `fix` formats it again,
+/// so a signature that a shorter keyword lets fit on one line passes
+/// `cargo fmt --check`.
+#[test]
+fn a_formatted_file_stays_formatted_after_the_edits() {
+    let has_rustfmt = std::process::Command::new("rustfmt")
+        .arg("--version")
+        .output()
+        .is_ok_and(|output| output.status.success());
+    if !has_rustfmt {
+        return;
+    }
+    let core = "pub fn used() {\n    helper_with_a_long_name_here(1, 2);\n}\n\n\
+                pub(crate) fn helper_with_a_long_name_here(\n    first_argument_value: u8,\n\
+                \x20   second_argument_value: u8,\n) -> u16 {\n\
+                \x20   u16::from(first_argument_value) + u16::from(second_argument_value)\n}\n";
+    let dir = workspace(core, APP);
+    let formatted = std::process::Command::new("rustfmt")
+        .args(["--edition", "2024", "--check"])
+        .arg(dir.path().join("core/src/lib.rs"))
+        .status()
+        .expect("run rustfmt");
+    assert!(formatted.success(), "the fixture is formatted");
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
+    let (code, stdout, stderr) = fix(
+        &dir,
+        &["--yes", "--format", "json", "--quiet"],
+        Some(&cargo),
+    );
+    assert_eq!(code, 0, "{stderr} {stdout}");
+    let after = std::process::Command::new("rustfmt")
+        .args(["--edition", "2024", "--check"])
+        .arg(dir.path().join("core/src/lib.rs"))
+        .status()
+        .expect("run rustfmt");
+    assert!(after.success(), "{}", read(&dir, "core/src/lib.rs"));
 }

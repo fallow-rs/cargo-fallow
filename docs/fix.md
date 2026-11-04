@@ -44,9 +44,14 @@ cargo fallow fix --dry-run -p my-crate     # only the edits in one member
   the command changes nothing and exits 2. Make the build pass, or use
   `--dry-run` and make the edits by hand. After the edits, the command runs
   the same check again.
+- The command compares the compiler warnings before and after the edits. An
+  edit that adds a warning breaks a workspace that builds with `-D warnings`,
+  so a new warning fails the check, the same as an error. A new `dead_code`
+  warning does not count: a `dead-public` edit shows the dead code on
+  purpose. The check runs `cargo check`, so a new clippy lint does not show.
 - When the check after the edits fails, the command writes back the old bytes
   of each file and of `Cargo.lock`. Then it leaves out the edits of the items
-  that the compiler errors name, and tries again. The command does at most
+  that the compiler errors and the new warnings name, and tries again. The command does at most
   five rounds of edits and checks. In the report, each left-out edit has
   `applied: false`. When there is no edit left to leave out, the command
   exits 2 with the compiler errors.
@@ -54,6 +59,15 @@ cargo fallow fix --dry-run -p my-crate     # only the edits in one member
   for another platform, and it does not build doc tests. An edit can break
   such code. After `fix`, run the tests on each platform, or use `--dry-run`
   and review the edits.
+- When `rustfmt` formats a changed file to the same text before the edits,
+  the command formats the file again after the edits. A shorter keyword can
+  let a signature fit on one line, and `cargo fmt --check` then still passes.
+  The command does not format a file that was not formatted before. Without
+  `rustfmt`, the command skips this step. Set `RUSTFMT` to use another
+  `rustfmt` binary.
+- One run does not always reach a fixed point. After `pub` becomes
+  `pub(crate)`, the next run can report that the item can be private. Run
+  `fix` again until it has no edit.
 - When the process stops during the check, the edits stay on disk. To undo
   them, use the version control of the workspace.
 - `fix` does not change these findings, and they have `auto_fixable: false`.

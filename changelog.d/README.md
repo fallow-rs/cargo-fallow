@@ -32,7 +32,11 @@ example a change to CI only, needs no fragment.
 
 - `node scripts/changelog-fragments.mjs check` checks each fragment.
 - `node scripts/changelog-fragments.mjs check --base origin/main` also checks
-  that the branch does not edit `[Unreleased]`. The pre-commit hook runs it.
+  that the branch does not edit `[Unreleased]`. It also fails on a new
+  `## [X.Y.Z]` heading, except in a branch with the commit
+  `chore: release vX.Y.Z`. The pre-commit hook runs it with
+  `--pending-release`, which also accepts the heading of the `Cargo.toml`
+  version.
 - `node scripts/changelog-fragments.mjs collect --dry-run` prints the
   `[Unreleased]` section that the fragments make.
 - The release commit runs `node scripts/changelog-fragments.mjs collect`. The

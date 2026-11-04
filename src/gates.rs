@@ -17,7 +17,7 @@ use crate::parse::{Edition, ParseOutcome, parse_source};
 use crate::workspace::{self, Workspace};
 
 /// The name of a gate, as it appears in `gate_outcomes`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum RustGateName {
     /// `boundaries`: a rule found a violation.
@@ -46,7 +46,6 @@ pub enum RustGateName {
 
 impl RustGateName {
     /// Every gate name, in wire order.
-    #[cfg(test)]
     pub const ALL: [Self; 11] = [
         Self::BoundaryViolations,
         Self::DuplicationFindings,

@@ -82,7 +82,7 @@ const GRADES: [(u32, &str); 4] = [(85, "A"), (70, "B"), (55, "C"), (40, "D")];
 
 /// What the checks of one run measured. A field is `None` when its check did
 /// not run.
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, schemars::JsonSchema)]
 pub struct Metrics {
     /// The source files that the module walk reached.
     pub total_files: usize,
@@ -123,7 +123,7 @@ pub struct Metrics {
 
 /// The points that each penalty subtracts. A penalty is `None` when its check
 /// did not run.
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, schemars::JsonSchema)]
 pub struct Penalties {
     /// From `visibility`.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -171,7 +171,7 @@ impl Penalties {
 }
 
 /// The health score of one language. The field order is the wire order.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, schemars::JsonSchema)]
 pub struct HealthScore {
     /// Always `rust`.
     pub language: &'static str,
@@ -183,6 +183,7 @@ pub struct HealthScore {
     pub score: Option<f64>,
     /// `A`, `B`, `C`, `D` or `F`. `None` without a score.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(extend("enum" = ["A", "B", "C", "D", "F"]))]
     pub grade: Option<&'static str>,
     /// The checks with a penalty that the run did not include. A score
     /// without them reads too high, so the report has no score then.
@@ -195,7 +196,7 @@ pub struct HealthScore {
 }
 
 /// The health part of a report.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(untagged)]
 pub enum Health {
     /// The score of a run on the whole workspace.
@@ -206,7 +207,7 @@ pub enum Health {
 }
 
 /// The health part of a run with a scope.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 pub struct ScopedHealth {
     /// Always `rust`.
     pub language: &'static str,
@@ -214,6 +215,7 @@ pub struct ScopedHealth {
     pub formula_version: u32,
     /// The scope of the run: `changed` for `--changed-since`, `baseline` for
     /// `--baseline`.
+    #[schemars(extend("enum" = ["changed", "baseline"]))]
     pub scope: &'static str,
 }
 

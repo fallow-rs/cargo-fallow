@@ -13,7 +13,7 @@ use crate::report::TOOL_VERSION;
 pub const SCHEMA_VERSION: u32 = 1;
 
 /// The rule of a finding.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum Rule {
     /// A `[dependencies]` entry that no code uses.
@@ -92,8 +92,9 @@ impl Rule {
 }
 
 /// The severity of a finding.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
+#[schemars(rename = "DepsSeverity")]
 pub enum Severity {
     /// Counts for the `error-severity-findings` gate.
     Error,
@@ -103,7 +104,8 @@ pub enum Severity {
 }
 
 /// One finding. The field order is the wire order.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
+#[schemars(rename = "DepsFinding")]
 pub struct Finding {
     /// The rule.
     pub rule: Rule,
@@ -149,7 +151,8 @@ pub struct Finding {
 }
 
 /// A next step for one finding.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
+#[schemars(rename = "DepsAction")]
 pub struct Action {
     /// The kind of the step.
     #[serde(rename = "type")]
@@ -166,7 +169,8 @@ pub struct Action {
 }
 
 /// A package that the run did not judge.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
+#[schemars(rename = "DepsSkippedPackage")]
 pub struct SkippedPackage {
     /// The package name.
     pub package: String,
@@ -175,7 +179,7 @@ pub struct SkippedPackage {
 }
 
 /// The report of a `deps` run. The field order is the wire order.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct DepsReport {
     /// The version of the report shape.
     pub schema_version: u32,

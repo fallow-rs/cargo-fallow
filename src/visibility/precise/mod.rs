@@ -239,11 +239,12 @@ pub enum KeepReason {
 }
 
 /// The result of the mode in the report.
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, schemars::JsonSchema)]
 pub struct PreciseSummary {
     /// `complete`, `nothing_to_decide`, `time_limit`, `memory_limit` or
     /// `failed`. Each status other than `complete` and `nothing_to_decide`
     /// leaves some candidates undecided.
+    #[schemars(extend("enum" = ["complete", "nothing_to_decide", "time_limit", "memory_limit", "failed"]))]
     pub status: &'static str,
     /// The candidates of the fast check.
     pub candidates: usize,

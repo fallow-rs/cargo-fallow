@@ -1,0 +1,4866 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/fallow-rs/cargo-fallow/blob/main/docs/output-schema.json",
+  "title": "cargo-fallow JSON output",
+  "description": "Each JSON document that cargo-fallow writes: the report of each command (also `fix`), the inspect report of `mutants --inspect`, the baseline file of `--save-baseline` and the error document of exit code 2. The `document-<name>` definitions name each document.",
+  "anyOf": [
+    {
+      "$ref": "#/$defs/document-check"
+    },
+    {
+      "$ref": "#/$defs/document-deps"
+    },
+    {
+      "$ref": "#/$defs/document-fix"
+    },
+    {
+      "$ref": "#/$defs/document-visibility"
+    },
+    {
+      "$ref": "#/$defs/document-files"
+    },
+    {
+      "$ref": "#/$defs/document-boundaries"
+    },
+    {
+      "$ref": "#/$defs/document-size"
+    },
+    {
+      "$ref": "#/$defs/document-complexity"
+    },
+    {
+      "$ref": "#/$defs/document-dupes"
+    },
+    {
+      "$ref": "#/$defs/document-mutants"
+    },
+    {
+      "$ref": "#/$defs/document-mutants-inspect"
+    },
+    {
+      "$ref": "#/$defs/document-baseline"
+    },
+    {
+      "$ref": "#/$defs/document-error"
+    }
+  ],
+  "$defs": {
+    "Action": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "description": "The kind of the step."
+        },
+        "auto_fixable": {
+          "type": "boolean",
+          "description": "True when a tool can apply the step without a person."
+        },
+        "description": {
+          "type": "string",
+          "description": "What the step does."
+        }
+      },
+      "required": [
+        "type",
+        "auto_fixable",
+        "description"
+      ],
+      "description": "A next step for a finding."
+    },
+    "Baseline": {
+      "type": "object",
+      "properties": {
+        "clean": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TestRun"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The run on the unmodified copy."
+        },
+        "schema": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TestRun"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The run on the schema build with no active mutant."
+        },
+        "failures": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The tests that fail on the unmodified copy. They decide no mutant."
+        },
+        "regressions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The tests that pass on the unmodified copy and fail on the schema build.\nThey decide no schema mutant."
+        },
+        "tests_pass_with_schema": {
+          "type": "boolean",
+          "description": "True when both runs completed and `regressions` is empty."
+        },
+        "timeout_ms": {
+          "$ref": "#/$defs/Timeouts",
+          "description": "The time limits from these runs."
+        }
+      },
+      "required": [
+        "clean",
+        "schema",
+        "failures",
+        "regressions",
+        "tests_pass_with_schema",
+        "timeout_ms"
+      ],
+      "description": "The baseline part of the report."
+    },
+    "BaselineEntry": {
+      "type": "object",
+      "properties": {
+        "check": {
+          "type": "string",
+          "description": "The check that found it, for example `deps`."
+        },
+        "rule": {
+          "type": "string",
+          "description": "The rule, for example `unused-dependency`."
+        },
+        "id": {
+          "type": "string",
+          "description": "The stable id of the finding."
+        }
+      },
+      "required": [
+        "check",
+        "rule",
+        "id"
+      ],
+      "description": "One finding in a baseline file."
+    },
+    "BaselineFile": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The version of the file shape."
+        },
+        "kind": {
+          "type": "string",
+          "description": "The command that saved the file."
+        },
+        "language": {
+          "type": "string",
+          "description": "Always `rust`."
+        },
+        "identity": {
+          "type": "string",
+          "description": "The key scheme of the ids."
+        },
+        "findings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/BaselineEntry"
+          },
+          "description": "The findings, sorted by check, rule and id."
+        }
+      },
+      "required": [
+        "schema_version",
+        "kind",
+        "language",
+        "identity",
+        "findings"
+      ],
+      "description": "The baseline file. The field order is the wire order."
+    },
+    "BaselineSummary": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "The path of the file."
+        },
+        "matched": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The file entries that a finding of the run matched. The report leaves\nout these findings."
+        },
+        "stale": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/BaselineEntry"
+          },
+          "description": "The file entries of the checks that ran with no finding in the run.\nA run with `--changed-since` does not judge them, so the list is empty."
+        }
+      },
+      "required": [
+        "path",
+        "matched",
+        "stale"
+      ],
+      "description": "The `baseline` member of a report."
+    },
+    "BoundariesFinding": {
+      "type": "object",
+      "properties": {
+        "rule": {
+          "type": "string",
+          "description": "The rule name."
+        },
+        "kind": {
+          "$ref": "#/$defs/BoundariesKind",
+          "description": "The kind of the rule."
+        },
+        "from": {
+          "type": "string",
+          "description": "The package or the module that the rule checks."
+        },
+        "to": {
+          "type": "string",
+          "description": "The denied package, pattern owner or module path."
+        },
+        "path": {
+          "type": "string",
+          "description": "The file of the violation."
+        },
+        "line": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The line. It starts at 1."
+        },
+        "col": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The column. It starts at 1."
+        },
+        "pattern": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The denied pattern, for a source rule."
+        },
+        "dependency_kinds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The `Cargo.toml` sections of the dependency, for a crate rule."
+        },
+        "message": {
+          "type": "string",
+          "description": "The message."
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/StructureAction"
+          },
+          "description": "The next steps."
+        }
+      },
+      "required": [
+        "rule",
+        "kind",
+        "from",
+        "to",
+        "path",
+        "line",
+        "col",
+        "message",
+        "actions"
+      ],
+      "description": "One violation of a rule."
+    },
+    "BoundariesKind": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "crate-dependency",
+          "description": "A workspace package depends on a denied workspace package."
+        },
+        {
+          "type": "string",
+          "const": "source-pattern",
+          "description": "A file contains a denied pattern."
+        },
+        {
+          "type": "string",
+          "const": "module-path",
+          "description": "A module uses a denied module."
+        }
+      ],
+      "description": "The kind of a boundary finding."
+    },
+    "BoundariesSummary": {
+      "type": "object",
+      "properties": {
+        "crate_rules": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The crate rules."
+        },
+        "source_rules": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The source rules."
+        },
+        "module_rules": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The module rules."
+        },
+        "workspace_edges": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The dependency edges between workspace packages."
+        },
+        "source_files": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The files that the source rules read."
+        }
+      },
+      "required": [
+        "crate_rules",
+        "source_rules",
+        "module_rules",
+        "workspace_edges",
+        "source_files"
+      ],
+      "description": "The summary of a boundaries run."
+    },
+    "ChangedFiles": {
+      "type": "object",
+      "properties": {
+        "ref": {
+          "type": "string",
+          "description": "The ref of the flag."
+        },
+        "base": {
+          "type": "string",
+          "description": "The fork point of the ref and `HEAD`: the commit that the diff starts\nfrom."
+        },
+        "changed_files": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string"
+          },
+          "description": "The changed files, relative to the workspace root, sorted."
+        }
+      },
+      "required": [
+        "ref",
+        "base",
+        "changed_files"
+      ],
+      "description": "The files that the working tree changed since the fork point of a ref."
+    },
+    "CheckName": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "parse",
+          "description": "The parse of each target root file: the `parse-error` gate."
+        },
+        {
+          "type": "string",
+          "const": "deps",
+          "description": "Unused dependencies, the same as `cargo fallow deps`."
+        },
+        {
+          "type": "string",
+          "const": "files",
+          "description": "Unused source files, the same as `cargo fallow files`."
+        },
+        {
+          "type": "string",
+          "const": "visibility",
+          "description": "Visibility in the fast mode, the same as `cargo fallow visibility`."
+        },
+        {
+          "type": "string",
+          "const": "boundaries",
+          "description": "Boundary rules, the same as `cargo fallow boundaries`."
+        },
+        {
+          "type": "string",
+          "const": "size",
+          "description": "File and function size, the same as `cargo fallow size`."
+        },
+        {
+          "type": "string",
+          "const": "complexity",
+          "description": "Complexity, the same as `cargo fallow complexity`."
+        },
+        {
+          "type": "string",
+          "const": "dupes",
+          "description": "Duplicated code, the same as `cargo fallow dupes`."
+        }
+      ],
+      "description": "One check of the run."
+    },
+    "CheckReport": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The version of the report shape."
+        },
+        "version": {
+          "type": "string",
+          "description": "The version of cargo-fallow."
+        },
+        "kind": {
+          "type": "string",
+          "description": "Always `check`."
+        },
+        "language": {
+          "type": "string",
+          "description": "Always `rust`."
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceSummary",
+          "description": "The workspace members."
+        },
+        "checks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CheckName"
+          },
+          "description": "The checks that ran, in run order."
+        },
+        "total_issues": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The number of findings."
+        },
+        "health": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Health"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The health score of the Rust code, when a check with a penalty ran."
+        },
+        "findings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Finding"
+          },
+          "description": "The findings of each check in the shared shape, in check order."
+        },
+        "gate_outcomes": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/GateOutcome"
+          },
+          "description": "The gate outcomes of each check that ran, keyed by gate name.",
+          "propertyNames": {
+            "enum": [
+              "boundary-violations",
+              "duplication-findings",
+              "duplication-threshold",
+              "error-severity-findings",
+              "file-growth",
+              "health-findings",
+              "parse-error",
+              "stale-baseline",
+              "surviving-mutants",
+              "unused-files",
+              "visibility-findings"
+            ]
+          }
+        },
+        "changed_since": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ChangedFiles"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The changed files of `--changed-since`. A run without the flag has no\nsuch member."
+        },
+        "baseline": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BaselineSummary"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The baseline of `--baseline`. A run without the flag has no such\nmember."
+        },
+        "sections": {
+          "$ref": "#/$defs/CheckSections",
+          "description": "The report of each check that ran, keyed by check name. Each report is\nthe JSON report of the command of the same name. The parse gate has no\nreport of its own."
+        }
+      },
+      "required": [
+        "schema_version",
+        "version",
+        "kind",
+        "language",
+        "workspace",
+        "checks",
+        "total_issues",
+        "findings",
+        "gate_outcomes",
+        "sections"
+      ],
+      "description": "The report of a `check` run. The field order is the wire order."
+    },
+    "CheckSections": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "deps": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DepsReport"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The report of `cargo fallow deps`."
+        },
+        "visibility": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/VisibilityReport"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The report of `cargo fallow visibility`."
+        },
+        "files": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Report_of_FilesSummary"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The report of `cargo fallow files`."
+        },
+        "boundaries": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Report_of_BoundariesSummary"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The report of `cargo fallow boundaries`."
+        },
+        "size": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Report_of_SizeSummary"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The report of `cargo fallow size`."
+        },
+        "complexity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Report_of_ComplexitySummary"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The report of `cargo fallow complexity`."
+        },
+        "dupes": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Report_of_DupesSummary"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The report of `cargo fallow dupes`."
+        }
+      },
+      "description": "The schema of the `sections` member: the report of each check that ran.\nThe report writes the map, so the type only describes it."
+    },
+    "CloneFamily": {
+      "type": "object",
+      "properties": {
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The files."
+        },
+        "groups": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The fingerprints of the groups."
+        },
+        "total_duplicated_lines": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The sum of the line counts of the groups."
+        },
+        "total_duplicated_tokens": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The sum of the token counts of the groups."
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/StructureAction"
+          },
+          "description": "The next steps."
+        }
+      },
+      "required": [
+        "files",
+        "groups",
+        "total_duplicated_lines",
+        "total_duplicated_tokens",
+        "actions"
+      ],
+      "description": "A set of clone groups in the same files."
+    },
+    "CloneGroup": {
+      "type": "object",
+      "properties": {
+        "fingerprint": {
+          "type": "string",
+          "description": "A stable id: `dup:` and the hash of the normalized tokens."
+        },
+        "instances": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Instance"
+          },
+          "description": "The places, sorted by file and line."
+        },
+        "token_count": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The number of tokens of the clone."
+        },
+        "line_count": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The largest line count of a place."
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/StructureAction"
+          },
+          "description": "The next steps."
+        }
+      },
+      "required": [
+        "fingerprint",
+        "instances",
+        "token_count",
+        "line_count",
+        "actions"
+      ],
+      "description": "One clone group."
+    },
+    "ComplexityFinding": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "The file."
+        },
+        "name": {
+          "type": "string",
+          "description": "The function name."
+        },
+        "line": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The line of the name."
+        },
+        "col": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The column of the name."
+        },
+        "cyclomatic": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The cyclomatic complexity."
+        },
+        "cognitive": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The cognitive complexity."
+        },
+        "line_count": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The lines of the function."
+        },
+        "param_count": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The parameters, with `self`."
+        },
+        "exceeded": {
+          "$ref": "#/$defs/Exceeded",
+          "description": "The limits that the function went over."
+        },
+        "severity": {
+          "$ref": "#/$defs/ComplexitySeverity",
+          "description": "The severity band."
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/StructureAction"
+          },
+          "description": "The next steps."
+        }
+      },
+      "required": [
+        "path",
+        "name",
+        "line",
+        "col",
+        "cyclomatic",
+        "cognitive",
+        "line_count",
+        "param_count",
+        "exceeded",
+        "severity",
+        "actions"
+      ],
+      "description": "One function over a limit."
+    },
+    "ComplexitySeverity": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "moderate",
+          "description": "Over a limit, under the `high` band."
+        },
+        {
+          "type": "string",
+          "const": "high",
+          "description": "Cognitive 25 or more, or cyclomatic 30 or more."
+        },
+        {
+          "type": "string",
+          "const": "critical",
+          "description": "Cognitive 40 or more, or cyclomatic 50 or more."
+        }
+      ],
+      "description": "The severity band of a finding."
+    },
+    "ComplexitySummary": {
+      "type": "object",
+      "properties": {
+        "files": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The parsed files."
+        },
+        "functions": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The functions and closures."
+        },
+        "max_cyclomatic": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The cyclomatic limit."
+        },
+        "max_cognitive": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The cognitive limit."
+        },
+        "suppressed": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The findings that a comment suppressed."
+        },
+        "generated_files": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The files with a generator header or an `@generated` comment, which\nthe check skips."
+        },
+        "skipped_files": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Skipped"
+          },
+          "description": "The files that a declaration reached but that did not parse."
+        }
+      },
+      "required": [
+        "files",
+        "functions",
+        "max_cyclomatic",
+        "max_cognitive",
+        "suppressed",
+        "generated_files",
+        "skipped_files"
+      ],
+      "description": "The summary of a complexity run."
+    },
+    "CoverageState": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "covered",
+          "description": "The listed tests execute a line of the mutant."
+        },
+        {
+          "type": "string",
+          "const": "not_covered",
+          "description": "The map has data on the lines, and no test executes them."
+        },
+        {
+          "type": "string",
+          "const": "no_line_data",
+          "description": "The map has no data on the lines, so a run has each test."
+        },
+        {
+          "type": "string",
+          "const": "constant_context",
+          "description": "The mutant is in a constant context. The compiler can evaluate such code, so\nthe map says nothing about it, and a run has each test."
+        }
+      ],
+      "description": "How the coverage map sees the lines of one mutant."
+    },
+    "CrateRow": {
+      "type": "object",
+      "properties": {
+        "package": {
+          "type": "string",
+          "description": "The package."
+        },
+        "name": {
+          "type": "string",
+          "description": "The crate name."
+        },
+        "kind": {
+          "type": "string",
+          "description": "The target kind."
+        },
+        "production": {
+          "type": "boolean",
+          "description": "True for a production binary."
+        },
+        "features": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The features of the package."
+        },
+        "required_features": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The features that the target needs."
+        },
+        "externs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ExternRow"
+          },
+          "description": "The crate names that the code can use."
+        }
+      },
+      "required": [
+        "package",
+        "name",
+        "kind",
+        "production",
+        "features",
+        "required_features",
+        "externs"
+      ],
+      "description": "One crate of the graph."
+    },
+    "DepsAction": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "description": "The kind of the step."
+        },
+        "auto_fixable": {
+          "type": "boolean",
+          "description": "True when `cargo fallow fix` applies the step."
+        },
+        "description": {
+          "type": "string",
+          "description": "What to do."
+        },
+        "file": {
+          "type": "string",
+          "description": "The file to change, relative to the workspace root."
+        },
+        "line": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The one-based line to change."
+        }
+      },
+      "required": [
+        "type",
+        "auto_fixable",
+        "description",
+        "file"
+      ],
+      "description": "A next step for one finding."
+    },
+    "DepsFinding": {
+      "type": "object",
+      "properties": {
+        "rule": {
+          "$ref": "#/$defs/Rule",
+          "description": "The rule."
+        },
+        "severity": {
+          "$ref": "#/$defs/DepsSeverity",
+          "description": "The severity of the rule."
+        },
+        "package": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The package. A workspace finding has none."
+        },
+        "manifest_path": {
+          "type": "string",
+          "description": "The `Cargo.toml` path, relative to the workspace root."
+        },
+        "line": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The one-based line of the entry, when the scan found it."
+        },
+        "section": {
+          "type": "string",
+          "description": "The table: `dependencies`, `dev-dependencies`, `build-dependencies`,\n`workspace.dependencies`, or the ignore table of a `redundant-ignore`."
+        },
+        "platform": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The platform of a `[target.<platform>.*]` table."
+        },
+        "dependency": {
+          "type": "string",
+          "description": "The key in `Cargo.toml`: the dependency name or its rename."
+        },
+        "package_name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The package name of a renamed dependency."
+        },
+        "optional": {
+          "type": "boolean",
+          "description": "True for an optional dependency."
+        },
+        "used_by": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The parts of the package that use the dependency. Only a\n`misplaced-dependency` finding has them."
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DepsAction"
+          },
+          "description": "The next steps. `cargo fallow fix` applies a step with `auto_fixable`."
+        }
+      },
+      "required": [
+        "rule",
+        "severity",
+        "manifest_path",
+        "section",
+        "dependency",
+        "actions"
+      ],
+      "description": "One finding. The field order is the wire order."
+    },
+    "DepsReport": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The version of the report shape."
+        },
+        "version": {
+          "type": "string",
+          "description": "The version of cargo-fallow."
+        },
+        "kind": {
+          "type": "string",
+          "description": "Always `deps`."
+        },
+        "language": {
+          "type": "string",
+          "description": "Always `rust`."
+        },
+        "members": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The number of workspace members."
+        },
+        "total_issues": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The number of findings."
+        },
+        "findings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DepsFinding"
+          },
+          "description": "The findings, sorted by manifest, line, table, key, platform, rule,\npackage and severity."
+        },
+        "skipped": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DepsSkippedPackage"
+          },
+          "description": "The packages that the run did not judge."
+        },
+        "gate_outcomes": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/GateOutcome"
+          },
+          "description": "The gate outcomes, keyed by gate name.",
+          "propertyNames": {
+            "enum": [
+              "boundary-violations",
+              "duplication-findings",
+              "duplication-threshold",
+              "error-severity-findings",
+              "file-growth",
+              "health-findings",
+              "parse-error",
+              "stale-baseline",
+              "surviving-mutants",
+              "unused-files",
+              "visibility-findings"
+            ]
+          }
+        }
+      },
+      "required": [
+        "schema_version",
+        "version",
+        "kind",
+        "language",
+        "members",
+        "total_issues",
+        "findings",
+        "gate_outcomes"
+      ],
+      "description": "The report of a `deps` run. The field order is the wire order."
+    },
+    "DepsSeverity": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "error",
+          "description": "Counts for the `error-severity-findings` gate."
+        },
+        {
+          "type": "string",
+          "const": "warn",
+          "description": "Does not count for a gate. The JSON value is `warn`."
+        }
+      ],
+      "description": "The severity of a finding."
+    },
+    "DepsSkippedPackage": {
+      "type": "object",
+      "properties": {
+        "package": {
+          "type": "string",
+          "description": "The package name."
+        },
+        "reason": {
+          "type": "string",
+          "description": "The reason."
+        }
+      },
+      "required": [
+        "package",
+        "reason"
+      ],
+      "description": "A package that the run did not judge."
+    },
+    "DiffInfo": {
+      "type": "object",
+      "properties": {
+        "ref": {
+          "type": "string",
+          "description": "The ref of the flag."
+        },
+        "base": {
+          "type": "string",
+          "description": "The commit that the working tree is compared with: the fork point of the\nref and `HEAD`."
+        },
+        "changed_files": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The files with a changed line."
+        },
+        "mutants_outside": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The mutants that the run left out, because no line of the mutant changed."
+        }
+      },
+      "required": [
+        "ref",
+        "base",
+        "changed_files",
+        "mutants_outside"
+      ],
+      "description": "The diff of an `--in-diff` run."
+    },
+    "DupesSummary": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "description": "The normalization mode.",
+          "enum": [
+            "strict",
+            "mild",
+            "weak",
+            "semantic"
+          ]
+        },
+        "min_tokens": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The smallest clone, in tokens."
+        },
+        "min_lines": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The smallest clone, in lines."
+        },
+        "stats": {
+          "$ref": "#/$defs/Stats",
+          "description": "The counts."
+        },
+        "generated_files": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The files with a generator header or an `@generated` comment, which\nthe check skips."
+        },
+        "clone_families": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CloneFamily"
+          },
+          "description": "The clone families."
+        },
+        "skipped_files": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Skipped"
+          },
+          "description": "The files that the check skips, with the reason: a file that did not\nparse, or a file over the token budget."
+        }
+      },
+      "required": [
+        "mode",
+        "min_tokens",
+        "min_lines",
+        "stats",
+        "generated_files",
+        "clone_families",
+        "skipped_files"
+      ],
+      "description": "The summary of a duplication run."
+    },
+    "ErrorOutput": {
+      "type": "object",
+      "properties": {
+        "error": {
+          "type": "boolean"
+        },
+        "message": {
+          "type": "string"
+        },
+        "exit_code": {
+          "type": "integer",
+          "format": "uint8",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "code": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "help": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "error",
+        "message",
+        "exit_code"
+      ],
+      "description": "The error document of exit code 2, on stdout with `--format json`."
+    },
+    "ErrorSummary": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The error code."
+        },
+        "message": {
+          "type": "string",
+          "description": "The first line of the message."
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "description": "One compiler error, without its spans."
+    },
+    "Exceeded": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "cyclomatic",
+          "description": "Only the cyclomatic limit."
+        },
+        {
+          "type": "string",
+          "const": "cognitive",
+          "description": "Only the cognitive limit."
+        },
+        {
+          "type": "string",
+          "const": "both",
+          "description": "Both limits."
+        }
+      ],
+      "description": "The limits that a function went over."
+    },
+    "ExternRow": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "The name in code."
+        },
+        "workspace_crate": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The workspace crate, or `None` for a crate outside the workspace."
+        },
+        "platform": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The `cfg` or target triple of a platform-specific dependency."
+        },
+        "optional": {
+          "type": "boolean",
+          "description": "True for an optional dependency."
+        }
+      },
+      "required": [
+        "name",
+        "workspace_crate",
+        "platform",
+        "optional"
+      ],
+      "description": "A crate name that the code can use."
+    },
+    "FileSkip": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "The path."
+        },
+        "reason": {
+          "type": "string",
+          "description": "The reason."
+        }
+      },
+      "required": [
+        "path",
+        "reason"
+      ],
+      "description": "A file that the walk reached but cannot use."
+    },
+    "FilesFinding": {
+      "type": "object",
+      "properties": {
+        "rule": {
+          "type": "string",
+          "description": "Always `unused-file`.",
+          "const": "unused-file"
+        },
+        "package": {
+          "type": "string",
+          "description": "The package of the file."
+        },
+        "path": {
+          "type": "string",
+          "description": "The file, relative to the workspace root."
+        },
+        "message": {
+          "type": "string",
+          "description": "The message."
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/StructureAction"
+          },
+          "description": "The next steps."
+        }
+      },
+      "required": [
+        "rule",
+        "package",
+        "path",
+        "message",
+        "actions"
+      ],
+      "description": "One unused file."
+    },
+    "FilesSkippedPackage": {
+      "type": "object",
+      "properties": {
+        "package": {
+          "type": "string",
+          "description": "The package name."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Why the syntax cannot decide the files of the package."
+        }
+      },
+      "required": [
+        "package",
+        "reason"
+      ],
+      "description": "A package that the check skips, with the reason."
+    },
+    "FilesSummary": {
+      "type": "object",
+      "properties": {
+        "packages": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The workspace members."
+        },
+        "files": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The `.rs` files in the target folders."
+        },
+        "reached_files": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The files that a target compiles."
+        },
+        "skipped_packages": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FilesSkippedPackage"
+          },
+          "description": "The packages that the check skips."
+        }
+      },
+      "required": [
+        "packages",
+        "files",
+        "reached_files",
+        "skipped_packages"
+      ],
+      "description": "The summary of a `files` run."
+    },
+    "Finding": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "A stable id: 16 hex digits of a hash of the check, the rule and the\nidentity of the finding. A run on the same code gives the same id."
+        },
+        "check": {
+          "type": "string",
+          "description": "The check that found it, for example `deps`."
+        },
+        "rule": {
+          "type": "string",
+          "description": "The rule, for example `unused-dependency`."
+        },
+        "severity": {
+          "$ref": "#/$defs/Severity",
+          "description": "The severity of the rule."
+        },
+        "message": {
+          "type": "string",
+          "description": "What is wrong."
+        },
+        "location": {
+          "$ref": "#/$defs/Location",
+          "description": "The main place."
+        },
+        "related_locations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Location"
+          },
+          "description": "The other places of the same finding, for example the other copies of\na clone."
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Action"
+          },
+          "description": "The next steps."
+        }
+      },
+      "required": [
+        "id",
+        "check",
+        "rule",
+        "severity",
+        "message",
+        "location",
+        "actions"
+      ],
+      "description": "One finding of one check. The field order is the wire order."
+    },
+    "FindingRow": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "description": "The finding kind.",
+          "enum": [
+            "dead_public",
+            "unnecessary_public",
+            "unnecessary_restricted_visibility"
+          ]
+        },
+        "package": {
+          "type": "string",
+          "description": "The package."
+        },
+        "crate": {
+          "type": "string",
+          "description": "The crate name."
+        },
+        "item": {
+          "type": "string",
+          "description": "The item path from the crate root."
+        },
+        "item_kind": {
+          "type": "string",
+          "description": "The item kind."
+        },
+        "file": {
+          "type": "string",
+          "description": "The file, relative to the workspace root."
+        },
+        "line": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The one-based line of the name."
+        },
+        "column": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The one-based column of the name, in characters."
+        },
+        "end_line": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The one-based last line of the item."
+        },
+        "visibility": {
+          "type": "string",
+          "description": "The written visibility."
+        },
+        "suggested": {
+          "type": "string",
+          "description": "The smaller visibility. An empty text means private."
+        },
+        "test_only": {
+          "type": "boolean",
+          "description": "True when only test code reaches the item."
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/VisibilityAction"
+          },
+          "description": "The next steps."
+        }
+      },
+      "required": [
+        "kind",
+        "package",
+        "crate",
+        "item",
+        "item_kind",
+        "file",
+        "line",
+        "column",
+        "end_line",
+        "visibility",
+        "suggested",
+        "test_only",
+        "actions"
+      ],
+      "description": "One finding."
+    },
+    "FixEdit": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "description": "The action type of the finding: `remove-dependency` or\n`move-to-dev-dependencies`."
+        },
+        "rule": {
+          "$ref": "#/$defs/Rule",
+          "description": "The rule of the finding."
+        },
+        "package": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The package. A workspace entry has none."
+        },
+        "manifest_path": {
+          "type": "string",
+          "description": "The `Cargo.toml` path, relative to the workspace root."
+        },
+        "section": {
+          "type": "string",
+          "description": "The table of the entry."
+        },
+        "platform": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The platform of a `[target.<platform>.*]` table."
+        },
+        "dependency": {
+          "type": "string",
+          "description": "The key in `Cargo.toml`."
+        },
+        "line": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The one-based line of the entry before the edit."
+        },
+        "applied": {
+          "type": "boolean",
+          "description": "True when the command wrote the edit."
+        }
+      },
+      "required": [
+        "type",
+        "rule",
+        "manifest_path",
+        "section",
+        "dependency",
+        "applied"
+      ],
+      "description": "One planned edit. The field order is the wire order."
+    },
+    "FixReport": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The version of the report shape."
+        },
+        "version": {
+          "type": "string",
+          "description": "The version of cargo-fallow."
+        },
+        "kind": {
+          "type": "string",
+          "description": "Always `fix`."
+        },
+        "language": {
+          "type": "string",
+          "description": "Always `rust`."
+        },
+        "dry_run": {
+          "type": "boolean",
+          "description": "True when `--dry-run` was given and no file changed."
+        },
+        "fixes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FixEdit"
+          },
+          "description": "The edits, applied or planned."
+        },
+        "total_fixed": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The number of edits with `applied: true`."
+        },
+        "skipped": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The findings that `fix` does not change, for example a warning."
+        },
+        "skipped_packages": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DepsSkippedPackage"
+          },
+          "description": "The packages that the `deps` check did not judge, so `fix` has no edit\nfor them."
+        }
+      },
+      "required": [
+        "schema_version",
+        "version",
+        "kind",
+        "language",
+        "dry_run",
+        "fixes",
+        "total_fixed",
+        "skipped"
+      ],
+      "description": "The report of a `fix` run. The field order is the wire order."
+    },
+    "Gaps": {
+      "type": "object",
+      "properties": {
+        "files": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The source files with a mutant."
+        },
+        "files_skipped": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FileSkip"
+          },
+          "description": "The files that the walk reached but cannot use."
+        },
+        "unreached_src_files": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The `.rs` files that no `mod` declaration reached: for example a file of a\nmacro-declared module, a test-only file or an unused file."
+        },
+        "macro_tokens": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "Operator tokens in macro arguments and macro bodies."
+        },
+        "const_context": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "Schema operators in constant contexts and patterns."
+        },
+        "let_chain": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "Schema operators in `let` chains."
+        },
+        "test_code": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "Operators in test code."
+        },
+        "features": {
+          "type": "string",
+          "description": "The features of this run. Other feature sets are not compiled."
+        },
+        "doctests": {
+          "type": "boolean",
+          "description": "True when the doctests ran for the survivors."
+        },
+        "untested_dependents": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The workspace members that depend on the package and whose tests did not run.\n`--test-workspace` runs them."
+        }
+      },
+      "required": [
+        "files",
+        "files_skipped",
+        "unreached_src_files",
+        "macro_tokens",
+        "const_context",
+        "let_chain",
+        "test_code",
+        "features",
+        "doctests",
+        "untested_dependents"
+      ],
+      "description": "What the run does not cover. A score says nothing about this code."
+    },
+    "GateFile": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "error_count": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "panicked": {
+          "type": "boolean"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GateFileReason"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "path",
+        "error_count",
+        "panicked"
+      ],
+      "description": "A file that a gate judged."
+    },
+    "GateFileReason": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "nesting-too-deep"
+        }
+      ],
+      "description": "The reason that a gate judged a file."
+    },
+    "GateOutcome": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "$ref": "#/$defs/GateStatus"
+        },
+        "enforced": {
+          "type": "boolean"
+        },
+        "observed": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "threshold": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "threshold_label": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/GateFile"
+          }
+        }
+      },
+      "required": [
+        "status",
+        "enforced"
+      ],
+      "description": "The outcome of one gate."
+    },
+    "GateStatus": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "pass"
+        },
+        {
+          "type": "string",
+          "const": "warn"
+        },
+        {
+          "type": "string",
+          "const": "fail"
+        },
+        {
+          "type": "string",
+          "const": "skipped"
+        }
+      ],
+      "description": "`pass`, `warn`, `fail` or `skipped`."
+    },
+    "GraphSummary": {
+      "type": "object",
+      "properties": {
+        "crates": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The crates: one for each target."
+        },
+        "modules": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The modules."
+        },
+        "items": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The items."
+        },
+        "files": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The parsed files, counted once for each crate."
+        },
+        "skipped_files": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SkippedRow"
+          },
+          "description": "The files that a declaration reached but that did not parse. Their\nitems and uses are not in the graph."
+        },
+        "unreached_files": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The `.rs` files under the root folders that no declaration reached."
+        }
+      },
+      "required": [
+        "crates",
+        "modules",
+        "items",
+        "files",
+        "skipped_files",
+        "unreached_files"
+      ],
+      "description": "The size of the graph."
+    },
+    "GuardInfo": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "False only with `--no-memory-guard`."
+        },
+        "memory_limit_mib": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "description": "The limit for one test process."
+        },
+        "low_memory_percent": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The floor of the free memory."
+        },
+        "kills": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The process trees that the guard killed."
+        },
+        "jobs": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The parallel jobs."
+        }
+      },
+      "required": [
+        "enabled",
+        "memory_limit_mib",
+        "low_memory_percent",
+        "kills",
+        "jobs"
+      ],
+      "description": "The guard part of the report."
+    },
+    "Health": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/HealthScore",
+          "description": "The score of a run on the whole workspace."
+        },
+        {
+          "$ref": "#/$defs/ScopedHealth",
+          "description": "A run with a scope. The penalties count the whole workspace, so a run\nthat keeps only part of the findings gives no score."
+        }
+      ],
+      "description": "The health part of a report."
+    },
+    "HealthScore": {
+      "type": "object",
+      "properties": {
+        "language": {
+          "type": "string",
+          "description": "Always `rust`."
+        },
+        "formula_version": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The version of the formula."
+        },
+        "score": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double",
+          "description": "The score, from 0 to 100, with one decimal. `None` when a check of\n[`HealthScore::missing_checks`] did not run."
+        },
+        "grade": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "`A`, `B`, `C`, `D` or `F`. `None` without a score.",
+          "enum": [
+            "A",
+            "B",
+            "C",
+            "D",
+            "F"
+          ]
+        },
+        "missing_checks": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The checks with a penalty that the run did not include. A score\nwithout them reads too high, so the report has no score then."
+        },
+        "penalties": {
+          "$ref": "#/$defs/Penalties",
+          "description": "The points that each penalty subtracts."
+        },
+        "metrics": {
+          "$ref": "#/$defs/Metrics",
+          "description": "The inputs of the penalties."
+        }
+      },
+      "required": [
+        "language",
+        "formula_version",
+        "penalties",
+        "metrics"
+      ],
+      "description": "The health score of one language. The field order is the wire order."
+    },
+    "InspectCoverage": {
+      "type": "object",
+      "properties": {
+        "map": {
+          "$ref": "#/$defs/MapSource",
+          "description": "Where the map comes from."
+        },
+        "state": {
+          "$ref": "#/$defs/CoverageState",
+          "description": "How the map sees the lines of the mutant."
+        },
+        "tests": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The tests that execute a line of the mutant, sorted by name."
+        },
+        "tests_without_data": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The tests with no usable data, sorted by name. A run has these tests for each\nmutant."
+        }
+      },
+      "required": [
+        "map",
+        "state",
+        "tests",
+        "tests_without_data"
+      ],
+      "description": "The coverage part of an inspect report."
+    },
+    "InspectReport": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The version of the report shape."
+        },
+        "version": {
+          "type": "string",
+          "description": "The version of cargo-fallow."
+        },
+        "kind": {
+          "type": "string",
+          "description": "Always `mutants-inspect`."
+        },
+        "language": {
+          "type": "string",
+          "description": "Always `rust`."
+        },
+        "package": {
+          "type": "string",
+          "description": "The package."
+        },
+        "mutant": {
+          "$ref": "#/$defs/InspectedMutant",
+          "description": "The mutant."
+        },
+        "coverage": {
+          "$ref": "#/$defs/InspectCoverage",
+          "description": "The tests of the mutant."
+        }
+      },
+      "required": [
+        "schema_version",
+        "version",
+        "kind",
+        "language",
+        "package",
+        "mutant",
+        "coverage"
+      ],
+      "description": "The report of `--inspect`."
+    },
+    "InspectedMutant": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "The stable id."
+        },
+        "tier": {
+          "$ref": "#/$defs/Tier",
+          "description": "The tier of the mutant. A schema mutant can move to the rebuild tier in a run\nwhen it breaks the schema build."
+        },
+        "operator": {
+          "type": "string",
+          "description": "The operator name."
+        },
+        "file": {
+          "type": "string",
+          "description": "The file, relative to the workspace root."
+        },
+        "line": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The line, from 1."
+        },
+        "column": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The column, from 1, in bytes."
+        },
+        "replacement": {
+          "type": "string",
+          "description": "The replacement text."
+        },
+        "before": {
+          "type": "string",
+          "description": "The whole lines of the mutant in the source."
+        },
+        "after": {
+          "type": "string",
+          "description": "The same lines with the mutant applied."
+        },
+        "under_cfg": {
+          "type": "boolean",
+          "description": "True when a `cfg` attribute is on an enclosing item."
+        }
+      },
+      "required": [
+        "id",
+        "tier",
+        "operator",
+        "file",
+        "line",
+        "column",
+        "replacement",
+        "before",
+        "after",
+        "under_cfg"
+      ],
+      "description": "The mutant of an inspect report."
+    },
+    "Instance": {
+      "type": "object",
+      "properties": {
+        "file": {
+          "type": "string",
+          "description": "The file."
+        },
+        "start_line": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The first line."
+        },
+        "end_line": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The last line."
+        },
+        "start_col": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The first column, starting at 1."
+        },
+        "end_col": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The column after the last character."
+        }
+      },
+      "required": [
+        "file",
+        "start_line",
+        "end_line",
+        "start_col",
+        "end_col"
+      ],
+      "description": "One place of a clone."
+    },
+    "LargeFile": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "The file."
+        },
+        "lines": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The line count."
+        }
+      },
+      "required": [
+        "path",
+        "lines"
+      ],
+      "description": "A file over the line limit."
+    },
+    "LargeFunction": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "The file."
+        },
+        "name": {
+          "type": "string",
+          "description": "The function name."
+        },
+        "line": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The line of the name."
+        },
+        "line_count": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The lines of the function."
+        }
+      },
+      "required": [
+        "path",
+        "name",
+        "line",
+        "line_count"
+      ],
+      "description": "A function over the function line limit."
+    },
+    "Location": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "The path relative to the workspace root, with `/` separators."
+        },
+        "line": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The first line, when the check knows it."
+        },
+        "column": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The first column, in characters, when the check knows it."
+        },
+        "end_line": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The last line, when the place is a range."
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "description": "A place in a file. Lines and columns start at 1."
+    },
+    "MapSource": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "none",
+          "description": "The run has no map, so each mutant runs each test."
+        },
+        {
+          "type": "string",
+          "const": "built",
+          "description": "The run built the map."
+        },
+        {
+          "type": "string",
+          "const": "cached",
+          "description": "The run read the map from the cache."
+        }
+      ],
+      "description": "Where the coverage map of a run comes from."
+    },
+    "Member": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "The package name."
+        },
+        "version": {
+          "type": "string",
+          "description": "The package version."
+        },
+        "manifest_path": {
+          "type": "string",
+          "description": "The `Cargo.toml` path, relative to the workspace root."
+        },
+        "targets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Target"
+          },
+          "description": "The targets, sorted by kind and then by name."
+        }
+      },
+      "required": [
+        "name",
+        "version",
+        "manifest_path",
+        "targets"
+      ],
+      "description": "One workspace member."
+    },
+    "Metrics": {
+      "type": "object",
+      "properties": {
+        "total_files": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The source files that the module walk reached."
+        },
+        "complexity_functions": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0,
+          "description": "The functions and closures outside the `exclude` list of `complexity`."
+        },
+        "critical_functions": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0,
+          "description": "Of those, the functions with cyclomatic complexity of\n[`CRITICAL_CYCLOMATIC`] or more."
+        },
+        "size_functions": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0,
+          "description": "The functions and closures outside the `exclude` list of `size`."
+        },
+        "large_functions": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0,
+          "description": "Of those, the functions over [`LARGE_FUNCTION_LINES`] lines."
+        },
+        "public_items": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0,
+          "description": "The `pub` items in the module graph."
+        },
+        "dead_public": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0,
+          "description": "The `dead_public` findings."
+        },
+        "declared_dependencies": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0,
+          "description": "The dependency entries in the `Cargo.toml` of the members."
+        },
+        "unused_deps": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0,
+          "description": "The `error` findings of `deps` on a member dependency. An unused\n`[workspace.dependencies]` entry is not a member dependency, so it\ndoes not count."
+        },
+        "boundary_violations": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0,
+          "description": "The boundary violations."
+        },
+        "duplication_percentage": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double",
+          "description": "The duplicated lines as a percentage of all lines."
+        }
+      },
+      "required": [
+        "total_files"
+      ],
+      "description": "What the checks of one run measured. A field is `None` when its check did\nnot run."
+    },
+    "MutantAction": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "description": "The kind of the step."
+        },
+        "auto_fixable": {
+          "type": "boolean",
+          "description": "Always false."
+        },
+        "description": {
+          "type": "string",
+          "description": "What the step shows."
+        },
+        "command": {
+          "type": "string",
+          "description": "The command of the step."
+        }
+      },
+      "required": [
+        "type",
+        "auto_fixable",
+        "description",
+        "command"
+      ],
+      "description": "A read-only next step for one mutant."
+    },
+    "MutantRow": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "The stable id: 16 hexadecimal digits."
+        },
+        "tier": {
+          "$ref": "#/$defs/Tier",
+          "description": "The tier that ran the mutant."
+        },
+        "operator": {
+          "type": "string",
+          "description": "The operator name."
+        },
+        "file": {
+          "type": "string",
+          "description": "The file, relative to the workspace root."
+        },
+        "line": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The line in the original file, from 1."
+        },
+        "column": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The column in the original file, from 1, in bytes."
+        },
+        "original": {
+          "type": "string",
+          "description": "The start of the original text."
+        },
+        "replacement": {
+          "type": "string",
+          "description": "The replacement text."
+        },
+        "status": {
+          "$ref": "#/$defs/Status",
+          "description": "The status."
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The reason of a status without a test result."
+        },
+        "killed_by": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The first test that failed."
+        },
+        "retried": {
+          "type": "boolean",
+          "description": "True when the mutant got a second run."
+        },
+        "removed_from_schema": {
+          "type": "boolean",
+          "description": "True when the mutant broke the schema and then ran in a rebuild."
+        },
+        "under_cfg": {
+          "type": "boolean",
+          "description": "True when a `cfg` attribute is on an enclosing item."
+        },
+        "duration_ms": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "description": "The wall time of the runs, in milliseconds."
+        },
+        "tests_run": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "description": "The nextest tests that gave a result with this mutant, over all runs."
+        },
+        "doctests_run": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "description": "The doctests that gave a result with this mutant, over all runs."
+        },
+        "no_line_data": {
+          "type": "boolean",
+          "description": "True when the coverage map has no data on the lines of this mutant, so the\nmutant ran each test."
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MutantAction"
+          },
+          "description": "The read-only next steps. The tool never writes a test or changes code, so\nno action can be applied automatically."
+        }
+      },
+      "required": [
+        "id",
+        "tier",
+        "operator",
+        "file",
+        "line",
+        "column",
+        "original",
+        "replacement",
+        "status",
+        "retried",
+        "removed_from_schema",
+        "under_cfg",
+        "duration_ms",
+        "tests_run",
+        "doctests_run",
+        "actions"
+      ],
+      "description": "One mutant in the report."
+    },
+    "MutantsReport": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The version of the report shape."
+        },
+        "version": {
+          "type": "string",
+          "description": "The version of cargo-fallow."
+        },
+        "kind": {
+          "type": "string",
+          "description": "Always `mutants`."
+        },
+        "language": {
+          "type": "string",
+          "description": "Always `rust`."
+        },
+        "package": {
+          "type": "string",
+          "description": "The package."
+        },
+        "package_version": {
+          "type": "string",
+          "description": "The package version."
+        },
+        "total_issues": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The number of surviving mutants."
+        },
+        "summary": {
+          "$ref": "#/$defs/MutantsSummary",
+          "description": "The count of each status."
+        },
+        "gate_outcomes": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/GateOutcome"
+          },
+          "description": "The gate outcomes, keyed by gate name.",
+          "propertyNames": {
+            "enum": [
+              "boundary-violations",
+              "duplication-findings",
+              "duplication-threshold",
+              "error-severity-findings",
+              "file-growth",
+              "health-findings",
+              "parse-error",
+              "stale-baseline",
+              "surviving-mutants",
+              "unused-files",
+              "visibility-findings"
+            ]
+          }
+        },
+        "in_diff": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DiffInfo"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The diff of an `--in-diff` run."
+        },
+        "stopped_by": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StopReason"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Why the run stopped before its last mutant."
+        },
+        "elapsed_ms": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "description": "The wall time of the run."
+        },
+        "baseline": {
+          "$ref": "#/$defs/Baseline",
+          "description": "The baseline runs."
+        },
+        "schema": {
+          "$ref": "#/$defs/SchemaInfo",
+          "description": "The schema tier."
+        },
+        "rebuild": {
+          "$ref": "#/$defs/RebuildInfo",
+          "description": "The rebuild tier."
+        },
+        "gaps": {
+          "$ref": "#/$defs/Gaps",
+          "description": "What the run does not cover."
+        },
+        "selection": {
+          "$ref": "#/$defs/SelectionInfo",
+          "description": "The test selection."
+        },
+        "workspace_tests": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkspaceTests"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The run of the survivors against the tests of the workspace."
+        },
+        "guard": {
+          "$ref": "#/$defs/GuardInfo",
+          "description": "The memory guard."
+        },
+        "mutants": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MutantRow"
+          },
+          "description": "Each mutant, by tier, file and offset."
+        }
+      },
+      "required": [
+        "schema_version",
+        "version",
+        "kind",
+        "language",
+        "package",
+        "package_version",
+        "total_issues",
+        "summary",
+        "gate_outcomes",
+        "stopped_by",
+        "elapsed_ms",
+        "baseline",
+        "schema",
+        "rebuild",
+        "gaps",
+        "selection",
+        "workspace_tests",
+        "guard",
+        "mutants"
+      ],
+      "description": "The report of one run."
+    },
+    "MutantsSummary": {
+      "type": "object",
+      "properties": {
+        "total": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "All mutants."
+        },
+        "killed": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "See [`Status::Killed`]."
+        },
+        "survived": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "See [`Status::Survived`]."
+        },
+        "timeout": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "See [`Status::Timeout`]."
+        },
+        "flaky": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "See [`Status::Flaky`]."
+        },
+        "no_coverage": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "See [`Status::NoCoverage`]."
+        },
+        "compile_error": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "See [`Status::CompileError`]."
+        },
+        "runtime_error": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "See [`Status::RuntimeError`]."
+        },
+        "pending": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "See [`Status::Pending`]."
+        },
+        "score": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double",
+          "description": "Detected mutants in percent, or `None` with no test result."
+        }
+      },
+      "required": [
+        "total",
+        "killed",
+        "survived",
+        "timeout",
+        "flaky",
+        "no_coverage",
+        "compile_error",
+        "runtime_error",
+        "pending",
+        "score"
+      ],
+      "description": "The count of each status."
+    },
+    "Penalties": {
+      "type": "object",
+      "properties": {
+        "dead_public": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double",
+          "description": "From `visibility`."
+        },
+        "complexity": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double",
+          "description": "From `complexity`."
+        },
+        "unit_size": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double",
+          "description": "From `size`."
+        },
+        "unused_deps": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double",
+          "description": "From `deps`."
+        },
+        "boundary_violations": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double",
+          "description": "From `boundaries`."
+        },
+        "duplication": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double",
+          "description": "From `dupes`."
+        }
+      },
+      "description": "The points that each penalty subtracts. A penalty is `None` when its check\ndid not run."
+    },
+    "PreciseSummary": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string",
+          "description": "`complete`, `nothing_to_decide`, `time_limit`, `memory_limit` or\n`failed`. Each status other than `complete` and `nothing_to_decide`\nleaves some candidates undecided.",
+          "enum": [
+            "complete",
+            "nothing_to_decide",
+            "time_limit",
+            "memory_limit",
+            "failed"
+          ]
+        },
+        "candidates": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The candidates of the fast check."
+        },
+        "reported": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The candidates that became findings."
+        },
+        "kept": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The candidates whose item keeps its visibility."
+        },
+        "kept_large_file": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The kept candidates whose name is in a file over the size limit."
+        },
+        "unresolved": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The candidates that the database could not find."
+        },
+        "left": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The candidates without a decision."
+        },
+        "large_files": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The workspace files over the size limit."
+        },
+        "load_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0,
+          "description": "The milliseconds of the load, with build scripts and proc-macros."
+        },
+        "search_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0,
+          "description": "The milliseconds of the search."
+        },
+        "elapsed_ms": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "description": "The milliseconds of the whole mode."
+        },
+        "message": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The reason of a stop, or the last lines of the worker's stderr."
+        }
+      },
+      "required": [
+        "status",
+        "candidates",
+        "reported",
+        "kept",
+        "kept_large_file",
+        "unresolved",
+        "left",
+        "large_files",
+        "load_ms",
+        "search_ms",
+        "elapsed_ms",
+        "message"
+      ],
+      "description": "The result of the mode in the report."
+    },
+    "Range": {
+      "type": "object",
+      "properties": {
+        "line": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The line of the first character."
+        },
+        "column": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The column of the first character."
+        },
+        "end_line": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The line of the end."
+        },
+        "end_column": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The column of the end."
+        }
+      },
+      "required": [
+        "line",
+        "column",
+        "end_line",
+        "end_column"
+      ],
+      "description": "A range of text with one-based lines and columns in characters. The end is\nthe position after the last character."
+    },
+    "RebuildInfo": {
+      "type": "object",
+      "properties": {
+        "candidates": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The mutants that the walk found."
+        },
+        "unknown_return_types": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The functions with a return type that has no known replacement."
+        },
+        "probe_verified": {
+          "type": "boolean",
+          "description": "False when a probe build had another error, so the probe proves nothing."
+        }
+      },
+      "required": [
+        "candidates",
+        "unknown_return_types",
+        "probe_verified"
+      ],
+      "description": "The rebuild part of the report."
+    },
+    "RemovedMutant": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "The id."
+        },
+        "file": {
+          "type": "string",
+          "description": "The file."
+        },
+        "line": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The line."
+        },
+        "replacement": {
+          "type": "string",
+          "description": "The replacement."
+        },
+        "round": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The compile round."
+        },
+        "how": {
+          "$ref": "#/$defs/Via",
+          "description": "How the loop found the mutant."
+        },
+        "code": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The compiler error code."
+        },
+        "message": {
+          "type": "string",
+          "description": "The compiler message."
+        }
+      },
+      "required": [
+        "id",
+        "file",
+        "line",
+        "replacement",
+        "round",
+        "how",
+        "code",
+        "message"
+      ],
+      "description": "One mutant that the removal loop removed."
+    },
+    "Report_of_BoundariesSummary": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The version of the report shape."
+        },
+        "version": {
+          "type": "string",
+          "description": "The version of cargo-fallow."
+        },
+        "kind": {
+          "type": "string",
+          "description": "The name of the subcommand."
+        },
+        "language": {
+          "type": "string",
+          "description": "Always `rust`."
+        },
+        "summary": {
+          "$ref": "#/$defs/BoundariesSummary",
+          "description": "The counts and the settings of the run."
+        },
+        "total_issues": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The number of findings."
+        },
+        "findings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/BoundariesFinding"
+          },
+          "description": "The findings, in a fixed order."
+        },
+        "gate_outcomes": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/GateOutcome"
+          },
+          "description": "The gate outcomes, keyed by gate name.",
+          "propertyNames": {
+            "enum": [
+              "boundary-violations",
+              "duplication-findings",
+              "duplication-threshold",
+              "error-severity-findings",
+              "file-growth",
+              "health-findings",
+              "parse-error",
+              "stale-baseline",
+              "surviving-mutants",
+              "unused-files",
+              "visibility-findings"
+            ]
+          }
+        }
+      },
+      "required": [
+        "schema_version",
+        "version",
+        "kind",
+        "language",
+        "summary",
+        "total_issues",
+        "findings",
+        "gate_outcomes"
+      ],
+      "description": "The report of one structure check. The field order is the wire order."
+    },
+    "Report_of_ComplexitySummary": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The version of the report shape."
+        },
+        "version": {
+          "type": "string",
+          "description": "The version of cargo-fallow."
+        },
+        "kind": {
+          "type": "string",
+          "description": "The name of the subcommand."
+        },
+        "language": {
+          "type": "string",
+          "description": "Always `rust`."
+        },
+        "summary": {
+          "$ref": "#/$defs/ComplexitySummary",
+          "description": "The counts and the settings of the run."
+        },
+        "total_issues": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The number of findings."
+        },
+        "findings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ComplexityFinding"
+          },
+          "description": "The findings, in a fixed order."
+        },
+        "gate_outcomes": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/GateOutcome"
+          },
+          "description": "The gate outcomes, keyed by gate name.",
+          "propertyNames": {
+            "enum": [
+              "boundary-violations",
+              "duplication-findings",
+              "duplication-threshold",
+              "error-severity-findings",
+              "file-growth",
+              "health-findings",
+              "parse-error",
+              "stale-baseline",
+              "surviving-mutants",
+              "unused-files",
+              "visibility-findings"
+            ]
+          }
+        }
+      },
+      "required": [
+        "schema_version",
+        "version",
+        "kind",
+        "language",
+        "summary",
+        "total_issues",
+        "findings",
+        "gate_outcomes"
+      ],
+      "description": "The report of one structure check. The field order is the wire order."
+    },
+    "Report_of_DupesSummary": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The version of the report shape."
+        },
+        "version": {
+          "type": "string",
+          "description": "The version of cargo-fallow."
+        },
+        "kind": {
+          "type": "string",
+          "description": "The name of the subcommand."
+        },
+        "language": {
+          "type": "string",
+          "description": "Always `rust`."
+        },
+        "summary": {
+          "$ref": "#/$defs/DupesSummary",
+          "description": "The counts and the settings of the run."
+        },
+        "total_issues": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The number of findings."
+        },
+        "findings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CloneGroup"
+          },
+          "description": "The findings, in a fixed order."
+        },
+        "gate_outcomes": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/GateOutcome"
+          },
+          "description": "The gate outcomes, keyed by gate name.",
+          "propertyNames": {
+            "enum": [
+              "boundary-violations",
+              "duplication-findings",
+              "duplication-threshold",
+              "error-severity-findings",
+              "file-growth",
+              "health-findings",
+              "parse-error",
+              "stale-baseline",
+              "surviving-mutants",
+              "unused-files",
+              "visibility-findings"
+            ]
+          }
+        }
+      },
+      "required": [
+        "schema_version",
+        "version",
+        "kind",
+        "language",
+        "summary",
+        "total_issues",
+        "findings",
+        "gate_outcomes"
+      ],
+      "description": "The report of one structure check. The field order is the wire order."
+    },
+    "Report_of_FilesSummary": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The version of the report shape."
+        },
+        "version": {
+          "type": "string",
+          "description": "The version of cargo-fallow."
+        },
+        "kind": {
+          "type": "string",
+          "description": "The name of the subcommand."
+        },
+        "language": {
+          "type": "string",
+          "description": "Always `rust`."
+        },
+        "summary": {
+          "$ref": "#/$defs/FilesSummary",
+          "description": "The counts and the settings of the run."
+        },
+        "total_issues": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The number of findings."
+        },
+        "findings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FilesFinding"
+          },
+          "description": "The findings, in a fixed order."
+        },
+        "gate_outcomes": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/GateOutcome"
+          },
+          "description": "The gate outcomes, keyed by gate name.",
+          "propertyNames": {
+            "enum": [
+              "boundary-violations",
+              "duplication-findings",
+              "duplication-threshold",
+              "error-severity-findings",
+              "file-growth",
+              "health-findings",
+              "parse-error",
+              "stale-baseline",
+              "surviving-mutants",
+              "unused-files",
+              "visibility-findings"
+            ]
+          }
+        }
+      },
+      "required": [
+        "schema_version",
+        "version",
+        "kind",
+        "language",
+        "summary",
+        "total_issues",
+        "findings",
+        "gate_outcomes"
+      ],
+      "description": "The report of one structure check. The field order is the wire order."
+    },
+    "Report_of_SizeSummary": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The version of the report shape."
+        },
+        "version": {
+          "type": "string",
+          "description": "The version of cargo-fallow."
+        },
+        "kind": {
+          "type": "string",
+          "description": "The name of the subcommand."
+        },
+        "language": {
+          "type": "string",
+          "description": "Always `rust`."
+        },
+        "summary": {
+          "$ref": "#/$defs/SizeSummary",
+          "description": "The counts and the settings of the run."
+        },
+        "total_issues": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The number of findings."
+        },
+        "findings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SizeFinding"
+          },
+          "description": "The findings, in a fixed order."
+        },
+        "gate_outcomes": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/GateOutcome"
+          },
+          "description": "The gate outcomes, keyed by gate name.",
+          "propertyNames": {
+            "enum": [
+              "boundary-violations",
+              "duplication-findings",
+              "duplication-threshold",
+              "error-severity-findings",
+              "file-growth",
+              "health-findings",
+              "parse-error",
+              "stale-baseline",
+              "surviving-mutants",
+              "unused-files",
+              "visibility-findings"
+            ]
+          }
+        }
+      },
+      "required": [
+        "schema_version",
+        "version",
+        "kind",
+        "language",
+        "summary",
+        "total_issues",
+        "findings",
+        "gate_outcomes"
+      ],
+      "description": "The report of one structure check. The field order is the wire order."
+    },
+    "RoundRecord": {
+      "type": "object",
+      "properties": {
+        "round": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The round number, from 1."
+        },
+        "phase": {
+          "type": "string",
+          "description": "`full` or `bisection`."
+        },
+        "mutants": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The number of mutants in this build."
+        },
+        "errors": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The number of compiler errors."
+        },
+        "success": {
+          "type": "boolean",
+          "description": "True when the build passed."
+        }
+      },
+      "required": [
+        "round",
+        "phase",
+        "mutants",
+        "errors",
+        "success"
+      ],
+      "description": "A record of one compile round."
+    },
+    "Rule": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "unused-dependency",
+          "description": "A `[dependencies]` entry that no code uses."
+        },
+        {
+          "type": "string",
+          "const": "unused-dev-dependency",
+          "description": "A `[dev-dependencies]` entry that no code uses."
+        },
+        {
+          "type": "string",
+          "const": "unused-build-dependency",
+          "description": "A `[build-dependencies]` entry that the build script does not use."
+        },
+        {
+          "type": "string",
+          "const": "unused-workspace-dependency",
+          "description": "A `[workspace.dependencies]` entry that no member inherits."
+        },
+        {
+          "type": "string",
+          "const": "misplaced-dependency",
+          "description": "A `[dependencies]` entry that only test code, benches or examples use."
+        },
+        {
+          "type": "string",
+          "const": "unused-optional-dependency",
+          "description": "An optional dependency that no code uses. A feature names it."
+        },
+        {
+          "type": "string",
+          "const": "feature-only-dependency",
+          "description": "A dependency that no code uses, and that a feature of the package\nconfigures, for example `std = [\"dep/std\"]`."
+        },
+        {
+          "type": "string",
+          "const": "redundant-ignore",
+          "description": "An ignore entry that hides no finding."
+        }
+      ],
+      "description": "The rule of a finding."
+    },
+    "SchemaInfo": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "$ref": "#/$defs/SchemaStatus",
+          "description": "The result of the build."
+        },
+        "moved_to_rebuild": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The mutants that ran as a rebuild, because the schema build changes the result\nof a test that can see them."
+        },
+        "rounds": {
+          "type": "integer",
+          "format": "int64",
+          "description": "The compile rounds, or -1 when the schema never compiled."
+        },
+        "source_bytes": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The size of the source files."
+        },
+        "schema_bytes": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The size of the schema files."
+        },
+        "candidates": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The mutants that the walk found."
+        },
+        "kept": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The mutants in the final schema."
+        },
+        "kept_under_cfg": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The kept mutants under a `cfg` attribute."
+        },
+        "kept_compile_checked": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The kept mutants that a build reads, from the probe builds."
+        },
+        "probe_verified": {
+          "type": "boolean",
+          "description": "False when a probe build had another error, so the probe proves nothing.\nThen each mutant runs, and a survivor can be code that no build reads."
+        },
+        "removed": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RemovedMutant"
+          },
+          "description": "The removed mutants."
+        },
+        "round_log": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RoundRecord"
+          },
+          "description": "One record for each compile round."
+        },
+        "last_errors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ErrorSummary"
+          },
+          "description": "The errors of the last failed round."
+        }
+      },
+      "required": [
+        "status",
+        "moved_to_rebuild",
+        "rounds",
+        "source_bytes",
+        "schema_bytes",
+        "candidates",
+        "kept",
+        "kept_under_cfg",
+        "kept_compile_checked",
+        "probe_verified",
+        "removed",
+        "round_log",
+        "last_errors"
+      ],
+      "description": "The schema part of the report."
+    },
+    "SchemaStatus": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "compiled",
+          "description": "The schema compiles."
+        },
+        {
+          "type": "string",
+          "const": "never_compiled",
+          "description": "The schema did not compile within the round cap."
+        },
+        {
+          "type": "string",
+          "const": "no_sites",
+          "description": "The crate has no site."
+        },
+        {
+          "type": "string",
+          "const": "not_run",
+          "description": "The command did not select this tier."
+        }
+      ],
+      "description": "The result of the schema build."
+    },
+    "ScopedHealth": {
+      "type": "object",
+      "properties": {
+        "language": {
+          "type": "string",
+          "description": "Always `rust`."
+        },
+        "formula_version": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The version of the formula."
+        },
+        "scope": {
+          "type": "string",
+          "description": "The scope of the run: `changed` for `--changed-since`, `baseline` for\n`--baseline`.",
+          "enum": [
+            "changed",
+            "baseline"
+          ]
+        }
+      },
+      "required": [
+        "language",
+        "formula_version",
+        "scope"
+      ],
+      "description": "The health part of a run with a scope."
+    },
+    "SelectionInfo": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "True when a coverage map selects the tests of each mutant."
+        },
+        "map": {
+          "$ref": "#/$defs/MapSource",
+          "description": "Where the map comes from."
+        },
+        "map_ms": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "description": "The time to build the map, in milliseconds. A cached map has 0."
+        },
+        "tests_mapped": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The tests with data in the map."
+        },
+        "tests_unmapped": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The tests with no usable data. Each mutant runs these tests."
+        },
+        "tests_fail_alone": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The tests that fail when they run alone with no mutant. They decide nothing."
+        },
+        "mutants_without_line_data": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The mutants with no coverage data on their lines, so they ran each test."
+        },
+        "resumed": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The mutants that the journal gave. These mutants did not run again."
+        },
+        "tests_run": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "description": "The sum of `tests_run` over the mutants."
+        },
+        "doctests_run": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "description": "The sum of `doctests_run` over the mutants."
+        }
+      },
+      "required": [
+        "enabled",
+        "map",
+        "map_ms",
+        "tests_mapped",
+        "tests_unmapped",
+        "tests_fail_alone",
+        "mutants_without_line_data",
+        "resumed",
+        "tests_run",
+        "doctests_run"
+      ],
+      "description": "The test selection part of the report."
+    },
+    "Severity": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "error",
+          "description": "A finding that the rule counts as an error."
+        },
+        {
+          "type": "string",
+          "const": "warn",
+          "description": "A finding that the rule counts as a warning. The JSON value is\n`warn`, the same as in the fallow JSON output. SARIF keeps `warning`."
+        }
+      ],
+      "description": "The severity of a rule."
+    },
+    "SizeFinding": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/SizeKind",
+          "description": "The kind."
+        },
+        "path": {
+          "type": "string",
+          "description": "The file."
+        },
+        "lines": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The line count now."
+        },
+        "previous": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The line count of the old version, or `None` for a new file."
+        },
+        "old_path": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The path of the old version, when a rename changed it."
+        },
+        "message": {
+          "type": "string",
+          "description": "The message."
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/StructureAction"
+          },
+          "description": "The next steps."
+        }
+      },
+      "required": [
+        "kind",
+        "path",
+        "lines",
+        "previous",
+        "message",
+        "actions"
+      ],
+      "description": "A file that the growth rule rejects."
+    },
+    "SizeKind": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "grown-file",
+          "description": "A file over the limit has more lines than its old version."
+        },
+        {
+          "type": "string",
+          "const": "new-large-file",
+          "description": "A new file is over the limit."
+        }
+      ],
+      "description": "The kind of a growth finding."
+    },
+    "SizeSummary": {
+      "type": "object",
+      "properties": {
+        "max_file_lines": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The file line limit."
+        },
+        "max_function_lines": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The function line limit."
+        },
+        "compared_with": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The old version of the growth rule, or `None` without `--base` and\n`--staged`."
+        },
+        "checked_changes": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The changed `.rs` files that the growth rule checked."
+        },
+        "files": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The parsed files."
+        },
+        "large_files": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LargeFile"
+          },
+          "description": "The checked files over the line limit, largest first."
+        },
+        "large_functions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LargeFunction"
+          },
+          "description": "The functions over the function line limit, largest first."
+        },
+        "skipped_files": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Skipped"
+          },
+          "description": "The files that the check skips, with the reason: a file that did not\nparse, or a changed path that is not UTF-8 text."
+        }
+      },
+      "required": [
+        "max_file_lines",
+        "max_function_lines",
+        "compared_with",
+        "checked_changes",
+        "files",
+        "large_files",
+        "large_functions",
+        "skipped_files"
+      ],
+      "description": "The summary of a size run."
+    },
+    "Skipped": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "The path relative to the workspace root."
+        },
+        "reason": {
+          "type": "string",
+          "description": "The reason."
+        }
+      },
+      "required": [
+        "path",
+        "reason"
+      ],
+      "description": "A file that a check skips, with the reason."
+    },
+    "SkippedRow": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "The path."
+        },
+        "reason": {
+          "type": "string",
+          "description": "The reason."
+        }
+      },
+      "required": [
+        "path",
+        "reason"
+      ],
+      "description": "A file that did not parse."
+    },
+    "Stats": {
+      "type": "object",
+      "properties": {
+        "total_files": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The files in the token streams."
+        },
+        "files_with_clones": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The files with a clone."
+        },
+        "total_lines": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "description": "The lines of the files."
+        },
+        "duplicated_lines": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "description": "The lines in a clone, counted once for each line."
+        },
+        "total_tokens": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "description": "The tokens of the files."
+        },
+        "duplicated_tokens": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "description": "The tokens that a removal of the clones would save."
+        },
+        "clone_groups": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The clone groups."
+        },
+        "clone_families": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The clone families."
+        },
+        "clone_instances": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The places of all clone groups."
+        },
+        "duplication_percentage": {
+          "type": "number",
+          "format": "double",
+          "description": "`duplicated_lines` as a percentage of `total_lines`."
+        },
+        "clone_groups_below_min_occurrences": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The groups under `min-occurrences` places."
+        }
+      },
+      "required": [
+        "total_files",
+        "files_with_clones",
+        "total_lines",
+        "duplicated_lines",
+        "total_tokens",
+        "duplicated_tokens",
+        "clone_groups",
+        "clone_families",
+        "clone_instances",
+        "duplication_percentage",
+        "clone_groups_below_min_occurrences"
+      ],
+      "description": "The counts of a run."
+    },
+    "Status": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "killed",
+          "description": "A test failed with the mutant."
+        },
+        {
+          "type": "string",
+          "const": "survived",
+          "description": "Each test passed with the mutant, also in the retry."
+        },
+        {
+          "type": "string",
+          "const": "timeout",
+          "description": "The tests did not end within the limit."
+        },
+        {
+          "type": "string",
+          "const": "flaky",
+          "description": "Two runs of the same mutant disagree."
+        },
+        {
+          "type": "string",
+          "const": "no_coverage",
+          "description": "No test can reach the mutant: no build reads it, or the package has no\ntest that passes."
+        },
+        {
+          "type": "string",
+          "const": "compile_error",
+          "description": "The mutant does not compile."
+        },
+        {
+          "type": "string",
+          "const": "runtime_error",
+          "description": "The run has no test result: the memory guard killed it, or a runner failed."
+        },
+        {
+          "type": "string",
+          "const": "pending",
+          "description": "The run stopped before this mutant, or the command ran no mutant."
+        }
+      ],
+      "description": "The status of one mutant."
+    },
+    "StopReason": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "time_budget",
+          "description": "The time budget ended."
+        },
+        {
+          "type": "string",
+          "const": "low_memory",
+          "description": "The free memory stayed under the floor."
+        }
+      ],
+      "description": "Why a run stopped before its last mutant."
+    },
+    "StructureAction": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "description": "The kind of the step."
+        },
+        "auto_fixable": {
+          "type": "boolean",
+          "description": "Always false."
+        },
+        "description": {
+          "type": "string",
+          "description": "What the step does."
+        },
+        "comment": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The comment that suppresses the finding, for a `suppress-line` step."
+        },
+        "placement": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Where the comment goes, for a `suppress-line` step."
+        }
+      },
+      "required": [
+        "type",
+        "auto_fixable",
+        "description"
+      ],
+      "description": "A next step for one finding. No step changes the code by itself."
+    },
+    "Suite": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "$ref": "#/$defs/SuiteStatus",
+          "description": "How the suite ended."
+        },
+        "pass": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The number of passed tests."
+        },
+        "fail": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The number of failed tests."
+        },
+        "ignored": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The number of ignored tests."
+        },
+        "elapsed_ms": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "description": "The wall time in milliseconds."
+        }
+      },
+      "required": [
+        "status",
+        "pass",
+        "fail",
+        "ignored",
+        "elapsed_ms"
+      ],
+      "description": "The result of one test suite."
+    },
+    "SuiteStatus": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "completed",
+          "description": "The suite ran to its end."
+        },
+        {
+          "type": "string",
+          "const": "timed_out",
+          "description": "The suite passed the time limit."
+        },
+        {
+          "type": "string",
+          "const": "did_not_run",
+          "description": "The runner or the build failed before the tests ended."
+        }
+      ],
+      "description": "How a test suite ended."
+    },
+    "Target": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "The target name."
+        },
+        "kind": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The target kinds, for example `lib`, `bin` or `test`."
+        },
+        "src_path": {
+          "type": "string",
+          "description": "The root source file, relative to the workspace root."
+        },
+        "edition": {
+          "type": "string",
+          "description": "The Rust edition of the target."
+        }
+      },
+      "required": [
+        "name",
+        "kind",
+        "src_path",
+        "edition"
+      ],
+      "description": "One target of a member."
+    },
+    "TestRun": {
+      "type": "object",
+      "properties": {
+        "nextest": {
+          "$ref": "#/$defs/Suite",
+          "description": "The nextest suite."
+        },
+        "doc": {
+          "$ref": "#/$defs/Suite",
+          "description": "The doctest suite."
+        }
+      },
+      "required": [
+        "nextest",
+        "doc"
+      ],
+      "description": "The two suites of one tree."
+    },
+    "Tier": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "schema",
+          "description": "In one build with all other schema mutants, selected by a runtime switch."
+        },
+        {
+          "type": "string",
+          "const": "rebuild",
+          "description": "In its own rebuild of a scratch copy."
+        }
+      ],
+      "description": "How the engine runs a mutant."
+    },
+    "Timeouts": {
+      "type": "object",
+      "properties": {
+        "schema_nextest": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "description": "A nextest run of a schema mutant."
+        },
+        "schema_doc": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "description": "A doctest run of a schema mutant."
+        },
+        "rebuild_nextest": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "description": "A nextest run of a rebuild mutant."
+        },
+        "rebuild_doc": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "description": "A doctest run of a rebuild mutant."
+        }
+      },
+      "required": [
+        "schema_nextest",
+        "schema_doc",
+        "rebuild_nextest",
+        "rebuild_doc"
+      ],
+      "description": "The time limit of each suite, in milliseconds."
+    },
+    "Via": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "arm",
+          "description": "An error span is inside the mutant arm."
+        },
+        {
+          "type": "string",
+          "const": "site",
+          "description": "An error span is inside the switch, outside each mutant arm."
+        },
+        {
+          "type": "string",
+          "const": "bisection",
+          "description": "No error span selects a mutant, so a bisection found it."
+        }
+      ],
+      "description": "The way that the loop found a broken mutant."
+    },
+    "VisibilityAction": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "description": "`change-visibility`, or `remove-item` for an enum variant."
+        },
+        "auto_fixable": {
+          "type": "boolean",
+          "description": "Always false: a change can need a matching change in other code, for\nexample in a `pub use` or in a field group."
+        },
+        "description": {
+          "type": "string",
+          "description": "What the step does."
+        },
+        "from": {
+          "type": "string",
+          "description": "The text to replace: the written keyword."
+        },
+        "to": {
+          "type": "string",
+          "description": "The new text. An empty text removes the keyword."
+        },
+        "range": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Range"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The one-based position of the keyword, or `None` when the item has no\nkeyword of its own, for example an enum variant."
+        }
+      },
+      "required": [
+        "type",
+        "auto_fixable",
+        "description",
+        "from",
+        "to",
+        "range"
+      ],
+      "description": "The change of the visibility keyword."
+    },
+    "VisibilityReport": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The version of the report shape."
+        },
+        "version": {
+          "type": "string",
+          "description": "The version of cargo-fallow."
+        },
+        "kind": {
+          "type": "string",
+          "description": "Always `visibility`."
+        },
+        "language": {
+          "type": "string",
+          "description": "Always `rust`."
+        },
+        "mode": {
+          "type": "string",
+          "description": "`fast` or `precise`.",
+          "enum": [
+            "fast",
+            "precise"
+          ]
+        },
+        "total_issues": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The number of findings."
+        },
+        "summary": {
+          "$ref": "#/$defs/VisibilitySummary",
+          "description": "The count of each finding kind."
+        },
+        "gate_outcomes": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/GateOutcome"
+          },
+          "description": "The gate outcomes, keyed by gate name.",
+          "propertyNames": {
+            "enum": [
+              "boundary-violations",
+              "duplication-findings",
+              "duplication-threshold",
+              "error-severity-findings",
+              "file-growth",
+              "health-findings",
+              "parse-error",
+              "stale-baseline",
+              "surviving-mutants",
+              "unused-files",
+              "visibility-findings"
+            ]
+          }
+        },
+        "precise": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PreciseSummary"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The result of `--precise` mode. `None` in the fast mode."
+        },
+        "graph": {
+          "$ref": "#/$defs/GraphSummary",
+          "description": "The size of the graph."
+        },
+        "crates": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CrateRow"
+          },
+          "description": "The crates of the graph: one for each target."
+        },
+        "findings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FindingRow"
+          },
+          "description": "The findings, sorted by file, line and kind."
+        },
+        "undecided": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FindingRow"
+          },
+          "description": "The candidates that only an untyped credit keeps: a method call, a field\naccess, or a name in macro tokens or in an attribute. They are not\nfindings. `--precise` mode decides them."
+        }
+      },
+      "required": [
+        "schema_version",
+        "version",
+        "kind",
+        "language",
+        "mode",
+        "total_issues",
+        "summary",
+        "gate_outcomes",
+        "precise",
+        "graph",
+        "crates",
+        "findings",
+        "undecided"
+      ],
+      "description": "The report."
+    },
+    "VisibilitySummary": {
+      "type": "object",
+      "properties": {
+        "dead_public": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The `dead_public` findings."
+        },
+        "unnecessary_public": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The `unnecessary_public` findings."
+        },
+        "unnecessary_restricted_visibility": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The `unnecessary_restricted_visibility` findings."
+        },
+        "undecided": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The undecided candidates."
+        }
+      },
+      "required": [
+        "dead_public",
+        "unnecessary_public",
+        "unnecessary_restricted_visibility",
+        "undecided"
+      ],
+      "description": "The count of each finding kind."
+    },
+    "WorkspaceSummary": {
+      "type": "object",
+      "properties": {
+        "members": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Member"
+          },
+          "description": "The members, sorted by name."
+        }
+      },
+      "required": [
+        "members"
+      ],
+      "description": "The workspace part of the report."
+    },
+    "WorkspaceTests": {
+      "type": "object",
+      "properties": {
+        "mutants_run": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The mutants that ran these tests."
+        },
+        "detected": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The mutants that these tests detected."
+        },
+        "elapsed_ms": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "description": "The time of this stage in milliseconds."
+        },
+        "failures": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The tests that fail with no mutant in the workspace run."
+        }
+      },
+      "required": [
+        "mutants_run",
+        "detected",
+        "elapsed_ms",
+        "failures"
+      ],
+      "description": "The run of the survivors against the tests of each workspace member."
+    },
+    "document-baseline": {
+      "$ref": "#/$defs/BaselineFile"
+    },
+    "document-boundaries": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/Report_of_BoundariesSummary"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "boundaries"
+            },
+            "language": {
+              "const": "rust"
+            }
+          }
+        }
+      ]
+    },
+    "document-check": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/CheckReport"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "check"
+            },
+            "language": {
+              "const": "rust"
+            }
+          }
+        }
+      ]
+    },
+    "document-complexity": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/Report_of_ComplexitySummary"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "complexity"
+            },
+            "language": {
+              "const": "rust"
+            }
+          }
+        }
+      ]
+    },
+    "document-deps": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/DepsReport"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "deps"
+            },
+            "language": {
+              "const": "rust"
+            }
+          }
+        }
+      ]
+    },
+    "document-dupes": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/Report_of_DupesSummary"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "dupes"
+            },
+            "language": {
+              "const": "rust"
+            }
+          }
+        }
+      ]
+    },
+    "document-error": {
+      "$ref": "#/$defs/ErrorOutput"
+    },
+    "document-files": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/Report_of_FilesSummary"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "files"
+            },
+            "language": {
+              "const": "rust"
+            }
+          }
+        }
+      ]
+    },
+    "document-fix": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/FixReport"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "fix"
+            },
+            "language": {
+              "const": "rust"
+            }
+          }
+        }
+      ]
+    },
+    "document-mutants": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/MutantsReport"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "mutants"
+            },
+            "language": {
+              "const": "rust"
+            }
+          }
+        }
+      ]
+    },
+    "document-mutants-inspect": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/InspectReport"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "mutants-inspect"
+            },
+            "language": {
+              "const": "rust"
+            }
+          }
+        }
+      ]
+    },
+    "document-size": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/Report_of_SizeSummary"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "size"
+            },
+            "language": {
+              "const": "rust"
+            }
+          }
+        }
+      ]
+    },
+    "document-visibility": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/VisibilityReport"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "visibility"
+            },
+            "language": {
+              "const": "rust"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

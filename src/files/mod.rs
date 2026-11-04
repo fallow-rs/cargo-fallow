@@ -93,9 +93,11 @@ pub struct Settings {
 }
 
 /// One unused file.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
+#[schemars(rename = "FilesFinding")]
 pub struct Finding {
     /// Always `unused-file`.
+    #[schemars(extend("const" = "unused-file"))]
     pub rule: &'static str,
     /// The package of the file.
     pub package: String,
@@ -108,7 +110,8 @@ pub struct Finding {
 }
 
 /// A package that the check skips, with the reason.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, schemars::JsonSchema)]
+#[schemars(rename = "FilesSkippedPackage")]
 pub struct SkippedPackage {
     /// The package name.
     pub package: String,
@@ -117,7 +120,8 @@ pub struct SkippedPackage {
 }
 
 /// The summary of a `files` run.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
+#[schemars(rename = "FilesSummary")]
 pub struct Summary {
     /// The workspace members.
     pub packages: usize,

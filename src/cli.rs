@@ -81,6 +81,8 @@ pub enum Parsed {
         /// True when the folder of the run goes when the parent is gone.
         remove: bool,
     },
+    /// Print the JSON Schema of the output.
+    Schema,
     /// Stop with this exit code. The parser already wrote its output.
     Exit(u8),
 }
@@ -144,6 +146,9 @@ enum Command {
     PreciseWorker(crate::visibility::precise::WorkerArgs),
     #[command(flatten)]
     Structure(crate::structure::Command),
+    /// Print the JSON Schema of each JSON document that the tool writes: the
+    /// report of each command, the baseline file and the error document.
+    Schema,
     /// Kill the test processes when the parent process dies. The memory guard
     /// starts this command.
     #[command(hide = true, name = "mutation-watchdog")]
@@ -561,6 +566,7 @@ pub fn parse(args: &[OsString]) -> Parsed {
             Some(Command::Fix(args)) => Parsed::Fix(args),
             Some(Command::Files(args)) => Parsed::Files(args),
             Some(Command::Structure(command)) => Parsed::Structure(Box::new(command)),
+            Some(Command::Schema) => Parsed::Schema,
             Some(Command::MutationWatchdog {
                 roots,
                 sweep,

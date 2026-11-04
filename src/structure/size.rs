@@ -57,8 +57,9 @@ pub fn is_checked_path(path: &str) -> bool {
 }
 
 /// The kind of a growth finding.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "kebab-case")]
+#[schemars(rename = "SizeKind")]
 pub enum Kind {
     /// A file over the limit has more lines than its old version.
     GrownFile,
@@ -67,7 +68,8 @@ pub enum Kind {
 }
 
 /// A file that the growth rule rejects.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
+#[schemars(rename = "SizeFinding")]
 pub struct Finding {
     /// The kind.
     pub kind: Kind,
@@ -87,7 +89,7 @@ pub struct Finding {
 }
 
 /// A file over the line limit.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct LargeFile {
     /// The file.
     pub path: String,
@@ -96,7 +98,7 @@ pub struct LargeFile {
 }
 
 /// A function over the function line limit.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct LargeFunction {
     /// The file.
     pub path: String,
@@ -109,7 +111,8 @@ pub struct LargeFunction {
 }
 
 /// The summary of a size run.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
+#[schemars(rename = "SizeSummary")]
 pub struct Summary {
     /// The file line limit.
     pub max_file_lines: u32,

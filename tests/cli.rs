@@ -106,7 +106,7 @@ fn check(fixture: &Fixture, extra: &[&str]) -> Run {
 }
 
 fn assert_ok_report(report: &Value) {
-    assert_eq!(report["schema_version"], 2);
+    assert_eq!(report["schema_version"], 1);
     assert_eq!(report["kind"], "check");
     assert_eq!(report["language"], "rust");
     assert_eq!(report["version"], env!("CARGO_PKG_VERSION"));

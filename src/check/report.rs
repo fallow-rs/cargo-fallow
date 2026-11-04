@@ -25,10 +25,10 @@ use crate::workspace::{Member, Workspace};
 
 /// The version of the report shape of `check`. A change that removes a member
 /// or changes its type increments it.
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 1;
 
 /// The report of a `check` run. The field order is the wire order.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct CheckReport {
     /// The version of the report shape.
     pub schema_version: u32,
@@ -62,6 +62,7 @@ pub struct CheckReport {
     /// The report of each check that ran, keyed by check name. Each report is
     /// the JSON report of the command of the same name. The parse gate has no
     /// report of its own.
+    #[schemars(with = "Sections")]
     pub sections: Map<String, Value>,
     /// The text and SARIF forms of each section. They are not part of the
     /// JSON report.
@@ -69,8 +70,57 @@ pub struct CheckReport {
     parts: Vec<(CheckName, Section)>,
 }
 
+/// The schema of the `sections` member: the report of each check that ran.
+/// The report writes the map, so the type only describes it.
+#[derive(schemars::JsonSchema)]
+#[schemars(rename = "CheckSections", deny_unknown_fields)]
+#[expect(dead_code, reason = "the type describes the JSON Schema only")]
+struct Sections {
+    /// The report of `cargo fallow deps`.
+    #[schemars(skip_serializing_if = "Option::is_none")]
+    deps: Option<crate::deps::report::DepsReport>,
+    /// The report of `cargo fallow visibility`.
+    #[schemars(skip_serializing_if = "Option::is_none")]
+    visibility: Option<crate::visibility::report::VisibilityReport>,
+    /// The report of `cargo fallow files`.
+    #[schemars(skip_serializing_if = "Option::is_none")]
+    files: Option<crate::structure::report::Report<crate::files::Summary, crate::files::Finding>>,
+    /// The report of `cargo fallow boundaries`.
+    #[schemars(skip_serializing_if = "Option::is_none")]
+    boundaries: Option<
+        crate::structure::report::Report<
+            crate::structure::boundaries::Summary,
+            crate::structure::boundaries::Finding,
+        >,
+    >,
+    /// The report of `cargo fallow size`.
+    #[schemars(skip_serializing_if = "Option::is_none")]
+    size: Option<
+        crate::structure::report::Report<
+            crate::structure::size::Summary,
+            crate::structure::size::Finding,
+        >,
+    >,
+    /// The report of `cargo fallow complexity`.
+    #[schemars(skip_serializing_if = "Option::is_none")]
+    complexity: Option<
+        crate::structure::report::Report<
+            crate::structure::complexity::Summary,
+            crate::structure::complexity::Finding,
+        >,
+    >,
+    /// The report of `cargo fallow dupes`.
+    #[schemars(skip_serializing_if = "Option::is_none")]
+    dupes: Option<
+        crate::structure::report::Report<
+            crate::structure::dupes::Summary,
+            crate::structure::dupes::CloneGroup,
+        >,
+    >,
+}
+
 /// The workspace part of the report.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct WorkspaceSummary {
     /// The members, sorted by name.
     pub members: Vec<Member>,

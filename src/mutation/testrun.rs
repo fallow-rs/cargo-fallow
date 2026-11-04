@@ -25,7 +25,7 @@ pub const NEXTEST_TESTS_FAILED: i32 = 100;
 const LIST_LIMIT: Duration = Duration::from_secs(600);
 
 /// How a test suite ended.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SuiteStatus {
     /// The suite ran to its end.
@@ -37,7 +37,7 @@ pub enum SuiteStatus {
 }
 
 /// The result of one test suite.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct Suite {
     /// How the suite ended.
     pub status: SuiteStatus,
@@ -128,7 +128,7 @@ enum Outcome {
 }
 
 /// The two suites of one tree.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct TestRun {
     /// The nextest suite.
     pub nextest: Suite,
@@ -723,7 +723,7 @@ fn strip_line_number(name: &str) -> String {
 }
 
 /// The comparison of a clean run and a schema run.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct Comparison {
     /// The tests that pass in the clean run and do not pass in the schema run.
     pub regressions: Vec<String>,

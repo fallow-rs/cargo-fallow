@@ -19,7 +19,7 @@ const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 const PART_SEPARATOR: u8 = 0xff;
 
 /// The severity of a rule.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Severity {
     /// A finding that the rule counts as an error.
@@ -78,7 +78,7 @@ impl Impact {
 }
 
 /// A place in a file. Lines and columns start at 1.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 pub struct Location {
     /// The path relative to the workspace root, with `/` separators.
     pub path: String,
@@ -106,7 +106,7 @@ impl Location {
 }
 
 /// A next step for a finding.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 pub struct Action {
     /// The kind of the step.
     #[serde(rename = "type")]
@@ -129,7 +129,7 @@ impl Action {
 }
 
 /// One finding of one check. The field order is the wire order.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 pub struct Finding {
     /// A stable id: 16 hex digits of a hash of the check, the rule and the
     /// identity of the finding. A run on the same code gives the same id.

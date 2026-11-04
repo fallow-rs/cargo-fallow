@@ -59,13 +59,13 @@ pub struct CheckReport {
     /// member.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub baseline: Option<baseline::Summary>,
+    /// The meaning of each rule with a finding, with `--explain`.
+    #[serde(rename = "_meta", skip_serializing_if = "Option::is_none")]
+    pub meta: Option<Value>,
     /// The report of each check that ran, keyed by check name. Each report is
     /// the JSON report of the command of the same name. The parse gate has no
     /// report of its own.
     #[schemars(with = "Sections")]
-    /// The meaning of each rule with a finding, with `--explain`.
-    #[serde(rename = "_meta", skip_serializing_if = "Option::is_none")]
-    pub meta: Option<Value>,
     pub sections: Map<String, Value>,
     /// The text and SARIF forms of each section. They are not part of the
     /// JSON report.

@@ -43,6 +43,9 @@ use crate::structure::sarif;
 use crate::structure::source::{self, LineIndex, Loaded, Needs, Skipped, is_space_or_comment};
 use crate::workspace;
 
+/// The rule of each complexity finding.
+pub const RULE: &str = "complexity";
+
 /// The comment kind that suppresses a complexity finding.
 const SUPPRESS_KIND: &str = "complexity";
 /// The suppression comment.
@@ -597,7 +600,7 @@ fn shared_findings(report: &Report<Summary, Finding>) -> Vec<shared::Finding> {
             let index = index.to_string();
             shared::Finding::new(Draft {
                 check: "complexity",
-                rule: "complexity",
+                rule: RULE,
                 severity: shared::Severity::Warning,
                 message: format!(
                     "`{}` has cyclomatic complexity {} and cognitive complexity {}.",

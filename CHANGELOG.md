@@ -11,6 +11,9 @@ GitHub release. Each release needs a `## [X.Y.Z] - YYYY-MM-DD` section.
 
 ### Added
 
+- `cargo fallow explain <rule>` gives the meaning, an example and the fix of a
+  rule, also as JSON. `--explain` adds `_meta` with the rules of the findings
+  to the JSON report of `check` and of each static command.
 - `cargo fallow check` reads the workspace and reports the parse gates.
 - `cargo fallow mutants` runs mutation tests with schemata and coverage
   selection.

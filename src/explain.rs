@@ -128,7 +128,7 @@ pub const RULES: &[Explanation] = &[
         severity: "warn",
         meaning: "A dependency that no code uses, and that a feature of the package configures.",
         example: "`std = [\"log/std\"]`, with no `log` name in the code.",
-        fix: "Remove the entry and its feature values. When the feature must set the features of the dependency, add it to `ignored`.",
+        fix: "Remove the entry and its feature values. Add the key to `ignored` when the feature must set the features of the dependency.",
         docs: "https://github.com/fallow-rs/cargo-fallow#unused-dependencies",
     },
     Explanation {
@@ -144,7 +144,7 @@ pub const RULES: &[Explanation] = &[
         rule: "unused-file",
         check: "files",
         severity: "warn",
-        meaning: "A `.rs` file in a target folder that no target compiles: no `mod` item, `#[path]` attribute or `include!` call reaches it.",
+        meaning: "A `.rs` file in a target folder that no target compiles. No `mod` item, `#[path]` attribute or `include!` call reaches it.",
         example: "src/old.rs, with no `mod old;` in src/lib.rs.",
         fix: "Delete the file, or declare it with a `mod` item.",
         docs: "https://github.com/fallow-rs/cargo-fallow#unused-files",
@@ -155,7 +155,7 @@ pub const RULES: &[Explanation] = &[
         severity: "warn",
         meaning: "A `pub` item that no code of the workspace reaches.",
         example: "`pub fn helper()` in a library that no crate calls.",
-        fix: "Make the item `pub(crate)`, or run `cargo fallow fix`. The compiler then reports it as dead code when no code of the crate uses it.",
+        fix: "Make the item `pub(crate)`, or run `cargo fallow fix`. When no code of the crate uses it, the compiler then reports dead code.",
         docs: "https://github.com/fallow-rs/cargo-fallow#visibility",
     },
     Explanation {
@@ -175,6 +175,15 @@ pub const RULES: &[Explanation] = &[
         example: "`pub(crate) fn step()` that only its own module calls.",
         fix: "Remove the visibility keyword, or run `cargo fallow fix`.",
         docs: "https://github.com/fallow-rs/cargo-fallow#visibility",
+    },
+    Explanation {
+        rule: "boundaries",
+        check: "boundaries",
+        severity: "warn",
+        meaning: "A rule of [workspace.metadata.fallow.boundaries] found a violation. The finding has the name of the rule. The kind is crate-dependency, source-pattern or module-path.",
+        example: "A source rule `no-exit` that denies `std::process::exit` in crates/core, and a call in crates/core/src/run.rs.",
+        fix: "Move the code or the dependency, or change the rule.",
+        docs: "https://github.com/fallow-rs/cargo-fallow#structure-checks",
     },
     Explanation {
         rule: "crate-dependency",
@@ -242,7 +251,7 @@ pub const RULES: &[Explanation] = &[
     Explanation {
         rule: "surviving-mutant",
         check: "mutants",
-        severity: "error",
+        severity: "warn",
         meaning: "A small change in the source that each test passes with: no test detects it.",
         example: "`a > b` becomes `a >= b`, and each test still passes.",
         fix: "Add a test that fails with the change, or remove the code when no test can need it.",
@@ -293,13 +302,18 @@ fn human(rule: &Explanation) -> String {
 }
 
 /// The `_meta` member of a JSON report: the explanation of each rule with a
-/// finding in `findings`. A rule with no entry, for example the name of a
-/// boundary rule, uses the entry of its check kind when one exists.
-pub fn meta<'a>(rules: impl IntoIterator<Item = &'a str>) -> Result<Value, CliError> {
+/// finding, keyed by the rule of the finding. A boundaries finding has the
+/// name of its rule in the configuration, so it gets the `boundaries` entry.
+pub fn meta<'a>(findings: impl IntoIterator<Item = (&'a str, &'a str)>) -> Result<Value, CliError> {
     let mut found = Map::new();
-    for name in rules {
-        if let Some(rule) = find(name) {
-            found.insert(name.to_owned(), to_value(rule)?);
+    for (check, name) in findings {
+        let entry = if check == "boundaries" {
+            find("boundaries")
+        } else {
+            find(name)
+        };
+        if let Some(entry) = entry {
+            found.insert(name.to_owned(), to_value(entry)?);
         }
     }
     let mut meta = Map::new();
@@ -309,6 +323,7 @@ pub fn meta<'a>(rules: impl IntoIterator<Item = &'a str>) -> Result<Value, CliEr
 }
 
 #[cfg(test)]
+#[expect(clippy::expect_used, reason = "a test fails loudly")]
 mod tests {
     use super::*;
 
@@ -337,9 +352,10 @@ mod tests {
             [
                 crate::files::RULE,
                 crate::gates::RustGateName::ParseError.as_str(),
-                "complexity",
-                "code-duplication",
-                "surviving-mutant",
+                crate::structure::complexity::RULE,
+                crate::structure::dupes::DUPES_RULE,
+                crate::render::mutants::SURVIVING_RULE,
+                "boundaries",
             ]
             .map(str::to_owned),
         );
@@ -357,6 +373,41 @@ mod tests {
         }
     }
 
+    /// A new variant of a rule enum breaks this match, so the `ALL` lists
+    /// above get the variant.
+    #[expect(dead_code, reason = "the match only checks that each variant is listed")]
+    const fn exhaustive(
+        deps: crate::deps::report::Rule,
+        kind: crate::visibility::FindingKind,
+        size: crate::structure::size::Kind,
+        boundary: crate::structure::boundaries::Kind,
+    ) -> usize {
+        use crate::deps::report::Rule as D;
+        use crate::structure::boundaries::Kind as B;
+        use crate::structure::size::Kind as S;
+        use crate::visibility::FindingKind as V;
+        let deps = match deps {
+            D::UnusedDependency
+            | D::UnusedDevDependency
+            | D::UnusedBuildDependency
+            | D::UnusedWorkspaceDependency
+            | D::MisplacedDependency
+            | D::UnusedOptionalDependency
+            | D::FeatureOnlyDependency
+            | D::RedundantIgnore => crate::deps::report::Rule::ALL.len(),
+        };
+        let kind = match kind {
+            V::DeadPublic | V::UnnecessaryPublic | V::UnnecessaryRestricted => V::ALL.len(),
+        };
+        let size = match size {
+            S::GrownFile | S::NewLargeFile => S::ALL.len(),
+        };
+        let boundary = match boundary {
+            B::CrateDependency | B::SourcePattern | B::ModulePath => B::ALL.len(),
+        };
+        deps + kind + size + boundary
+    }
+
     #[test]
     fn lookup_takes_both_separators() {
         assert_eq!(
@@ -372,8 +423,14 @@ mod tests {
 
     #[test]
     fn meta_lists_the_rules_with_an_entry() {
-        let meta = meta(["unused-file", "my-boundary-rule"]).unwrap_or_default();
+        let meta = meta([
+            ("files", "unused-file"),
+            ("boundaries", "my-boundary-rule"),
+            ("other", "nothing"),
+        ])
+        .expect("the meta member builds");
         assert_eq!(meta["rules"]["unused-file"]["check"], "files");
-        assert!(meta["rules"].get("my-boundary-rule").is_none());
+        assert_eq!(meta["rules"]["my-boundary-rule"]["rule"], "boundaries");
+        assert!(meta["rules"].get("nothing").is_none());
     }
 }

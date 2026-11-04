@@ -14,6 +14,9 @@ use crate::mutation::report::{
 };
 use crate::mutation::status::{Status, Tier};
 
+/// The rule of each mutant that survived.
+pub const SURVIVING_RULE: &str = "surviving-mutant";
+
 /// The most source lines that the human form of inspect shows for each side. The
 /// JSON form has all lines.
 const MAX_CHANGE_LINES: usize = 20;
@@ -247,7 +250,7 @@ pub fn findings(report: &Report) -> Vec<crate::finding::Finding> {
         .map(|row| {
             Finding::new(Draft {
                 check: "mutants",
-                rule: "surviving-mutant",
+                rule: SURVIVING_RULE,
                 severity: Severity::Warning,
                 message: survivor_message(row),
                 location: Location {

@@ -97,9 +97,8 @@ fn explain_flag_adds_the_rules_of_the_findings() {
             "--explain",
         ],
     );
-    assert_eq!(
+    assert!(
         check["_meta"]["rules"]["unused-file"]["fix"].is_string(),
-        true,
         "{check}"
     );
     let (_, plain) = run(dir.path(), &["files", "--format", "json", "--quiet"]);

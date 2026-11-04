@@ -43,7 +43,8 @@ pub struct ScopeArgs {
     #[arg(long, requires = "baseline")]
     pub fail_on_stale_baseline: bool,
     /// Add `_meta` to the JSON report: the meaning, an example and the fix of
-    /// each rule with a finding. `cargo fallow explain <rule>` gives one rule.
+    /// each rule with a finding. Only the JSON format has it. `cargo fallow
+    /// explain <rule>` gives one rule.
     #[arg(long)]
     pub explain: bool,
 }
@@ -129,7 +130,12 @@ impl Scope {
         if !self.explain {
             return Ok(None);
         }
-        crate::explain::meta(findings.iter().map(|finding| finding.rule.as_str())).map(Some)
+        crate::explain::meta(
+            findings
+                .iter()
+                .map(|finding| (finding.check, finding.rule.as_str())),
+        )
+        .map(Some)
     }
 
     /// True when the run removes the findings of a baseline.

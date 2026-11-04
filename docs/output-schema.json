@@ -529,12 +529,11 @@
           "description": "The baseline of `--baseline`. A run without the flag has no such\nmember."
         },
         "_meta": {
-          "$ref": "#/$defs/CheckSections",
-          "description": "The report of each check that ran, keyed by check name. Each report is\nthe JSON report of the command of the same name. The parse gate has no\nreport of its own.\nThe meaning of each rule with a finding, with `--explain`."
+          "description": "The meaning of each rule with a finding, with `--explain`."
         },
         "sections": {
-          "type": "object",
-          "additionalProperties": true
+          "$ref": "#/$defs/CheckSections",
+          "description": "The report of each check that ran, keyed by check name. Each report is\nthe JSON report of the command of the same name. The parse gate has no\nreport of its own."
         }
       },
       "required": [

@@ -60,7 +60,7 @@ use crate::structure::source::{self, File, Loaded, Needs, Skipped};
 use crate::workspace;
 
 /// The rule of a clone group.
-const DUPES_RULE: &str = "code-duplication";
+pub const DUPES_RULE: &str = "code-duplication";
 /// The comment kind that suppresses a clone instance.
 const SUPPRESS_KIND: &str = "code-duplication";
 /// The suppression comment.

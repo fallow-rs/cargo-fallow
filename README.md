@@ -44,7 +44,7 @@ cargo fallow check --skip dupes --format codeclimate > gl-code-quality.json
 You can also run the binary directly: `cargo-fallow check`.
 
 `cargo fallow check` runs the static checks in one run: `parse`, `deps`,
-`visibility` (fast mode), `boundaries`, `size`, `complexity` and `dupes`. The
+`files`, `visibility` (fast mode), `boundaries`, `size`, `complexity` and `dupes`. The
 run reads `cargo metadata` once, builds the module graph once and parses each
 source file once for the structure checks. Each check gives the same result as
 its own command, and keeps its own gate. `mutants` and `visibility --precise`
@@ -60,6 +60,7 @@ and take minutes. Run them as separate commands.
 | `--skip <CHECK>,...` | Do not run these checks. |
 | `--fail-on-issues` | Enforce the gate of each check that ran. |
 | `--fail-on-parse-error` | Enforce only the `parse-error` gate. |
+| `--changed-since <REF>` | Report only the findings in the files that changed since the fork point of `REF`. See [Changed files](#changed-files). |
 | `--locked`, `--offline`, `--frozen` | Give the flag to the `cargo metadata` call of `deps`. |
 
 The `deps` check resolves the dependencies with `cargo metadata`, so Cargo can
@@ -71,6 +72,42 @@ The configuration of each check is the same as for its command, in
 a limit: change the table instead. The `size` check has no old version to
 compare with in a `check` run, so its `file-growth` gate is `skipped`. Use
 `cargo fallow size --base <REF>` for the growth rule.
+
+### Changed files
+
+`--changed-since <REF>` scopes a run to the files that a branch changed. The
+flag is on `check`, `deps`, `files`, `visibility`, `boundaries`, `size`,
+`complexity` and `dupes`. Use it for a pull request gate that judges only the changed code.
+
+```bash
+cargo fallow check --changed-since origin/main --fail-on-issues
+```
+
+- The analysis still reads the whole workspace. Only the report changes.
+- The base is the fork point of `REF` and `HEAD`, the same rule as
+  `mutants --in-diff`. A committed, a staged, an unstaged and an untracked
+  change count.
+- The report keeps a finding when its file changed.
+- A finding in a `Cargo.toml` (for example a `deps` finding) stays when a file
+  of its package changed: the manifest, or a file in the package folder that
+  no nested member owns.
+- A clone group of `dupes` stays when one of its copies is in a changed file.
+- The gates count only the kept findings. The `duplication-threshold` gate
+  measures the whole workspace, so a scoped run does not give it.
+- The `parse-error` gate always judges each target root file. A file that does
+  not parse makes each check incomplete.
+- The JSON report has a `changed_since` member with `ref`, `base` (the fork
+  point) and `changed_files`. The human output has a `Scope:` line: first for
+  a single command, and under the header for `check`.
+- The `dupes` summary counts only the kept groups and their families. Its
+  line, token and file counts stay those of the whole workspace.
+- With `visibility --precise --fail-on-issues`, a run that leaves a candidate
+  undecided exits 2 also when the candidate is outside the scope.
+- A `check` run with the flag has no health score: its `health` object has
+  `scope: "changed"` and no penalties.
+- An unknown ref, a ref that starts with `-`, a shallow clone without the fork
+  point, or a run outside a git work tree exits 2. The run never falls back to
+  the whole workspace.
 
 ### Health score
 
@@ -500,6 +537,7 @@ cargo fallow deps --fail-on-issues --format sarif --quiet
 | `--format human\|json\|sarif\|codeclimate` | The output format. The default is `human`. |
 | `--quiet` | Hide the progress lines on stderr. |
 | `--fail-on-issues` | Exit 1 when a finding has the `error` severity. |
+| `--changed-since <REF>` | Report only the findings in the files that changed since the fork point of `REF`. See [Changed files](#changed-files). |
 | `--locked` | Give `--locked` to `cargo metadata`. |
 | `--offline` | Give `--offline` to `cargo metadata`. |
 | `--frozen` | Give `--frozen` to `cargo metadata`. |
@@ -607,6 +645,62 @@ The JSON report has `dry_run`, `fixes`, `total_fixed` and `skipped` (the
 findings that `fix` does not change). Each entry of `fixes` has `type`
 (`remove-dependency` or `move-to-dev-dependencies`), `rule`, `package`,
 `manifest_path`, `section`, `platform`, `dependency`, `line` and `applied`.
+## Unused files
+
+`cargo fallow files` reports each `.rs` file in a target folder of a package
+that no target compiles. The compiler never reads such a file, so its code is
+dead and no other check sees it.
+
+```bash
+cargo fallow files
+cargo fallow files --format json --fail-on-issues
+```
+
+A file counts as used when one of these reaches it from a target root:
+
+- a `mod name;` item, also in an inline module and in the tokens of a macro
+  call such as `cfg_if!`,
+- a `#[path = "..."]` attribute or a `path` value in a `cfg_attr` attribute,
+- a literal `include!`, `include_str!` or `include_bytes!` call,
+- a Cargo target: a library, a binary, a test, a benchmark, an example or a
+  build script.
+
+The check gives credit when the syntax cannot decide:
+
+- It reads only `src/`, `tests/`, `benches/`, `examples/` and the folder of
+  each target root that is not the package folder.
+- It skips a folder with no reached `.rs` file, for example the inputs of a
+  compile test. So a folder of old modules with no `mod` item is not reported:
+  only the file that names the folder is.
+- It skips each folder with one of these names: `fixture`, `fixtures`,
+  `testdata`, `test-data`, `test_data`, `data`, `snapshots`, `ui`,
+  `compile-fail`, `compile_fail`, `corpus`, `samples`, `inputs` and
+  `resources`.
+- It skips a folder with its own `Cargo.toml`, a hidden folder, `target`, and
+  a file with a generator header or an `@generated` comment.
+- A `.rs` string literal in a macro call counts as an include, because a
+  macro can give it to `include_str!`.
+- It skips each file of a package when the syntax cannot follow the code: a
+  computed `include!` path (an `OUT_DIR` path is not a source file), a file
+  that `include!` reads and that declares a module, a `path` attribute on an
+  inline module, a module in a function body, a module form in a macro that
+  the scan cannot read, or a file that does not parse. A macro that declares a
+  module from its input skips each package of the workspace.
+  `summary.skipped_packages` names each such package with the reason.
+
+The check cannot see a module that a macro of another crate, for example a
+dependency, declares. Add such a file to `exclude`.
+
+Each finding has the rule `unused-file`, the `warning` severity and a
+`delete-file` action with `auto_fixable: false`. `--fail-on-issues` enforces
+the `unused-files` gate. The health score does not change.
+
+```toml
+[workspace.metadata.fallow.files]
+exclude = ["crates/app/src/scratch.rs"]
+```
+
+`exclude` lists files and folders that the check skips.
 
 ## Visibility
 
@@ -634,6 +728,7 @@ cargo fallow visibility --precise
 | `--uniform-fields` | The fields of one struct with one written visibility change as a group. |
 | `--kind <KIND>` | Report only this kind: `dead-public`, `unnecessary-public` or `unnecessary-restricted-visibility`. The flag can repeat. |
 | `--fail-on-issues` | Exit 1 when the run has a finding. |
+| `--changed-since <REF>` | Report only the findings in the files that changed since the fork point of `REF`. See [Changed files](#changed-files). |
 | `--precise` | Decide the undecided candidates with rust-analyzer. See below. |
 
 The table `[workspace.metadata.fallow.visibility]` in the root `Cargo.toml`
@@ -774,11 +869,12 @@ dependency key, or the crate and the item path, so an edit above a finding does
 not change its id. The hash is the same as in the JavaScript CLI.
 
 The gates of `check` are the gates of the checks that ran: `parse-error`,
-`error-severity-findings` (deps), `visibility-findings`, `boundary-violations`,
-`file-growth` (size), `health-findings` (complexity), `duplication-findings`
-and `duplication-threshold` (dupes). They use the same names as the gates of
-the JavaScript CLI. A gate fails the run when its `status` is `fail` and
-`enforced` is `true`.
+`error-severity-findings` (deps), `unused-files` (files),
+`visibility-findings`, `boundary-violations`, `file-growth` (size),
+`health-findings` (complexity), `duplication-findings` and
+`duplication-threshold` (dupes). Each gate except `unused-files` has the same
+name as a gate of the JavaScript CLI. A gate fails the run when its `status`
+is `fail` and `enforced` is `true`.
 
 The tool parses each target root file on a thread with a stack that is sized
 from the file length, so deep nesting cannot crash the run. A file that needs
@@ -796,7 +892,8 @@ other formats, the error goes to stderr.
 ## Structure checks
 
 Four commands check the structure of the workspace. Each command has the
-`--manifest-path`, `--format human|json|sarif|codeclimate` and `--quiet` flags, and its own
+`--manifest-path`, `--format human|json|sarif|codeclimate`, `--quiet` and
+[`--changed-since <REF>`](#changed-files) flags, and its own
 gate. A gate is in the report each time, but it fails the run only with its flag.
 Each command accepts `--fail-on-issues` as its gate flag. The older flag of
 each command is the same flag. `size` has no growth gate without `--base` or

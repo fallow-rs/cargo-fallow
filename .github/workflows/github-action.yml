@@ -191,7 +191,7 @@ jobs:
           expect "check: install method" "$CHECK_METHOD" "source"
           expect "check: exit code" "$CHECK_EXIT" "0"
           expect "check: issues match the findings" "$CHECK_ISSUES" "$(jq '.findings | length' "$CHECK_RESULTS")"
-          expect "check: sections" "$(jq -c '.sections | keys' "$CHECK_RESULTS")" '["boundaries","complexity","deps","dupes","size","visibility"]'
+          expect "check: sections" "$(jq -c '.sections | keys' "$CHECK_RESULTS")" '["boundaries","complexity","deps","dupes","files","size","visibility"]'
           expect "check: health language" "$(jq -r .health.language "$CHECK_RESULTS")" "rust"
           expect "deps: install method" "$DEPS_METHOD" "path"
           expect "deps: format json reports the JSON file" "$DEPS_REPORT" "$DEPS_RESULTS"

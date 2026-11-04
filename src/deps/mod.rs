@@ -34,6 +34,7 @@ use crate::cli::Format;
 use crate::error::CliError;
 use crate::graph::{self, Production};
 use crate::render;
+use crate::scope::Scope;
 use crate::workspace;
 use report::{DepsReport, Severity};
 
@@ -53,35 +54,45 @@ pub struct Options {
     pub fail_on_issues: bool,
     /// The flags for `cargo metadata`: `--locked`, `--offline`, `--frozen`.
     pub cargo_flags: Vec<String>,
+    /// The ref of `--changed-since`.
+    pub changed_since: Option<String>,
 }
 
-/// Runs the analysis and builds the report.
-pub fn run(options: &Options) -> Result<DepsReport, CliError> {
+/// Runs the analysis and builds the section of the report.
+pub fn run(options: &Options) -> Result<crate::section::Section, CliError> {
     let progress = render::Progress::new(options.quiet);
     progress.step("Resolving the workspace with cargo metadata");
     let (workspace, metadata) =
         workspace::load_resolved(options.manifest_path.as_deref(), &options.cargo_flags)?;
     progress.step("Building the module graph");
     let module_graph = graph::build(&workspace, &Production::default());
+    let scope = Scope::load(&workspace, options.changed_since.as_deref())?;
     progress.step("Checking the dependencies");
-    Ok(report(
+    let report = report(
         &workspace,
         &metadata,
         &module_graph,
         options.fail_on_issues,
-    ))
+        &scope,
+    );
+    scope.annotate(section(&report)?)
 }
 
 /// Checks the dependencies of a resolved workspace. The graph can have any
 /// production selection: the rules do not read it. `enforced` is true when an
-/// `error` finding fails the run.
+/// `error` finding fails the run. The report keeps only the findings in
+/// `scope`.
 pub fn report(
     workspace: &workspace::Workspace,
     metadata: &cargo_metadata::Metadata,
     module_graph: &graph::Graph,
     enforced: bool,
+    scope: &Scope,
 ) -> DepsReport {
-    let analysis = analyze::analyze(workspace, metadata, module_graph);
+    let mut analysis = analyze::analyze(workspace, metadata, module_graph);
+    analysis
+        .findings
+        .retain(|finding| scope.keeps(&finding.manifest_path));
     for skipped in &analysis.skipped {
         render::warn(&format!(
             "the `deps` command does not judge the package `{}`: {}",

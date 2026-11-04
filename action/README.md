@@ -82,12 +82,12 @@ Complexity findings in code scanning, without a failed job:
 
 | Input | Default | Meaning |
 | --- | --- | --- |
-| `command` | `check` | `check`, `deps`, `visibility`, `boundaries`, `size`, `complexity`, `dupes` or `mutants`. |
+| `command` | `check` | `check`, `deps`, `files`, `visibility`, `boundaries`, `size`, `complexity`, `dupes` or `mutants`. |
 | `working-directory` | `.` | The folder in which the command runs. |
 | `manifest-path` | empty | The `Cargo.toml` of the workspace, relative to `working-directory`. |
 | `format` | `human` | The report in the log and in the `report` output: `human`, `json` or `sarif`. |
 | `fail-on-issues` | `true` | Give the gate flag of the command, so a failed gate fails the job. See [Gate flags](#gate-flags). |
-| `args` | empty | More arguments, separated by spaces. The action does no shell expansion on them. `--format` and `--quiet` are not permitted. |
+| `args` | empty | More arguments, separated by spaces. The action does no shell expansion on them. `--format` and `--quiet` are not permitted. For example, `--changed-since origin/main` keeps only the findings in the changed files. |
 | `base` | empty | The ref to compare with: `--base` for `size`, `--in-diff` for `mutants`. `auto` takes the base commit of the pull request. |
 | `install` | `auto` | See [Install](#install). |
 | `version` | empty | The version for `install: release` and `install: cargo`. When empty, the version of the action ref. |

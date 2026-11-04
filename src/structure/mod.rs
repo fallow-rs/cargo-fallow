@@ -11,8 +11,8 @@ pub mod complexity;
 pub mod config;
 pub mod dupes;
 mod git;
-mod report;
-mod sarif;
+pub mod report;
+pub mod sarif;
 pub mod size;
 pub mod source;
 
@@ -50,6 +50,11 @@ pub struct CommonArgs {
     /// Hide the progress lines on stderr.
     #[arg(long)]
     pub quiet: bool,
+    /// Report only the findings in the files that changed since the fork point
+    /// of this ref and `HEAD`. Uncommitted and untracked files count. The
+    /// analysis still reads the whole workspace.
+    #[arg(long, value_name = "REF")]
+    pub changed_since: Option<String>,
 }
 
 /// The flags of `boundaries`.

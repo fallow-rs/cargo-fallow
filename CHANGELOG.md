@@ -24,12 +24,21 @@ GitHub release. Each release needs a `## [X.Y.Z] - YYYY-MM-DD` section.
   misplaced entry to `[dev-dependencies]`. `--dry-run` shows the edits. The
   edit keeps comments, and a failed load after the edit writes back the old
   bytes. The `error` findings of `deps` now have `auto_fixable: true`.
+- `cargo fallow files` reports each `.rs` file in a target folder that no
+  target compiles, with the rule `unused-file` and the gate `unused-files`.
+  `check` runs it by default.
 - `boundaries`, `size`, `complexity`, `dupes` and `mutants` accept
   `--fail-on-issues` as their gate flag. The older gate flags stay. The GitHub
   Action now gives `--fail-on-issues` to each command.
+- `check`, `deps`, `visibility`, `boundaries`, `size`, `complexity` and
+  `dupes` accept `--changed-since <REF>`. The report keeps only the findings
+  in the files that changed since the fork point of the ref. The JSON report
+  has a `changed_since` member.
 
 ### Fixed
 
+- A `#[path]` attribute in an inline module now resolves from the module
+  folder plus the inline module names, the same as rustc.
 - A large valid source file no longer counts as too deep. The parse stack is
   sized from the nesting depth of the file, not from its size.
 - The JSON `severity` of a finding is now `warn`, not `warning`. The fallow

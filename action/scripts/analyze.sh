@@ -36,7 +36,7 @@ fail() {
 # the older name of the same gate.
 gate_flags() {
   case "$1" in
-    check | deps | visibility) echo "--fail-on-issues" ;;
+    check | deps | files | visibility) echo "--fail-on-issues" ;;
     boundaries) echo "--fail-on-issues --fail-on-violations" ;;
     size) echo "--fail-on-issues --fail-on-growth" ;;
     complexity) echo "--fail-on-issues --fail-on-complexity" ;;
@@ -96,7 +96,7 @@ path_prefix() {
 
 COMMAND="$INPUT_COMMAND"
 GATE_FLAGS="$(gate_flags "$COMMAND")" \
-  || fail "Invalid 'command' input: ${COMMAND}. Use check, deps, visibility, boundaries, size, complexity, dupes or mutants."
+  || fail "Invalid 'command' input: ${COMMAND}. Use check, deps, files, visibility, boundaries, size, complexity, dupes or mutants."
 case "$INPUT_FORMAT" in
   human | json | sarif) ;;
   *) fail "Invalid 'format' input: ${INPUT_FORMAT}. Use human, json or sarif." ;;

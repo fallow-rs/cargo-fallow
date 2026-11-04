@@ -2,8 +2,10 @@
 //!
 //! [`RustGateName`] holds the name of each gate of each command. The gate names
 //! use the same spelling as `GateName` in fallow. The two lists stay equal by
-//! convention until the protocol crate owns the names. `surviving-mutants` is
-//! the one exception: the JavaScript tool has no gate on mutation results.
+//! convention until the protocol crate owns the names. There are two
+//! exceptions: the JavaScript tool has no gate on mutation results
+//! (`surviving-mutants`), and it counts an unused file in
+//! `error-severity-findings`, not in its own gate (`unused-files`).
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -34,6 +36,8 @@ pub enum RustGateName {
     ParseError,
     /// Fails when a mutant survived the tests of a `mutants` run.
     SurvivingMutants,
+    /// `files`: a `.rs` file that no target compiles.
+    UnusedFiles,
     /// Fails when a `visibility` run has a finding.
     VisibilityFindings,
 }
@@ -41,7 +45,7 @@ pub enum RustGateName {
 impl RustGateName {
     /// Every gate name, in wire order.
     #[cfg(test)]
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::BoundaryViolations,
         Self::DuplicationFindings,
         Self::DuplicationThreshold,
@@ -50,6 +54,7 @@ impl RustGateName {
         Self::HealthFindings,
         Self::ParseError,
         Self::SurvivingMutants,
+        Self::UnusedFiles,
         Self::VisibilityFindings,
     ];
 
@@ -64,6 +69,7 @@ impl RustGateName {
             Self::ErrorSeverityFindings => "error-severity-findings",
             Self::ParseError => "parse-error",
             Self::SurvivingMutants => "surviving-mutants",
+            Self::UnusedFiles => "unused-files",
             Self::VisibilityFindings => "visibility-findings",
         }
     }
@@ -81,6 +87,7 @@ impl RustGateName {
             Self::HealthFindings => "A function is over a complexity limit.",
             Self::ParseError => "A target root file does not parse.",
             Self::SurvivingMutants => "A mutant survived: each test passed with the change.",
+            Self::UnusedFiles => "A `.rs` file in a target folder is not part of a target.",
             Self::VisibilityFindings => "An item has a larger visibility than its uses need.",
         }
     }

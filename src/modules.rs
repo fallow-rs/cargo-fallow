@@ -169,8 +169,17 @@ fn resolve_module(
     module: &ModuleDecl,
 ) -> Option<(String, bool)> {
     if let Some(attr) = &module.path_attr {
-        let parent = Path::new(declaring_file).parent()?;
-        let path = normalize(&parent.join(attr))?;
+        // Outside an inline module, the path starts at the folder of the
+        // declaring file. Inside one, it starts at the module folder of the
+        // file plus the inline module names.
+        let base = if module.inline_path.is_empty() {
+            Path::new(declaring_file).parent()?.to_path_buf()
+        } else {
+            let mut base = dir.to_path_buf();
+            base.extend(&module.inline_path);
+            base
+        };
+        let path = normalize(&base.join(attr))?;
         return workspace.join(&path).is_file().then_some((path, true));
     }
     let mut base = dir.to_path_buf();
@@ -255,6 +264,28 @@ mod tests {
             under_cfg: false,
             cfg_off: false,
         }
+    }
+
+    #[test]
+    fn path_in_an_inline_module_of_a_plain_file_starts_at_the_module_folder() {
+        let dir = std::path::PathBuf::from("src/a");
+        let Ok(tmp) = tempfile::tempdir() else {
+            panic!("a temporary directory");
+        };
+        let full = tmp.path().join("src/a/m/x.rs");
+        let Some(parent) = full.parent() else {
+            panic!("a parent folder");
+        };
+        let (Ok(()), Ok(())) = (fs::create_dir_all(parent), fs::write(&full, "")) else {
+            panic!("write a fixture file");
+        };
+        let found = resolve_module(
+            tmp.path(),
+            "src/a.rs",
+            &dir,
+            &decl("y", &["m"], Some("x.rs")),
+        );
+        assert_eq!(found, Some(("src/a/m/x.rs".to_owned(), true)));
     }
 
     #[test]

@@ -742,3 +742,257 @@ fn size_fail_on_issues_gates_growth_and_needs_no_base() {
     ]);
     assert_eq!(code, 1);
 }
+
+/// The ids of the findings of a report.
+fn ids_of(report: &Value) -> Vec<String> {
+    report["findings"]
+        .as_array()
+        .expect("findings is an array")
+        .iter()
+        .filter_map(|finding| finding["id"].as_str().map(str::to_owned))
+        .collect()
+}
+
+#[test]
+fn changed_since_keeps_only_the_findings_in_changed_files() {
+    let fixture = committed();
+    fixture.git(&["checkout", "--quiet", "-b", "topic"]);
+    let render = fs::read_to_string(fixture.root().join("crates/app/src/render.rs")).expect("read");
+    fixture.write(
+        "crates/app/src/render.rs",
+        &format!("{render}// A change.\n"),
+    );
+    fixture.git(&["commit", "--quiet", "--all", "-m", "change render"]);
+
+    let (code, report) = fixture.json(&["boundaries", "--changed-since", "main"]);
+    assert_eq!(code, 0, "{report:#}");
+    assert_eq!(
+        strings(&report, "rule"),
+        ["render-does-not-run", "render-does-not-run"],
+        "{report:#}"
+    );
+    assert_eq!(report["total_issues"], 2);
+    assert_eq!(report["changed_since"]["ref"], "main");
+    assert_eq!(
+        report["changed_since"]["changed_files"],
+        serde_json::json!(["crates/app/src/render.rs"])
+    );
+    assert_eq!(
+        report["changed_since"]["base"].as_str().map(str::len),
+        Some(40)
+    );
+
+    // A complexity finding in an unchanged file is gone, so the gate passes.
+    let (code, report) =
+        fixture.json(&["complexity", "--changed-since", "main", "--fail-on-issues"]);
+    assert_eq!(code, 0, "{report:#}");
+    assert_eq!(report["total_issues"], 0);
+    // The suppressed finding is in an unchanged file, so it does not count.
+    assert_eq!(report["summary"]["suppressed"], 0, "{report:#}");
+
+    // An uncommitted edit counts, and the finding keeps the id of a full run.
+    let (_, full) = fixture.json(&["complexity"]);
+    let core = fs::read_to_string(fixture.root().join("crates/core/src/lib.rs")).expect("read");
+    fixture.write("crates/core/src/lib.rs", &format!("{core}// A change.\n"));
+    let (code, report) =
+        fixture.json(&["complexity", "--changed-since", "main", "--fail-on-issues"]);
+    assert_eq!(code, 1, "{report:#}");
+    assert_eq!(strings(&report, "name"), ["branchy"]);
+    assert_eq!(ids_of(&report), ids_of(&full));
+
+    let human = fixture.run(&["complexity", "--changed-since", "main"]);
+    assert!(
+        human
+            .stdout
+            .starts_with("Scope: 2 files changed since `main` (fork point "),
+        "{}",
+        human.stdout
+    );
+}
+
+#[test]
+fn an_untracked_file_puts_the_manifest_findings_of_its_package_in_scope() {
+    let fixture = committed();
+    let (_, report) = fixture.json(&["boundaries", "--changed-since", "main"]);
+    assert_eq!(report["total_issues"], 0, "{report:#}");
+    fixture.write("crates/process/notes.md", "A new file.\n");
+    let (_, report) = fixture.json(&["boundaries", "--changed-since", "main"]);
+    assert_eq!(
+        strings(&report, "rule"),
+        ["process-stays-a-leaf"],
+        "{report:#}"
+    );
+    assert_eq!(report["findings"][0]["path"], "crates/process/Cargo.toml");
+}
+
+#[test]
+fn changed_since_keeps_a_clone_group_with_one_changed_copy_and_skips_the_threshold() {
+    // A second clone group in two files that do not change.
+    let fixture = Fixture::new();
+    let copy = "\npub fn tally(values: &[u32]) -> u32 {\n    let mut total = 0;\n    for value in values {\n        if *value > 3 {\n            total += value * 2;\n        } else {\n            total += value + 7;\n        }\n    }\n    total\n}\n";
+    for path in ["crates/app/src/render.rs", "crates/app/src/engine.rs"] {
+        let text = fs::read_to_string(fixture.root().join(path)).expect("read");
+        fixture.write(path, &format!("{text}{copy}"));
+    }
+    fixture.git(&["init", "--quiet"]);
+    fixture.git(&["add", "--all"]);
+    fixture.git(&["commit", "--quiet", "-m", "base"]);
+    let process =
+        fs::read_to_string(fixture.root().join("crates/process/src/lib.rs")).expect("read");
+    fixture.write(
+        "crates/process/src/lib.rs",
+        &format!("{process}// A change.\n"),
+    );
+    let (_, full) = fixture.json(&["dupes", "--min-tokens", "30", "--threshold", "1"]);
+    let (code, report) = fixture.json(&[
+        "dupes",
+        "--min-tokens",
+        "30",
+        "--threshold",
+        "1",
+        "--changed-since",
+        "main",
+    ]);
+    assert_eq!(code, 0, "{report:#}");
+    let groups = report["findings"].as_array().expect("findings");
+    assert!(!groups.is_empty(), "{report:#}");
+    assert!(groups.len() < full["findings"].as_array().map_or(0, Vec::len) + 1);
+    for group in groups {
+        let files: Vec<&str> = group["instances"]
+            .as_array()
+            .map(|all| all.iter().filter_map(|i| i["file"].as_str()).collect())
+            .unwrap_or_default();
+        assert!(files.contains(&"crates/process/src/lib.rs"), "{group:#}");
+    }
+    assert!(
+        report["gate_outcomes"]["duplication-threshold"].is_null(),
+        "{report:#}"
+    );
+    assert_eq!(full["summary"]["stats"]["clone_groups"], 2, "{full:#}");
+    assert_eq!(groups.len(), 1, "{report:#}");
+    assert_eq!(report["summary"]["stats"]["clone_groups"], groups.len());
+    let families = report["summary"]["clone_families"]
+        .as_array()
+        .expect("families");
+    assert_eq!(report["summary"]["stats"]["clone_families"], families.len());
+    assert_eq!(
+        full["gate_outcomes"]["duplication-threshold"]["status"],
+        "fail"
+    );
+}
+
+#[test]
+fn check_with_changed_since_scopes_each_section_and_gives_no_score() {
+    let fixture = committed();
+    let (_, full) = fixture.json(&["check", "--skip", "deps"]);
+    assert!(full["health"]["penalties"].is_object(), "{full:#}");
+    let core = fs::read_to_string(fixture.root().join("crates/core/src/lib.rs")).expect("read");
+    fixture.write("crates/core/src/lib.rs", &format!("{core}// A change.\n"));
+    let (code, report) = fixture.json(&["check", "--skip", "deps", "--changed-since", "main"]);
+    assert_eq!(code, 0, "{report:#}");
+    assert_eq!(report["health"]["scope"], "changed", "{report:#}");
+    assert!(report["health"]["penalties"].is_null(), "{report:#}");
+    assert_eq!(
+        report["changed_since"]["changed_files"],
+        serde_json::json!(["crates/core/src/lib.rs"])
+    );
+    let paths: Vec<&str> = report["findings"]
+        .as_array()
+        .expect("findings")
+        .iter()
+        .filter_map(|finding| finding["location"]["path"].as_str())
+        .collect();
+    assert!(!paths.is_empty(), "{report:#}");
+    // A clone group keeps each copy, so its other place can be outside the
+    // scope. Each other finding is in the changed file.
+    for finding in report["findings"].as_array().expect("findings") {
+        let in_scope =
+            finding["location"]["path"] == "crates/core/src/lib.rs" || finding["check"] == "dupes";
+        assert!(in_scope, "{finding:#}");
+    }
+    assert_eq!(report["total_issues"], paths.len());
+    assert!(
+        report["sections"]["boundaries"]["findings"]
+            .as_array()
+            .is_some_and(Vec::is_empty)
+    );
+    let (code, _) = fixture.json(&[
+        "check",
+        "--skip",
+        "deps",
+        "--changed-since",
+        "main",
+        "--fail-on-issues",
+    ]);
+    assert_eq!(code, 1);
+}
+
+#[test]
+fn changed_since_with_a_bad_ref_or_outside_git_exits_2() {
+    let outside = Fixture::new();
+    let (code, report) = outside.json(&["complexity", "--changed-since", "main"]);
+    assert_eq!(code, 2, "{report:#}");
+    assert_eq!(report["code"], "CARGO_FALLOW_INVALID_ARGUMENT");
+
+    let fixture = committed();
+    for command in [
+        "boundaries",
+        "size",
+        "complexity",
+        "dupes",
+        "check",
+        "visibility",
+    ] {
+        let (code, report) = fixture.json(&[command, "--changed-since", "no-such-ref"]);
+        assert_eq!(code, 2, "{command}: {report:#}");
+        assert_eq!(report["code"], "CARGO_FALLOW_INVALID_ARGUMENT", "{command}");
+        assert!(
+            report["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("no-such-ref")),
+            "{command}: {report:#}"
+        );
+    }
+    let (code, report) = fixture.json(&["complexity", "--changed-since=--output=x"]);
+    assert_eq!(code, 2, "{report:#}");
+    assert!(
+        report["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("must name a git ref")),
+        "{report:#}"
+    );
+}
+
+#[test]
+fn deps_and_visibility_with_changed_since_keep_the_findings_of_the_changed_package() {
+    let fixture = committed();
+    let process =
+        fs::read_to_string(fixture.root().join("crates/process/src/lib.rs")).expect("read");
+    fixture.write(
+        "crates/process/src/lib.rs",
+        &format!("{process}// A change.\n"),
+    );
+
+    let (code, report) = fixture.json(&["visibility", "--changed-since", "main"]);
+    assert_eq!(code, 0, "{report:#}");
+    let files: Vec<&str> = report["findings"]
+        .as_array()
+        .expect("findings")
+        .iter()
+        .filter_map(|finding| finding["file"].as_str())
+        .collect();
+    assert_eq!(files, ["crates/process/src/lib.rs"], "{report:#}");
+    assert_eq!(report["changed_since"]["ref"], "main");
+
+    // The source file of the package puts the findings of its manifest in scope.
+    let (code, report) = fixture.json(&["deps", "--changed-since", "main", "--fail-on-issues"]);
+    assert_eq!(code, 1, "{report:#}");
+    let manifests: Vec<&str> = report["findings"]
+        .as_array()
+        .expect("findings")
+        .iter()
+        .filter_map(|finding| finding["manifest_path"].as_str())
+        .collect();
+    assert_eq!(manifests, ["crates/process/Cargo.toml"], "{report:#}");
+    assert_eq!(report["total_issues"], 1);
+}

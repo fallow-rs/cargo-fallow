@@ -47,6 +47,8 @@ pub struct VisibilityOptions {
     pub kinds: Vec<crate::visibility::FindingKind>,
     /// True when a finding fails the run.
     pub fail_on_issues: bool,
+    /// The ref of `--changed-since`.
+    pub changed_since: Option<String>,
     /// The limits of `--precise` mode, or `None` for the fast mode.
     pub precise: Option<crate::visibility::precise::Limits>,
 }
@@ -66,6 +68,8 @@ pub enum Parsed {
     Deps(crate::deps::Options),
     /// Apply the fixable actions.
     Fix(crate::fix::FixArgs),
+    /// Run the unused file check.
+    Files(crate::files::FilesArgs),
     /// Run one structure check: boundaries, size, complexity or dupes.
     Structure(Box<crate::structure::Command>),
     /// Run the hidden watchdog of the memory guard.
@@ -98,8 +102,8 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Run the static checks in one run: parse, deps, visibility, boundaries,
-    /// size, complexity and dupes. This is the default command.
+    /// Run the static checks in one run: parse, deps, files, visibility,
+    /// boundaries, size, complexity and dupes. This is the default command.
     ///
     /// The run reads the workspace once and writes one report with a section
     /// for each check. Each check keeps its own gate. `mutants` and `visibility
@@ -125,6 +129,13 @@ enum Command {
     /// terminal needs `--yes`. When the workspace does not load after the
     /// edits, the command writes back each file and exits 2.
     Fix(crate::fix::FixArgs),
+    /// Report `.rs` files in the target folders that no target compiles.
+    ///
+    /// A file counts as used when a `mod` item, a `#[path]` attribute, a
+    /// literal `include!` call or a Cargo target reaches it. The check skips
+    /// test data folders, generated files and packages whose files the syntax
+    /// cannot decide.
+    Files(crate::files::FilesArgs),
     /// Report `pub` and `pub(crate)` items that can have a smaller visibility.
     Visibility(VisibilityArgs),
     /// The worker of `visibility --precise`. The `visibility` command starts it
@@ -338,6 +349,11 @@ struct VisibilityArgs {
     /// Exit 1 when the run has a finding.
     #[arg(long)]
     fail_on_issues: bool,
+    /// Report only the findings in the files that changed since the fork point
+    /// of this ref and `HEAD`. Uncommitted and untracked files count. The
+    /// analysis still reads the whole workspace.
+    #[arg(long, value_name = "REF")]
+    changed_since: Option<String>,
     /// Decide the findings that the syntax cannot decide with rust-analyzer: method
     /// calls on an unknown type and the output of proc-macros. This needs a build
     /// with the `precise` feature, and it runs the build scripts and proc-macros of
@@ -402,6 +418,7 @@ impl From<VisibilityArgs> for VisibilityOptions {
                 })
                 .collect(),
             fail_on_issues: args.fail_on_issues,
+            changed_since: args.changed_since,
             precise: args.precise.then_some(crate::visibility::precise::Limits {
                 timeout: Duration::from_secs(args.precise_timeout),
                 memory_mib: args.precise_memory_limit,
@@ -425,6 +442,11 @@ struct DepsArgs {
     /// Exit 1 when a finding has the `error` severity. A warning does not count.
     #[arg(long)]
     fail_on_issues: bool,
+    /// Report only the findings in the files that changed since the fork point
+    /// of this ref and `HEAD`. Uncommitted and untracked files count. The
+    /// analysis still reads the whole workspace.
+    #[arg(long, value_name = "REF")]
+    changed_since: Option<String>,
     /// Give `--locked` to `cargo metadata`: fail when `Cargo.lock` must change.
     #[arg(long)]
     locked: bool,
@@ -446,6 +468,7 @@ impl From<DepsArgs> for crate::deps::Options {
             quiet: args.quiet,
             fail_on_issues: args.fail_on_issues,
             cargo_flags,
+            changed_since: args.changed_since,
         }
     }
 }
@@ -474,13 +497,19 @@ struct CheckArgs {
     #[arg(long, value_enum, value_name = "CHECK", value_delimiter = ',')]
     skip: Vec<crate::check::CheckName>,
     /// Exit 1 when the gate of a check that ran fails: parse-error,
-    /// error-severity-findings (deps), visibility-findings, boundary-violations,
-    /// health-findings (complexity) and duplication-findings (dupes).
+    /// error-severity-findings (deps), unused-files, visibility-findings,
+    /// boundary-violations, health-findings (complexity) and
+    /// duplication-findings (dupes).
     #[arg(long)]
     fail_on_issues: bool,
     /// Exit 1 when a target root file does not parse.
     #[arg(long)]
     fail_on_parse_error: bool,
+    /// Report only the findings in the files that changed since the fork point
+    /// of this ref and `HEAD`. Uncommitted and untracked files count. The
+    /// analysis still reads the whole workspace.
+    #[arg(long, value_name = "REF")]
+    changed_since: Option<String>,
     /// Give `--locked` to the `cargo metadata` call of the deps check.
     #[arg(long)]
     locked: bool,
@@ -516,6 +545,7 @@ impl From<CheckArgs> for crate::check::Options {
             fail_on_issues: args.fail_on_issues,
             fail_on_parse_error: args.fail_on_parse_error,
             cargo_flags: cargo_flags(args.locked, args.offline, args.frozen),
+            changed_since: args.changed_since,
         }
     }
 }
@@ -538,6 +568,7 @@ pub fn parse(args: &[OsString]) -> Parsed {
             Some(Command::PreciseWorker(args)) => Parsed::PreciseWorker(args),
             Some(Command::Deps(args)) => Parsed::Deps(args.into()),
             Some(Command::Fix(args)) => Parsed::Fix(args),
+            Some(Command::Files(args)) => Parsed::Files(args),
             Some(Command::Structure(command)) => Parsed::Structure(Box::new(command)),
             Some(Command::MutationWatchdog {
                 roots,

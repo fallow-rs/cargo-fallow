@@ -8,13 +8,11 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::process::{Command, Stdio};
 
 use crate::error::{CliError, ErrorCode};
 use crate::mutation::coverage::LineRange;
 use crate::mutation::files::CrateFile;
 use crate::mutation::plan::lines_of;
-use crate::mutation::process::new_command;
 use crate::render;
 
 /// The last line of a range that covers a whole file.
@@ -147,19 +145,12 @@ fn failed(action: &str, error: &str) -> CliError {
 }
 
 /// Runs git in `dir`. The outer error means that git does not run at all, and the
-/// inner error holds the message of a call that failed. A hook of the caller can set
-/// the `GIT_*` variables, and they must not choose another repository.
+/// inner error holds the message of a call that failed. The shared runner removes
+/// the `GIT_*` variables that a hook of the caller can set, so they cannot choose
+/// another repository.
 fn git(dir: &Path, args: &[&str]) -> Result<Result<String, String>, CliError> {
-    let mut command: Command = new_command("git");
-    let output = command
-        .current_dir(dir)
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
-        .args(args)
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|err| failed("run git", &err.to_string()))?;
+    let output = crate::diff::run_git(dir, args)
+        .map_err(|err| CliError::new(ErrorCode::MutationFailed, err))?;
     if output.status.success() {
         return Ok(Ok(String::from_utf8_lossy(&output.stdout).into_owned()));
     }

@@ -12,7 +12,7 @@ branding:
 
 inputs:
   command:
-    description: 'The command to run: check, deps, visibility, boundaries, size, complexity, dupes or mutants.'
+    description: 'The command to run: check, deps, files, visibility, boundaries, size, complexity, dupes or mutants.'
     required: false
     default: 'check'
   working-directory:

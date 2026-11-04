@@ -248,7 +248,7 @@ assert_equals "$(output_of results)" "$(cd "$CASE_DIR/artifacts" && pwd -P)/carg
 assert_equals "$(output_of report)" "$(cd "$CASE_DIR/artifacts" && pwd -P)/cargo-fallow-report.txt" "check: report output is the human report"
 assert_equals "$(output_of path-prefix)" "" "check: no cargo, so no prefix"
 
-for command in check deps visibility boundaries size complexity dupes mutants; do
+for command in check deps files visibility boundaries size complexity dupes mutants; do
   run_analyze INPUT_COMMAND="$command" INPUT_FORMAT=json
   assert_equals "$(call_args 1)" "$command --fail-on-issues --format json " "$command: the gate flag is --fail-on-issues"
 done

@@ -155,10 +155,19 @@ no new one.
           comment: 'true'
 ```
 
-- The step needs `pull-requests: write`.
+- The step needs `pull-requests: write`. A token without it, for example the
+  token of a Dependabot pull request, gives a warning and no comment. The run
+  still passes or fails on its gates.
 - A pull request from a fork has a read-only token, so the step posts no
-  comment and writes a notice. The run still passes or fails on its gates.
+  comment and writes a notice. A `pull_request_target` run from a fork also
+  posts no comment.
 - An event with no pull request posts no comment.
+- The step updates only a comment of its own author: the login of the token,
+  or `github-actions[bot]` for the default token.
+- A comment over 60000 characters is cut, with a line that points to the job
+  summary.
+- `auto-changed-since` and `changed-since` need the history of the base
+  (`fetch-depth: 0`).
 
 ### Gate flags
 

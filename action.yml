@@ -40,7 +40,7 @@ inputs:
     required: false
     default: ''
   changed-since:
-    description: 'Report only the findings in the files that changed since this git ref (--changed-since). The static commands take it; mutants uses base.'
+    description: 'Report only the findings in the files that changed since this git ref (--changed-since). The static commands take it; mutants uses base. The checkout needs the history of that ref (fetch-depth: 0).'
     required: false
     default: ''
   auto-changed-since:
@@ -60,7 +60,7 @@ inputs:
     required: false
     default: 'false'
   comment-key:
-    description: 'The key of the sticky comment. Give each call its own key when two calls run the same command, else the second comment replaces the first. When empty, the command.'
+    description: 'The key of the sticky comment: letters, digits, dot, dash and underscore. Give each call its own key when two calls run the same command (also in a matrix), else the second comment replaces the first. When empty, the command.'
     required: false
     default: ''
   install:

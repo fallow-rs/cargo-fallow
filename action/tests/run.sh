@@ -685,7 +685,7 @@ assert_equals "$CODE" "0" "comment: a first run exits 0"
 assert_contains "$(cat "$GH_LOG")" "-X POST repos/o/r/issues/7/comments" "comment: a first run posts a comment"
 assert_contains "$(head -n 1 "$GH_BODY")" "<!-- cargo-fallow-comment:complexity -->" "comment: the body starts with the marker"
 assert_contains "$(cat "$GH_BODY")" "complexity" "comment: the body holds the summary"
-printf '[{"id": 11, "body": "other"}, {"id": 42, "body": "<!-- cargo-fallow-comment:complexity -->\\nold"}]' > "$WORK/comments-one.json"
+printf '[{"id": 11, "body": "other", "user": {"login": "someone"}}, {"id": 13, "body": "<!-- cargo-fallow-comment:complexity -->", "user": {"login": "someone"}}]\n[{"id": 42, "body": "<!-- cargo-fallow-comment:complexity -->\\nold", "user": {"login": "github-actions[bot]"}}]\n' > "$WORK/comments-one.json"
 GH_COMMENTS="$WORK/comments-one.json" run_comment PR_NUMBER=7
 assert_contains "$(cat "$GH_LOG")" "-X PATCH repos/o/r/issues/comments/42" "comment: a second run updates the comment"
 assert_equals "$(grep -c -- '-X POST' "$GH_LOG")" "0" "comment: a second run posts no new comment"
@@ -699,6 +699,18 @@ run_comment PR_NUMBER=""
 assert_contains "$OUT" "has no pull request" "comment: a push posts no comment"
 run_comment PR_NUMBER="7; id"
 assert_equals "$CODE" "1" "comment: a bad number fails"
+run_comment PR_NUMBER=7 COMMENT_KEY='x --> y'
+assert_equals "$CODE" "1" "comment: a key that can close the marker fails"
+run_comment PR_NUMBER=7 RESULTS_FILE=/nonexistent
+assert_contains "$OUT" "posts no comment" "comment: a run with no summary posts no comment"
+assert_equals "$(cat "$GH_LOG")" "" "comment: a run with no summary calls no API"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$WORK/gh-fail"
+mkdir -p "$WORK/gh-fail-dir" && cp "$WORK/gh-fail" "$WORK/gh-fail-dir/gh" && chmod +x "$WORK/gh-fail-dir/gh"
+OUT="$(env -i PATH="$WORK/gh-fail-dir:$BASE_PATH" RUNNER_TEMP="$WORK" ACTION_JQ_DIR="$JQ_DIR" \
+  RESULTS_FILE="$FIXTURES/complexity.json" FALLOW_COMMAND=complexity EXIT_CODE=0 MAX_FINDINGS=50 \
+  GH_REPO=o/r PR_NUMBER=7 bash "$SCRIPTS/comment.sh" 2>&1)"
+assert_equals "$?" "0" "comment: an API error does not fail the step"
+assert_contains "$OUT" "pull-requests: write" "comment: an API error names the permission"
 
 # --- the scope inputs of analyze.sh -------------------------------------------
 

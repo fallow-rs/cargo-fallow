@@ -197,3 +197,42 @@ fn next_line_comment_hides_a_boundary_violation() {
     assert_eq!(report["suppressed"], 1);
     assert!(!stderr.contains("names no check"), "{stderr}");
 }
+
+#[test]
+fn a_narrowed_run_and_size_without_a_base_judge_no_stale_comment() {
+    let core = "pub fn used() {}\n// fallow-ignore-next-line unnecessary_public\npub fn helper() {}\n// fallow-ignore-next-line grown-file\nfn f() {}\n";
+    let dir = workspace("", &[("core/src/lib.rs", core)]);
+    let (narrowed, _) = run(&dir, &["visibility", "--kind", "dead-public"]);
+    assert!(narrowed.get("stale_suppressions").is_none(), "{narrowed}");
+    let (check, _) = run(&dir, &["check", "--only", "size"]);
+    assert!(
+        check["findings"]
+            .as_array()
+            .expect("findings is an array")
+            .iter()
+            .all(|finding| finding["rule"] != "stale-suppression"),
+        "{check}"
+    );
+}
+
+#[test]
+fn sarif_names_the_stale_suppression_rule() {
+    let core = "pub fn used() {}\n// fallow-ignore-next-line visibility\nfn private() {}\n";
+    let dir = workspace("", &[("core/src/lib.rs", core)]);
+    let output = Command::cargo_bin("cargo-fallow")
+        .expect("the binary exists")
+        .current_dir(dir.path())
+        .args(["visibility", "--format", "sarif", "--quiet"])
+        .output()
+        .expect("run the binary");
+    let sarif: Value = serde_json::from_slice(&output.stdout).expect("SARIF is JSON");
+    let rules = &sarif["runs"][0]["tool"]["driver"]["rules"];
+    assert!(
+        rules
+            .as_array()
+            .expect("rules is an array")
+            .iter()
+            .any(|rule| rule["id"] == "stale-suppression"),
+        "{sarif}"
+    );
+}

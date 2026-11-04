@@ -6,6 +6,7 @@
 //! findings in the changed files, and `--baseline` leaves out the findings of
 //! an earlier run.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use clap::Args;
@@ -91,6 +92,8 @@ pub struct Scope {
     /// The files whose suppression comments can be stale: the `.rs` files of
     /// the target folders and the manifests.
     marked_files: Vec<String>,
+    /// The folder of each member, by package name.
+    member_folders: BTreeMap<String, String>,
 }
 
 impl Scope {
@@ -108,6 +111,17 @@ impl Scope {
             narrowed: false,
             suppressions: Registry::new(workspace.root.as_std_path(), boundary_rules(workspace)),
             marked_files: marked_files(workspace),
+            member_folders: workspace
+                .members
+                .iter()
+                .map(|member| {
+                    let folder = member
+                        .manifest_path
+                        .rsplit_once('/')
+                        .map_or("", |(folder, _)| folder);
+                    (member.name.clone(), folder.to_owned())
+                })
+                .collect(),
         })
     }
 
@@ -154,13 +168,32 @@ impl Scope {
             "suppressed",
             Value::from(self.suppressions.hidden(check)),
         );
+        if !self.judges_stale_suppressions(check, section) {
+            return;
+        }
+        let unjudged = unjudged_folders(&section.json, &self.member_folders);
         let files = self
             .marked_files
             .iter()
             .map(String::as_str)
-            .filter(|path| self.keeps(path));
+            .filter(|path| self.keeps(path))
+            .filter(|path| !crate::structure::config::matches_prefix(path, &unjudged));
         let stale = self.suppressions.stale(check, files);
         section.add_stale_suppressions(check, &stale);
+    }
+
+    /// True when a comment of `check` that hid nothing is stale in this run:
+    /// no flag narrows the findings, and the check ran each of its rules.
+    /// `size` gives its findings only with a growth comparison.
+    fn judges_stale_suppressions(&self, check: &str, section: &Section) -> bool {
+        if self.narrowed {
+            return false;
+        }
+        check != "size"
+            || section
+                .gates
+                .get(&RustGateName::FileGrowth)
+                .is_some_and(|gate| gate.status != fallow_report_protocol::GateStatus::Skipped)
     }
 
     /// The scope of a run in which a flag narrows the findings.
@@ -335,6 +368,21 @@ impl Scope {
         }
         Ok(section)
     }
+}
+
+/// The folders of the packages that the check did not judge: `skipped` of
+/// `deps`, `summary.skipped_packages` of `files`. A comment there is not stale.
+fn unjudged_folders(json: &Value, folders: &BTreeMap<String, String>) -> Vec<String> {
+    let lists = [&json["skipped"], &json["summary"]["skipped_packages"]];
+    lists
+        .into_iter()
+        .filter_map(Value::as_array)
+        .flatten()
+        .filter_map(|entry| entry["package"].as_str())
+        .filter_map(|package| folders.get(package))
+        // The root package has the folder `""`, which holds each path.
+        .cloned()
+        .collect()
 }
 
 /// The names of the boundary rules in the configuration. A suppression

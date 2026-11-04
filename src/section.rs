@@ -114,9 +114,29 @@ impl Section {
         if let Value::Object(map) = &mut self.json {
             map.insert("stale_suppressions".to_owned(), Value::Array(rows));
         }
+        if let Some(rules) = self.sarif["runs"][0]["tool"]["driver"]["rules"].as_array_mut()
+            && !rules.iter().any(|rule| rule["id"] == STALE_RULE)
+        {
+            rules.push(json!({
+                "id": STALE_RULE,
+                "shortDescription": { "text": "A suppression comment hides no finding." },
+            }));
+        }
         // The lines go above the gate block of the text.
-        let at = self.human.find("Gates:").unwrap_or(self.human.len());
-        self.human.insert_str(at, &lines);
+        let at = if self.human.starts_with("Gates:") {
+            Some(0)
+        } else {
+            self.human.find("\nGates:").map(|at| at + 1)
+        };
+        match at {
+            Some(at) => self.human.insert_str(at, &lines),
+            None => {
+                if !self.human.is_empty() && !self.human.ends_with('\n') {
+                    self.human.push('\n');
+                }
+                self.human.push_str(&lines);
+            }
+        }
     }
 }
 

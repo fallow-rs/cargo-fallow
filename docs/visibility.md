@@ -20,7 +20,7 @@ finding. A binary and a library with `publish = false` keep each rule. When a li
 | --- | --- | --- |
 | `dead-public` | A `pub` item that is not reachable from a root. | `pub` to `pub(crate)`. Then the compiler shows the dead code. |
 | `unnecessary-public` | A `pub` item that only its own crate uses. | `pub` to `pub(crate)`. |
-| `unnecessary-restricted-visibility` | A `pub(crate)`, `pub(super)` or `pub(in path)` item that only its own module and its child modules use. | Remove the keyword. |
+| `unnecessary-restricted-visibility` | A `pub(crate)`, `pub(super)` or `pub(in path)` item that only its own module and its child modules use. A `#[cfg(test)] pub` item that other crates cannot name gets this rule too. | Remove the keyword. |
 
 Each finding has the `error` severity, because it counts for the gate of
 the command. See [Rule severity](adoption.md#rule-severity).

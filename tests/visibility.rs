@@ -1710,12 +1710,6 @@ fn a_type_in_the_signature_of_a_reported_item_keeps_its_finding() {
 /// link is a use, so the target keeps the visibility that the link needs.
 #[test]
 fn an_intra_doc_link_is_a_use_from_the_module_of_the_doc_comment() {
-/// In a private module, `pub` already gives crate visibility, and
-/// `clippy::redundant_pub_crate` rejects `pub(crate)` there. A test helper
-/// in such a module gets no `pub(crate)` change. When only its own module
-/// uses it, it can be private.
-#[test]
-fn a_test_helper_in_a_private_module_gets_no_pub_crate_change() {
     let dir = workspace(&[
         ("app/src/main.rs", "fn main() { mid::run(); }\n"),
         (
@@ -1742,15 +1736,6 @@ fn a_test_helper_in_a_private_module_gets_no_pub_crate_change() {
              /// [the label]: super::api::defined\n\
              pub(crate) fn run_audit() {}\n",
         ),
-            "mod protocol;\npub mod open;\npub fn run() { protocol::send(); }\n\
-             #[cfg(test)]\nmod tests { #[test] fn t() { crate::protocol::shared(); crate::open::exposed(); } }\n",
-        ),
-        (
-            "mid/src/protocol.rs",
-            "pub fn send() {}\n#[cfg(test)]\npub fn shared() {}\n#[cfg(test)]\npub fn local() {}\n\
-             #[cfg(test)]\nmod tests { #[test] fn t() { super::local(); } }\n",
-        ),
-        ("mid/src/open.rs", "#[cfg(test)]\npub fn exposed() {}\n"),
     ]);
     let (found, _) = findings(&dir, &[]);
     assert_eq!(
@@ -1894,6 +1879,31 @@ fn an_intra_doc_link_from_a_reported_item_holds_nothing() {
         set(&["dead-public dead_doc", "unnecessary-public Target"])
     );
 }
+
+/// In a private module, `pub` already gives crate visibility, and
+/// `clippy::redundant_pub_crate` rejects `pub(crate)` there. A test helper
+/// in such a module gets no `pub(crate)` change. When only its own module
+/// uses it, it can be private.
+#[test]
+fn a_test_helper_in_a_private_module_gets_no_pub_crate_change() {
+    let dir = workspace(&[
+        ("app/src/main.rs", "fn main() { mid::run(); }\n"),
+        (
+            "mid/src/lib.rs",
+            "mod protocol;\npub mod open;\npub fn run() { protocol::send(); }\n\
+             #[cfg(test)]\nmod tests { #[test] fn t() { crate::protocol::shared(); crate::open::exposed(); } }\n",
+        ),
+        (
+            "mid/src/protocol.rs",
+            "pub fn send() {}\n#[cfg(test)]\npub fn shared() {}\n#[cfg(test)]\npub fn local() {}\n\
+             #[cfg(test)]\nmod tests { #[test] fn t() { super::local(); } }\n",
+        ),
+        ("mid/src/open.rs", "#[cfg(test)]\npub fn exposed() {}\n"),
+    ]);
+    let (found, _) = findings(&dir, &[]);
+    assert_eq!(
+        found,
+        set(&[
             "unnecessary-public open",
             "unnecessary-public open::exposed",
             "unnecessary-restricted-visibility protocol::local",

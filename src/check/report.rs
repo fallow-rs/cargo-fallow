@@ -47,6 +47,20 @@ pub struct CheckReport {
     /// The health score of the Rust code, when a check with a penalty ran.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub health: Option<Health>,
+    /// With `--file-scores`: the score of each source file, the least
+    /// maintainable first.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_scores: Option<Vec<crate::hotspots::FileScore>>,
+    /// With `--hotspots`: the files that are complex and change often, the
+    /// riskiest first.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hotspots: Option<Vec<crate::hotspots::Hotspot>>,
+    /// With `--hotspots`: the settings and the counts of the ranking.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hotspot_summary: Option<crate::hotspots::HotspotSummary>,
+    /// With `--trend` or `--trend-from`: the change against a snapshot.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub health_trend: Option<crate::hotspots::snapshot::HealthTrend>,
     /// The findings of each check in the shared shape, in check order.
     pub findings: Vec<Finding>,
     /// The gate outcomes of each check that ran, keyed by gate name.
@@ -165,6 +179,10 @@ impl CheckReport {
             checks: parts.iter().map(|(name, _)| *name).collect(),
             total_issues: findings.len(),
             health,
+            file_scores: None,
+            hotspots: None,
+            hotspot_summary: None,
+            health_trend: None,
             findings,
             gate_outcomes,
             changed_since: None,
@@ -357,6 +375,7 @@ impl CheckReport {
             text.push_str(&line);
             text.push('\n');
         }
+        text.push_str(&crate::hotspots::human(self));
         if self.total_issues == 0 {
             text.push_str("No issues found\n");
         } else {

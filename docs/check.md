@@ -38,6 +38,12 @@ separate commands.
 | `--save-baseline <PATH>`, `--baseline <PATH>`, `--fail-on-stale-baseline` | Save the findings to a file, or leave out the findings that a saved file lists. See [Baselines](adoption.md#baselines). |
 | `--package <NAME>`, `-p <NAME>` | Report only the findings of this workspace member. You can repeat the flag. See [Packages](adoption.md#packages). |
 | `--locked`, `--offline`, `--frozen` | Pass the flag to the `cargo metadata` call of `deps`. |
+| `--file-scores` | Add `file_scores`. See [File scores and hotspots](#file-scores-and-hotspots). |
+| `--hotspots` | Add `hotspots` and `hotspot_summary`. See [File scores and hotspots](#file-scores-and-hotspots). |
+| `--since <DURATION>` | The git history window of `--hotspots`: `6m`, `90d`, `2w`, `1y` or a date such as `2025-06-01`. The default is `6m`. |
+| `--min-commits <N>` | The least number of commits in the window for a hotspot. The default is 3. |
+| `--save-snapshot [PATH]` | Save a health snapshot. See [Snapshots and trend](#snapshots-and-trend). |
+| `--trend`, `--trend-from <PATH>` | Add `health_trend`: the change against a snapshot. |
 
 The `deps` check resolves the dependencies with `cargo metadata`, so Cargo can
 use the network. The run does not change `Cargo.lock`. For a run without
@@ -100,3 +106,69 @@ include, in the order of `checks`. The human output then says
 `Health (rust): no score.` The report still has the penalties of the checks
 that ran. When no check with a penalty runs, for example with `--only parse`,
 the report has no `health` object.
+
+## File scores and hotspots
+
+`--file-scores` and `--hotspots` need the complexity check. A run that leaves
+it out exits 2. The model is `fallow health` for JavaScript.
+
+`file_scores` has one entry for each source file that the complexity check
+measures, the least maintainable first. Each entry has `path`,
+`maintainability_index`, `complexity_density` (the cyclomatic complexity of
+all functions per line), `total_cyclomatic`, `total_cognitive`,
+`function_count` and `lines`. A run with the visibility check adds
+`dead_code_ratio`: the `dead_public` findings per `pub` item of the file.
+
+```text
+maintainability_index = 100 - density x 30 x min(lines / 50, 1) - dead_code_ratio x 20
+```
+
+The index is clamped to 0..100. The JavaScript formula also has a fan-out
+term. The Rust formula leaves it out.
+
+`hotspots` ranks the files that are complex and change often, the riskiest
+first. The run reads `git log --numstat` for the `--since` window, without
+merge commits. A commit of 90 days ago counts half, so `weighted_commits`
+favors recent work. A file needs `--min-commits` commits and some complexity:
+a file with no branch is not a hotspot. The score is the
+weighted commits times the complexity density, each divided by the largest
+value of the ranked files, on a scale of 0 to 100. Each entry has `path`,
+`score`, `commits`, `weighted_commits`, `lines_added`, `lines_deleted`,
+`complexity_density` and `trend`. The trend compares the commits in the newer
+half of the `--since` window with the commits in the older half:
+`accelerating` over 1.5 times, `cooling` under 0.67 times, else `stable`. A
+month counts 30 days. A path can hold any character, because the run reads
+the git log with NUL separators.
+`hotspot_summary` has `since`, `min_commits`, `files_analyzed`,
+`files_excluded` and `shallow_clone`.
+
+A shallow clone has a cut history, so the run gives a warning and no hotspot.
+In GitHub Actions, use `fetch-depth: 0`.
+
+## Snapshots and trend
+
+`--save-snapshot` writes the health score, the grade, the penalties and the
+issue count of the run to a JSON file with the `kind` `health-snapshot`.
+Without a path, the file goes to `.fallow/snapshots/` in the workspace root,
+named by the time of the run, for example `2026-11-04T06-30-59Z.json`. A
+second run in the same second adds a suffix, so no file is replaced. A
+relative path is relative to the current folder. The snapshot also records
+the checks of the run and whether a scope (`--changed-since`, `--package` or
+`--baseline`) kept part of the findings.
+
+`--trend` compares the run with the newest snapshot in `.fallow/snapshots/`.
+Only the file names that `--save-snapshot` gives count. A file that does not
+read gives a warning, and the next older file counts.
+`--trend-from <PATH>` compares it with one file. `health_trend` has
+`compared_to` (the time, the commit, the score and the grade of the
+snapshot), `snapshots_loaded`, `overall_direction` and `metrics`. Each metric
+has `name` (`score`, a penalty name or `total_issues`), `previous`, `current`,
+`delta`, `direction` and `unit`. A higher score is better. A lower penalty or
+issue count is better. A change under 0.05 is `stable`. Without a snapshot,
+the run gives a warning and no `health_trend`. When the snapshot has another
+formula version, the trend compares only `total_issues`. `warnings` names
+each difference between the runs: the formula version, the checks and the
+scope. An invalid `--trend-from` file stops the run with exit code 2 before
+the analysis. A run with `--trend` and
+`--save-snapshot` reads the old snapshot first.
+

@@ -22,6 +22,7 @@ mod fix;
 mod gates;
 mod graph;
 mod health;
+mod hotspots;
 mod init;
 mod modules;
 mod mutation;

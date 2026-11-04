@@ -565,6 +565,8 @@ struct CheckArgs {
     /// Give `--frozen` to the `cargo metadata` call of the deps check.
     #[arg(long)]
     frozen: bool,
+    #[command(flatten)]
+    health: crate::hotspots::HealthArgs,
 }
 
 /// The `cargo metadata` flags that are on.
@@ -592,6 +594,7 @@ impl From<CheckArgs> for crate::check::Options {
             fail_on_parse_error: args.fail_on_parse_error,
             cargo_flags: cargo_flags(args.locked, args.offline, args.frozen),
             scope: args.scope,
+            health: args.health,
         }
     }
 }

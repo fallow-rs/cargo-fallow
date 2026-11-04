@@ -109,6 +109,8 @@ pub struct Options {
     pub cargo_flags: Vec<String>,
     /// The scope flags: `--changed-since` and the baseline flags.
     pub scope: crate::scope::ScopeArgs,
+    /// The flags of the file scores, the hotspots and the trend.
+    pub health: crate::hotspots::HealthArgs,
 }
 
 impl Options {
@@ -134,6 +136,8 @@ pub fn run(options: &Options) -> u8 {
 
 /// The settings of the structure checks that read the source walk.
 struct SourceSettings {
+    /// True when a health flag needs the file scores.
+    scores: bool,
     size: Option<config::Size>,
     complexity: Option<config::Complexity>,
     dupes: Option<config::Duplication>,
@@ -143,6 +147,7 @@ impl SourceSettings {
     /// The tables of the checks in `runs`.
     fn read(workspace: &Workspace, runs: &impl Fn(CheckName) -> bool) -> Result<Self, CliError> {
         Ok(Self {
+            scores: false,
             size: runs(CheckName::Size)
                 .then(|| config::section(workspace, "size"))
                 .transpose()?,
@@ -159,6 +164,8 @@ impl SourceSettings {
 /// What the graph thread gives back.
 #[derive(Default)]
 struct GraphPart {
+    /// The `pub` items and the `dead_public` findings of each file.
+    dead_counts: Option<crate::hotspots::DeadCounts>,
     deps: Option<Section>,
     visibility: Option<Section>,
     public_items: Option<usize>,
@@ -169,6 +176,8 @@ struct GraphPart {
 /// What the source thread gives back.
 #[derive(Default)]
 struct SourcePart {
+    /// The file scores, when a flag asks for them.
+    file_scores: Option<Vec<crate::hotspots::FileScore>>,
     size: Option<Section>,
     complexity: Option<Section>,
     dupes: Option<Section>,
@@ -177,14 +186,7 @@ struct SourcePart {
 
 /// Runs the selected checks and joins their sections.
 pub fn execute(options: &Options) -> Result<report::CheckReport, CliError> {
-    let selected = options.selected();
-    if selected.is_empty() {
-        return Err(CliError::new(
-            ErrorCode::InvalidArgument,
-            "`--only` and `--skip` leave no check to run",
-        )
-        .with_help("Remove a value from `--skip`, or add one to `--only`."));
-    }
+    let selected = selected_checks(options)?;
     let runs = |name: CheckName| selected.contains(&name);
     let enforced = options.fail_on_issues;
     let progress = Progress::new(options.quiet);
@@ -208,7 +210,10 @@ pub fn execute(options: &Options) -> Result<report::CheckReport, CliError> {
     } else {
         None
     };
-    let settings = SourceSettings::read(&workspace, &runs)?;
+    let settings = SourceSettings {
+        scores: options.health.needs_functions(),
+        ..SourceSettings::read(&workspace, &runs)?
+    };
 
     let mut sections: Vec<(CheckName, Section)> = Vec::new();
     if runs(CheckName::Parse) {
@@ -280,7 +285,42 @@ pub fn execute(options: &Options) -> Result<report::CheckReport, CliError> {
             .filter_map(|(name, section)| section.map(|section| (name, section))),
     );
     attach_suppressions(&scope, &mut sections);
-    report::CheckReport::new(workspace, sections, scoped_health(metrics, &scope)).with_scope(&scope)
+    let scores = source_part
+        .file_scores
+        .map(|scores| crate::hotspots::with_dead_counts(scores, graph_part.dead_counts.as_ref()));
+    finish(options, workspace, sections, metrics, &scope, scores)
+}
+
+/// The checks that run, or an input error when the flags leave none or when
+/// a health flag needs a check that does not run.
+fn selected_checks(options: &Options) -> Result<Vec<CheckName>, CliError> {
+    let selected = options.selected();
+    if selected.is_empty() {
+        return Err(CliError::new(
+            ErrorCode::InvalidArgument,
+            "`--only` and `--skip` leave no check to run",
+        )
+        .with_help("Remove a value from `--skip`, or add one to `--only`."));
+    }
+    options
+        .health
+        .validate(selected.contains(&CheckName::Complexity))?;
+    Ok(selected)
+}
+
+/// Builds the report, and adds the parts of the health flags.
+fn finish(
+    options: &Options,
+    workspace: Workspace,
+    sections: Vec<(CheckName, Section)>,
+    metrics: Metrics,
+    scope: &Scope,
+    scores: Option<Vec<crate::hotspots::FileScore>>,
+) -> Result<report::CheckReport, CliError> {
+    let root = workspace.root.clone().into_std_path_buf();
+    let report = report::CheckReport::new(workspace, sections, scoped_health(metrics, scope))
+        .with_scope(scope)?;
+    crate::hotspots::attach(report, &root, &options.health, scores)
 }
 
 /// The inputs of the health score: the source counts with the counts of the
@@ -401,9 +441,37 @@ fn graph_checks(
         let report = visibility::fast_report(&module_graph, options, workspace, scope);
         part.public_items = Some(public_items(&module_graph, &options.exclude));
         part.dead_public = Some(report.summary.dead_public);
+        // A scope, a baseline or a kind filter hides findings, so the ratio
+        // would read too low. The file scores then have no ratio.
+        let all_dead = scope.is_full()
+            && !scope.has_baseline()
+            && (options.kinds.is_empty()
+                || options.kinds.contains(&visibility::FindingKind::DeadPublic));
+        part.dead_counts = all_dead.then(|| dead_counts(&module_graph, &options.exclude, &report));
         part.visibility = Some(report.section()?);
     }
     Ok(part)
+}
+
+/// The `pub` items and the `dead_public` findings of each file, for the
+/// file scores.
+fn dead_counts(
+    module_graph: &Graph,
+    exclude: &[String],
+    report: &visibility::report::VisibilityReport,
+) -> crate::hotspots::DeadCounts {
+    let mut counts = crate::hotspots::DeadCounts::new();
+    for item in &module_graph.items {
+        if item.vis == Vis::Public && !exclude.contains(&module_graph.crates[item.krate].name) {
+            counts.entry(item.file.clone()).or_default().0 += 1;
+        }
+    }
+    for finding in &report.findings {
+        if finding.kind == visibility::FindingKind::DeadPublic.label() {
+            counts.entry(finding.file.clone()).or_default().1 += 1;
+        }
+    }
+    counts
 }
 
 /// The `pub` items of the crates whose public items are not an external API.
@@ -438,6 +506,11 @@ fn source_checks(
     );
     let mut part = SourcePart {
         metrics: function_metrics(&loaded, settings),
+        file_scores: settings
+            .complexity
+            .as_ref()
+            .filter(|_| settings.scores)
+            .map(|complexity| crate::hotspots::file_scores(&loaded, &complexity.exclude)),
         ..SourcePart::default()
     };
     if let Some(size) = &settings.size {

@@ -11,6 +11,10 @@ GitHub release. Each release needs a `## [X.Y.Z] - YYYY-MM-DD` section.
 
 ### Added
 
+- `cargo fallow check --hotspots` ranks the files that are complex and change
+  often, by git churn times complexity density. `--file-scores` adds the
+  maintainability index of each file. `--save-snapshot` saves the health
+  score, and `--trend` or `--trend-from` compares a run with a snapshot.
 - `ci/gitlab-ci.yml` is a GitLab CI template. The job writes the code quality
   report of the merge request widget, and with `CARGO_FALLOW_COMMENT` posts or
   updates one merge request note with the markdown report.

@@ -68,6 +68,8 @@ pub enum Parsed {
     Deps(crate::deps::Options),
     /// Write a starting configuration.
     Init(crate::init::InitArgs),
+    /// Explain one rule.
+    Explain(crate::explain::ExplainArgs),
     /// Apply the fixable actions.
     Fix(crate::fix::FixArgs),
     /// Run the unused file check.
@@ -134,6 +136,11 @@ enum Command {
     /// Cargo.toml and writes `fallow-baseline.json`. `--ci github` prints a
     /// workflow file.
     Init(crate::init::InitArgs),
+    /// Explain a rule: its meaning, an example and the fix.
+    ///
+    /// `--format json` gives `rule`, `check`, `severity`, `meaning`, `example`,
+    /// `fix` and `docs`. An unknown rule exits 2 and lists the rules.
+    Explain(crate::explain::ExplainArgs),
     /// Apply the actions with `auto_fixable: true`: remove each unused
     /// dependency entry, move each misplaced entry to `[dev-dependencies]`, and
     /// narrow the visibility keyword of each `visibility` finding.
@@ -578,6 +585,7 @@ pub fn parse(args: &[OsString]) -> Parsed {
             Some(Command::PreciseWorker(args)) => Parsed::PreciseWorker(args),
             Some(Command::Deps(args)) => Parsed::Deps(args.into()),
             Some(Command::Init(args)) => Parsed::Init(args),
+            Some(Command::Explain(args)) => Parsed::Explain(args),
             Some(Command::Fix(args)) => Parsed::Fix(args),
             Some(Command::Files(args)) => Parsed::Files(args),
             Some(Command::Structure(command)) => Parsed::Structure(Box::new(command)),

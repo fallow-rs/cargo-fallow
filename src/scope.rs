@@ -45,6 +45,11 @@ pub struct ScopeArgs {
     /// run needs `--baseline` or the `baseline` key of the configuration.
     #[arg(long)]
     pub fail_on_stale_baseline: bool,
+    /// Add `_meta` to the JSON report: the meaning, an example and the fix of
+    /// each rule with a finding. Only the JSON format has it. `cargo fallow
+    /// explain <rule>` gives one rule.
+    #[arg(long)]
+    pub explain: bool,
     /// Report only the findings of this workspace member. The flag can repeat.
     /// The analysis still reads the whole workspace.
     #[arg(
@@ -227,6 +232,8 @@ pub struct Scope {
     /// `visibility --kind`. A baseline entry then can be stale with no change
     /// of the code, so the run does not judge stale entries.
     narrowed: bool,
+    /// True when the JSON report gets `_meta` with the rules of its findings.
+    explain: bool,
     /// The suppression comments of the workspace.
     suppressions: Registry,
     /// The files whose suppression comments can be stale: the `.rs` files of
@@ -266,6 +273,7 @@ impl Scope {
             recorder: args.save_baseline.clone().map(Recorder::new),
             fail_on_stale: args.fail_on_stale_baseline,
             narrowed: false,
+            explain: args.explain,
             suppressions: Registry::new(workspace.root.as_std_path(), boundary_rules(workspace)),
             marked_files: marked_files(workspace),
             member_folders: workspace
@@ -364,6 +372,20 @@ impl Scope {
     /// filter and no flag that narrows the findings.
     const fn judges_stale(&self) -> bool {
         self.is_full() && !self.narrowed
+    }
+
+    /// The `_meta` member of a JSON report with these findings, when the run
+    /// has `--explain`.
+    pub fn meta(&self, findings: &[Finding]) -> Result<Option<Value>, CliError> {
+        if !self.explain {
+            return Ok(None);
+        }
+        crate::explain::meta(
+            findings
+                .iter()
+                .map(|finding| (finding.check, finding.rule.as_str())),
+        )
+        .map(Some)
     }
 
     /// True when the run removes the findings of a baseline.
@@ -495,6 +517,9 @@ impl Scope {
     /// The section of one command with the scope in its JSON and human
     /// output. The `kind` of the JSON report names the check.
     pub fn annotate(&self, mut section: Section) -> Result<Section, CliError> {
+        if let Some(meta) = self.meta(&section.findings)? {
+            insert(&mut section.json, "_meta", meta);
+        }
         self.attach_suppressions(&mut section);
         let check = section.json["kind"].as_str().unwrap_or_default().to_owned();
         let check = check.as_str();

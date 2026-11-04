@@ -15,6 +15,7 @@ mod cli;
 mod deps;
 mod diff;
 mod error;
+mod explain;
 mod files;
 mod finding;
 mod fix;
@@ -56,6 +57,10 @@ pub fn run(args: Vec<OsString>) -> ExitCode {
         Parsed::Mutants(options) => run_mutants(&options),
         Parsed::Deps(options) => run_deps(&options),
         Parsed::Init(args) => init::run(&args).unwrap_or_else(|err| {
+            err.emit(args.format());
+            EXIT_INVALID_INPUT
+        }),
+        Parsed::Explain(args) => explain::run(&args).unwrap_or_else(|err| {
             err.emit(args.format());
             EXIT_INVALID_INPUT
         }),

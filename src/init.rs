@@ -72,7 +72,7 @@ impl InitArgs {
 }
 
 /// The report of `init`. The field order is the wire order.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct InitReport {
     /// Always `init`.
     pub kind: &'static str,

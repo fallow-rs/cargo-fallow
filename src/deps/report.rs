@@ -36,6 +36,19 @@ pub enum Rule {
 }
 
 impl Rule {
+    /// Each rule.
+    #[cfg(test)]
+    pub const ALL: [Self; 8] = [
+        Self::UnusedDependency,
+        Self::UnusedDevDependency,
+        Self::UnusedBuildDependency,
+        Self::UnusedWorkspaceDependency,
+        Self::MisplacedDependency,
+        Self::UnusedOptionalDependency,
+        Self::FeatureOnlyDependency,
+        Self::RedundantIgnore,
+    ];
+
     /// The wire name.
     pub const fn as_str(self) -> &'static str {
         match self {

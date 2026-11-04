@@ -1025,6 +1025,27 @@ part of the decisions.
 so they change from run to run. The other members of the JSON report are the
 same in each run on the same input.
 
+## Explain a rule
+
+`cargo fallow explain <rule>` gives the meaning of a rule, an example and the
+fix. An agent can read a rule from the tool, with no documentation site.
+
+```bash
+cargo fallow explain unused-dependency
+cargo fallow explain dead_public --format json
+cargo fallow check --format json --explain
+```
+
+- `--format json` gives `rule`, `check`, `severity`, `meaning`, `example`,
+  `fix` and `docs`. A `_` and a `-` in the rule name are the same.
+- An unknown rule exits 2, and the help of the error lists each rule.
+- `--explain` on `check` and on each static command adds `_meta` to the JSON
+  report. `_meta.rules` holds the explanation of each rule with a finding,
+  keyed by the rule of the finding. A boundaries finding has the name of its
+  rule from the configuration, and gets the `boundaries` entry. `_meta.docs`
+  holds the documentation address. Only the JSON format has `_meta`, and
+  `mutants` has no `--explain`.
+
 ## Output formats
 
 This section describes `check`. [Output](#output) describes `mutants`.

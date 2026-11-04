@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/fallow-rs/cargo-fallow/blob/main/docs/output-schema.json",
   "title": "cargo-fallow JSON output",
-  "description": "Each JSON document that cargo-fallow writes: the report of each command (also `fix`), the inspect report of `mutants --inspect`, the baseline file of `--save-baseline` and the error document of exit code 2. The `document-<name>` definitions name each document.",
+  "description": "Each JSON document that cargo-fallow writes: the report of each command (also `fix`), the inspect report of `mutants --inspect`, the baseline file of `--save-baseline`, the rule of `explain`, the report of `init` and the error document of exit code 2. The `document-<name>` definitions name each document.",
   "anyOf": [
     {
       "$ref": "#/$defs/document-check"
@@ -39,6 +39,12 @@
     },
     {
       "$ref": "#/$defs/document-baseline"
+    },
+    {
+      "$ref": "#/$defs/document-explain"
+    },
+    {
+      "$ref": "#/$defs/document-init"
     },
     {
       "$ref": "#/$defs/document-error"
@@ -534,6 +540,9 @@
             }
           ],
           "description": "The baseline of `--baseline`. A run without the flag has no such\nmember."
+        },
+        "_meta": {
+          "description": "The meaning of each rule with a finding, with `--explain`."
         },
         "sections": {
           "$ref": "#/$defs/CheckSections",
@@ -1362,6 +1371,49 @@
         }
       ],
       "description": "The limits that a function went over."
+    },
+    "ExplainRule": {
+      "type": "object",
+      "properties": {
+        "rule": {
+          "type": "string",
+          "description": "The rule name, as it appears in a finding."
+        },
+        "check": {
+          "type": "string",
+          "description": "The check that reports it."
+        },
+        "severity": {
+          "type": "string",
+          "description": "The severity of a finding: `error` or `warn`."
+        },
+        "meaning": {
+          "type": "string",
+          "description": "What the rule finds."
+        },
+        "example": {
+          "type": "string",
+          "description": "A short example of a finding."
+        },
+        "fix": {
+          "type": "string",
+          "description": "What to do."
+        },
+        "docs": {
+          "type": "string",
+          "description": "The documentation address."
+        }
+      },
+      "required": [
+        "rule",
+        "check",
+        "severity",
+        "meaning",
+        "example",
+        "fix",
+        "docs"
+      ],
+      "description": "The explanation of one rule. The field order is the wire order."
     },
     "ExternRow": {
       "type": "object",
@@ -2195,6 +2247,46 @@
         "metrics"
       ],
       "description": "The health score of one language. The field order is the wire order."
+    },
+    "InitReport": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "description": "Always `init`."
+        },
+        "version": {
+          "type": "string",
+          "description": "The version of cargo-fallow."
+        },
+        "tables": {
+          "type": "string",
+          "description": "The tables as TOML text."
+        },
+        "baseline": {
+          "type": "string",
+          "description": "The baseline file, relative to the workspace root."
+        },
+        "baseline_findings": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The findings that the baseline holds."
+        },
+        "written": {
+          "type": "boolean",
+          "description": "True when the command changed the manifest or wrote the baseline."
+        }
+      },
+      "required": [
+        "kind",
+        "version",
+        "tables",
+        "baseline",
+        "baseline_findings",
+        "written"
+      ],
+      "description": "The report of `init`. The field order is the wire order."
     },
     "InspectCoverage": {
       "type": "object",
@@ -4776,6 +4868,18 @@
             "language": {
               "const": "rust"
             },
+            "_meta": {
+              "description": "With `--explain`: the meaning, an example and the fix of each rule with a finding, keyed by rule, and the documentation address.",
+              "type": "object",
+              "properties": {
+                "rules": {
+                  "type": "object"
+                },
+                "docs": {
+                  "type": "string"
+                }
+              }
+            },
             "suppressed": {
               "description": "The number of findings that a suppression comment hid.",
               "type": "integer",
@@ -4824,6 +4928,18 @@
             },
             "language": {
               "const": "rust"
+            },
+            "_meta": {
+              "description": "With `--explain`: the meaning, an example and the fix of each rule with a finding, keyed by rule, and the documentation address.",
+              "type": "object",
+              "properties": {
+                "rules": {
+                  "type": "object"
+                },
+                "docs": {
+                  "type": "string"
+                }
+              }
             }
           }
         }
@@ -4841,6 +4957,18 @@
             },
             "language": {
               "const": "rust"
+            },
+            "_meta": {
+              "description": "With `--explain`: the meaning, an example and the fix of each rule with a finding, keyed by rule, and the documentation address.",
+              "type": "object",
+              "properties": {
+                "rules": {
+                  "type": "object"
+                },
+                "docs": {
+                  "type": "string"
+                }
+              }
             },
             "suppressed": {
               "description": "The number of findings that a suppression comment hid.",
@@ -4891,6 +5019,18 @@
             "language": {
               "const": "rust"
             },
+            "_meta": {
+              "description": "With `--explain`: the meaning, an example and the fix of each rule with a finding, keyed by rule, and the documentation address.",
+              "type": "object",
+              "properties": {
+                "rules": {
+                  "type": "object"
+                },
+                "docs": {
+                  "type": "string"
+                }
+              }
+            },
             "suppressed": {
               "description": "The number of findings that a suppression comment hid.",
               "type": "integer",
@@ -4940,6 +5080,18 @@
             "language": {
               "const": "rust"
             },
+            "_meta": {
+              "description": "With `--explain`: the meaning, an example and the fix of each rule with a finding, keyed by rule, and the documentation address.",
+              "type": "object",
+              "properties": {
+                "rules": {
+                  "type": "object"
+                },
+                "docs": {
+                  "type": "string"
+                }
+              }
+            },
             "suppressed": {
               "description": "The number of findings that a suppression comment hid.",
               "type": "integer",
@@ -4979,6 +5131,9 @@
     "document-error": {
       "$ref": "#/$defs/ErrorOutput"
     },
+    "document-explain": {
+      "$ref": "#/$defs/ExplainRule"
+    },
     "document-files": {
       "allOf": [
         {
@@ -4991,6 +5146,18 @@
             },
             "language": {
               "const": "rust"
+            },
+            "_meta": {
+              "description": "With `--explain`: the meaning, an example and the fix of each rule with a finding, keyed by rule, and the documentation address.",
+              "type": "object",
+              "properties": {
+                "rules": {
+                  "type": "object"
+                },
+                "docs": {
+                  "type": "string"
+                }
+              }
             },
             "suppressed": {
               "description": "The number of findings that a suppression comment hid.",
@@ -5040,10 +5207,25 @@
             },
             "language": {
               "const": "rust"
+            },
+            "_meta": {
+              "description": "With `--explain`: the meaning, an example and the fix of each rule with a finding, keyed by rule, and the documentation address.",
+              "type": "object",
+              "properties": {
+                "rules": {
+                  "type": "object"
+                },
+                "docs": {
+                  "type": "string"
+                }
+              }
             }
           }
         }
       ]
+    },
+    "document-init": {
+      "$ref": "#/$defs/InitReport"
     },
     "document-mutants": {
       "allOf": [
@@ -5057,6 +5239,18 @@
             },
             "language": {
               "const": "rust"
+            },
+            "_meta": {
+              "description": "With `--explain`: the meaning, an example and the fix of each rule with a finding, keyed by rule, and the documentation address.",
+              "type": "object",
+              "properties": {
+                "rules": {
+                  "type": "object"
+                },
+                "docs": {
+                  "type": "string"
+                }
+              }
             }
           }
         }
@@ -5074,6 +5268,18 @@
             },
             "language": {
               "const": "rust"
+            },
+            "_meta": {
+              "description": "With `--explain`: the meaning, an example and the fix of each rule with a finding, keyed by rule, and the documentation address.",
+              "type": "object",
+              "properties": {
+                "rules": {
+                  "type": "object"
+                },
+                "docs": {
+                  "type": "string"
+                }
+              }
             }
           }
         }
@@ -5091,6 +5297,18 @@
             },
             "language": {
               "const": "rust"
+            },
+            "_meta": {
+              "description": "With `--explain`: the meaning, an example and the fix of each rule with a finding, keyed by rule, and the documentation address.",
+              "type": "object",
+              "properties": {
+                "rules": {
+                  "type": "object"
+                },
+                "docs": {
+                  "type": "string"
+                }
+              }
             },
             "suppressed": {
               "description": "The number of findings that a suppression comment hid.",
@@ -5140,6 +5358,18 @@
             },
             "language": {
               "const": "rust"
+            },
+            "_meta": {
+              "description": "With `--explain`: the meaning, an example and the fix of each rule with a finding, keyed by rule, and the documentation address.",
+              "type": "object",
+              "properties": {
+                "rules": {
+                  "type": "object"
+                },
+                "docs": {
+                  "type": "string"
+                }
+              }
             },
             "suppressed": {
               "description": "The number of findings that a suppression comment hid.",

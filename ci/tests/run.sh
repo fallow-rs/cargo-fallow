@@ -80,6 +80,7 @@ fi
 [ "${CURL_EXIT:-0}" = "0" ] || exit "$CURL_EXIT"
 if [ "$method" = "GET" ]; then
   case "$url" in
+    */user) printf '{"id":42}' ;;
     *page=1) printf '%s' "${CURL_NOTES:-[]}" ;;
     *page=2) printf '%s' "${CURL_NOTES_2:-[]}" ;;
     *) printf '[]' ;;
@@ -218,23 +219,31 @@ assert_contains "$log" '## cargo fallow check' "the note has the report"
 
 reset
 printf '## cargo fallow check\n' > "$OUT/report.md"
-run_comment GITLAB_TOKEN=secret CURL_NOTES='[{"id":3,"body":"other"},{"id":5,"body":"<!-- cargo-fallow-comment:check -->\nold"}]'
+run_comment GITLAB_TOKEN=secret CURL_NOTES='[{"id":3,"body":"other"},{"id":5,"author":{"id":42},"body":"<!-- cargo-fallow-comment:check -->\nold"}]'
 log="$(cat "$CURL_LOG")"
 assert_contains "$log" "PUT https://gitlab.example/api/v4/projects/7/merge_requests/12/notes/5" "the note with the marker is updated"
 assert_not_contains "$log" "POST" "no second note is posted"
 
 reset
 printf '## cargo fallow check\n' > "$OUT/report.md"
-page_one="[$(for id in $(seq 1 100); do printf '{"id":%s,"body":"other"},' "$id"; done | sed 's/,$//')]"
-run_comment GITLAB_TOKEN=secret CURL_NOTES="$page_one" CURL_NOTES_2='[{"id":205,"body":"<!-- cargo-fallow-comment:check -->\nold"}]'
+page_one="[$(for id in $(seq 1 100); do printf '{"id":%s,"author":{"id":42},"body":"other"},' "$id"; done | sed 's/,$//')]"
+run_comment GITLAB_TOKEN=secret CURL_NOTES="$page_one" CURL_NOTES_2='[{"id":205,"author":{"id":42},"body":"<!-- cargo-fallow-comment:check -->\nold"}]'
 log="$(cat "$CURL_LOG")"
 assert_contains "$log" "page=2" "a full page of notes reads the next page"
 assert_contains "$log" "PUT https://gitlab.example/api/v4/projects/7/merge_requests/12/notes/205" "the note on the second page is updated"
 assert_not_contains "$log" "POST" "no second note when the marker is on the second page"
 
 reset
+printf '## cargo fallow check\n' > "$OUT/report.md"
+run_comment GITLAB_TOKEN=secret CURL_NOTES='[{"id":8,"author":{"id":7},"body":"<!-- cargo-fallow-comment:check -->\nfake"},{"id":9,"system":true,"author":{"id":42},"body":"<!-- cargo-fallow-comment:check -->"}]'
+log="$(cat "$CURL_LOG")"
+assert_contains "$log" "GET https://gitlab.example/api/v4/user" "the script reads the user of the token"
+assert_contains "$log" "POST https://gitlab.example/api/v4/projects/7/merge_requests/12/notes" "a marker note of another user or of the system is not the note of the job"
+assert_not_contains "$log" "PUT" "the job does not edit the note of another user"
+
+reset
 printf '## cargo fallow deps\n' > "$OUT/report.md"
-run_comment GITLAB_TOKEN=secret COMMENT_KEY=deps CURL_NOTES='[{"id":5,"body":"<!-- cargo-fallow-comment:check -->\nold"}]'
+run_comment GITLAB_TOKEN=secret COMMENT_KEY=deps CURL_NOTES='[{"id":5,"author":{"id":42},"body":"<!-- cargo-fallow-comment:check -->\nold"}]'
 log="$(cat "$CURL_LOG")"
 assert_contains "$log" "POST" "the note of another key stays"
 assert_contains "$log" '<!-- cargo-fallow-comment:deps -->' "the key names the marker"

@@ -57,12 +57,17 @@ api() {
     --header "Content-Type: application/json" "$@"
 }
 
+# The user of the token. Only a note of this user with the marker is the note
+# of the job: another user can write the marker in a note of their own.
+me="$(api --retry 3 "${CI_API_V4_URL}/user" | jq -r '.id // empty')" || api_warning read
+[ -n "$me" ] || api_warning read
+
 existing=""
 page=1
 while [ -z "$existing" ]; do
   notes="$(api --retry 3 "${NOTES}?per_page=100&page=${page}")" || api_warning read
-  existing="$(printf '%s' "$notes" | jq -r --arg marker "$MARKER" \
-    '[.[] | select((.body // "") | startswith($marker)) | .id] | first // empty')" || api_warning read
+  existing="$(printf '%s' "$notes" | jq -r --arg marker "$MARKER" --argjson me "$me" \
+    '[.[] | select((.system | not) and .author.id == $me and ((.body // "") | startswith($marker))) | .id] | first // empty')" || api_warning read
   [ "$(printf '%s' "$notes" | jq 'length')" -lt 100 ] && break
   page=$((page + 1))
 done

@@ -59,5 +59,7 @@ The note needs `GITLAB_TOKEN`, a project or personal access token with the
 `api` scope, as a masked CI/CD variable. `CI_JOB_TOKEN` cannot write notes.
 Without the token, or when an API call fails, the job gives a warning and
 posts no note. The gates of the run decide the job, not the note. A hidden
-marker, `<!-- cargo-fallow-comment:<key> -->`, names the note of each key. A
+marker, `<!-- cargo-fallow-comment:<key> -->`, names the note of each key.
+Only a note of the user of the token counts, so a note of another user with the
+marker does not stop the update. A
 report over 900000 characters is cut.

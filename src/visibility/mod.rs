@@ -330,6 +330,9 @@ struct Surface {
     glob_exported: FxHashSet<ItemId>,
     reexport_targets: FxHashMap<ItemId, Vec<ItemId>>,
     modules_with_reexports: FxHashSet<ModuleId>,
+    /// The items that a named `use` with a written visibility re-exports.
+    /// rustc rejects the `use` when the item becomes less visible.
+    use_targets: FxHashSet<ItemId>,
     excluded: FxHashSet<usize>,
     /// The library crates whose exported items are an external API: the
     /// excluded crates and the libraries that a registry can publish.
@@ -377,6 +380,7 @@ impl Surface {
             glob_exported: FxHashSet::default(),
             reexport_targets: FxHashMap::default(),
             modules_with_reexports: FxHashSet::default(),
+            use_targets: FxHashSet::default(),
             excluded,
             api,
             types: FxHashMap::default(),
@@ -402,6 +406,11 @@ impl Surface {
             surface.grow(graph, resolver);
             if before == surface.exported_modules.len() {
                 break;
+            }
+        }
+        for (index, import) in graph.imports.iter().enumerate() {
+            if import.vis != Vis::Private && import.binding != Binding::Glob {
+                surface.use_targets.extend(resolver.import_items(index).0);
             }
         }
         surface.exported = (0..graph.items.len())
@@ -690,6 +699,7 @@ fn judge(
         let crate_public = entry.test_only && surface.crate_public(graph, item);
         if !excluded
             && (restricted_candidate(entry) || crate_public)
+            && !surface.use_targets.contains(&item)
             && !surface.macro_covered[item]
             && !uses[item].exposed
             && !uses[item].cross_crate

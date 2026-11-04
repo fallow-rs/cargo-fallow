@@ -1910,3 +1910,41 @@ fn a_test_helper_in_a_private_module_gets_no_pub_crate_change() {
         ])
     );
 }
+
+/// rustc rejects a `use` that re-exports an item with more visibility than
+/// the item has, so a re-exported item keeps its visibility.
+#[test]
+fn an_item_that_a_visible_use_re_exports_keeps_its_visibility() {
+    let dir = workspace(&[
+        ("app/src/main.rs", "fn main() { mid::run(); }\n"),
+        ("mid/src/lib.rs", "mod a;\npub fn run() { a::x(); }\n"),
+        (
+            "mid/src/a.rs",
+            "pub fn x() { y(); }\n#[cfg(test)]\npub fn helper() {}\n#[cfg(test)]\npub use self::helper as alias;\n\
+             pub(crate) fn inner() {}\npub(crate) use self::inner as y;\n\
+             #[cfg(test)]\nmod t { #[test] fn t() { super::alias(); } }\n",
+        ),
+    ]);
+    let (found, _) = findings(&dir, &[]);
+    assert_eq!(found, set(&[]));
+}
+
+/// A method call from another module is a use from that module, also when
+/// only the name of the method is known.
+#[test]
+fn a_test_helper_method_that_another_module_calls_keeps_pub() {
+    let dir = workspace(&[
+        ("app/src/main.rs", "fn main() { mid::run(); }\n"),
+        (
+            "mid/src/lib.rs",
+            "mod a;\npub fn run() { let _ = a::Foo; }\n\
+             #[cfg(test)]\nmod tests { #[test] fn t() { crate::a::Foo.helper(); } }\n",
+        ),
+        (
+            "mid/src/a.rs",
+            "pub struct Foo;\n#[cfg(test)]\nimpl Foo { pub fn helper(&self) {} }\n",
+        ),
+    ]);
+    let (found, _) = findings(&dir, &[]);
+    assert_eq!(found, set(&[]));
+}

@@ -265,10 +265,7 @@ pub fn execute(options: &Options) -> Result<report::CheckReport, CliError> {
         let mut graph_part = join(graph_thread)?;
         let source_part = join(source_thread)?;
         let boundaries = join(boundaries_thread)?;
-        let files = match graph_part.as_mut().and_then(|part| part.files.take()) {
-            Some(files) => Some(files?),
-            None => join(files_thread)?,
-        };
+        let files = take_files(graph_part.as_mut(), files_thread)?;
         Ok::<_, CliError>((graph_part, source_part, boundaries, files))
     })?;
     let graph_part = graph_part.unwrap_or_default();
@@ -412,6 +409,18 @@ fn visibility_flags(options: &Options, enforced: bool) -> VisibilityOptions {
         precise: None,
         cargo_flags: options.cargo_flags.clone(),
         trace: None,
+    }
+}
+
+/// The `files` section: from the graph thread when it ran there, else from
+/// its own thread. Its error comes after the errors of the other checks.
+fn take_files(
+    graph: Option<&mut GraphPart>,
+    own: Option<thread::ScopedJoinHandle<'_, Result<Section, CliError>>>,
+) -> Result<Option<Section>, CliError> {
+    match graph.and_then(|part| part.files.take()) {
+        Some(files) => files.map(Some),
+        None => join(own),
     }
 }
 

@@ -2,7 +2,7 @@
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/fallow-rs/cargo-fallow/main/assets/logo-dark.svg">
     <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/fallow-rs/cargo-fallow/main/assets/logo.svg">
-    <img src="https://raw.githubusercontent.com/fallow-rs/cargo-fallow/main/assets/logo.svg" alt="cargo fallow" width="400">
+    <img src="https://raw.githubusercontent.com/fallow-rs/cargo-fallow/main/assets/logo.svg" alt="cargo fallow" width="360">
   </picture>
 </p>
 

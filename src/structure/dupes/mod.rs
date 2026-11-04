@@ -116,7 +116,7 @@ impl Clock {
 }
 
 /// One place of a clone.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 pub struct Instance {
     /// The file.
     pub file: String,
@@ -131,7 +131,7 @@ pub struct Instance {
 }
 
 /// One clone group.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct CloneGroup {
     /// A stable id: `dup:` and the hash of the normalized tokens.
     pub fingerprint: String,
@@ -146,7 +146,7 @@ pub struct CloneGroup {
 }
 
 /// A set of clone groups in the same files.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct CloneFamily {
     /// The files.
     pub files: Vec<String>,
@@ -161,7 +161,7 @@ pub struct CloneFamily {
 }
 
 /// The counts of a run.
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, schemars::JsonSchema)]
 pub struct Stats {
     /// The files in the token streams.
     pub total_files: usize,
@@ -188,9 +188,11 @@ pub struct Stats {
 }
 
 /// The summary of a duplication run.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
+#[schemars(rename = "DupesSummary")]
 pub struct Summary {
     /// The normalization mode.
+    #[schemars(extend("enum" = ["strict", "mild", "weak", "semantic"]))]
     pub mode: &'static str,
     /// The smallest clone, in tokens.
     pub min_tokens: u32,

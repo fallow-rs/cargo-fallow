@@ -25,7 +25,7 @@ pub struct Workspace {
 }
 
 /// One workspace member.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct Member {
     /// The package name.
     pub name: String,
@@ -75,7 +75,7 @@ pub struct Link {
 }
 
 /// One target of a member.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct Target {
     /// The target name.
     pub name: String,

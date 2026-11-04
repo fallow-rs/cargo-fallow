@@ -26,6 +26,7 @@ mod mutation;
 mod parse;
 mod render;
 mod report;
+mod schema;
 mod scope;
 mod section;
 mod structure;
@@ -68,6 +69,13 @@ pub fn run(args: Vec<OsString>) -> ExitCode {
             mutation::guard::run_watchdog(&roots, sweep.as_deref(), remove);
             EXIT_OK
         }
+        Parsed::Schema => match render::write_stdout(schema::text().trim_end()) {
+            Ok(()) => EXIT_OK,
+            Err(err) => {
+                CliError::output(&err).emit(cli::Format::Human);
+                EXIT_INVALID_INPUT
+            }
+        },
         Parsed::Exit(code) => code,
     };
     ExitCode::from(code)

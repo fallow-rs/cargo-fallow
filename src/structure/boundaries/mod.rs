@@ -55,8 +55,9 @@ fn fill(template: &str, values: &[(&str, &str)]) -> String {
 }
 
 /// The kind of a boundary finding.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "kebab-case")]
+#[schemars(rename = "BoundariesKind")]
 pub enum Kind {
     /// A workspace package depends on a denied workspace package.
     CrateDependency,
@@ -67,7 +68,8 @@ pub enum Kind {
 }
 
 /// One violation of a rule.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
+#[schemars(rename = "BoundariesFinding")]
 pub struct Finding {
     /// The rule name.
     pub rule: String,
@@ -96,7 +98,8 @@ pub struct Finding {
 }
 
 /// The summary of a boundaries run.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
+#[schemars(rename = "BoundariesSummary")]
 pub struct Summary {
     /// The crate rules.
     pub crate_rules: usize,

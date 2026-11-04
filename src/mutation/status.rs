@@ -6,7 +6,7 @@
 use serde::{Deserialize, Serialize};
 
 /// The status of one mutant.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Status {
     /// A test failed with the mutant.
@@ -45,7 +45,7 @@ impl Status {
 }
 
 /// How the engine runs a mutant.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Tier {
     /// In one build with all other schema mutants, selected by a runtime switch.

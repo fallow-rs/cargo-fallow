@@ -66,7 +66,7 @@ impl FixArgs {
 }
 
 /// The report of a `fix` run. The field order is the wire order.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct FixReport {
     /// The version of the report shape.
     pub schema_version: u32,

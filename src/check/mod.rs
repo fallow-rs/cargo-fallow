@@ -37,7 +37,9 @@ use crate::workspace::{self, Workspace};
 use crate::{deps, files, visibility};
 
 /// One check of the run.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Serialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Serialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "kebab-case")]
 pub enum CheckName {
     /// The parse of each target root file: the `parse-error` gate.

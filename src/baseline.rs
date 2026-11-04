@@ -25,7 +25,10 @@ pub const SCHEMA_VERSION: u32 = 1;
 pub const IDENTITY: &str = "cargo-fallow-finding-id-v1";
 
 /// One finding in a baseline file.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[schemars(rename = "BaselineEntry")]
 pub struct Entry {
     /// The check that found it, for example `deps`.
     pub check: String,
@@ -47,8 +50,9 @@ impl Entry {
 }
 
 /// The baseline file. The field order is the wire order.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(rename = "BaselineFile")]
 pub struct File {
     /// The version of the file shape.
     pub schema_version: u32,
@@ -145,7 +149,8 @@ impl Loaded {
 }
 
 /// The `baseline` member of a report.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
+#[schemars(rename = "BaselineSummary")]
 pub struct Summary {
     /// The path of the file.
     pub path: String,

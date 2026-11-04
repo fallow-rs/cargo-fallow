@@ -902,7 +902,7 @@ This section describes `check`. [Output](#output) describes `mutants`.
 
 - `human`: the score, then the text of each check, then one gate block, on
   stdout. Progress lines go to stderr.
-- `json`: the report on stdout. The report has `schema_version` (2),
+- `json`: the report on stdout. The report has `schema_version` (1),
   `version`, `kind`, `language`, `workspace`, `checks`, `total_issues`,
   `health`, `findings`, `gate_outcomes` and `sections`. `health` has no
   `score` and no `grade` when `health.missing_checks` names a check. `sections` holds the
@@ -941,6 +941,23 @@ judge the file. `--quiet` does not hide the warning.
 With `--format json`, an error goes to stdout as an error document:
 `{ "error": true, "message": "...", "exit_code": 2, "code": "..." }`. In the
 other formats, the error goes to stderr.
+
+### JSON Schema
+
+[`docs/output-schema.json`](docs/output-schema.json) is the JSON Schema
+(draft 2020-12) of each JSON document of the tool. `cargo fallow schema`
+prints the same schema.
+
+- The `document-<name>` definitions describe one document each: the report
+  of each command (`check`, `deps`, `fix`, `visibility`, `files`,
+  `boundaries`, `size`, `complexity`, `dupes` and `mutants`), the inspect report of
+  `mutants --inspect` (`mutants-inspect`), the baseline file (`baseline`) and
+  the error document (`error`).
+- Each report has `schema_version` 1. A change that removes a member or
+  changes the type of a member increments the version of its report.
+- A test generates the schema and compares it with the file, so a report
+  change without a schema change fails CI. Run the tests with
+  `CARGO_FALLOW_UPDATE_SCHEMA=1` to write the file again.
 
 ## Structure checks
 

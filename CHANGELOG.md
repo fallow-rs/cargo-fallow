@@ -38,6 +38,10 @@ GitHub release. Each release needs a `## [X.Y.Z] - YYYY-MM-DD` section.
   with a baseline leaves out the saved findings, and the
   `stale-baseline` gate (`--fail-on-stale-baseline`) fails on an entry with no
   finding.
+- `cargo fallow schema` prints the JSON Schema of each JSON document, and
+  `docs/output-schema.json` holds a copy. A test fails when the two differ.
+  The `check` report now has `schema_version` 1, the same as each other
+  report.
 
 ### Fixed
 

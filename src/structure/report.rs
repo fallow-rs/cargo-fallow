@@ -14,7 +14,8 @@ use crate::scope::Scope;
 pub const SCHEMA_VERSION: u32 = 1;
 
 /// The report of one structure check. The field order is the wire order.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
+#[schemars(rename = "Report_of_{S}")]
 pub struct Report<S, F> {
     /// The version of the report shape.
     pub schema_version: u32,
@@ -61,7 +62,8 @@ impl<S, F> Report<S, F> {
 }
 
 /// A next step for one finding. No step changes the code by itself.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
+#[schemars(rename = "StructureAction")]
 pub struct Action {
     /// The kind of the step.
     #[serde(rename = "type")]

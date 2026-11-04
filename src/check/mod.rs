@@ -277,6 +277,7 @@ pub fn execute(options: &Options) -> Result<report::CheckReport, CliError> {
             .into_iter()
             .filter_map(|(name, section)| section.map(|section| (name, section))),
     );
+    attach_suppressions(&scope, &mut sections);
     report::CheckReport::new(workspace, sections, scoped_health(metrics, &scope)).with_scope(&scope)
 }
 
@@ -314,6 +315,15 @@ fn scoped_health(metrics: Metrics, scope: &Scope) -> Option<Health> {
             Health::Score(Box::new(health))
         }
     })
+}
+
+/// Adds the suppression results to each section except the parse gate.
+fn attach_suppressions(scope: &Scope, sections: &mut [(CheckName, Section)]) {
+    for (name, section) in sections {
+        if *name != CheckName::Parse {
+            scope.attach_suppressions(section);
+        }
+    }
 }
 
 /// The result of a thread, or `None` when the thread did not start. A panic

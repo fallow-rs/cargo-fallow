@@ -13,21 +13,9 @@ fn body(name: &str, value: u32) -> String {
 }
 
 fn file(path: &str, source: &str, mode: Mode) -> File {
-    let (tokens, suppressions) = with_parsed(source, Edition::Edition2024, |parsed, text| {
+    let tokens = with_parsed(source, Edition::Edition2024, |parsed, text| {
         let index = LineIndex::new(text);
-        let found = tokens::tokens(parsed.syntax(), &index, mode, true);
-        let notes: Vec<(u32, String)> = text
-            .lines()
-            .enumerate()
-            .filter(|(_, line)| line.contains("fallow-ignore-next-line code-duplication"))
-            .map(|(at, _)| {
-                (
-                    u32::try_from(at + 1).unwrap_or(0),
-                    "code-duplication".to_owned(),
-                )
-            })
-            .collect();
-        (found, notes)
+        tokens::tokens(parsed.syntax(), &index, mode, true)
     })
     .unwrap_or_default();
     File {
@@ -37,7 +25,6 @@ fn file(path: &str, source: &str, mode: Mode) -> File {
         skip_metrics: false,
         functions: Vec::new(),
         tokens,
-        suppressions,
     }
 }
 
@@ -47,7 +34,7 @@ fn run(files: &[File], settings: &Duplication) -> Found {
 
 fn run_limited(files: &[File], settings: &Duplication, limits: &Limits) -> Result<Found, TimedOut> {
     let refs: Vec<&File> = files.iter().collect();
-    detect(&refs, settings, limits)
+    detect(&refs, settings, limits, &|_, _| false)
 }
 
 #[test]
@@ -103,7 +90,11 @@ fn a_clone_under_the_line_limit_is_dropped() {
         file("x.rs", &body("a", 2), settings.mode),
         file("y.rs", &body("a", 2), settings.mode),
     ];
-    assert!(run(&files, &settings).groups.is_empty());
+    let refs: Vec<&File> = files.iter().collect();
+    // The comment is on line 1 of `x.rs`, so the copy at line 2 is hidden.
+    let hides = |path: &str, line: u32| path == "x.rs" && line == 2;
+    let found = detect(&refs, &settings, &Limits::default(), &hides).unwrap_or_default();
+    assert!(found.groups.is_empty());
 }
 
 #[test]

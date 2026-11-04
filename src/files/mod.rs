@@ -327,6 +327,11 @@ fn included_reach(root: &Path, path: &str) -> Option<&'static str> {
 }
 
 /// The `.rs` files in the target folders of each member, with their package.
+pub fn target_files(root: &Path, workspace: &Workspace) -> BTreeMap<String, String> {
+    candidates(root, workspace)
+}
+
+/// The `.rs` files in the target folders of each member, with their package.
 fn candidates(root: &Path, workspace: &Workspace) -> BTreeMap<String, String> {
     let mut found = BTreeMap::new();
     for member in &workspace.members {

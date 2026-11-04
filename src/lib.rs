@@ -29,6 +29,7 @@ mod report;
 mod scope;
 mod section;
 mod structure;
+mod suppress;
 mod visibility;
 mod workspace;
 

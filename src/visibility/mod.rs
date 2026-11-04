@@ -121,7 +121,15 @@ impl Analysis {
     pub fn retain_scope(&mut self, graph: &Graph, scope: &crate::scope::Scope) {
         let in_files = |finding: &Finding| scope.keeps(&graph.items[finding.item].file);
         self.findings.retain(|finding| {
-            in_files(finding) && scope.keeps_entry_of(|| report::baseline_entry(graph, finding))
+            let item = &graph.items[finding.item];
+            in_files(finding)
+                && !scope.hides(
+                    "visibility",
+                    finding.kind.label(),
+                    &item.file,
+                    Some(item.line..=item.line),
+                )
+                && scope.keeps_entry_of(|| report::baseline_entry(graph, finding))
         });
         self.undecided.retain(in_files);
         self.opaque.retain(in_files);

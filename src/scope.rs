@@ -18,6 +18,7 @@ use crate::finding::Finding;
 use crate::gates::RustGateName;
 use crate::render;
 use crate::section::{Section, to_value};
+use crate::suppress::Registry;
 use crate::workspace::Workspace;
 
 /// The flag that scopes a run to the changed files.
@@ -85,6 +86,11 @@ pub struct Scope {
     /// `visibility --kind`. A baseline entry then can be stale with no change
     /// of the code, so the run does not judge stale entries.
     narrowed: bool,
+    /// The suppression comments of the workspace.
+    suppressions: Registry,
+    /// The files whose suppression comments can be stale: the `.rs` files of
+    /// the target folders and the manifests.
+    marked_files: Vec<String>,
 }
 
 impl Scope {
@@ -100,7 +106,56 @@ impl Scope {
             recorder: args.save_baseline.clone().map(Recorder::new),
             fail_on_stale: args.fail_on_stale_baseline,
             narrowed: false,
+            suppressions: Registry::new(workspace.root.as_std_path(), boundary_rules(workspace)),
+            marked_files: marked_files(workspace),
         })
+    }
+
+    /// True when a suppression comment hides the finding of `check` and
+    /// `rule` at `lines` of `path`. `lines` is `None` for a finding of the
+    /// whole file.
+    pub fn hides(
+        &self,
+        check: &str,
+        rule: &str,
+        path: &str,
+        lines: Option<std::ops::RangeInclusive<u32>>,
+    ) -> bool {
+        self.suppressions.hides(check, rule, path, lines.as_ref())
+    }
+
+    /// True when a suppression comment hides a finding in the shared shape.
+    pub fn hides_finding(&self, finding: &Finding) -> bool {
+        let lines = finding
+            .location
+            .line
+            .map(|line| line..=finding.location.end_line.unwrap_or(line).max(line));
+        self.hides(finding.check, &finding.rule, &finding.location.path, lines)
+    }
+
+    /// Adds the suppression results of the check of `section`: the number of
+    /// hidden findings in `suppressed`, and a `stale-suppression` warning for
+    /// each comment of the check that hid no finding. A scoped run judges only
+    /// the comments in the files of its scope.
+    pub fn attach_suppressions(&self, section: &mut Section) {
+        let Some(check) = section.json["kind"]
+            .as_str()
+            .and_then(crate::suppress::check_name)
+        else {
+            return;
+        };
+        insert(
+            &mut section.json,
+            "suppressed",
+            Value::from(self.suppressions.hidden(check)),
+        );
+        let files = self
+            .marked_files
+            .iter()
+            .map(String::as_str)
+            .filter(|path| self.keeps(path));
+        let stale = self.suppressions.stale(check, files);
+        section.add_stale_suppressions(check, &stale);
     }
 
     /// The scope of a run in which a flag narrows the findings.
@@ -184,12 +239,11 @@ impl Scope {
             shared.len(),
             "one shared finding for each item"
         );
-        if self.baseline.is_none() && self.recorder.is_none() {
-            return;
-        }
+        // A suppressed finding goes before the baseline sees it, so a saved
+        // baseline does not hold it.
         let keep: Vec<bool> = shared
             .iter()
-            .map(|finding| self.keeps_finding(finding))
+            .map(|finding| !self.hides_finding(finding) && self.keeps_finding(finding))
             .collect();
         let mut flags = keep.iter();
         items.retain(|_| flags.next().copied().unwrap_or(true));
@@ -231,6 +285,7 @@ impl Scope {
     /// The section of one command with the scope in its JSON and human
     /// output. The `kind` of the JSON report names the check.
     pub fn annotate(&self, mut section: Section) -> Result<Section, CliError> {
+        self.attach_suppressions(&mut section);
         let check = section.json["kind"].as_str().unwrap_or_default().to_owned();
         let check = check.as_str();
         let mut lines = String::new();
@@ -275,6 +330,44 @@ impl Scope {
         }
         Ok(section)
     }
+}
+
+/// The names of the boundary rules in the configuration. A suppression
+/// comment can name one.
+fn boundary_rules(workspace: &Workspace) -> Vec<String> {
+    let rules = workspace
+        .metadata
+        .get("fallow")
+        .and_then(|root| root.get("boundaries"));
+    let Some(rules) = rules else {
+        return Vec::new();
+    };
+    ["crates", "sources", "modules"]
+        .iter()
+        .filter_map(|key| rules.get(key).and_then(Value::as_array))
+        .flatten()
+        .filter_map(|rule| rule.get("rule").and_then(Value::as_str))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The files whose suppression comments a run judges: the `.rs` files in the
+/// target folders of each member, and each manifest.
+fn marked_files(workspace: &Workspace) -> Vec<String> {
+    let mut files: Vec<String> =
+        crate::files::target_files(workspace.root.as_std_path(), workspace)
+            .into_keys()
+            .collect();
+    files.push("Cargo.toml".to_owned());
+    files.extend(
+        workspace
+            .members
+            .iter()
+            .map(|member| member.manifest_path.clone()),
+    );
+    files.sort();
+    files.dedup();
+    files
 }
 
 /// Sets `enforced` to false in each gate of a JSON report. A run that saves a

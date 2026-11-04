@@ -213,28 +213,28 @@ pub struct ScopedHealth {
     pub language: &'static str,
     /// The version of the formula.
     pub formula_version: u32,
-    /// The scope of the run: `changed` for `--changed-since`, `baseline` for
-    /// `--baseline`.
-    #[schemars(extend("enum" = ["changed", "baseline"]))]
+    /// The scope of the run: `changed` for `--changed-since`, `package` for
+    /// `--package`, `baseline` for `--baseline`.
+    #[schemars(extend("enum" = ["changed", "package", "baseline"]))]
     pub scope: &'static str,
 }
 
 impl ScopedHealth {
+    /// The health part of a run with a file filter: `changed` or `package`.
+    pub const fn filtered(scope: &'static str) -> Self {
+        Self {
+            language: "rust",
+            formula_version: FORMULA_VERSION,
+            scope,
+        }
+    }
+
     /// The health part of a `--baseline` run.
     pub const fn baseline() -> Self {
         Self {
             language: "rust",
             formula_version: FORMULA_VERSION,
             scope: "baseline",
-        }
-    }
-
-    /// The health part of a `--changed-since` run.
-    pub const fn changed() -> Self {
-        Self {
-            language: "rust",
-            formula_version: FORMULA_VERSION,
-            scope: "changed",
         }
     }
 }

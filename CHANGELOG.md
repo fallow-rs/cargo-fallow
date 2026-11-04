@@ -14,6 +14,12 @@ GitHub release. Each release needs a `## [X.Y.Z] - YYYY-MM-DD` section.
 - `cargo fallow explain <rule>` gives the meaning, an example and the fix of a
   rule, also as JSON. `--explain` adds `_meta` with the rules of the findings
   to the JSON report of `check` and of each static command.
+- One suppression model for each check: `// fallow-ignore-next-line <kind>`
+  now also works for `visibility`, `size`, `boundaries` and `files`,
+  `// fallow-ignore-file <kind>` hides the findings of a file, and
+  `# fallow-ignore-next-line <rule>` in `Cargo.toml` hides a `deps` finding.
+  A comment that hides no finding gives a `stale-suppression` warning, and
+  each report has a `suppressed` count.
 - `cargo fallow check` reads the workspace and reports the parse gates.
 - `cargo fallow mutants` runs mutation tests with schemata and coverage
   selection.
@@ -27,6 +33,10 @@ GitHub release. Each release needs a `## [X.Y.Z] - YYYY-MM-DD` section.
   misplaced entry to `[dev-dependencies]`. `--dry-run` shows the edits. The
   edit keeps comments, and a failed load after the edit writes back the old
   bytes. The `deps` actions that `fix` applies now have `auto_fixable: true`.
+- `cargo fallow fix` also narrows the visibility keyword of each `visibility`
+  finding. It runs `cargo check --workspace --all-targets` before and after
+  the edits, and writes back each file when the check after the edits fails.
+  The `change-visibility` actions now have `auto_fixable: true`.
 - `cargo fallow files` reports each `.rs` file in a target folder that no
   target compiles, with the rule `unused-file` and the gate `unused-files`.
   `check` runs it by default.
@@ -45,9 +55,15 @@ GitHub release. Each release needs a `## [X.Y.Z] - YYYY-MM-DD` section.
   `docs/output-schema.json` holds a copy. A test fails when the two differ.
   The `check` report now has `schema_version` 1, the same as each other
   report.
+- `--package <NAME>` (`-p`) on `check` and the static commands keeps only the
+  findings of the named workspace members. The analysis still reads the whole
+  workspace. An unknown name exits 2.
 
 ### Fixed
 
+- The action input `base: auto` now takes the commit before a push on a push
+  event. A new branch and a commit that the checkout cannot fetch give no base
+  and a notice. The size self-test runs on push again.
 - The `fingerprint` of a `dupes` clone group now depends only on the tokens of
   the group. Before, a new token in another file changed it.
 - A `#[path]` attribute in an inline module now resolves from the module

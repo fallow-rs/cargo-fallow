@@ -95,7 +95,13 @@ pub fn report(
         .findings
         .retain(|finding| scope.keeps(&finding.manifest_path));
     analysis.findings.retain(|finding| {
-        scope.keeps_entry_of(|| Entry::of(&render::deps::shared_finding(finding)))
+        let lines = finding.line.map(|line| line..=line);
+        !scope.hides(
+            "deps",
+            finding.rule.as_str(),
+            &finding.manifest_path,
+            lines.as_ref(),
+        ) && scope.keeps_entry_of(|| Entry::of(&render::deps::shared_finding(finding)))
     });
     for skipped in &analysis.skipped {
         render::warn(&format!(

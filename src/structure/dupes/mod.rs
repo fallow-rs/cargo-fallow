@@ -272,7 +272,9 @@ pub fn section(
         .collect();
     progress.step("Finding clones");
     let limits = Limits::default();
-    let found = detect(&files, settings, &limits).map_err(|TimedOut| {
+    let hides =
+        |path: &str, line: u32| scope.hides("dupes", SUPPRESS_KIND, path, Some(&(line..=line)));
+    let found = detect(&files, settings, &limits, &hides).map_err(|TimedOut| {
         CliError::new(
             ErrorCode::TimedOut,
             format!(
@@ -445,7 +447,14 @@ struct Raw {
 }
 
 /// Finds the clone groups in `files`, within `limits`.
-pub fn detect(files: &[&File], settings: &Duplication, limits: &Limits) -> Result<Found, TimedOut> {
+/// `hides` is true for a copy that a suppression comment hides, by its file
+/// and first line.
+pub fn detect(
+    files: &[&File],
+    settings: &Duplication,
+    limits: &Limits,
+    hides: &dyn Fn(&str, u32) -> bool,
+) -> Result<Found, TimedOut> {
     let clock = Clock {
         started: Instant::now(),
         deadline: limits.deadline,
@@ -483,7 +492,7 @@ pub fn detect(files: &[&File], settings: &Duplication, limits: &Limits) -> Resul
         .collect();
     clock.check()?;
     drop_line_subsets(&mut groups);
-    let below = drop_suppressed(&mut groups, files, settings.min_occurrences);
+    let below = drop_suppressed(&mut groups, hides, settings.min_occurrences);
     set_fingerprints(&mut groups);
     let mut groups: Vec<CloneGroup> = groups.into_iter().map(|(group, _)| group).collect();
     groups.sort_by(|a, b| {
@@ -604,21 +613,14 @@ fn drop_line_subsets(groups: &mut Vec<(CloneGroup, u64)>) {
 /// `min_occurrences`. Returns the number of groups under `min_occurrences`.
 fn drop_suppressed(
     groups: &mut Vec<(CloneGroup, u64)>,
-    files: &[&File],
+    hides: &dyn Fn(&str, u32) -> bool,
     min_occurrences: u32,
 ) -> usize {
-    let by_path: BTreeMap<&str, &File> = files
-        .iter()
-        .map(|file| (file.path.as_str(), *file))
-        .collect();
     let mut below = 0;
     groups.retain_mut(|(group, _)| {
-        group.instances.retain(|instance| {
-            let above = instance.start_line.saturating_sub(1);
-            !by_path
-                .get(instance.file.as_str())
-                .is_some_and(|file| file.suppressed(SUPPRESS_KIND, above..=above))
-        });
+        group
+            .instances
+            .retain(|instance| !hides(&instance.file, instance.start_line));
         if group.instances.len() < 2 {
             return false;
         }

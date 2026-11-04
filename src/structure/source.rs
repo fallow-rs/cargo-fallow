@@ -48,17 +48,6 @@ pub struct File {
     pub functions: Vec<Function>,
     /// The tokens, when the load asked for them.
     pub tokens: Vec<Token>,
-    /// The lines of the `fallow-ignore-next-line` comments, with their kind.
-    pub suppressions: Vec<(u32, String)>,
-}
-
-impl File {
-    /// True when a comment on `line` or on a line in `lines` suppresses `kind`.
-    pub fn suppressed(&self, kind: &str, lines: std::ops::RangeInclusive<u32>) -> bool {
-        self.suppressions
-            .iter()
-            .any(|(line, found)| found == kind && lines.contains(line))
-    }
 }
 
 /// The source files of the workspace.
@@ -102,7 +91,7 @@ fn load_file(
     let lines = count_lines(&source);
     let generated = is_generated(&source);
     let skip_metrics = generated || has_generated_marker(&source);
-    let (functions, tokens, suppressions, modules) = with_parsed(&source, edition, |file, text| {
+    let (functions, tokens, modules) = with_parsed(&source, edition, |file, text| {
         let index = LineIndex::new(text);
         let functions = if needs.functions && !skip_metrics {
             functions(file.syntax(), &index)
@@ -114,12 +103,7 @@ fn load_file(
             .filter(|_| !skip_metrics)
             .map(|(mode, ignore_imports)| tokens(file.syntax(), &index, mode, ignore_imports))
             .unwrap_or_default();
-        (
-            functions,
-            tokens,
-            suppressions(file.syntax(), &index),
-            declarations(file),
-        )
+        (functions, tokens, declarations(file))
     })
     .map_err(parse_reason)?;
     Ok((
@@ -130,7 +114,6 @@ fn load_file(
             skip_metrics,
             functions,
             tokens,
-            suppressions,
         },
         modules,
     ))
@@ -300,27 +283,6 @@ impl<'a> LineIndex<'a> {
         self.position(end.checked_sub(TextSize::from(1)).unwrap_or(end))
             .0
     }
-}
-
-/// The comment that suppresses a finding on the next line.
-const SUPPRESS_PREFIX: &str = "fallow-ignore-next-line";
-
-/// The `// fallow-ignore-next-line <kind>` comments, with their line.
-fn suppressions(root: &ra_ap_syntax::SyntaxNode, index: &LineIndex<'_>) -> Vec<(u32, String)> {
-    root.descendants_with_tokens()
-        .filter_map(ra_ap_syntax::NodeOrToken::into_token)
-        .filter(|token| token.kind() == SyntaxKind::COMMENT)
-        .filter_map(|token| {
-            let text = token.text();
-            let at = text.find(SUPPRESS_PREFIX)?;
-            let kind = text[at + SUPPRESS_PREFIX.len()..]
-                .split_whitespace()
-                .next()?
-                .trim_end_matches("*/")
-                .to_owned();
-            Some((index.position(token.text_range().start()).0, kind))
-        })
-        .collect()
 }
 
 /// The `mod name;` declarations of a file, also in inline modules.

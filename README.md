@@ -62,6 +62,7 @@ and take minutes. Run them as separate commands.
 | `--fail-on-parse-error` | Enforce only the `parse-error` gate. |
 | `--changed-since <REF>` | Report only the findings in the files that changed since the fork point of `REF`. See [Changed files](#changed-files). |
 | `--save-baseline <PATH>`, `--baseline <PATH>`, `--fail-on-stale-baseline` | Save the findings, or leave out the saved findings. See [Baselines](#baselines). |
+| `--package <NAME>`, `-p <NAME>` | Report only the findings of this workspace member. The flag can repeat. See [Packages](#packages). |
 | `--locked`, `--offline`, `--frozen` | Give the flag to the `cargo metadata` call of `deps`. |
 
 The `deps` check resolves the dependencies with `cargo metadata`, so Cargo can
@@ -110,6 +111,33 @@ cargo fallow check --changed-since origin/main --fail-on-issues
   point, or a run outside a git work tree exits 2. The run never falls back to
   the whole workspace.
 
+### Packages
+
+`--package <NAME>` (`-p`) scopes a run to part of a workspace. The flag can
+repeat, and it is on the same commands as `--changed-since`.
+
+```bash
+cargo fallow check -p my-core -p my-cli --fail-on-issues
+```
+
+- The analysis still reads the whole workspace. Only the report changes.
+- A finding stays when a named member owns its file: the member with the
+  deepest folder that holds the file. A finding in a `Cargo.toml` follows the
+  member of that manifest. A finding of the root `Cargo.toml` of a virtual
+  workspace belongs to no member.
+- A clone group of `dupes` stays when one of its copies is in a named member.
+  With `--changed-since` too, one copy must be in a changed file of a named
+  member.
+- The gates count only the kept findings, the same as for `--changed-since`.
+  The report has a `packages` member with the sorted names, and the human
+  output has a `Scope:` line.
+- A `check` run with the flag has no health score: `health.scope` is
+  `package`, or `changed` when the run also has `--changed-since`. The run
+  does not judge stale baseline entries.
+  `--save-baseline` cannot go with `--package`.
+- A name that is not a workspace member exits 2, and the help names the
+  members.
+
 ### Baselines
 
 A baseline lets a workspace with old findings turn on the gates now. The run
@@ -148,6 +176,41 @@ cargo fallow check --baseline fallow-baseline.json --fail-on-issues
 
 The file has `schema_version` 1, the `kind` of the command that saved it,
 `language: "rust"`, the key scheme in `identity` and the sorted `findings`.
+
+### Suppressions
+
+A comment hides the findings that a person accepts. Each check reads the same
+comments:
+
+- `// fallow-ignore-next-line <kind>` hides the findings of the next code
+  line. Attribute lines, doc comments and blank lines between the comment and
+  the code do not count, so the comment can stand above `#[derive(...)]`.
+- `// fallow-ignore-file <kind>` in the first ten lines hides the findings of
+  the file.
+- In a `Cargo.toml`, the comment starts with `#`:
+  `# fallow-ignore-next-line unused-dependency` above an entry.
+- A block comment works too: `/* fallow-ignore-next-line size */`.
+- A list takes commas or spaces. Text after ` -- ` is a reason:
+  `// fallow-ignore-next-line visibility -- kept for a plugin`.
+- A comment with no kind hides each finding.
+
+| Check | Kinds | Place of the comment |
+| --- | --- | --- |
+| `deps` | `deps` or a rule, for example `unused-dependency` | Above the entry in `Cargo.toml`, or a file comment in the manifest |
+| `files` | `files` or `unused-file` | A file comment in the unused file |
+| `visibility` | `visibility`, `dead_public`, `unnecessary_public` or `unnecessary_restricted_visibility` | Above the item |
+| `boundaries` | `boundaries` or the `rule` name of the configuration | Above the line of the violation |
+| `size` | `size`, `grown-file` or `new-large-file` | A file comment in the file |
+| `complexity` | `complexity` | Above the function |
+| `dupes` | `dupes` or `code-duplication` | Above the copy |
+
+A rule name can use `-` or `_`. Each command and each section of `check` has
+`suppressed`: the number of hidden findings. A comment with a kind of a check
+that ran, and that hides no finding, is stale: the check reports a
+`stale-suppression` warning with a `remove-suppression` action, and the JSON
+report lists it in `stale_suppressions`. The gates do not count it. A
+`--changed-since` run judges only the comments in the changed files. A kind
+that names no check or rule gives a warning on stderr.
 
 ### Health score
 
@@ -579,6 +642,7 @@ cargo fallow deps --fail-on-issues --format sarif --quiet
 | `--fail-on-issues` | Exit 1 when a finding has the `error` severity. |
 | `--changed-since <REF>` | Report only the findings in the files that changed since the fork point of `REF`. See [Changed files](#changed-files). |
 | `--save-baseline <PATH>`, `--baseline <PATH>`, `--fail-on-stale-baseline` | Save the findings, or leave out the saved findings. See [Baselines](#baselines). |
+| `--package <NAME>`, `-p <NAME>` | Report only the findings of this workspace member. The flag can repeat. See [Packages](#packages). |
 | `--locked` | Give `--locked` to `cargo metadata`. |
 | `--offline` | Give `--offline` to `cargo metadata`. |
 | `--frozen` | Give `--frozen` to `cargo metadata`. |
@@ -655,7 +719,8 @@ without a change. Only the cargo-fallow lists get `redundant-ignore` findings.
 
 ### Fix
 
-`cargo fallow fix` applies the actions with `auto_fixable: true`.
+`cargo fallow fix` applies the actions with `auto_fixable: true` of the
+`deps` and the `visibility` checks.
 
 ```bash
 cargo fallow fix --dry-run                 # show the edits, write nothing
@@ -672,6 +737,26 @@ cargo fallow fix --yes                     # apply the edits
 - When no dependency table of the package has the key after the edit, it
   removes `dep:<key>`, `<key>/<feature>` and `<key>?/<feature>` from each
   feature.
+- It changes the visibility keyword of each `visibility` finding (fast
+  mode) at the `range` of its action: `pub` becomes `pub(crate)`, and a
+  restricted keyword goes. The edit counts characters, so a wide character
+  before the keyword on the same line does not move it. The analysis holds the
+  target of a narrowed `pub use`, so each change stays valid with the others.
+- With a visibility edit, the command runs `cargo check --workspace
+  --all-targets --all-features` before the edits, and without
+  `--all-features` when that build fails. When neither build passes, the
+  command changes nothing and exits 2. After the edits, it runs the same check
+  again.
+- When the check after the edits fails, the command writes back each file and
+  `Cargo.lock`. It then leaves out the edits of the items that the compiler
+  errors name, and tries again, at most five times. The report gives each
+  left-out edit `applied: false`. When no edit is left to leave out, the
+  command exits 2 with the compiler errors.
+- The check builds one platform. Code under a `cfg` for another platform, and
+  doc tests, are not part of it. An edit can break such code. Run the tests of
+  each platform after `fix`, or use `--dry-run` and review the edits.
+- A stop of the process during the check leaves the edits on disk. Use the
+  version control of the workspace to undo them.
 - These findings stay for a person, with `auto_fixable: false`:
   - a warning: `unused-optional-dependency`, `feature-only-dependency` and
     `redundant-ignore`,
@@ -695,6 +780,8 @@ The JSON report has `dry_run`, `fixes`, `total_fixed` and `skipped` (the
 findings that `fix` does not change). Each entry of `fixes` has `type`
 (`remove-dependency` or `move-to-dev-dependencies`), `rule`, `package`,
 `manifest_path`, `section`, `platform`, `dependency`, `line` and `applied`.
+A `change-visibility` entry has `type`, `rule` (the finding kind),
+`package`, `item`, `path`, `line`, `column`, `from`, `to` and `applied`.
 `skipped_packages` names the packages that `deps` did not judge.
 
 ## Unused files
@@ -782,6 +869,7 @@ cargo fallow visibility --precise
 | `--fail-on-issues` | Exit 1 when the run has a finding. |
 | `--changed-since <REF>` | Report only the findings in the files that changed since the fork point of `REF`. See [Changed files](#changed-files). |
 | `--save-baseline <PATH>`, `--baseline <PATH>`, `--fail-on-stale-baseline` | Save the findings, or leave out the saved findings. See [Baselines](#baselines). |
+| `--package <NAME>`, `-p <NAME>` | Report only the findings of this workspace member. The flag can repeat. See [Packages](#packages). |
 | `--precise` | Decide the undecided candidates with rust-analyzer. See below. |
 
 The table `[workspace.metadata.fallow.visibility]` in the root `Cargo.toml`
@@ -836,8 +924,9 @@ Each finding has an `actions` array with one action of type
 `change-visibility`. It gives the written keyword (`from`), the new keyword
 (`to`, an empty text for private) and the `range` of the keyword. An enum
 variant has no keyword, so its action has the type `remove-item`.
-`auto_fixable` is false: a change can need a change in other code, for
-example in a `pub use`.
+A `change-visibility` action of a finding has `auto_fixable: true`:
+`cargo fallow fix` applies it (see [Fix](#fix)). A `remove-item` action and
+each undecided candidate keep `auto_fixable: false`.
 
 `undecided` lists the candidates that only an untyped credit keeps. They are
 not findings. `--format sarif` gives one result for each finding, with the
@@ -984,7 +1073,8 @@ prints the same schema.
 
 Four commands check the structure of the workspace. Each command has the
 `--manifest-path`, `--format human|json|sarif|codeclimate` and `--quiet` flags,
-the [`--changed-since <REF>`](#changed-files) and [baseline](#baselines) flags,
+the [`--changed-since <REF>`](#changed-files), [`--package`](#packages) and
+[baseline](#baselines) flags,
 and its own
 gate. A gate is in the report each time, but it fails the run only with its flag.
 Each command accepts `--fail-on-issues` as its gate flag. The older flag of
@@ -1060,7 +1150,7 @@ are not checked. `--base <REF>` compares HEAD with the merge base, and
 The complexity and clone models are the models of fallow for JavaScript. A unit
 is a `fn` with a body or a closure. Put `// fallow-ignore-next-line complexity`
 above a function, or `// fallow-ignore-next-line code-duplication` above a
-clone, to suppress it.
+clone, to suppress it. See [Suppressions](#suppressions).
 
 The complexity counts have these known differences from other tools:
 

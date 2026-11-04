@@ -249,6 +249,15 @@ pub const RULES: &[Explanation] = &[
         docs: "https://github.com/fallow-rs/cargo-fallow#structure-checks",
     },
     Explanation {
+        rule: "stale-suppression",
+        check: "any",
+        severity: "warn",
+        meaning: "A suppression comment with a kind of a check that ran hides no finding.",
+        example: "`// fallow-ignore-next-line visibility` above a private function.",
+        fix: "Remove the comment. The finding that it hid is gone.",
+        docs: "https://github.com/fallow-rs/cargo-fallow#suppressions",
+    },
+    Explanation {
         rule: "surviving-mutant",
         check: "mutants",
         severity: "warn",
@@ -355,6 +364,7 @@ mod tests {
                 crate::structure::complexity::RULE,
                 crate::structure::dupes::DUPES_RULE,
                 crate::render::mutants::SURVIVING_RULE,
+                crate::suppress::STALE_RULE,
                 "boundaries",
             ]
             .map(str::to_owned),
@@ -375,7 +385,10 @@ mod tests {
 
     /// A new variant of a rule enum breaks this match, so the `ALL` lists
     /// above get the variant.
-    #[expect(dead_code, reason = "the match only checks that each variant is listed")]
+    #[expect(
+        dead_code,
+        reason = "the match only checks that each variant is listed"
+    )]
     const fn exhaustive(
         deps: crate::deps::report::Rule,
         kind: crate::visibility::FindingKind,

@@ -6,18 +6,20 @@
 //! findings in the changed files, and `--baseline` leaves out the findings of
 //! an earlier run.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use clap::Args;
 use serde_json::Value;
 
 use crate::baseline::{self, Entry, Loaded, Recorder};
-use crate::diff::ChangedFiles;
-use crate::error::CliError;
+use crate::diff::{ChangedFiles, member_dirs, owner};
+use crate::error::{CliError, ErrorCode};
 use crate::finding::Finding;
 use crate::gates::RustGateName;
 use crate::render;
 use crate::section::{Section, to_value};
+use crate::suppress::Registry;
 use crate::workspace::Workspace;
 
 /// The flag that scopes a run to the changed files.
@@ -47,6 +49,84 @@ pub struct ScopeArgs {
     /// explain <rule>` gives one rule.
     #[arg(long)]
     pub explain: bool,
+    /// Report only the findings of this workspace member. The flag can repeat.
+    /// The analysis still reads the whole workspace.
+    #[arg(
+        long = "package",
+        short = 'p',
+        value_name = "NAME",
+        conflicts_with = "save_baseline"
+    )]
+    pub packages: Vec<String>,
+}
+
+/// The members of `--package`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Packages {
+    /// The names, sorted.
+    pub names: Vec<String>,
+    /// The manifests of the named members.
+    manifests: BTreeSet<String>,
+    /// The folder and the manifest of each member.
+    dirs: Vec<(String, String)>,
+}
+
+impl Packages {
+    /// The members with these names. A name that no member has is an error.
+    pub fn new(workspace: &Workspace, names: &[String]) -> Result<Self, CliError> {
+        let mut sorted: Vec<String> = names.to_vec();
+        sorted.sort();
+        sorted.dedup();
+        let mut manifests = BTreeSet::new();
+        for name in &sorted {
+            let Some(member) = workspace.members.iter().find(|member| &member.name == name) else {
+                let known: Vec<&str> = workspace
+                    .members
+                    .iter()
+                    .map(|member| member.name.as_str())
+                    .collect();
+                return Err(CliError::new(
+                    ErrorCode::InvalidArgument,
+                    format!("`--package {name}` names no workspace member"),
+                )
+                .with_help(format!("The members are: {}.", known.join(", "))));
+            };
+            manifests.insert(member.manifest_path.clone());
+        }
+        let dirs = member_dirs(workspace)
+            .into_iter()
+            .map(|(dir, manifest)| (dir.to_owned(), manifest.to_owned()))
+            .collect();
+        Ok(Self {
+            names: sorted,
+            manifests,
+            dirs,
+        })
+    }
+
+    /// True when a named member owns `path`: the member with the deepest
+    /// folder that holds the path.
+    pub fn keeps(&self, path: &str) -> bool {
+        let dirs: Vec<(&str, &str)> = self
+            .dirs
+            .iter()
+            .map(|(dir, manifest)| (dir.as_str(), manifest.as_str()))
+            .collect();
+        self.manifests.contains(&owner(&dirs, path))
+    }
+}
+
+/// The line of the human output that names the packages.
+pub fn packages_line(packages: &Packages) -> String {
+    format!(
+        "Scope: {} {}\n",
+        if packages.names.len() == 1 {
+            "package"
+        } else {
+            "packages"
+        },
+        packages.names.join(", ")
+    )
 }
 
 /// The line of the human output that names the changed files.
@@ -80,6 +160,8 @@ pub fn baseline_line(summary: &baseline::Summary) -> String {
 pub struct Scope {
     /// The changed files of `--changed-since`, or `None` for each file.
     pub changed: Option<ChangedFiles>,
+    /// The members of `--package`, or `None` for each member.
+    pub packages: Option<Packages>,
     /// The baseline of `--baseline`.
     baseline: Option<Loaded>,
     /// The entries for `--save-baseline`.
@@ -92,6 +174,13 @@ pub struct Scope {
     narrowed: bool,
     /// True when the JSON report gets `_meta` with the rules of its findings.
     explain: bool,
+    /// The suppression comments of the workspace.
+    suppressions: Registry,
+    /// The files whose suppression comments can be stale: the `.rs` files of
+    /// the target folders and the manifests.
+    marked_files: Vec<String>,
+    /// The folder of each member, by package name.
+    member_folders: BTreeMap<String, String>,
 }
 
 impl Scope {
@@ -103,12 +192,101 @@ impl Scope {
                 .as_deref()
                 .map(|reference| ChangedFiles::load(workspace, CHANGED_SINCE_FLAG, reference))
                 .transpose()?,
+            packages: if args.packages.is_empty() {
+                None
+            } else {
+                Some(Packages::new(workspace, &args.packages)?)
+            },
             baseline: args.baseline.as_deref().map(Loaded::read).transpose()?,
             recorder: args.save_baseline.clone().map(Recorder::new),
             fail_on_stale: args.fail_on_stale_baseline,
             narrowed: false,
             explain: args.explain,
+            suppressions: Registry::new(workspace.root.as_std_path(), boundary_rules(workspace)),
+            marked_files: marked_files(workspace),
+            member_folders: workspace
+                .members
+                .iter()
+                .map(|member| {
+                    let folder = member
+                        .manifest_path
+                        .rsplit_once('/')
+                        .map_or("", |(folder, _)| folder);
+                    (member.name.clone(), folder.to_owned())
+                })
+                .collect(),
         })
+    }
+
+    /// True when a suppression comment hides the finding of `check` and
+    /// `rule` at `lines` of `path`. `lines` is `None` for a finding of the
+    /// whole file.
+    pub fn hides(
+        &self,
+        check: &str,
+        rule: &str,
+        path: &str,
+        lines: Option<&std::ops::RangeInclusive<u32>>,
+    ) -> bool {
+        self.suppressions.hides(check, rule, path, lines)
+    }
+
+    /// True when a suppression comment hides a finding in the shared shape.
+    pub fn hides_finding(&self, finding: &Finding) -> bool {
+        let lines = finding
+            .location
+            .line
+            .map(|line| line..=finding.location.end_line.unwrap_or(line).max(line));
+        self.hides(
+            finding.check,
+            &finding.rule,
+            &finding.location.path,
+            lines.as_ref(),
+        )
+    }
+
+    /// Adds the suppression results of the check of `section`: the number of
+    /// hidden findings in `suppressed`, and a `stale-suppression` warning for
+    /// each comment of the check that hid no finding. A scoped run judges only
+    /// the comments in the files of its scope.
+    pub fn attach_suppressions(&self, section: &mut Section) {
+        let Some(check) = section.json["kind"]
+            .as_str()
+            .and_then(crate::suppress::check_name)
+        else {
+            return;
+        };
+        insert(
+            &mut section.json,
+            "suppressed",
+            Value::from(self.suppressions.hidden(check)),
+        );
+        if !self.judges_stale_suppressions(check, section) {
+            return;
+        }
+        let unjudged = unjudged_folders(&section.json, &self.member_folders);
+        let files = self
+            .marked_files
+            .iter()
+            .map(String::as_str)
+            .filter(|path| self.keeps(path))
+            .filter(|path| !crate::structure::config::matches_prefix(path, &unjudged));
+        let stale = self.suppressions.stale(check, files);
+        section.add_stale_suppressions(check, &stale);
+    }
+
+    /// True when a comment of `check` that hid nothing is stale in this run:
+    /// no flag narrows the findings, and the check ran each of its rules.
+    /// `size` gives its findings only with a growth comparison.
+    fn judges_stale_suppressions(&self, check: &str, section: &Section) -> bool {
+        if self.narrowed {
+            return false;
+        }
+        check != "size"
+            || section
+                .gates
+                .get(&RustGateName::FileGrowth)
+                .is_some_and(|gate| gate.status != fallow_report_protocol::GateStatus::Skipped)
     }
 
     /// The scope of a run in which a flag narrows the findings.
@@ -147,7 +325,19 @@ impl Scope {
     /// count: it removes known findings, and the rest of the report still
     /// covers the whole workspace.
     pub const fn is_full(&self) -> bool {
-        self.changed.is_none()
+        self.changed.is_none() && self.packages.is_none()
+    }
+
+    /// The name of the file filter of the run: `changed` for
+    /// `--changed-since`, `package` for `--package`, or `None`.
+    pub const fn filter(&self) -> Option<&'static str> {
+        if self.changed.is_some() {
+            Some("changed")
+        } else if self.packages.is_some() {
+            Some("package")
+        } else {
+            None
+        }
     }
 
     /// True when the scope keeps a finding at `path`.
@@ -155,13 +345,16 @@ impl Scope {
         self.changed
             .as_ref()
             .is_none_or(|changed| changed.keeps(path))
+            && self
+                .packages
+                .as_ref()
+                .is_none_or(|packages| packages.keeps(path))
     }
 
-    /// True when the scope keeps a finding with one of these places.
-    pub fn keeps_any<'a>(&self, paths: impl Iterator<Item = &'a str>) -> bool {
-        self.changed
-            .as_ref()
-            .is_none_or(|changed| changed.keeps_any(paths))
+    /// True when the scope keeps a finding with one of these places: one
+    /// place passes each filter of the scope.
+    pub fn keeps_any<'a>(&self, mut paths: impl Iterator<Item = &'a str>) -> bool {
+        self.is_full() || paths.any(|path| self.keeps(path))
     }
 
     /// True when the baseline does not hold the entry. The entry then goes to
@@ -206,12 +399,11 @@ impl Scope {
             shared.len(),
             "one shared finding for each item"
         );
-        if self.baseline.is_none() && self.recorder.is_none() {
-            return;
-        }
+        // A suppressed finding goes before the baseline sees it, so a saved
+        // baseline does not hold it.
         let keep: Vec<bool> = shared
             .iter()
-            .map(|finding| self.keeps_finding(finding))
+            .map(|finding| !self.hides_finding(finding) && self.keeps_finding(finding))
             .collect();
         let mut flags = keep.iter();
         items.retain(|_| flags.next().copied().unwrap_or(true));
@@ -256,12 +448,17 @@ impl Scope {
         if let Some(meta) = self.meta(&section.findings)? {
             insert(&mut section.json, "_meta", meta);
         }
+        self.attach_suppressions(&mut section);
         let check = section.json["kind"].as_str().unwrap_or_default().to_owned();
         let check = check.as_str();
         let mut lines = String::new();
         if let Some(changed) = &self.changed {
             insert(&mut section.json, "changed_since", to_value(changed)?);
             lines.push_str(&changed_line(changed));
+        }
+        if let Some(packages) = &self.packages {
+            insert(&mut section.json, "packages", to_value(&packages.names)?);
+            lines.push_str(&packages_line(packages));
         }
         if let Some(summary) = self.baseline_summary(&[check]) {
             let gate = self.stale_gate(&summary);
@@ -300,6 +497,59 @@ impl Scope {
         }
         Ok(section)
     }
+}
+
+/// The folders of the packages that the check did not judge: `skipped` of
+/// `deps`, `summary.skipped_packages` of `files`. A comment there is not stale.
+fn unjudged_folders(json: &Value, folders: &BTreeMap<String, String>) -> Vec<String> {
+    let lists = [&json["skipped"], &json["summary"]["skipped_packages"]];
+    lists
+        .into_iter()
+        .filter_map(Value::as_array)
+        .flatten()
+        .filter_map(|entry| entry["package"].as_str())
+        .filter_map(|package| folders.get(package))
+        // The root package has the folder `""`, which holds each path.
+        .cloned()
+        .collect()
+}
+
+/// The names of the boundary rules in the configuration. A suppression
+/// comment can name one.
+fn boundary_rules(workspace: &Workspace) -> Vec<String> {
+    let rules = workspace
+        .metadata
+        .get("fallow")
+        .and_then(|root| root.get("boundaries"));
+    let Some(rules) = rules else {
+        return Vec::new();
+    };
+    ["crates", "sources", "modules"]
+        .iter()
+        .filter_map(|key| rules.get(key).and_then(Value::as_array))
+        .flatten()
+        .filter_map(|rule| rule.get("rule").and_then(Value::as_str))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The files whose suppression comments a run judges: the `.rs` files in the
+/// target folders of each member, and each manifest.
+fn marked_files(workspace: &Workspace) -> Vec<String> {
+    let mut files: Vec<String> =
+        crate::files::target_files(workspace.root.as_std_path(), workspace)
+            .into_keys()
+            .collect();
+    files.push("Cargo.toml".to_owned());
+    files.extend(
+        workspace
+            .members
+            .iter()
+            .map(|member| member.manifest_path.clone()),
+    );
+    files.sort();
+    files.dedup();
+    files
 }
 
 /// Sets `enforced` to false in each gate of a JSON report. A run that saves a

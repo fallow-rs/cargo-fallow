@@ -330,6 +330,60 @@ pub fn absolute_path(root: &Utf8Path, relative: &str) -> PathBuf {
     root.join(relative).into_std_path_buf()
 }
 
+/// Runs `cargo check --workspace --all-targets` with `flags`, for example
+/// `--offline`, and with `--all-features` when `all_features` is true.
+/// Returns each error line of the compiler on a failure.
+pub fn cargo_check(
+    manifest_path: Option<&Path>,
+    root: &Path,
+    flags: &[String],
+    all_features: bool,
+) -> Result<(), String> {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the workspace loader is the one module that spawns cargo: `cargo check` after `fix`"
+    )]
+    let mut command = std::process::Command::new(cargo);
+    // A relative `--manifest-path` names a file from the current folder, the
+    // same as for `cargo metadata`, so only a run without it starts at the root.
+    if manifest_path.is_none() {
+        command.current_dir(root);
+    }
+    if all_features {
+        command.arg("--all-features");
+    }
+    command
+        .args([
+            "check",
+            "--workspace",
+            "--all-targets",
+            "--quiet",
+            "--message-format",
+            "short",
+        ])
+        .args(flags);
+    if let Some(path) = manifest_path {
+        command.arg("--manifest-path").arg(path);
+    }
+    let output = command
+        .output()
+        .map_err(|err| format!("cannot run `cargo check`: {err}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let errors: Vec<&str> = stderr
+        .lines()
+        .filter(|line| line.starts_with("error") || line.contains(": error"))
+        .collect();
+    Err(if errors.is_empty() {
+        format!("`cargo check` failed with {}", output.status)
+    } else {
+        errors.join("\n")
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

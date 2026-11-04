@@ -517,6 +517,16 @@
           ],
           "description": "The changed files of `--changed-since`. A run without the flag has no\nsuch member."
         },
+        "packages": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "The members of `--package`, sorted. A run without the flag has no\nsuch member."
+        },
         "baseline": {
           "anyOf": [
             {
@@ -1686,7 +1696,7 @@
       ],
       "description": "One finding."
     },
-    "FixEdit": {
+    "FixDependencyEdit": {
       "type": "object",
       "properties": {
         "type": {
@@ -1747,6 +1757,19 @@
       ],
       "description": "One planned edit. The field order is the wire order."
     },
+    "FixEntry": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/FixDependencyEdit",
+          "description": "An edit of a `Cargo.toml`."
+        },
+        {
+          "$ref": "#/$defs/FixVisibilityEdit",
+          "description": "An edit of a visibility keyword."
+        }
+      ],
+      "description": "One edit of the report."
+    },
     "FixReport": {
       "type": "object",
       "properties": {
@@ -1775,9 +1798,9 @@
         "fixes": {
           "type": "array",
           "items": {
-            "$ref": "#/$defs/FixEdit"
+            "$ref": "#/$defs/FixEntry"
           },
-          "description": "The edits, applied or planned."
+          "description": "The edits, applied or planned: the `Cargo.toml` edits first, then the\nvisibility edits."
         },
         "total_fixed": {
           "type": "integer",
@@ -1810,6 +1833,73 @@
         "skipped"
       ],
       "description": "The report of a `fix` run. The field order is the wire order."
+    },
+    "FixVisibilityEdit": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "description": "Always `change-visibility`."
+        },
+        "rule": {
+          "type": "string",
+          "description": "The finding kind, for example `unnecessary_public`."
+        },
+        "package": {
+          "type": "string",
+          "description": "The package of the item."
+        },
+        "item": {
+          "type": "string",
+          "description": "The item path."
+        },
+        "path": {
+          "type": "string",
+          "description": "The file, relative to the workspace root."
+        },
+        "line": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The one-based line of the keyword."
+        },
+        "column": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The one-based column of the keyword, in characters."
+        },
+        "from": {
+          "type": "string",
+          "description": "The written keyword."
+        },
+        "to": {
+          "type": "string",
+          "description": "The new keyword. An empty text removes the keyword."
+        },
+        "item_kind": {
+          "type": "string",
+          "description": "The item kind, for example `function` or `reexport`."
+        },
+        "applied": {
+          "type": "boolean",
+          "description": "True when the command wrote the edit."
+        }
+      },
+      "required": [
+        "type",
+        "rule",
+        "package",
+        "item",
+        "path",
+        "line",
+        "column",
+        "from",
+        "to",
+        "item_kind",
+        "applied"
+      ],
+      "description": "One planned edit. The field order is the wire order."
     },
     "Gaps": {
       "type": "object",
@@ -3828,9 +3918,10 @@
         },
         "scope": {
           "type": "string",
-          "description": "The scope of the run: `changed` for `--changed-since`, `baseline` for\n`--baseline`.",
+          "description": "The scope of the run: `changed` for `--changed-since`, `package` for\n`--package`, `baseline` for `--baseline`.",
           "enum": [
             "changed",
+            "package",
             "baseline"
           ]
         }
@@ -4478,7 +4569,7 @@
         },
         "auto_fixable": {
           "type": "boolean",
-          "description": "Always false: a change can need a matching change in other code, for\nexample in a `pub use` or in a field group."
+          "description": "True for a `change-visibility` step of a finding with a keyword range:\n`cargo fallow fix` applies it, and checks the build after the edit. A\nchange can still need a change in other code, so `fix` leaves out an\nedit that breaks the build. An undecided candidate and a `remove-item`\nstep stay false."
         },
         "description": {
           "type": "string",
@@ -4745,6 +4836,38 @@
                   "type": "string"
                 }
               }
+            },
+            "suppressed": {
+              "description": "The number of findings that a suppression comment hid.",
+              "type": "integer",
+              "minimum": 0
+            },
+            "stale_suppressions": {
+              "description": "The suppression comments of the check that hid no finding.",
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  },
+                  "line": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "kinds": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [
+                  "path",
+                  "line",
+                  "kinds"
+                ]
+              }
             }
           }
         }
@@ -4803,6 +4926,38 @@
                   "type": "string"
                 }
               }
+            },
+            "suppressed": {
+              "description": "The number of findings that a suppression comment hid.",
+              "type": "integer",
+              "minimum": 0
+            },
+            "stale_suppressions": {
+              "description": "The suppression comments of the check that hid no finding.",
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  },
+                  "line": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "kinds": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [
+                  "path",
+                  "line",
+                  "kinds"
+                ]
+              }
             }
           }
         }
@@ -4832,6 +4987,38 @@
                   "type": "string"
                 }
               }
+            },
+            "suppressed": {
+              "description": "The number of findings that a suppression comment hid.",
+              "type": "integer",
+              "minimum": 0
+            },
+            "stale_suppressions": {
+              "description": "The suppression comments of the check that hid no finding.",
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  },
+                  "line": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "kinds": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [
+                  "path",
+                  "line",
+                  "kinds"
+                ]
+              }
             }
           }
         }
@@ -4860,6 +5047,38 @@
                 "docs": {
                   "type": "string"
                 }
+              }
+            },
+            "suppressed": {
+              "description": "The number of findings that a suppression comment hid.",
+              "type": "integer",
+              "minimum": 0
+            },
+            "stale_suppressions": {
+              "description": "The suppression comments of the check that hid no finding.",
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  },
+                  "line": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "kinds": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [
+                  "path",
+                  "line",
+                  "kinds"
+                ]
               }
             }
           }
@@ -4895,6 +5114,38 @@
                 "docs": {
                   "type": "string"
                 }
+              }
+            },
+            "suppressed": {
+              "description": "The number of findings that a suppression comment hid.",
+              "type": "integer",
+              "minimum": 0
+            },
+            "stale_suppressions": {
+              "description": "The suppression comments of the check that hid no finding.",
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  },
+                  "line": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "kinds": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [
+                  "path",
+                  "line",
+                  "kinds"
+                ]
               }
             }
           }
@@ -5012,6 +5263,38 @@
                   "type": "string"
                 }
               }
+            },
+            "suppressed": {
+              "description": "The number of findings that a suppression comment hid.",
+              "type": "integer",
+              "minimum": 0
+            },
+            "stale_suppressions": {
+              "description": "The suppression comments of the check that hid no finding.",
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  },
+                  "line": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "kinds": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [
+                  "path",
+                  "line",
+                  "kinds"
+                ]
+              }
             }
           }
         }
@@ -5040,6 +5323,38 @@
                 "docs": {
                   "type": "string"
                 }
+              }
+            },
+            "suppressed": {
+              "description": "The number of findings that a suppression comment hid.",
+              "type": "integer",
+              "minimum": 0
+            },
+            "stale_suppressions": {
+              "description": "The suppression comments of the check that hid no finding.",
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  },
+                  "line": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "kinds": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [
+                  "path",
+                  "line",
+                  "kinds"
+                ]
               }
             }
           }

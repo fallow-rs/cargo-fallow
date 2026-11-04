@@ -2268,10 +2268,13 @@
           "description": "The baseline file, relative to the workspace root."
         },
         "baseline_findings": {
-          "type": "integer",
+          "type": [
+            "integer",
+            "null"
+          ],
           "format": "uint",
           "minimum": 0,
-          "description": "The findings that the baseline holds."
+          "description": "The findings that this run saved to the baseline, or `null` when the\nrun wrote no baseline."
         },
         "written": {
           "type": "boolean",

@@ -72,8 +72,8 @@ report. The gate fails the run only with `--threshold`, or with
 
 The `size` growth rule is the rule of `scripts/check-file-size.mjs` in fallow,
 for `.rs` files: a file over the limit must not grow, and a new file must not be
-over it. Test files, test and snapshot folders, and files with a generator header
-are not checked. `--base <REF>` compares HEAD with the merge base, and
+over it. Test files, test and snapshot folders, and files with a generator
+header or an `@generated` comment are not checked. `--base <REF>` compares HEAD with the merge base, and
 `--staged` compares the index with HEAD.
 
 The complexity and clone models are the models of fallow for JavaScript. A unit

@@ -4,7 +4,8 @@
 //! files: a file over the line limit must not grow, and a new file must not be
 //! over it. A file in a `tests`, `test`, `snapshots` or `__snapshots__` folder,
 //! a `tests.rs` file, a `*_test.rs` or `*_tests.rs` file, and a file with a
-//! generator header are not checked, because test files grow with each test.
+//! generator header or an `@generated` comment are not checked. Test files
+//! grow with each test, and a generator writes the other files.
 //!
 //! The growth rule needs an old version: `--base <ref>` compares HEAD with the
 //! merge base, and `--staged` compares the index with HEAD. Without one, the
@@ -28,7 +29,9 @@ use crate::structure::config::{self, matches_prefix};
 use crate::structure::git::{self, Change, Changes};
 use crate::structure::report::{Action, Report, count_gate, gates_text, plural, shared_actions};
 use crate::structure::sarif;
-use crate::structure::source::{self, Loaded, Needs, Skipped, count_lines, is_generated};
+use crate::structure::source::{
+    self, Loaded, Needs, Skipped, count_lines, has_generated_marker, is_generated,
+};
 use crate::workspace::{self, Workspace};
 
 /// The folders whose files the growth rule skips.
@@ -210,7 +213,7 @@ pub fn section(inputs: &Inputs<'_>) -> Result<Section, CliError> {
     let mut large_files: Vec<LargeFile> = loaded
         .files
         .iter()
-        .filter(|file| is_checked_path(&file.path) && !file.generated)
+        .filter(|file| is_checked_path(&file.path) && !file.skip_metrics)
         .filter(|file| !matches_prefix(&file.path, &settings.exclude))
         .filter(|file| file.lines > settings.max_file_lines)
         .filter(|file| scope.keeps(&file.path))
@@ -340,7 +343,7 @@ fn growth(
             continue;
         };
         let lines = count_lines(&text);
-        if lines <= settings.max_file_lines || is_generated(&text) {
+        if lines <= settings.max_file_lines || is_generated(&text) || has_generated_marker(&text) {
             continue;
         }
         let mut previous: Option<u32> = None;

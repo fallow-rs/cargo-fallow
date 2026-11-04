@@ -151,9 +151,12 @@ cargo fallow init --ci github > .github/workflows/cargo-fallow.yml
 
 - The command runs the static checks. It prints the tables of
   `[workspace.metadata.fallow]` with the limits at the current maximum of the
-  workspace: `max-cyclomatic` and `max-cognitive` of `complexity`,
-  `max-file-lines` of `size` and `threshold` of `dupes`. A limit is never
-  under its default, and `threshold = 0.0` means no threshold gate.
+  workspace: `max-cyclomatic` and `max-cognitive` of `complexity`, and
+  `threshold` of `dupes`. A limit is never under its default, and
+  `threshold = 0.0` means no threshold gate.
+- The tables do not set `max-file-lines` of `size`. A large file fails only
+  when it grows, so the default limit passes on the first run. A larger
+  limit only turns off the growth rule.
 - The limits are a ratchet. A new function under the current maximum passes.
   Lower the limits over time.
 - With `--write`, the command saves the findings of a run with the new limits
@@ -171,7 +174,8 @@ cargo fallow init --ci github > .github/workflows/cargo-fallow.yml
 - `--ci github` prints a GitHub Actions workflow that runs `check` with the
   action. Pin each action to a commit before you use it.
 - `--format json` gives `kind`, `version`, `tables`, `baseline`,
-  `baseline_findings` and `written`.
+  `baseline_findings` and `written`. `baseline_findings` is the number of
+  findings that the run saved, or `null` when the run wrote no baseline.
 
 ## Suppressions
 

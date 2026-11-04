@@ -39,10 +39,8 @@ pub struct File {
     pub path: String,
     /// The line count, the same as `wc -l` plus a last line without a newline.
     pub lines: u32,
-    /// True when the first lines hold a generator header.
-    pub generated: bool,
     /// True when the first lines hold a generator header or an `@generated`
-    /// comment. The complexity and duplication checks skip such a file.
+    /// comment. The size, complexity and duplication checks skip such a file.
     pub skip_metrics: bool,
     /// The functions, when the load asked for them.
     pub functions: Vec<Function>,
@@ -89,8 +87,7 @@ fn load_file(
     let source = fs::read_to_string(root.join(path))
         .map_err(|err| format!("cannot read the file: {err}"))?;
     let lines = count_lines(&source);
-    let generated = is_generated(&source);
-    let skip_metrics = generated || has_generated_marker(&source);
+    let skip_metrics = is_generated(&source) || has_generated_marker(&source);
     let (functions, tokens, modules) = with_parsed(&source, edition, |file, text| {
         let index = LineIndex::new(text);
         let functions = if needs.functions && !skip_metrics {
@@ -110,7 +107,6 @@ fn load_file(
         File {
             path: path.to_owned(),
             lines,
-            generated,
             skip_metrics,
             functions,
             tokens,

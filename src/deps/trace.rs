@@ -96,7 +96,7 @@ pub struct TracedSite {
     pub context: &'static str,
     /// How the code uses the dependency.
     #[schemars(extend("enum" = [
-        "import", "path", "macro-tokens", "attribute", "doc-code", "macro-crate",
+        "import", "path", "macro-tokens", "attribute", "doc-code", "doc-link", "macro-crate",
         "include"
     ]))]
     pub via: &'static str,

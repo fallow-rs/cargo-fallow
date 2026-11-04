@@ -10,6 +10,7 @@
 //! macros. A name in macro tokens counts as a reference to each item with that
 //! name, so a gap in the graph hides a finding and does not make one.
 
+pub mod doc_links;
 pub mod extract;
 pub mod resolve;
 pub mod tokens;
@@ -21,7 +22,7 @@ use std::thread;
 
 use crate::gates::parse_edition;
 use crate::graph::extract::{
-    Binding, CodeInclude, FileFacts, ItemFlags, ItemKind, Origin, RawRef, RefKind, Vis,
+    Binding, CodeInclude, DocInclude, FileFacts, ItemFlags, ItemKind, Origin, RawRef, RefKind, Vis,
     doc_refs_of_markdown, extract,
 };
 use crate::modules::{SkippedFile, TargetRoot, normalize, walk};
@@ -565,23 +566,11 @@ fn add_files(graph: &mut Graph, root: &Path, krate: CrateId, files: CrateFiles, 
                 .imports
                 .push(import_of(raw, krate, module, &ids, file_id));
         }
-        let mut refs = file.facts.refs;
-        let mut budget = MAX_INCLUDED_FILES;
-        refs.extend(included_code(
-            root,
-            &mut vec![file.path.clone()],
-            file.facts.code_includes,
-            edition,
-            &mut budget,
-        ));
-        if doctest {
-            refs.extend(included_docs(
-                root,
-                &file.path,
-                &file.facts.doc_includes,
-                edition,
-            ));
-        }
+        let rest = FileFacts {
+            uses: Vec::new(),
+            ..file.facts
+        };
+        let refs = file_refs(root, &file.path, rest, edition, doctest);
         for raw in refs {
             if raw.origin == Origin::Doc && !doctest {
                 continue;
@@ -602,6 +591,31 @@ fn add_files(graph: &mut Graph, root: &Path, krate: CrateId, files: CrateFiles, 
             });
         }
     }
+}
+
+/// The references of one file, with the references of the files that it
+/// includes as code or as documentation.
+fn file_refs(
+    root: &Path,
+    path: &str,
+    facts: FileFacts,
+    edition: Edition,
+    doctest: bool,
+) -> Vec<RawRef> {
+    let mut refs = facts.refs;
+    let mut budget = MAX_INCLUDED_FILES;
+    refs.extend(included_code(
+        root,
+        &mut vec![path.to_owned()],
+        facts.code_includes,
+        edition,
+        &mut budget,
+    ));
+    if doctest {
+        refs.extend(included_docs(root, path, &facts.doc_includes, edition));
+    }
+    refs.extend(included_doc_links(root, path, facts.doc_link_includes));
+    refs
 }
 
 fn import_of(
@@ -781,6 +795,27 @@ fn included_docs(root: &Path, file: &str, includes: &[String], edition: Edition)
         .filter_map(|path| fs::read_to_string(root.join(path)).ok())
         .flat_map(|markdown| doc_refs_of_markdown(&markdown, edition))
         .collect()
+}
+
+/// The intra-doc links of the files that `#[doc = include_str!(..)]` reads.
+/// Each link gets the module, the owner and the line of the attribute.
+fn included_doc_links(root: &Path, file: &str, includes: Vec<DocInclude>) -> Vec<RawRef> {
+    let folder = Path::new(file).parent().unwrap_or_else(|| Path::new(""));
+    let mut refs = Vec::new();
+    for include in includes {
+        let Some(markdown) = normalize(&folder.join(&include.path))
+            .and_then(|path| fs::read_to_string(root.join(path)).ok())
+        else {
+            continue;
+        };
+        for (_, (segments, global)) in doc_links::link_paths(&markdown) {
+            refs.push(RawRef {
+                kind: RefKind::Path { segments, global },
+                ..include.site.clone()
+            });
+        }
+    }
+    refs
 }
 
 impl Graph {

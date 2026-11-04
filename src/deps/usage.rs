@@ -207,6 +207,7 @@ pub fn sites(graph: &Graph, package: &str, names: &[String], include: bool) -> V
                     Origin::Macro => "macro-tokens",
                     Origin::Attr => "attribute",
                     Origin::Doc => "doc-code",
+                    Origin::DocLink => "doc-link",
                 };
                 (name, via)
             }

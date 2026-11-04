@@ -81,6 +81,21 @@ expansion:
   attribute is on an enclosing item, module or file,
 - items behind a glob re-export.
 
+Two other uses keep an item at its visibility, because the change would add
+a warning:
+
+- A type in the signature of an item that stays `pub`. Parameter and return
+  types, field types, bounds, aliases and the members of a trait impl count.
+  rustc warns with `private_interfaces` when such a type is less visible
+  than the item. For example, an attribute macro keeps a `#[napi] pub fn`
+  public, so its return type stays `pub` too.
+- The target of an intra-doc link: `` [`path`] ``, `[text](path)`,
+  `[text][path]` and `[label]: path`. The link is a use from the module of
+  the doc comment. When the documented item stays `pub`, the target stays
+  `pub` too, because rustdoc warns with `private_intra_doc_links`. A link
+  makes no item live, so an item that only a link names can still be
+  `dead-public`.
+
 The command ignores `cfg` conditions. It reads the code of each branch.
 
 The command reports no finding in a generated file, because a code generator

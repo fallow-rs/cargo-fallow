@@ -1497,5 +1497,17 @@ fn fix_has_no_compact_or_markdown_output() {
     for format in ["compact", "markdown"] {
         let run = fixture.run(&["fix", "--dry-run", "--format", format]);
         assert_eq!(run.code, 2, "{format}: {}", run.stdout);
+        // `explain` reads no workspace, so the run has no `--manifest-path`.
+        let explain = Command::cargo_bin("cargo-fallow")
+            .expect("find the binary")
+            .args(["fallow", "explain", "unused-dependency", "--format", format])
+            .output()
+            .expect("run cargo-fallow");
+        assert_eq!(explain.status.code(), Some(2), "{format}");
+        assert!(
+            String::from_utf8_lossy(&explain.stderr)
+                .contains("no SARIF, CodeClimate, compact or markdown"),
+            "{format}: {explain:?}"
+        );
     }
 }

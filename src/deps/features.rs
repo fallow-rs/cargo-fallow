@@ -132,7 +132,9 @@ impl FeatureRule {
 /// The features of `package` that only the scan can still credit: an empty
 /// list, not `default`, and no feature, member or target names it.
 fn candidates_of(metadata: &Metadata, package: &Package, excluded: &[String]) -> Vec<String> {
-    if is_published(package) || is_excluded(package, excluded) {
+    // Users outside the workspace can turn on the features of a published
+    // package, with a dependency entry or with `cargo install --features`.
+    if crate::workspace::is_published(package) || is_excluded(package, excluded) {
         return Vec::new();
     }
     let enabled = enabled_by_members(metadata, package);
@@ -425,16 +427,6 @@ fn header_name(line: &str) -> Option<&str> {
 /// The name of the variable of a feature: upper case, with `_` for `-`.
 fn variable_of(feature: &str) -> String {
     feature.to_ascii_uppercase().replace('-', "_")
-}
-
-/// True for a package that a registry can publish. Users outside the
-/// workspace can turn on its features with a dependency entry or with
-/// `cargo install --features`, so the features are its API.
-fn is_published(package: &Package) -> bool {
-    package
-        .publish
-        .as_ref()
-        .is_none_or(|registries| !registries.is_empty())
 }
 
 fn is_library(target: &cargo_metadata::Target) -> bool {

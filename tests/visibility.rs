@@ -290,6 +290,105 @@ fn an_excluded_crate_gets_no_findings() {
 }
 
 #[test]
+fn the_exported_api_of_a_published_library_is_an_entry_point() {
+    let dir = workspace(&[
+        (
+            "mid/Cargo.toml",
+            "[package]\nname = \"mid\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n\
+             [dependencies]\nbase = { path = \"../base\" }\n",
+        ),
+        ("app/src/main.rs", "fn main() { mid::shared(); }\n"),
+        (
+            "mid/src/lib.rs",
+            "pub fn shared() {}\npub fn unused() { base::helper(); }\n\
+             mod inner { pub(crate) fn here() {} fn call() { here(); } }\n",
+        ),
+        (
+            "base/src/lib.rs",
+            "pub fn helper() {}\npub fn lonely() {}\n",
+        ),
+    ]);
+    let (found, _) = findings(&dir, &[]);
+    // `mid` is published: its exported items are no findings, and an item
+    // that its API calls is live. Its restricted items and the unpublished
+    // `base` keep each rule.
+    assert_eq!(
+        found,
+        set(&[
+            "dead_public lonely",
+            "unnecessary_restricted_visibility inner::here",
+        ])
+    );
+}
+
+#[test]
+fn the_publish_list_decides_and_a_binary_target_keeps_each_rule() {
+    let manifest = |publish: &str| {
+        format!(
+            "[package]\nname = \"mid\"\nversion = \"0.1.0\"\nedition = \"2024\"\n{publish}\n\
+             [dependencies]\nbase = {{ path = \"../base\" }}\n"
+        )
+    };
+    let files = |publish: &str| {
+        vec![
+            ("mid/Cargo.toml".to_owned(), manifest(publish)),
+            ("mid/src/lib.rs".to_owned(), "pub fn unused() {}\n".to_owned()),
+            (
+                "mid/src/main.rs".to_owned(),
+                "mod tool {\n    pub(crate) fn helper() {}\n    pub fn run() { helper(); }\n}\nfn main() { tool::run(); }\n".to_owned(),
+            ),
+        ]
+    };
+    for (publish, expected) in [
+        (
+            "publish = [\"internal\"]\n",
+            vec!["unnecessary_restricted_visibility tool::helper"],
+        ),
+        (
+            "publish = []\n",
+            vec![
+                "dead_public unused",
+                "unnecessary_restricted_visibility tool::helper",
+            ],
+        ),
+    ] {
+        let owned = files(publish);
+        let borrowed: Vec<(&str, &str)> = owned
+            .iter()
+            .map(|(path, text)| (path.as_str(), text.as_str()))
+            .collect();
+        let dir = workspace(&borrowed);
+        let (found, _) = findings(&dir, &[]);
+        assert_eq!(found, set(&expected), "{publish}");
+    }
+}
+
+#[test]
+fn an_item_that_an_excluded_api_uses_is_live() {
+    let dir = workspace(&[
+        ("mid/src/lib.rs", "pub fn api() { base::helper(); }\n"),
+        ("base/src/lib.rs", "pub fn helper() {}\n"),
+    ]);
+    let (found, _) = findings(&dir, &["--exclude-crate", "mid"]);
+    assert_eq!(found, set(&[]));
+}
+
+#[test]
+fn a_published_binary_keeps_each_rule() {
+    let dir = workspace(&[
+        (
+            "app/Cargo.toml",
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n\
+             [dependencies]\nmid = { path = \"../mid\" }\n",
+        ),
+        ("app/src/main.rs", "fn main() {}\n"),
+        ("mid/src/lib.rs", "pub fn unused() {}\n"),
+    ]);
+    let (found, _) = findings(&dir, &[]);
+    assert_eq!(found, set(&["dead_public unused"]));
+}
+
+#[test]
 fn a_restricted_type_in_a_wider_signature_keeps_its_visibility() {
     let dir = workspace(&[(
         "mid/src/lib.rs",

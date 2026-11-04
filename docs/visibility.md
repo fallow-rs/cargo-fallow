@@ -2,8 +2,19 @@
 
 `cargo fallow visibility` reports items whose visibility is larger than their
 uses need. The command treats the workspace as the only user of its
-libraries. To keep the public API of a library, exclude it with
-`--exclude-crate`.
+libraries, with two exceptions:
+
+- A library that a registry can publish: `publish` is not `false` in its
+  manifest. Users outside the workspace can use its exported items.
+- A library in `--exclude-crate` or `exclude-crates`.
+
+The exported items of these libraries are an external API. They are entry
+points: they get no `dead_public` or `unnecessary_public` finding, `fix` does
+not narrow them, and each item that they use is live. The `pub(crate)`,
+`pub(super)` and `pub(in path)` items of a published library still get the
+`unnecessary_restricted_visibility` rule. An excluded library gets no
+finding. A binary and a library with `publish = false` keep each rule. When a library is not for a registry, set
+`publish = false` in its manifest, so that the command checks its public API.
 
 | Kind | Meaning | Change |
 | --- | --- | --- |

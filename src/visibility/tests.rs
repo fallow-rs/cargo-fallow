@@ -23,7 +23,7 @@ fn precise_findings(proto_header: &str) -> Vec<String> {
     let files = [
         (
             "Cargo.toml",
-            "[package]\nname = \"lib1\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[workspace]\n",
+            "[package]\nname = \"lib1\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n[workspace]\n",
         ),
         ("src/lib.rs", "mod hand;\npub mod proto;\n"),
         ("src/hand.rs", "pub struct Thing;\n"),

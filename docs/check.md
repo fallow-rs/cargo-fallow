@@ -94,7 +94,8 @@ Some code does not count:
 - The function count of `size` leaves out the files in the `exclude` list of
   `size`. The function count of `complexity` leaves out the files in the
   `exclude` list of `complexity`.
-- The `pub` items of a crate in `exclude-crates` of `visibility` do not count.
+- The `pub` items of a crate in `exclude-crates` of `visibility`, and of a
+  library that a registry can publish, do not count.
 
 `formula_version` is `2`. The maintainers increment it when they change a
 weight, a cap or an input.

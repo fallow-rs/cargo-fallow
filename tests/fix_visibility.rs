@@ -93,6 +93,23 @@ const APP: &str = "fn main() { core_lib::used(); }\n";
 
 #[cfg(unix)]
 #[test]
+fn a_published_library_keeps_its_public_items() {
+    let dir = workspace(CORE, APP);
+    let manifest = read(&dir, "core/Cargo.toml").replace("publish = false\n", "");
+    write(dir.path(), "core/Cargo.toml", &manifest);
+    let cargo = fake_cargo(&dir, 0);
+    let (code, stdout, stderr) = fix(
+        &dir,
+        &["--dry-run", "--format", "json", "--quiet"],
+        Some(&cargo),
+    );
+    assert_eq!(code, 0, "{stderr}");
+    let report = json(&stdout);
+    assert_eq!(report["fixes"], serde_json::json!([]), "{report}");
+}
+
+#[cfg(unix)]
+#[test]
 fn dry_run_lists_the_keyword_edit_and_changes_nothing() {
     let dir = workspace(CORE, APP);
     let cargo = fake_cargo(&dir, 0);

@@ -99,6 +99,13 @@ GitHub release. Each release needs a `## [X.Y.Z] - YYYY-MM-DD` section.
 
 ### Changed
 
+- `visibility`, `check` and `fix` treat the exported items of a library that
+  a registry can publish as an external API. They get no `dead_public` or
+  `unnecessary_public` finding, and `fix` does not narrow them. A library with
+  `publish = false` and a binary keep each rule. `cargo new` writes no
+  `publish` key, so add `publish = false` to a library that no registry gets,
+  to keep the old result. Each item that the API of a published or excluded
+  library uses is now live.
 - The reference for each command moved from the README to `docs/`. The
   README is now an overview with a logo. The `docs` address of
   `cargo fallow explain` and `_meta.docs` point to the new pages.

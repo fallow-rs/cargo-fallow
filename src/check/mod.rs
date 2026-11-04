@@ -462,7 +462,7 @@ fn dead_counts(
 ) -> crate::hotspots::DeadCounts {
     let mut counts = crate::hotspots::DeadCounts::new();
     for item in &module_graph.items {
-        if item.vis == Vis::Public && !exclude.contains(&module_graph.crates[item.krate].name) {
+        if item.vis == Vis::Public && !is_api(&module_graph.crates[item.krate], exclude) {
             counts.entry(item.file.clone()).or_default().0 += 1;
         }
     }
@@ -480,8 +480,14 @@ fn public_items(module_graph: &Graph, exclude: &[String]) -> usize {
         .items
         .iter()
         .filter(|item| item.vis == Vis::Public)
-        .filter(|item| !exclude.contains(&module_graph.crates[item.krate].name))
+        .filter(|item| !is_api(&module_graph.crates[item.krate], exclude))
         .count()
+}
+
+/// True when the public items of the crate are an external API: `exclude`
+/// names it, or it is a library that a registry can publish.
+fn is_api(krate: &graph::Crate, exclude: &[String]) -> bool {
+    exclude.contains(&krate.name) || (krate.published && krate.kind.is_library())
 }
 
 /// Walks the source once and runs `size`, `complexity` and `dupes` on it.

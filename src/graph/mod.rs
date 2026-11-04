@@ -123,6 +123,8 @@ pub struct Crate {
     pub externs: Vec<Extern>,
     /// The features of the package. All of them can be on for the target.
     pub features: Vec<String>,
+    /// True when a registry can publish the package.
+    pub published: bool,
     /// The features that the target needs.
     pub required_features: Vec<String>,
     /// The names that the code blocks of the documentation can use. rustdoc
@@ -342,6 +344,7 @@ pub fn build(workspace: &Workspace, production: &Production) -> Graph {
             root_module,
             externs,
             features: member.features.clone(),
+            published: member.published,
             required_features: target.required_features.clone(),
             doc_externs,
         });

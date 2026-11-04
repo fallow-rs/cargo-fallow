@@ -327,6 +327,10 @@ fn holds_of(
             .is_some_and(|module| surface.modules_with_reexports.contains(&module));
     let facts = [
         (surface.excluded.contains(&entry.krate), "excluded-crate"),
+        (
+            !surface.excluded.contains(&entry.krate) && surface.api.contains(&entry.krate),
+            "published-crate",
+        ),
         (surface.glob_exported.contains(&item), "glob-reexport"),
         (reexports, "module-with-reexports"),
         (entry.flags.macro_export, "macro-export"),

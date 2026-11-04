@@ -1,7 +1,9 @@
 //! The visibility check on the module graph.
 //!
 //! The model is the closed-world model of hawk: the workspace is the only user
-//! of its libraries, unless a library is excluded.
+//! of its libraries. Two kinds of library are an exception: a library that a
+//! registry can publish, and a library that `exclude-crates` names. Their
+//! exported items are an external API, so they are entry points.
 //!
 //! - `dead_public`: a `pub` item that the library exports, and that no
 //!   production root and no test, bench, example or doctest reaches.
@@ -327,6 +329,9 @@ struct Surface {
     reexport_targets: FxHashMap<ItemId, Vec<ItemId>>,
     modules_with_reexports: FxHashSet<ModuleId>,
     excluded: FxHashSet<usize>,
+    /// The library crates whose exported items are an external API: the
+    /// excluded crates and the libraries that a registry can publish.
+    api: FxHashSet<usize>,
     /// The types of each crate by name, for the self type of an `impl` block.
     types: FxHashMap<(usize, String), Vec<ItemId>>,
     /// The result of [`Surface::exported`] for each item.
@@ -349,6 +354,15 @@ impl Surface {
             .filter(|(_, entry)| options.exclude.contains(&entry.name))
             .map(|(id, _)| id)
             .collect();
+        let api: FxHashSet<usize> = graph
+            .crates
+            .iter()
+            .enumerate()
+            .filter(|(id, entry)| {
+                excluded.contains(id) || (entry.published && entry.kind.is_library())
+            })
+            .map(|(id, _)| id)
+            .collect();
         let mut surface = Self {
             exported_modules: graph
                 .crates
@@ -362,6 +376,7 @@ impl Surface {
             reexport_targets: FxHashMap::default(),
             modules_with_reexports: FxHashSet::default(),
             excluded,
+            api,
             types: FxHashMap::default(),
             exported: Vec::new(),
             macro_covered: Vec::new(),
@@ -496,7 +511,7 @@ impl Surface {
     fn public_candidate(&self, graph: &Graph, item: ItemId) -> bool {
         let entry = &graph.items[item];
         let krate = &graph.crates[entry.krate];
-        if krate.kind != CrateKind::Lib || self.excluded.contains(&entry.krate) {
+        if krate.kind != CrateKind::Lib || self.api.contains(&entry.krate) {
             return false;
         }
         if entry.flags.macro_export
@@ -712,7 +727,7 @@ fn required_items(
     let mut queue: Vec<ItemId> = (0..graph.items.len())
         .filter(|&item| uses[item].cross_crate || surface.glob_exported.contains(&item))
         .collect();
-    queue.extend(surface.excluded_surface(graph));
+    queue.extend(surface.api_surface(graph));
     while let Some(item) = queue.pop() {
         if !required.insert(item) {
             continue;
@@ -750,10 +765,10 @@ fn variant_enum(graph: &Graph, field: ItemId) -> Option<ItemId> {
 }
 
 impl Surface {
-    /// The exported items of the excluded crates. They are an external API.
-    fn excluded_surface(&self, graph: &Graph) -> Vec<ItemId> {
+    /// The exported items of the API crates. They are an external API.
+    fn api_surface(&self, graph: &Graph) -> Vec<ItemId> {
         (0..graph.items.len())
-            .filter(|&item| self.excluded.contains(&graph.items[item].krate))
+            .filter(|&item| self.api.contains(&graph.items[item].krate))
             .filter(|&item| self.exported(item))
             .collect()
     }
@@ -811,6 +826,8 @@ fn live_items(
             other_roots.push(item);
         }
     }
+    // An external user can call each item of an external API.
+    production_roots.extend(surface.api_surface(graph));
     let production = reach(&edges, production_roots.iter().copied(), false);
     let mut all_roots = production_roots;
     all_roots.extend(other_roots);

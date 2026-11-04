@@ -46,6 +46,10 @@ pub struct Member {
     /// The names of the features of the package. They are not part of the report.
     #[serde(skip)]
     pub features: Vec<String>,
+    /// True when a registry can publish the package: `publish` is not `false`
+    /// in its manifest. It is not part of the report.
+    #[serde(skip)]
+    pub published: bool,
 }
 
 /// The section of `Cargo.toml` that declares a dependency.
@@ -294,7 +298,17 @@ fn member(root: &Utf8Path, package: &Package) -> Member {
             .collect(),
         links: package.dependencies.iter().map(link_of).collect(),
         features: package.features.keys().cloned().collect(),
+        published: is_published(package),
     }
+}
+
+/// True for a package that a registry can publish: `publish` is not `false`
+/// and not an empty list in its manifest.
+pub fn is_published(package: &Package) -> bool {
+    package
+        .publish
+        .as_ref()
+        .is_none_or(|registries| !registries.is_empty())
 }
 
 fn link_of(dependency: &cargo_metadata::Dependency) -> Link {

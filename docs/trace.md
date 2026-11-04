@@ -43,7 +43,8 @@ The `credit` field tells how the code names the item:
 `class` is `exact`, `fallback` (the path did not resolve) or `untyped` (the
 type is not known from the syntax). `--precise` mode checks only the
 candidates that have no use other than an `untyped` one. `holds` lists the
-reasons other than a use that the check does not report the item: `excluded-crate`, `glob-reexport`,
+reasons other than a use that the check does not report the item:
+`excluded-crate`, `published-crate`, `glob-reexport`,
 `module-with-reexports`, `macro-export`, `attribute-macro`, `allow-dead-code`,
 `external-symbol`, `trait-impl`, `trait-item`, `proc-macro`, `test-function`,
 `derive`, `main-function`, `generated-file` and `opaque-include`.

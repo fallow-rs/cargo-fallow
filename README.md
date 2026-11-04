@@ -223,8 +223,9 @@ To keep an intentional finding, add a suppression comment:
 pub fn hook() {}
 ```
 
-[Adoption](docs/adoption.md) covers baselines, `--package`, `--changed-since`
-and each suppression kind.
+`[workspace.metadata.fallow.rules]` sets a rule to `error`, `warn` or `off`.
+[Adoption](docs/adoption.md) covers rule severity, baselines, `--package`,
+`--changed-since` and each suppression kind.
 
 ## Mutation testing
 
@@ -302,7 +303,7 @@ each format.
 | Page | Contents |
 |---|---|
 | [The check command](docs/check.md) | Flags of `check`, and the health score |
-| [Adoption](docs/adoption.md) | Changed files, packages, baselines, `init` and suppressions |
+| [Adoption](docs/adoption.md) | Changed files, packages, rule severity, baselines, `init` and suppressions |
 | [Unused dependencies](docs/dependencies.md) | Rules of `deps`, and how it gives credit |
 | [Fix](docs/fix.md) | What `cargo fallow fix` changes, and how it checks the result |
 | [Unused files](docs/unused-files.md) | How `files` finds the files that no target compiles |

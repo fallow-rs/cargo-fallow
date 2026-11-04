@@ -103,6 +103,14 @@ pub fn report(
             lines.as_ref(),
         ) && scope.keeps_entry_of(|| Entry::of(&render::deps::shared_finding(finding)))
     });
+    // A configured level sets the severity, so the gate counts it.
+    for finding in &mut analysis.findings {
+        match scope.rules().level(&[finding.rule.as_str()]) {
+            Some(crate::rules::Level::Error) => finding.severity = Severity::Error,
+            Some(crate::rules::Level::Warn) => finding.severity = Severity::Warning,
+            _ => {}
+        }
+    }
     for skipped in &analysis.skipped {
         render::warn(&format!(
             "the `deps` command does not judge the package `{}`: {}",

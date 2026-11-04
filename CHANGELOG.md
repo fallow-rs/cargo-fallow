@@ -72,6 +72,9 @@ GitHub release. Each release needs a `## [X.Y.Z] - YYYY-MM-DD` section.
   `path:line:col: rule: message`, and `--format markdown` gives a gate table
   and one table for each check. Each command has both formats, except `fix`
   and `mutants --inspect`.
+- `[workspace.metadata.fallow.rules]` sets a rule to `error`, `warn` or `off`.
+  The severity, the SARIF level and the gate count of its findings follow
+  the level.
 - `--format github-annotations` writes GitHub workflow commands, at most 50,
   the errors first, with paths from the repository root.
   `--format github-summary` writes a GitHub job summary. The annotations are

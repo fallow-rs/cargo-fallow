@@ -31,6 +31,7 @@ use crate::gates::parse_edition;
 use crate::modules::{ModuleDecl, TargetRoot, walk};
 use crate::parse::{Edition, with_parsed};
 use crate::render::{Progress, warn};
+use crate::rules::Level;
 use crate::scope::Scope;
 use crate::section::{Section, to_value};
 use crate::structure::BoundariesArgs;
@@ -73,7 +74,6 @@ impl Kind {
     pub const ALL: [Self; 3] = [Self::CrateDependency, Self::SourcePattern, Self::ModulePath];
 
     /// The kind in the report.
-    #[cfg(test)]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::CrateDependency => "crate-dependency",
@@ -181,18 +181,49 @@ pub fn section(
     };
     let mut report = Report::new("boundaries", summary, findings);
     let mut findings = shared_findings(&report);
+    let rules = scope.rules();
+    // A rule name, a kind or `boundaries` can turn a boundary finding off.
+    // The filter goes before the baseline, so a saved baseline does not hold
+    // the finding.
+    Scope::retain_where(&mut report.findings, &mut findings, |finding| {
+        !rules.is_off(&level_names(finding))
+    });
     report.retain_baseline(scope, &mut findings);
-    report.gate_outcomes.insert(
-        Gate::BoundaryViolations,
-        count_gate(report.findings.len(), enforced),
-    );
+    for (finding, shared) in report.findings.iter().zip(findings.iter_mut()) {
+        shared.severity = rules.severity(&level_names(finding), shared.severity);
+    }
+    let counted = report
+        .findings
+        .iter()
+        .filter(|finding| rules.counts(&level_names(finding), true))
+        .count();
+    report
+        .gate_outcomes
+        .insert(Gate::BoundaryViolations, count_gate(counted, enforced));
+    let mut sarif = sarif_log(&report, &findings, enforced);
+    // The structure log has one result for each finding, in the same order.
+    if let Some(results) = sarif["runs"][0]["results"].as_array_mut() {
+        for (finding, result) in report.findings.iter().zip(results) {
+            match rules.level(&level_names(finding)) {
+                Some(Level::Error) => result["level"] = "error".into(),
+                Some(Level::Warn) => result["level"] = "warning".into(),
+                _ => {}
+            }
+        }
+    }
     Ok(Section {
         human: human(&report),
         json: to_value(&report)?,
-        sarif: sarif_log(&report, &findings, enforced),
+        sarif,
         findings,
         gates: report.gate_outcomes,
     })
+}
+
+/// The names of a finding in `[workspace.metadata.fallow.rules]`: the rule
+/// name of its table, its kind, and `boundaries` for each boundary rule.
+fn level_names(finding: &Finding) -> [&str; 3] {
+    [&finding.rule, finding.kind.as_str(), "boundaries"]
 }
 
 /// The findings in the shared shape. The id uses the rule, the file, the

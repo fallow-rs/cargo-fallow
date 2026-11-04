@@ -65,6 +65,35 @@ cargo fallow check -p my-core -p my-cli --fail-on-issues
 - A name that is not a workspace member exits 2, and the help names the
   members.
 
+## Rule severity
+
+`[workspace.metadata.fallow.rules]` sets each rule to `error`, `warn` or
+`off`. `warning` is an alias of `warn`. A rule that the table does not name
+keeps its own severity and gate.
+
+```toml
+[workspace.metadata.fallow.rules]
+unused-optional-dependency = "error"
+dead_public = "warn"
+code-duplication = "off"
+```
+
+- `off`: the rule gives no finding, so a baseline does not hold it either.
+- `error`: the finding has the `error` severity, its SARIF result has the
+  level `error`, and it counts for the gate of its check, for example
+  `error-severity-findings` of `deps`.
+- `warn`: the finding has the `warn` severity, its SARIF result has the level
+  `warning`, and it does not count for the gate of its check.
+- A rule name is a name of `cargo fallow explain`. `_` and `-` are the same,
+  so `dead_public` and `dead-public` are one rule. A boundary rule uses the
+  `rule` name of its table, the kind (`crate-dependency`, `source-pattern`,
+  `module-path`) for each rule of the kind, or `boundaries` for each boundary
+  rule. The first of these names that the table has wins.
+- `code-duplication = "off"` also removes the `duplication-threshold` gate.
+- `parse-error`, `surviving-mutant` and `stale-suppression` have a fixed
+  level. An unknown rule, a fixed rule or an unknown level exits 2 with
+  `CARGO_FALLOW_INVALID_CONFIG`.
+
 ## Baselines
 
 A baseline lets a workspace with old findings turn on the gates now. The run

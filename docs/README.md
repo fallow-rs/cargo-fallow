@@ -8,7 +8,7 @@ for each command.
 | Page | Contents |
 | --- | --- |
 | [The check command](check.md) | Flags of `check`, and the health score |
-| [Adoption](adoption.md) | Changed files, packages, baselines, `init` and suppressions |
+| [Adoption](adoption.md) | Changed files, packages, rule severity, baselines, `init` and suppressions |
 | [Unused dependencies](dependencies.md) | Rules of `deps`, and how it gives credit |
 | [Fix](fix.md) | What `cargo fallow fix` changes, and how it checks the result |
 | [Unused files](unused-files.md) | How `files` finds the files that no target compiles |

@@ -8,6 +8,7 @@ cargo fallow fix --dry-run                 # show the edits, write nothing
 cargo fallow fix --dry-run --format json   # the edits as a list
 cargo fallow fix --yes                     # apply the edits
 cargo fallow fix --dry-run -p my-crate     # only the edits in one member
+cargo fallow fix --yes --only visibility   # only the visibility edits
 ```
 
 - `--package <NAME>` (`-p`) keeps only the edits in the files of the named
@@ -16,6 +17,14 @@ cargo fallow fix --dry-run -p my-crate     # only the edits in one member
   `Cargo.toml` of a virtual workspace, for example an unused
   `[workspace.dependencies]` entry, belongs to no member, so `--package` leaves
   it out.
+- `--only <CHECK>` applies only the edits of the named checks. `--skip
+  <CHECK>` applies no edits of the named checks. The values are `deps` and
+  `visibility`. Each flag takes a list with commas and can repeat. You cannot
+  give both flags, and a `--skip` of both checks exits 2. The command does not
+  run a check that the flags leave out, or read its table. The findings of
+  that check do not count in `skipped`, and without `deps` the report has no
+  `skipped_packages`. With `--only deps`, no visibility edit exists, so the
+  command does not run `cargo check`.
 - A rule at `off` in `[workspace.metadata.fallow.rules]` gets no edit. A
   suppression comment keeps its finding out of the edits. A baseline does not
   hide an edit, because `fix` changes the old findings too.

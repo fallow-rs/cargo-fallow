@@ -1,6 +1,7 @@
 //! The `fix` command: applies the `auto_fixable` actions of the findings.
 //!
-//! The command runs the `deps` and the `visibility` checks. It edits each
+//! The command runs the `deps` and the `visibility` checks, or the checks
+//! that `--only` and `--skip` select. It edits each
 //! `Cargo.toml` with an error finding: it removes an unused entry, or moves a
 //! misplaced entry to `[dev-dependencies]`. It narrows the visibility keyword
 //! of each `visibility` finding. A warning stays. `--dry-run` writes nothing.
@@ -67,6 +68,29 @@ pub struct FixArgs {
     /// can repeat. The analysis still reads the whole workspace.
     #[arg(long = "package", short = 'p', value_name = "NAME")]
     packages: Vec<String>,
+    /// Apply only the edits of these checks. The flag takes a list with
+    /// commas and can repeat.
+    #[arg(
+        long,
+        value_enum,
+        value_name = "CHECK",
+        value_delimiter = ',',
+        conflicts_with = "skip"
+    )]
+    only: Vec<FixCheck>,
+    /// Apply no edits of these checks. The flag takes a list with commas and
+    /// can repeat.
+    #[arg(long, value_enum, value_name = "CHECK", value_delimiter = ',')]
+    skip: Vec<FixCheck>,
+}
+
+/// A check that has edits: the values of `--only` and `--skip`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum FixCheck {
+    /// The `Cargo.toml` edits of the `deps` check.
+    Deps,
+    /// The visibility keyword edits of the `visibility` check.
+    Visibility,
 }
 
 impl FixArgs {
@@ -87,6 +111,11 @@ impl FixArgs {
         .filter(|(on, _)| *on)
         .map(|(_, flag)| flag.to_owned())
         .collect()
+    }
+
+    /// True when `--only` and `--skip` select the check.
+    fn selects(&self, check: FixCheck) -> bool {
+        (self.only.is_empty() || self.only.contains(&check)) && !self.skip.contains(&check)
     }
 }
 
@@ -135,7 +164,8 @@ pub struct FixReport {
     pub fixes: Vec<Fix>,
     /// The number of edits with `applied: true`.
     pub total_fixed: usize,
-    /// The findings that `fix` does not change, for example a warning.
+    /// The findings that `fix` does not change, for example a warning. A check
+    /// that `--only` or `--skip` leaves out adds nothing.
     pub skipped: usize,
     /// The packages that the `deps` check did not judge, so `fix` has no edit
     /// for them.
@@ -153,6 +183,13 @@ struct Plan {
 
 /// Runs `fix` and returns the process exit code.
 pub fn run(args: &FixArgs) -> Result<u8, CliError> {
+    if !args.selects(FixCheck::Deps) && !args.selects(FixCheck::Visibility) {
+        return Err(CliError::new(
+            ErrorCode::InvalidArgument,
+            "`--skip` leaves out each check of `fix`, so no edit is possible",
+        )
+        .with_help("Remove a value from `--skip`. The values are `deps` and `visibility`."));
+    }
     if !args.dry_run && !args.yes && !std::io::stdin().is_terminal() {
         return Err(CliError::new(
             ErrorCode::InvalidArgument,
@@ -210,14 +247,60 @@ pub fn run(args: &FixArgs) -> Result<u8, CliError> {
     Ok(EXIT_OK)
 }
 
-/// Runs both checks on one module graph and plans their edits.
+/// Runs the selected checks on one module graph and plans their edits.
 fn plan(
     args: &FixArgs,
     workspace: &Workspace,
     metadata: &cargo_metadata::Metadata,
     progress: Progress,
 ) -> Result<Plan, CliError> {
-    let options = crate::visibility::config::resolve(
+    let options = if args.selects(FixCheck::Visibility) {
+        Some(visibility_options(args, workspace)?)
+    } else {
+        None
+    };
+    let scope = Scope::for_fix(workspace, &args.packages)?;
+    progress.step("Building the module graph");
+    // Only the visibility check reads the production selection.
+    let production = crate::graph::Production {
+        bins: options
+            .as_ref()
+            .map(|options| options.production.clone())
+            .unwrap_or_default(),
+    };
+    let module_graph = crate::graph::build(workspace, &production);
+    let mut planned = Plan {
+        deps: Vec::new(),
+        visibility: Vec::new(),
+        skipped: 0,
+        skipped_packages: Vec::new(),
+    };
+    if args.selects(FixCheck::Deps) {
+        progress.step("Checking the dependencies");
+        let report = crate::deps::report(workspace, metadata, &module_graph, false, &scope);
+        planned.deps = deps::plan(&report);
+        planned.skipped += report.findings.len().saturating_sub(planned.deps.len());
+        // A package outside `--package` gets no edit, so its skip is no news.
+        planned.skipped_packages = report
+            .skipped
+            .into_iter()
+            .filter(|skipped| args.packages.is_empty() || args.packages.contains(&skipped.package))
+            .collect();
+    }
+    if let Some(options) = &options {
+        let (edits, skipped) = plan_visibility(workspace, &module_graph, options, &scope, progress);
+        planned.visibility = edits;
+        planned.skipped += skipped;
+    }
+    Ok(planned)
+}
+
+/// The options of the visibility check: the table, with no flags.
+fn visibility_options(
+    args: &FixArgs,
+    workspace: &Workspace,
+) -> Result<VisibilityOptions, CliError> {
+    crate::visibility::config::resolve(
         workspace,
         &VisibilityOptions {
             manifest_path: args.manifest_path.clone(),
@@ -234,20 +317,20 @@ fn plan(
             cargo_flags: Vec::new(),
             trace: None,
         },
-    )?;
-    let scope = Scope::for_fix(workspace, &args.packages)?;
-    progress.step("Building the module graph");
-    // Only the visibility check reads the production selection.
-    let production = crate::graph::Production {
-        bins: options.production.clone(),
-    };
-    let module_graph = crate::graph::build(workspace, &production);
-    progress.step("Checking the dependencies");
-    let report = crate::deps::report(workspace, metadata, &module_graph, false, &scope);
-    let deps_edits = deps::plan(&report);
+    )
+}
+
+/// Runs the visibility check and plans its edits. Returns the edits and the
+/// number of findings without an edit.
+fn plan_visibility(
+    workspace: &Workspace,
+    module_graph: &crate::graph::Graph,
+    options: &VisibilityOptions,
+    scope: &Scope,
+    progress: Progress,
+) -> (Vec<visibility::Edit>, usize) {
     progress.step("Checking the visibility");
-    let visibility_report =
-        crate::visibility::fast_report(&module_graph, &options, workspace, &scope);
+    let visibility_report = crate::visibility::fast_report(module_graph, options, workspace, scope);
     let mut visibility_edits = visibility::plan(&visibility_report);
     // An edit of a grouped `use` changes the names of the group that keep
     // their uses too, so it stays for a person.
@@ -261,21 +344,11 @@ fn plan(
         .iter()
         .filter(|row| row.actions.iter().any(|action| action.auto_fixable))
         .count();
-    Ok(Plan {
-        skipped: report.findings.len().saturating_sub(deps_edits.len())
-            + visibility_report
-                .findings
-                .len()
-                .saturating_sub(fixable_rows),
-        deps: deps_edits,
-        visibility: visibility_edits,
-        // A package outside `--package` gets no edit, so its skip is no news.
-        skipped_packages: report
-            .skipped
-            .into_iter()
-            .filter(|skipped| args.packages.is_empty() || args.packages.contains(&skipped.package))
-            .collect(),
-    })
+    let skipped = visibility_report
+        .findings
+        .len()
+        .saturating_sub(fixable_rows);
+    (visibility_edits, skipped)
 }
 
 /// Writes the edits and checks the workspace. On a failure after the first

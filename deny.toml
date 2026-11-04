@@ -30,9 +30,6 @@ allow = ["Apache-2.0 WITH LLVM-exception"]
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
-# The M0 path dependency on fallow-report-protocol has no version. Cargo-deny
-# accepts it because this crate has `publish = false`.
-allow-wildcard-paths = true
 
 [sources]
 unknown-registry = "deny"

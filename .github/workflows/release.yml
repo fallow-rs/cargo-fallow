@@ -71,8 +71,8 @@ jobs:
           echo "publish=${PUBLISH}" >> "$GITHUB_OUTPUT"
           echo "cargo-fallow ${version}, publish: ${PUBLISH}" >> "$GITHUB_STEP_SUMMARY"
 
-      # Only a release runs these checks. A dry run on a branch has a
-      # development version and `publish = false`.
+      # Only a release runs these checks. A dry run on a branch can have a
+      # version that is not tagged yet.
       - name: Check the release tag, the manifest and the branch
         if: ${{ steps.mode.outputs.publish == 'true' }}
         shell: bash
@@ -127,11 +127,10 @@ jobs:
           cargo package --list --locked > package-list.txt
           node scripts/check-package.mjs < package-list.txt
 
-      # `cargo publish --dry-run` refuses a package with `publish = false`. A
-      # dry run removes that line in the checkout of this job only, and the
-      # repository keeps it. `--allow-dirty` accepts that one change. A release
-      # never edits the manifest: the check above requires that the line is
-      # already gone.
+      # `cargo publish --dry-run` refuses a package with `publish = false`. If
+      # the line comes back, a dry run removes it in the checkout of this job
+      # only. `--allow-dirty` accepts that one change. A release never edits
+      # the manifest: the check above requires that the line is not there.
       - name: Publish dry run
         shell: bash
         env:

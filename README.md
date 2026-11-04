@@ -15,7 +15,7 @@
 <p align="center">
   <a href="https://github.com/fallow-rs/cargo-fallow/actions/workflows/ci.yml"><img src="https://github.com/fallow-rs/cargo-fallow/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://github.com/fallow-rs/cargo-fallow/blob/main/Cargo.toml"><img src="https://img.shields.io/badge/rust-1.98%2B-8B7355.svg" alt="MSRV 1.98"></a>
-  <a href="https://github.com/fallow-rs/cargo-fallow/blob/main/CHANGELOG.md"><img src="https://img.shields.io/badge/status-pre--release-orange.svg" alt="Status: pre-release"></a>
+  <a href="https://crates.io/crates/cargo-fallow"><img src="https://img.shields.io/crates/v/cargo-fallow.svg" alt="crates.io"></a>
   <a href="https://github.com/fallow-rs/cargo-fallow/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License"></a>
 </p>
 
@@ -43,9 +43,8 @@ checks work from this graph and the syntax tree, so you do not have to
 compile the workspace first.
 
 > [!IMPORTANT]
-> cargo-fallow is pre-release. It is not on crates.io yet, and the JSON
-> output can change before the first release. See the
-> [CHANGELOG](CHANGELOG.md) for each change.
+> cargo-fallow is at version 0.x. The JSON output can change in a minor
+> release. The [CHANGELOG](CHANGELOG.md) lists each change.
 
 ## What cargo-fallow finds
 
@@ -67,11 +66,15 @@ for all the checks. To see what a rule means and how to fix a finding, run
 
 ## Install
 
-The crate is not on crates.io yet. Install it from source:
+Install the crate from crates.io:
 
 ```bash
-cargo install --git https://github.com/fallow-rs/cargo-fallow --locked
+cargo install cargo-fallow --locked
 ```
+
+Each [GitHub release](https://github.com/fallow-rs/cargo-fallow/releases)
+also has prebuilt binaries for Linux, macOS and Windows, with a checksum and a
+signature for each archive.
 
 `--locked` uses the dependency versions in `Cargo.lock`, which are the
 versions that CI tests. The package installs one binary, `cargo-fallow`, and

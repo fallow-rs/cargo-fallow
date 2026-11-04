@@ -64,9 +64,10 @@ git checkout -- Cargo.toml
 `cargo publish --dry-run` fails for a package with `publish = false`. The CI
 job and the dry run of the release workflow remove the line only in their own
 checkout, and put it back after the dry run. With `--allow-dirty`, Cargo
-accepts that one change. The line stays in the repository until the 0.1.0
-release commit. A release does not edit the manifest. While the line is in
-`Cargo.toml`, the `plan` job fails.
+accepts that one change. The 0.1.0 release commit removed the line, so the
+`sed` step now changes nothing. The step stays as a guard. A release does not
+edit the manifest. If the line comes back in `Cargo.toml`, the `plan` job
+fails.
 
 To run the same check on your machine, use a separate git worktree, not your
 own work tree:

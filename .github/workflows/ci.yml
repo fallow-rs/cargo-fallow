@@ -199,8 +199,9 @@ jobs:
           node scripts/check-package.mjs < package-list.txt
       - name: Build the package with the precise feature
         run: cargo package --locked --features precise
-      # `cargo publish --dry-run` refuses `publish = false`. The step removes
-      # the line in this checkout only and restores it after the dry run.
+      # `cargo publish --dry-run` refuses `publish = false`. If the line comes
+      # back, the step removes it in this checkout only and restores it after
+      # the dry run.
       - name: Publish dry run
         run: |
           sed -i '/^publish = false$/d' Cargo.toml
@@ -385,8 +386,7 @@ jobs:
       # The minimum follows the parser crates, which require a recent compiler.
       - name: Fetch locked dependencies
         run: cargo fetch --locked
-      # fallow checks only the packages that it publishes. This package has
-      # `publish = false` until M4, so the check reads every package.
+      # The check reads every package of the workspace.
       - name: Verify crate MSRV metadata
         run: |
           cargo metadata --no-deps --format-version 1 | jq -e --arg msrv "1.98" '

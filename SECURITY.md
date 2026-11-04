@@ -12,15 +12,19 @@ You should receive a response within 48 hours. Please include:
 
 ## Supported versions
 
-cargo-fallow has no release yet. A security fix goes to the `main` branch. After the first release, the policy of fallow applies: only the latest minor release receives security fixes.
+Only the latest minor release of cargo-fallow receives security fixes. A security fix goes to the `main` branch first.
 
 ## Scope
 
-cargo-fallow runs `cargo metadata --no-deps` and parses the root source file of each target with `syn`. It does not compile the workspace, it does not run build scripts or procedural macros, and it does not use the network. It writes the report to stdout and progress lines to stderr. It writes no file.
+The static checks (`check`, `deps`, `visibility`, `boundaries`, `size`, `complexity`, `dupes` and `files`) run `cargo metadata --no-deps` and parse the source with `ra_ap_syntax`. They do not compile the workspace, they do not run build scripts or procedural macros, and they do not use the network. `--changed-since` and `--hotspots` also run `git` on the workspace.
+
+Some commands and flags write files. `fix --yes` edits the source and the manifests. `init` writes the configuration. `--save-baseline` and `--save-snapshot` write the file that you name.
+
+`cargo fallow mutants` is different. It copies the workspace to a temporary folder, then builds it and runs its tests in that copy. That runs the build scripts, the procedural macros and the tests of the workspace, and Cargo can use the network to fetch dependencies. Run `mutants` only on code that you would build and test yourself.
 
 `cargo metadata` reads the Cargo configuration of the workspace, for example `.cargo/config.toml`. Run cargo-fallow only on a workspace whose Cargo configuration you trust, the same as for `cargo build`.
 
-The crate root uses `#![cfg_attr(not(test), deny(clippy::disallowed_methods))]` to prohibit `std::process::Command::new`. The workspace loader in `src/workspace.rs` is the one module that spawns a process.
+The crate root uses `#![cfg_attr(not(test), deny(clippy::disallowed_methods))]` to prohibit `std::process::Command::new`. Only the workspace loader (`src/workspace.rs`), the git diff reader (`src/diff.rs`) and the mutation process runner (`src/mutation/process.rs`) are allowed to spawn a process.
 
 ## Release binaries
 

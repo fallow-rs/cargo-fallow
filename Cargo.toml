@@ -1,6 +1,6 @@
 [package]
 name = "cargo-fallow"
-version = "0.0.0"
+version = "0.1.0"
 edition = "2024"
 # The floor of fallow-report-protocol.
 rust-version = "1.98"
@@ -11,10 +11,6 @@ documentation = "https://github.com/fallow-rs/cargo-fallow/blob/main/docs/README
 readme = "README.md"
 keywords = ["cargo", "cargo-subcommand", "static-analysis", "mutation-testing"]
 categories = ["development-tools::cargo-plugins"]
-# The owner removes this line in the 0.1.0 release commit. See
-# docs/release-procedure.md. The release workflow refuses a real publish while
-# the line is here.
-publish = false
 # The package holds the source, the manifest, the lock file, the license, the
 # README and the CHANGELOG only. scripts/check-package.mjs checks the list.
 include = ["/src/**/*.rs", "/LICENSE", "/README.md", "/CHANGELOG.md"]

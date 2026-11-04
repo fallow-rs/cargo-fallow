@@ -48,7 +48,10 @@ test("an empty section is an error", () => {
   assert.equal(releaseNotes("## [1.0.0]\n\n## [0.9.0]\n- x\n", "1.0.0", false).ok, false);
 });
 
-test("the repository CHANGELOG has an unreleased section for the dry run", () => {
+test("the repository CHANGELOG has notes for a dry run of the manifest version", () => {
   const changelog = readFileSync(new URL("../CHANGELOG.md", import.meta.url), "utf8");
-  assert.notEqual(sectionOf(changelog, "Unreleased"), null);
+  const manifest = readFileSync(new URL("../Cargo.toml", import.meta.url), "utf8");
+  const version = /^version = "([^"]+)"$/m.exec(manifest)?.[1];
+  assert.ok(version, "Cargo.toml has a package version");
+  assert.equal(releaseNotes(changelog, version, true).ok, true);
 });

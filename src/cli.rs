@@ -26,7 +26,8 @@ pub enum Format {
     Sarif,
     /// A CodeClimate report: a JSON array of issues, for GitLab code quality.
     Codeclimate,
-    /// A flat SVG badge with the health grade. Only `check` gives it.
+    /// A flat SVG badge with the health grade. Only `check` gives it, and it
+    /// exits 0 also when a gate fails.
     Badge,
 }
 

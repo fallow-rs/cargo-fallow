@@ -140,6 +140,11 @@ pub struct DupesArgs {
 }
 
 impl Command {
+    /// The output format of the subcommand.
+    pub const fn format(&self) -> Format {
+        self.common().format
+    }
+
     const fn common(&self) -> &CommonArgs {
         match self {
             Self::Boundaries(args) => &args.common,

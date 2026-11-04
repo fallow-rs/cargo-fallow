@@ -50,7 +50,11 @@ use crate::error::CliError;
 /// `cargo-fallow <args>`. Both forms give the same result.
 pub fn run(args: Vec<OsString>) -> ExitCode {
     let args = cli::strip_cargo_subcommand(args);
-    let code = match cli::parse(&args) {
+    let parsed = cli::parse(&args);
+    if let Some(code) = refuse_badge(&parsed) {
+        return ExitCode::from(code);
+    }
+    let code = match parsed {
         Parsed::Run(options) => check::run(&options),
         Parsed::Mutants(options) => run_mutants(&options),
         Parsed::Deps(options) => run_deps(&options),
@@ -80,6 +84,29 @@ pub fn run(args: Vec<OsString>) -> ExitCode {
         Parsed::Exit(code) => code,
     };
     ExitCode::from(code)
+}
+
+/// Stops a command other than `check` that asks for `--format badge`, before
+/// it runs: only `check` has the health score.
+fn refuse_badge(parsed: &Parsed) -> Option<u8> {
+    let format = match parsed {
+        Parsed::Mutants(options) => options.format,
+        Parsed::Deps(options) => options.format,
+        Parsed::Visibility(options) => options.format,
+        Parsed::Files(args) => args.format(),
+        Parsed::Fix(args) => args.format(),
+        Parsed::Structure(command) => command.format(),
+        _ => return None,
+    };
+    (format == cli::Format::Badge).then(|| {
+        CliError::new(
+            error::ErrorCode::InvalidArgument,
+            "`--format badge` needs the health score of `cargo fallow check`",
+        )
+        .with_help("Run `cargo fallow check --format badge`.")
+        .emit(format);
+        EXIT_INVALID_INPUT
+    })
 }
 
 /// Runs the `visibility` command and returns the process exit code.

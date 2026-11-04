@@ -250,15 +250,36 @@ mod tests {
     }
 
     #[test]
-    fn the_badge_of_one_grade_is_stable() {
+    fn the_badge_of_one_grade_has_fixed_widths() {
+        let label = text_width(LABEL);
+        let message = text_width("A (92)");
         let svg = render(LABEL, "A (92)", grade_color("A"));
-        let expected_width = 2 * 5 + text_width(LABEL) + 2 * 5 + text_width("A (92)");
+        let total = label + message + 4 * 5;
         assert!(
             svg.starts_with(&format!(
-                "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{expected_width}\" height=\"20\""
+                "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{total}\" height=\"20\""
             )),
             "{svg}"
         );
+        // The Verdana table fixes the widths: a change of the table shows here.
+        assert_eq!((label, message), (WIDTH_LABEL, WIDTH_MESSAGE));
         assert_eq!(svg.matches("<text").count(), 4);
+    }
+
+    /// The widths of `fallow rust` and `A (92)` in the Verdana table.
+    const WIDTH_LABEL: u32 = 57;
+    const WIDTH_MESSAGE: u32 = 35;
+
+    #[test]
+    fn a_scoped_run_gives_the_grey_badge() {
+        let scoped = Health::Scoped(crate::health::ScopedHealth::baseline());
+        assert!(health(Some(&scoped)).contains("no score"));
+    }
+
+    #[test]
+    fn render_escapes_the_text() {
+        let svg = render("a<&\"", "b>", "#000");
+        assert!(svg.contains("a&lt;&amp;&quot;: b&gt;"), "{svg}");
+        assert!(!svg.contains("a<&"), "{svg}");
     }
 }

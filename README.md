@@ -54,7 +54,7 @@ and take minutes. Run them as separate commands.
 | Flag | Meaning |
 | --- | --- |
 | `--manifest-path <PATH>` | The `Cargo.toml` of the workspace. The default is the manifest that Cargo finds from the current directory. |
-| `--format human\|json\|sarif\|codeclimate` | The output format. The default is `human`. |
+| `--format human\|json\|sarif\|codeclimate\|badge` | The output format. The default is `human`. `badge` is an SVG badge with the health grade (see [Output formats](#output-formats)). |
 | `--quiet` | Hide the progress lines on stderr. |
 | `--only <CHECK>,...` | Run only these checks. |
 | `--skip <CHECK>,...` | Do not run these checks. |
@@ -1049,10 +1049,12 @@ prints the same schema.
   `CARGO_FALLOW_UPDATE_SCHEMA=1` to write the file again.
 
 - `badge`: a flat SVG badge with the health grade, for example
-  `fallow rust: A (92)`, on stdout. Only `check` gives it. A run with no
-  health score, for example `check --only deps` or a scoped run, gives a grey
-  `no score` badge. Another command with `--format badge` exits 2. The badge
-  has the shape and the colors of the fallow badge for JavaScript.
+  `fallow rust: A (92)`, on stdout. The number is the whole part of the score.
+  Only `check` gives it. A run with no health score, for example
+  `check --only deps` or a scoped run, gives a grey `no score` badge. The run
+  exits 0 also when a gate fails, so a job can upload the badge. Another
+  command with `--format badge` exits 2 before it runs. The badge has the
+  shape and the colors of the fallow badge for JavaScript.
 
 ```bash
 cargo fallow check --format badge --quiet > fallow-badge.svg

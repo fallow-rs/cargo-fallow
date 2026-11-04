@@ -67,3 +67,28 @@ fn a_command_without_a_score_refuses_the_badge() {
         "{stderr}"
     );
 }
+
+#[test]
+fn the_badge_exits_0_when_a_gate_fails_and_mutants_refuses_it_at_once() {
+    let dir = package();
+    fs::write(dir.path().join("src/orphan.rs"), "").expect("write a file");
+    let (code, svg, stderr) = run(
+        dir.path(),
+        &[
+            "check",
+            "--format",
+            "badge",
+            "--fail-on-issues",
+            "--quiet",
+            "--offline",
+        ],
+    );
+    assert_eq!(code, 0, "{stderr}");
+    assert!(svg.starts_with("<svg "), "{svg}");
+    let (code, _, stderr) = run(dir.path(), &["mutants", "--format", "badge", "--quiet"]);
+    assert_eq!(code, 2);
+    assert!(
+        stderr.contains("cargo fallow check --format badge"),
+        "{stderr}"
+    );
+}

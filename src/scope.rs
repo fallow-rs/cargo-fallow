@@ -41,8 +41,9 @@ pub struct ScopeArgs {
     /// exit 0. A later run with `--baseline` leaves out these findings.
     #[arg(long, value_name = "PATH", conflicts_with = "changed_since")]
     pub save_baseline: Option<PathBuf>,
-    /// Exit 1 when the baseline has an entry with no finding in the run.
-    #[arg(long, requires = "baseline")]
+    /// Exit 1 when the baseline has an entry with no finding in the run. The
+    /// run needs `--baseline` or the `baseline` key of the configuration.
+    #[arg(long)]
     pub fail_on_stale_baseline: bool,
     /// Add `_meta` to the JSON report: the meaning, an example and the fix of
     /// each rule with a finding. Only the JSON format has it. `cargo fallow
@@ -129,6 +130,65 @@ pub fn packages_line(packages: &Packages) -> String {
     )
 }
 
+/// The key of the baseline file in `[workspace.metadata.fallow]`.
+const BASELINE_KEY: &str = "baseline";
+
+/// The baseline file of the run: `--baseline`, else the `baseline` key of
+/// `[workspace.metadata.fallow]`, relative to the workspace root. A run with
+/// `--save-baseline` reads no baseline from the configuration.
+fn baseline_path(workspace: &Workspace, args: &ScopeArgs) -> Result<Option<PathBuf>, CliError> {
+    if args.baseline.is_some() || args.save_baseline.is_some() {
+        return Ok(args.baseline.clone());
+    }
+    let Some(value) = workspace
+        .metadata
+        .get("fallow")
+        .and_then(|root| root.get(BASELINE_KEY))
+    else {
+        return Ok(None);
+    };
+    let Some(path) = value.as_str() else {
+        return Err(CliError::new(
+            crate::error::ErrorCode::InvalidConfig,
+            "`baseline` in `[workspace.metadata.fallow]` is not a path",
+        )
+        .with_help("Set `baseline = \"fallow-baseline.json\"`, a path from the workspace root."));
+    };
+    check_baseline_key(path)?;
+    let full = workspace.root.as_std_path().join(path);
+    if !full.is_file() {
+        return Err(CliError::new(
+            crate::error::ErrorCode::InvalidConfig,
+            format!("the baseline `{path}` of `[workspace.metadata.fallow]` does not exist"),
+        )
+        .with_help(format!(
+            "Run `cargo fallow check --save-baseline {path}`, or remove the `baseline` key."
+        )));
+    }
+    Ok(Some(full))
+}
+
+/// Checks that the `baseline` key is a path in the workspace root: relative,
+/// with no `..` part.
+pub fn check_baseline_key(path: &str) -> Result<(), CliError> {
+    let relative = std::path::Path::new(path);
+    let inside = relative.is_relative()
+        && relative.components().all(|part| {
+            matches!(
+                part,
+                std::path::Component::Normal(_) | std::path::Component::CurDir
+            )
+        });
+    if inside {
+        return Ok(());
+    }
+    Err(CliError::new(
+        crate::error::ErrorCode::InvalidConfig,
+        format!("the baseline `{path}` of `[workspace.metadata.fallow]` leaves the workspace root"),
+    )
+    .with_help("Use a path from the workspace root, with no `..` part."))
+}
+
 /// The line of the human output that names the changed files.
 pub fn changed_line(changed: &ChangedFiles) -> String {
     let count = changed.files.len();
@@ -197,7 +257,19 @@ impl Scope {
             } else {
                 Some(Packages::new(workspace, &args.packages)?)
             },
-            baseline: args.baseline.as_deref().map(Loaded::read).transpose()?,
+            baseline: {
+                let path = baseline_path(workspace, args)?;
+                if args.fail_on_stale_baseline && path.is_none() {
+                    return Err(CliError::new(
+                        crate::error::ErrorCode::InvalidArgument,
+                        "`--fail-on-stale-baseline` needs a baseline",
+                    )
+                    .with_help(
+                        "Add `--baseline <PATH>`, or set `baseline` in `[workspace.metadata.fallow]`.",
+                    ));
+                }
+                path.as_deref().map(Loaded::read).transpose()?
+            },
             recorder: args.save_baseline.clone().map(Recorder::new),
             fail_on_stale: args.fail_on_stale_baseline,
             narrowed: false,

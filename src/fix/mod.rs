@@ -147,10 +147,13 @@ struct Plan {
 
 /// Runs `fix` and returns the process exit code.
 pub fn run(args: &FixArgs) -> Result<u8, CliError> {
-    if matches!(args.format, Format::Sarif | Format::Codeclimate) {
+    if matches!(
+        args.format,
+        Format::Sarif | Format::Codeclimate | Format::Compact | Format::Markdown
+    ) {
         return Err(CliError::new(
             ErrorCode::InvalidArgument,
-            "`fix` has no SARIF or CodeClimate output",
+            "`fix` has no SARIF, CodeClimate, compact or markdown output",
         )
         .with_help("Use `--format human` or `--format json`."));
     }

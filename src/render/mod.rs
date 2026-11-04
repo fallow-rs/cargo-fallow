@@ -1,7 +1,9 @@
 //! The output of a run.
 
+pub mod compact;
 pub mod deps;
 mod human;
+pub mod markdown;
 pub mod mutants;
 mod sarif;
 
@@ -69,6 +71,15 @@ pub fn sarif_document(
 /// success, so `cargo fallow | head` does not fail.
 pub fn write_stdout(text: &str) -> io::Result<()> {
     ignore_broken_pipe(writeln!(io::stdout().lock(), "{text}"))
+}
+
+/// Writes the text of a report to stdout. An empty text writes nothing, so a
+/// compact run with no finding has no output.
+pub fn write_report(text: &str) -> io::Result<()> {
+    if text.is_empty() {
+        return Ok(());
+    }
+    write_stdout(text)
 }
 
 /// Writes one block of text and a newline to stderr.

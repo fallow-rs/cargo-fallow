@@ -14,6 +14,11 @@ GitHub release. Each release needs a `## [X.Y.Z] - YYYY-MM-DD` section.
 - The GitHub Action has the inputs `changed-since`, `auto-changed-since`,
   `baseline` and `save-baseline`, and `comment` posts or updates one sticky
   pull request comment with the gates and the findings.
+- `cargo fallow init` prints the configuration tables with the limits at the
+  current maximum, and saves the current findings as a baseline. `--write`
+  adds them to the root `Cargo.toml`. `--ci github` prints a workflow. The
+  `baseline` key of `[workspace.metadata.fallow]` names the baseline of each
+  run.
 - `cargo fallow explain <rule>` gives the meaning, an example and the fix of a
   rule, also as JSON. `--explain` adds `_meta` with the rules of the findings
   to the JSON report of `check` and of each static command.
@@ -61,6 +66,10 @@ GitHub release. Each release needs a `## [X.Y.Z] - YYYY-MM-DD` section.
 - `--package <NAME>` (`-p`) on `check` and the static commands keeps only the
   findings of the named workspace members. The analysis still reads the whole
   workspace. An unknown name exits 2.
+- `--format compact` gives one line for each finding,
+  `path:line:col: rule: message`, and `--format markdown` gives a gate table
+  and one table for each check. Each command has both formats, except `fix`
+  and `mutants --inspect`.
 
 ### Fixed
 

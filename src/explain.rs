@@ -278,10 +278,13 @@ pub fn find(name: &str) -> Option<&'static Explanation> {
 
 /// Runs `explain` and returns the process exit code.
 pub fn run(args: &ExplainArgs) -> Result<u8, CliError> {
-    if matches!(args.format, Format::Sarif | Format::Codeclimate) {
+    if matches!(
+        args.format,
+        Format::Sarif | Format::Codeclimate | Format::Compact | Format::Markdown
+    ) {
         return Err(CliError::new(
             ErrorCode::InvalidArgument,
-            "`explain` has no SARIF or CodeClimate output",
+            "`explain` has no SARIF, CodeClimate, compact or markdown output",
         )
         .with_help("Use `--format human` or `--format json`."));
     }

@@ -300,3 +300,44 @@ fn workspace_entry_that_a_kept_member_entry_inherits_stays() {
     assert_eq!(report["total_fixed"], 0, "{report}");
     assert_eq!(read(&dir, "Cargo.toml"), before);
 }
+
+#[test]
+fn misplaced_entry_that_a_feature_names_stays() {
+    let manifest = "[dependencies]\nalpha = { path = \"../libs/alpha\" }\nbeta = { path = \"../libs/beta\" }\n\n[features]\nfull = [\"beta/extra\"]\n";
+    let dir = workspace(
+        "",
+        manifest,
+        &[("app/tests/it.rs", "#[test]\nfn t() { beta::f(); }\n")],
+    );
+    let before = read(&dir, "app/Cargo.toml");
+    let (code, stdout, stderr) = fix(&dir, &["--yes", "--format", "json", "--quiet"], &[]);
+    assert_eq!(code, 0, "{stderr} {stdout}");
+    assert_eq!(json(&stdout)["total_fixed"], 0, "{stdout}");
+    assert_eq!(read(&dir, "app/Cargo.toml"), before);
+}
+
+#[test]
+fn misplaced_entry_moves_when_the_dev_entry_is_for_another_platform() {
+    let dev = "[target.'cfg(windows)'.dev-dependencies]\nbeta = { path = \"../libs/beta\" }\n";
+    {
+        let manifest = format!(
+            "[dependencies]\nalpha = {{ path = \"../libs/alpha\" }}\nbeta = {{ path = \"../libs/beta\" }}\n\n{dev}"
+        );
+        let dir = workspace(
+            "",
+            &manifest,
+            &[("app/tests/it.rs", "#[test]\nfn t() { beta::f(); }\n")],
+        );
+        let (code, stdout, stderr) = fix(&dir, &["--yes", "--format", "json", "--quiet"], &[]);
+        assert_eq!(code, 0, "{stderr} {stdout}");
+        let report = json(&stdout);
+        let types: Vec<&str> = report["fixes"]
+            .as_array()
+            .expect("fixes is an array")
+            .iter()
+            .filter(|fix| fix["dependency"] == "beta")
+            .filter_map(|fix| fix["type"].as_str())
+            .collect();
+        assert_eq!(types, ["move-to-dev-dependencies"], "{dev}: {report}");
+    }
+}

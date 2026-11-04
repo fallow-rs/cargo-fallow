@@ -12,7 +12,7 @@ pub mod deps;
 use std::fmt::Write as _;
 use std::fs;
 use std::io::IsTerminal as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::Args;
 use fallow_report_protocol::exit_code::EXIT_OK;
@@ -43,8 +43,8 @@ pub struct FixArgs {
     /// Show the edits and write nothing.
     #[arg(long)]
     dry_run: bool,
-    /// Apply the edits without a question. A process without a terminal on
-    /// stdin needs this flag.
+    /// Confirm the edits. A process without a terminal on stdin needs this
+    /// flag. In a terminal, the command applies the edits also without it.
     #[arg(long, alias = "force")]
     yes: bool,
     /// Give `--locked` to the `cargo metadata` call of the analysis.
@@ -84,6 +84,10 @@ pub struct FixReport {
     pub total_fixed: usize,
     /// The findings that `fix` does not change, for example a warning.
     pub skipped: usize,
+    /// The packages that the `deps` check did not judge, so `fix` has no edit
+    /// for them.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub skipped_packages: Vec<crate::deps::report::SkippedPackage>,
 }
 
 /// Runs `fix` and returns the process exit code.
@@ -115,21 +119,32 @@ pub fn run(args: &FixArgs) -> Result<u8, CliError> {
         .map(|(_, flag)| flag.to_owned())
         .collect::<Vec<_>>()
     };
-    let report = crate::deps::run(&crate::deps::Options {
-        manifest_path: args.manifest_path.clone(),
-        format: args.format,
-        quiet: args.quiet,
-        fail_on_issues: false,
-        cargo_flags: flags(true),
-    })?;
+    let progress = Progress::new(args.quiet);
+    progress.step("Resolving the workspace with cargo metadata");
+    let (workspace, metadata) =
+        workspace::load_resolved(args.manifest_path.as_deref(), &flags(true))?;
+    progress.step("Building the module graph");
+    let module_graph = crate::graph::build(&workspace, &crate::graph::Production::default());
+    progress.step("Checking the dependencies");
+    let report = crate::deps::report(
+        &workspace,
+        &metadata,
+        &module_graph,
+        false,
+        &crate::scope::Scope::default(),
+    );
     let mut fixes = deps::plan(&report);
     let skipped = report.findings.len() - fixes.len();
     if !args.dry_run && !fixes.is_empty() {
-        let progress = Progress::new(args.quiet);
         progress.step("Editing the manifests");
         // The edits change `Cargo.lock`, so the check after the edits cannot
         // use `--locked` or `--frozen`.
-        write_and_check(args.manifest_path.as_deref(), &fixes, &flags(false))?;
+        write_and_check(
+            workspace.root.as_std_path(),
+            args.manifest_path.as_deref(),
+            &fixes,
+            &flags(false),
+        )?;
         for fix in &mut fixes {
             fix.applied = true;
         }
@@ -144,6 +159,7 @@ pub fn run(args: &FixArgs) -> Result<u8, CliError> {
         fixes,
         total_fixed,
         skipped,
+        skipped_packages: report.skipped,
     };
     let text = match args.format {
         Format::Json => pretty(&report)?,
@@ -156,31 +172,32 @@ pub fn run(args: &FixArgs) -> Result<u8, CliError> {
 /// Writes the edits and loads the workspace again. On a failure, writes back
 /// the old bytes of each file.
 fn write_and_check(
-    manifest_path: Option<&std::path::Path>,
+    root: &Path,
+    manifest_path: Option<&Path>,
     fixes: &[deps::Edit],
     flags: &[String],
 ) -> Result<(), CliError> {
-    let workspace = workspace::load(manifest_path)?;
-    let root = workspace.root.as_std_path();
     let mut planned = Vec::new();
     for (manifest, edits) in deps::by_manifest(fixes) {
         let path = root.join(manifest);
-        let old =
-            fs::read(&path).map_err(|err| failed(&format!("cannot read `{manifest}`: {err}")))?;
+        let old = fs::read(&path)
+            .map_err(|err| unchanged(&format!("cannot read `{manifest}`: {err}")))?;
         let text = String::from_utf8(old.clone())
-            .map_err(|_| failed(&format!("`{manifest}` is not UTF-8")))?;
+            .map_err(|_| unchanged(&format!("`{manifest}` is not UTF-8")))?;
         let new = deps::apply(&text, &edits)
-            .map_err(|reason| failed(&format!("`{manifest}`: {reason}")))?;
+            .map_err(|reason| unchanged(&format!("`{manifest}`: {reason}")))?;
         planned.push((path, old, new));
     }
-    let mut written: Vec<(&PathBuf, &Vec<u8>)> = Vec::new();
+    let mut written: Vec<(&Path, &[u8])> = Vec::new();
     let mut outcome = Ok(());
     for (path, old, new) in &planned {
-        if let Err(err) = fs::write(path, new) {
+        // The list holds the file before the write, so a failed write is
+        // restored too.
+        written.push((path, old));
+        if let Err(err) = replace(path, new.as_bytes()) {
             outcome = Err(failed(&format!("cannot write `{}`: {err}", path.display())));
             break;
         }
-        written.push((path, old));
     }
     if outcome.is_ok() {
         outcome = workspace::load_resolved(manifest_path, flags)
@@ -192,21 +209,47 @@ fn write_and_check(
                 ))
             });
     }
-    if outcome.is_err() {
-        for (path, old) in written {
-            // A failed write back leaves the file with the edit. The error
-            // names the edit, so a person can undo it.
-            let _ = fs::write(path, old);
-        }
+    let Err(error) = outcome else {
+        return Ok(());
+    };
+    let kept: Vec<String> = written
+        .into_iter()
+        .filter(|(path, old)| replace(path, old).is_err())
+        .map(|(path, _)| path.display().to_string())
+        .collect();
+    if kept.is_empty() {
+        return Err(error.with_help(RESTORED_HELP));
     }
-    outcome
+    Err(error.with_help(format!(
+        "The command cannot write back the old bytes of {}. Undo the edits of these files by \
+         hand.",
+        kept.join(", ")
+    )))
+}
+
+/// The help of a failed run after each file got its old bytes again.
+const RESTORED_HELP: &str = "The command wrote back the old bytes of each file. Run \
+                             `cargo fallow fix --dry-run` to see the edits.";
+
+/// Writes the bytes to a new file next to `path`, then renames it over
+/// `path`. A stop between the two steps leaves the old file.
+fn replace(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let folder = path.parent().unwrap_or_else(|| Path::new("."));
+    let mut file = tempfile::NamedTempFile::new_in(folder)?;
+    std::io::Write::write_all(&mut file, bytes)?;
+    if let Ok(metadata) = fs::metadata(path) {
+        file.as_file().set_permissions(metadata.permissions())?;
+    }
+    file.persist(path).map(|_| ()).map_err(|err| err.error)
 }
 
 fn failed(message: &str) -> CliError {
-    CliError::new(ErrorCode::FixFailed, message).with_help(
-        "The command wrote back the old bytes of each file. Run `cargo fallow fix --dry-run` \
-         to see the edits.",
-    )
+    CliError::new(ErrorCode::FixFailed, message)
+}
+
+/// An error before the first write.
+fn unchanged(message: &str) -> CliError {
+    failed(message).with_help("No file changed.")
 }
 
 fn human(report: &FixReport) -> String {

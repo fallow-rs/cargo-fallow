@@ -13,6 +13,14 @@ use super::usage::{self, Context, PackageUsage};
 use crate::graph::{Graph, crate_name};
 use crate::workspace::{self, Workspace};
 
+/// Why `fix` leaves an entry that turns on features.
+const MANUAL_FEATURES: &str = "The entry turns on features, and another dependency can need them through feature unification.";
+/// Why `fix` leaves a misplaced entry that a feature names.
+const MANUAL_FEATURE_NAMES: &str =
+    "A feature of the package names the dependency, and a feature cannot name a dev-dependency.";
+/// Why `fix` leaves a workspace entry.
+const MANUAL_INHERITED: &str = "A member entry that `fix` keeps inherits it.";
+
 /// The table of the cargo-fallow ignore list in a package.
 const PACKAGE_IGNORE_TABLE: &str = "package.metadata.fallow.deps";
 /// The table of the cargo-fallow ignore list in the workspace root.
@@ -148,18 +156,7 @@ pub fn analyze(workspace: &Workspace, metadata: &Metadata, graph: &Graph) -> Ana
             analysis.findings.push(finding);
         }
         member_keys.extend(inherited_keys(&entries, &removed));
-        kept_inherited.extend(
-            entries
-                .iter()
-                .filter(|entry| entry.inherits)
-                .filter(|entry| {
-                    removed.iter().any(|finding| {
-                        finding.sets_features
-                            && line_of(std::slice::from_ref(*entry), finding).is_some()
-                    })
-                })
-                .map(|entry| entry.key.clone()),
-        );
+        kept_inherited.extend(kept_inherited_keys(&entries, &removed));
         for name in ignores.redundant() {
             analysis.findings.push(redundant_ignore(
                 Some(package.name.to_string()),
@@ -189,7 +186,9 @@ pub fn analyze(workspace: &Workspace, metadata: &Metadata, graph: &Graph) -> Ana
             );
             finding.manifest_path.clone_from(&root_path);
             finding.line = Some(entry.line);
-            finding.kept_by_member = kept_inherited.contains(&entry.key);
+            finding.manual = kept_inherited
+                .contains(&entry.key)
+                .then_some(MANUAL_INHERITED);
             finding.actions = actions(&finding);
             analysis.findings.push(finding);
         }
@@ -247,6 +246,22 @@ const fn is_removal(rule: Rule) -> bool {
 
 /// The keys that the entries inherit from `[workspace.dependencies]`, without
 /// the entries that a finding in `removed` removes.
+/// The keys of the inheriting entries that `fix` keeps.
+fn kept_inherited_keys<'a>(
+    entries: &'a [Entry],
+    removed: &'a [Finding],
+) -> impl Iterator<Item = String> + 'a {
+    entries
+        .iter()
+        .filter(|entry| entry.inherits)
+        .filter(|entry| {
+            removed.iter().any(|finding| {
+                finding.manual.is_some() && line_of(std::slice::from_ref(*entry), finding).is_some()
+            })
+        })
+        .map(|entry| entry.key.clone())
+}
+
 fn inherited_keys(entries: &[Entry], removed: &[Finding]) -> Vec<String> {
     entries
         .iter()
@@ -360,9 +375,20 @@ fn package_findings(metadata: &Metadata, package: &Package, used: &PackageUsage)
             (entry.dependency.name != entry.key).then(|| entry.dependency.name.clone());
         found.optional = entry.dependency.optional;
         found.used_by = used_by;
-        found.sets_features = !entry.dependency.features.is_empty();
+        found.manual = if !entry.dependency.features.is_empty() {
+            Some(MANUAL_FEATURES)
+        } else if rule == Rule::MisplacedDependency && feature_configures(package, &entry.key) {
+            Some(MANUAL_FEATURE_NAMES)
+        } else {
+            None
+        };
+        // Only a dev entry with the same key, on each platform of the normal
+        // entry, makes the normal entry a plain removal.
         found.in_dev = declared.iter().any(|other| {
-            other.section == Section::Dev && other.dependency.name == entry.dependency.name
+            other.section == Section::Dev
+                && other.dependency.name == entry.dependency.name
+                && other.key == entry.key
+                && (other.platform.is_none() || other.platform == entry.platform)
         });
         findings.push(found);
     }
@@ -496,8 +522,7 @@ fn finding(
         optional: false,
         used_by: Vec::new(),
         in_dev: false,
-        sets_features: false,
-        kept_by_member: false,
+        manual: None,
         actions: Vec::new(),
     }
 }
@@ -577,22 +602,14 @@ fn actions(finding: &Finding) -> Vec<Action> {
             ("remove-dependency", format!("Remove `{key}` from {table}."))
         }
     };
-    let description = if finding.sets_features && fixes(finding.rule) {
-        format!(
-            "{description} The entry turns on features, and another dependency can need them, \
-             so `cargo fallow fix` does not change it."
-        )
-    } else if finding.kept_by_member {
-        format!(
-            "{description} A member entry that inherits it turns on features, so \
-             `cargo fallow fix` does not change it."
-        )
-    } else {
-        description
+    let manual = finding.manual.filter(|_| fixes(finding.rule));
+    let description = match manual {
+        Some(reason) => format!("{description} {reason} So `cargo fallow fix` does not change it."),
+        None => description,
     };
     vec![Action {
         kind,
-        auto_fixable: fixes(finding.rule) && !finding.sets_features && !finding.kept_by_member,
+        auto_fixable: fixes(finding.rule) && manual.is_none(),
         description,
         file: finding.manifest_path.clone(),
         line: finding.line,

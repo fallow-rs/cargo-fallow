@@ -28,7 +28,7 @@ const PACKAGE_TABLES: [&str; 5] = [
 
 /// True when `fix` can apply the action of a finding of `rule`. A warning is
 /// not fixed: a person decides it. An entry that turns on features is not
-/// fixed either: see `Finding::sets_features`.
+/// fixed either: see `Finding::manual`.
 pub const fn fixes(rule: Rule) -> bool {
     matches!(
         rule,
@@ -104,8 +104,11 @@ pub fn apply(text: &str, edits: &[&Edit]) -> Result<String, String> {
     let mut removed = BTreeSet::new();
     for edit in edits {
         let platform = edit.platform.as_deref();
-        let entry = table(&mut doc, &edit.section, platform)
-            .and_then(|table| table.remove(&edit.dependency))
+        let entry = table(&mut doc, &edit.section, platform, &edit.dependency)
+            .and_then(|table| {
+                let key = table.key(&edit.dependency).cloned()?;
+                table.remove(&edit.dependency).map(|item| (key, item))
+            })
             .ok_or_else(|| {
                 format!(
                     "the manifest has no `{}` entry in `{}`",
@@ -113,9 +116,20 @@ pub fn apply(text: &str, edits: &[&Edit]) -> Result<String, String> {
                 )
             })?;
         if edit.kind == MOVE {
-            dev_table(&mut doc, platform)
-                .ok_or_else(|| "the manifest has no place for `[dev-dependencies]`".to_owned())?
-                .insert(&edit.dependency, entry);
+            let (key, item) = entry;
+            let dev = dev_table(&mut doc, platform)
+                .ok_or_else(|| "the manifest has no place for `[dev-dependencies]`".to_owned())?;
+            // The key keeps its decor, so a comment above the entry moves with it.
+            match dev.as_table_mut() {
+                Some(table) => {
+                    table.insert_formatted(&key, item);
+                }
+                None => {
+                    dev.as_table_like_mut()
+                        .ok_or_else(|| "`[dev-dependencies]` is not a table".to_owned())?
+                        .insert(key.get(), item);
+                }
+            }
         } else if edit.section != WORKSPACE_SECTION {
             removed.insert(edit.dependency.as_str());
         }
@@ -140,12 +154,13 @@ pub fn by_manifest(edits: &[Edit]) -> BTreeMap<&str, Vec<&Edit>> {
     grouped
 }
 
-/// The table of a section, on the platform when there is one. Cargo also
-/// reads the `dev_dependencies` and `build_dependencies` spellings.
+/// The table of a section with the key, on the platform when there is one.
+/// Cargo also reads the `dev_dependencies` and `build_dependencies` spellings.
 fn table<'a>(
     doc: &'a mut DocumentMut,
     section: &str,
     platform: Option<&str>,
+    key: &str,
 ) -> Option<&'a mut dyn TableLike> {
     if section == WORKSPACE_SECTION {
         return doc
@@ -156,7 +171,11 @@ fn table<'a>(
     let base = platform_base(doc, platform)?;
     let name = [section.to_owned(), section.replace('-', "_")]
         .into_iter()
-        .find(|name| base.contains_key(name))?;
+        .find(|name| {
+            base.get(name)
+                .and_then(Item::as_table_like)
+                .is_some_and(|table| table.contains_key(key))
+        })?;
     base.get_mut(&name)?.as_table_like_mut()
 }
 
@@ -177,12 +196,9 @@ fn platform_base<'a>(
     target.get_mut(&key)?.as_table_like_mut()
 }
 
-/// The `[dev-dependencies]` table of the platform. The function adds the
-/// table when the manifest has none.
-fn dev_table<'a>(
-    doc: &'a mut DocumentMut,
-    platform: Option<&str>,
-) -> Option<&'a mut dyn TableLike> {
+/// The `[dev-dependencies]` item of the platform. The function adds the table
+/// when the manifest has none.
+fn dev_table<'a>(doc: &'a mut DocumentMut, platform: Option<&str>) -> Option<&'a mut Item> {
     let base = platform_base(doc, platform)?;
     let name = if base.contains_key("dev_dependencies") && !base.contains_key("dev-dependencies") {
         "dev_dependencies"
@@ -192,7 +208,7 @@ fn dev_table<'a>(
     if !base.contains_key(name) {
         base.insert(name, Item::Table(Table::new()));
     }
-    base.get_mut(name)?.as_table_like_mut()
+    base.get_mut(name)
 }
 
 /// True when a dependency table of the package, on any platform, still has
@@ -240,6 +256,10 @@ fn remove_feature_values(doc: &mut DocumentMut, key: &str) {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::expect_used,
+    reason = "a test fails loudly when an edit does not apply"
+)]
 mod tests {
     use super::*;
 
@@ -261,7 +281,7 @@ mod tests {
     fn removal_keeps_the_other_entries_and_their_comments() {
         let text = "[dependencies]\n# a\na = \"1\"\n# b\nb = \"1\" # tail\n# c\nc = \"1\"\n";
         let remove = edit("remove-dependency", "dependencies", None, "b");
-        let out = apply(text, &[&remove]).unwrap_or_default();
+        let out = apply(text, &[&remove]).expect("the edit applies");
         assert_eq!(out, "[dependencies]\n# a\na = \"1\"\n# c\nc = \"1\"\n");
     }
 
@@ -269,7 +289,7 @@ mod tests {
     fn removal_finds_the_platform_table_by_its_normal_form() {
         let text = "[target.\"cfg( unix )\".dependencies]\na = \"1\"\nb = \"1\"\n";
         let remove = edit("remove-dependency", "dependencies", Some("cfg(unix)"), "a");
-        let out = apply(text, &[&remove]).unwrap_or_default();
+        let out = apply(text, &[&remove]).expect("the edit applies");
         assert_eq!(out, "[target.\"cfg( unix )\".dependencies]\nb = \"1\"\n");
     }
 
@@ -277,7 +297,7 @@ mod tests {
     fn removal_cleans_the_feature_values_of_the_key() {
         let text = "[dependencies]\na = { version = \"1\", optional = true }\n\n[features]\nx = [\"dep:a\", \"a/f\", \"a?/g\", \"ab/f\"]\n";
         let remove = edit("remove-dependency", "dependencies", None, "a");
-        let out = apply(text, &[&remove]).unwrap_or_default();
+        let out = apply(text, &[&remove]).expect("the edit applies");
         assert!(out.contains("x = [\"ab/f\"]"), "{out}");
     }
 
@@ -285,7 +305,7 @@ mod tests {
     fn feature_values_stay_while_another_table_declares_the_key() {
         let text = "[dependencies]\na = \"1\"\n\n[build-dependencies]\na = \"1\"\n\n[features]\nx = [\"a/f\"]\n";
         let remove = edit("remove-dependency", "dependencies", None, "a");
-        let out = apply(text, &[&remove]).unwrap_or_default();
+        let out = apply(text, &[&remove]).expect("the edit applies");
         assert!(out.contains("x = [\"a/f\"]"), "{out}");
     }
 
@@ -293,7 +313,7 @@ mod tests {
     fn move_adds_the_dev_table_and_keeps_the_value() {
         let text = "[dependencies]\na = { version = \"1\", features = [\"x\"] }\n";
         let moved = edit(MOVE, "dependencies", None, "a");
-        let out = apply(text, &[&moved]).unwrap_or_default();
+        let out = apply(text, &[&moved]).expect("the edit applies");
         assert_eq!(
             out,
             "[dependencies]\n\n[dev-dependencies]\na = { version = \"1\", features = [\"x\"] }\n"
@@ -304,5 +324,46 @@ mod tests {
     fn missing_entry_is_an_error() {
         let remove = edit("remove-dependency", "dependencies", None, "z");
         assert!(apply("[dependencies]\na = \"1\"\n", &[&remove]).is_err());
+    }
+}
+
+#[cfg(test)]
+#[expect(
+    clippy::expect_used,
+    reason = "a test fails loudly when an edit does not apply"
+)]
+mod more_tests {
+    use super::*;
+
+    fn edit(kind: &'static str, section: &str, key: &str) -> Edit {
+        Edit {
+            kind,
+            rule: Rule::MisplacedDependency,
+            package: Some("app".to_owned()),
+            manifest_path: "Cargo.toml".to_owned(),
+            section: section.to_owned(),
+            platform: None,
+            dependency: key.to_owned(),
+            line: None,
+            applied: false,
+        }
+    }
+
+    #[test]
+    fn move_keeps_the_comment_above_the_entry() {
+        let text = "[dependencies]\n# for the tests\na = \"1\"\n\n[dev-dependencies]\nb = \"1\"\n";
+        let out = apply(text, &[&edit(MOVE, "dependencies", "a")]).expect("the edit applies");
+        assert!(
+            out.contains("b = \"1\"\n# for the tests\na = \"1\"\n"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn the_table_with_the_key_wins_when_both_spellings_exist() {
+        let text = "[dev-dependencies]\na = \"1\"\n\n[dev_dependencies]\nb = \"1\"\n";
+        let out = apply(text, &[&edit("remove-dependency", "dev-dependencies", "b")])
+            .expect("the edit applies");
+        assert_eq!(out, "[dev-dependencies]\na = \"1\"\n\n[dev_dependencies]\n");
     }
 }

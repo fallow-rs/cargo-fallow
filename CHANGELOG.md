@@ -23,7 +23,7 @@ GitHub release. Each release needs a `## [X.Y.Z] - YYYY-MM-DD` section.
 - `cargo fallow fix` removes each unused dependency entry and moves each
   misplaced entry to `[dev-dependencies]`. `--dry-run` shows the edits. The
   edit keeps comments, and a failed load after the edit writes back the old
-  bytes. The `error` findings of `deps` now have `auto_fixable: true`.
+  bytes. The `deps` actions that `fix` applies now have `auto_fixable: true`.
 - `cargo fallow files` reports each `.rs` file in a target folder that no
   target compiles, with the rule `unused-file` and the gate `unused-files`.
   `check` runs it by default.

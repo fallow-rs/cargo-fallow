@@ -96,6 +96,12 @@ Complexity findings in code scanning, without a failed job:
 | `annotations` | `true` | Show each finding as an annotation. |
 | `max-annotations` | `50` | The most annotations, and the most findings in the job summary. The errors come first. GitHub shows at most 10 annotations of each level for a step. |
 | `summary` | `true` | Write the job summary. |
+| `changed-since` | empty | `--changed-since`: report only the findings in the files that changed since this ref. The static commands take it. |
+| `auto-changed-since` | `false` | On a pull request, give the base commit of the pull request as `--changed-since`, when `changed-since` is empty. |
+| `baseline` | empty | `--baseline`: a baseline file from `--save-baseline`, relative to `working-directory`. |
+| `save-baseline` | empty | `--save-baseline`: write the findings of the run to this file. The run then exits 0. |
+| `comment` | `false` | Post or update one sticky comment on the pull request. See [Pull request comment](#pull-request-comment). |
+| `comment-key` | empty | The key of the sticky comment. When empty, the command. Give each call its own key when two calls run the same command. |
 | `artifacts-dir` | empty | The folder for the report files. When empty, each call gets a new folder in `RUNNER_TEMP`. |
 | `github-token` | `github.token` | The token for the code scanning check and the upload. |
 | `mutants-package` | empty | `--package` |
@@ -125,6 +131,43 @@ commit with `--depth=1`, so the clone gets it as a shallow commit. When the
 fetch fails, the run compares with no base, and the notice names
 `fetch-depth: 0`. After a force push, the old commit can be gone from the
 remote. Use `fetch-depth: 0` for a full comparison.
+
+### Pull request comment
+
+`comment: true` posts one comment on the pull request with the gates and the
+findings, the same text as the job summary. A hidden marker names the comment
+of each `comment-key`, so the next run of the job updates the comment and adds
+no new one.
+
+```yaml
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@<sha>
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: fallow-rs/cargo-fallow@<sha>
+        with:
+          command: check
+          auto-changed-since: 'true'
+          comment: 'true'
+```
+
+- The step needs `pull-requests: write`. A token without it, for example the
+  token of a Dependabot pull request, gives a warning and no comment. The run
+  still passes or fails on its gates.
+- A pull request from a fork has a read-only token, so the step posts no
+  comment and writes a notice. A `pull_request_target` run from a fork also
+  posts no comment.
+- An event with no pull request posts no comment.
+- The step updates only a comment of its own author: the login of the token,
+  or `github-actions[bot]` for the default token.
+- A comment over 60000 characters is cut, with a line that points to the job
+  summary.
+- `auto-changed-since` and `changed-since` need the history of the base
+  (`fetch-depth: 0`).
 
 ### Gate flags
 

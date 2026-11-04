@@ -580,7 +580,7 @@ pub fn section(
     Ok(Section {
         human: human(&report),
         json: to_value(&report)?,
-        sarif: sarif_log(&findings, &report, enforced),
+        sarif: sarif_log(&findings, &report),
         findings,
         gates: report.gate_outcomes,
     })
@@ -703,21 +703,12 @@ const fn severity_label(severity: Severity) -> &'static str {
     }
 }
 
-fn sarif_log(
-    findings: &[shared::Finding],
-    report: &Report<Summary, Finding>,
-    enforced: bool,
-) -> serde_json::Value {
+fn sarif_log(findings: &[shared::Finding], report: &Report<Summary, Finding>) -> serde_json::Value {
     let rules = BTreeMap::from([(
         "complexity".to_owned(),
         "A function is over the cyclomatic or the cognitive complexity limit.".to_owned(),
     )]);
-    sarif::log(
-        &rules,
-        findings,
-        sarif::level(enforced),
-        &report.gate_outcomes,
-    )
+    sarif::log(&rules, findings, &report.gate_outcomes)
 }
 
 #[cfg(test)]

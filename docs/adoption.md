@@ -84,8 +84,9 @@ A finding that counts for a gate has the default severity `error`: the
 counts for no gate is a warning, for example `unused-optional-dependency` or
 `stale-suppression`. `cargo fallow explain <rule>` shows the default of each
 rule. A gate fails the run only with its flag, for example
-`--fail-on-issues`. In SARIF, the level of these results is `error` when the
-gate is enforced, and `warning` when it is not.
+`--fail-on-issues`. In SARIF, the level of a result follows the severity of
+its finding: `error` gives `error`, and `warn` gives `warning`. A gate flag
+does not change the level.
 
 ```toml
 [workspace.metadata.fallow.rules]

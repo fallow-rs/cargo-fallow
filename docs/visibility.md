@@ -119,8 +119,9 @@ has `auto_fixable: false`, and so does the action of each undecided candidate.
 
 `undecided` lists the candidates that are used only by a name match without a
 type. These candidates are not findings. With `--format sarif`, the command
-writes one result for each finding. The level of a result is `error` when you
-give `--fail-on-issues`. The gate is `visibility-findings`.
+writes one result for each finding. The level of a result follows the
+severity of its finding: `error` by default, `warning` for a rule at `warn`.
+The gate is `visibility-findings`.
 
 ## Precise mode
 

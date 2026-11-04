@@ -458,6 +458,19 @@ fn optional_and_feature_only_dependencies_are_warnings() {
             .iter()
             .all(|finding| finding["severity"] == "warn")
     );
+    let sarif = Command::cargo_bin("cargo-fallow")
+        .expect("the binary exists")
+        .current_dir(dir.path())
+        .args(["deps", "--quiet", "--format", "sarif"])
+        .output()
+        .expect("run the binary");
+    let log: Value = serde_json::from_slice(&sarif.stdout).expect("SARIF is JSON");
+    let results = log["runs"][0]["results"].as_array().expect("the results");
+    assert_eq!(results.len(), 2, "{log:#}");
+    assert!(
+        results.iter().all(|result| result["level"] == "warning"),
+        "{log:#}"
+    );
 }
 
 #[test]
@@ -695,6 +708,8 @@ fn human_and_sarif_forms_name_the_finding() {
     let log: Value = serde_json::from_slice(&sarif.stdout).expect("SARIF is JSON");
     let result = &log["runs"][0]["results"][0];
     assert_eq!(result["ruleId"], "unused-dependency");
+    // An error finding is a SARIF error, also when the gate is not enforced.
+    assert_eq!(result["level"], "error");
     assert_eq!(
         result["locations"][0]["physicalLocation"]["region"]["startLine"],
         8

@@ -180,7 +180,8 @@ fn assert_survivor_is_shown(format: &str, output: &Output, enforced: bool) {
             assert_eq!(results.len(), 1, "{log}");
             let result = &results[0];
             assert_eq!(result["ruleId"], "surviving-mutants");
-            assert_eq!(result["level"], if enforced { "error" } else { "warning" });
+            // A survivor has the error severity, so its level does not follow the gate.
+            assert_eq!(result["level"], "error");
             let location = &result["locations"][0]["physicalLocation"];
             assert_eq!(location["artifactLocation"]["uri"], "src/lib.rs");
             assert_eq!(location["region"]["startLine"], 8);

@@ -30,6 +30,17 @@ pub enum Severity {
     Warning,
 }
 
+impl Severity {
+    /// The SARIF level: `error` for an error, `warning` for a warning. The
+    /// level does not depend on a gate, the same as in fallow.
+    pub const fn sarif_level(self) -> &'static str {
+        match self {
+            Self::Error => "error",
+            Self::Warning => "warning",
+        }
+    }
+}
+
 /// The CodeClimate category of a finding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Category {

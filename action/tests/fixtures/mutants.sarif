@@ -37,7 +37,7 @@
       "results": [
         {
           "ruleId": "surviving-mutants",
-          "level": "warning",
+          "level": "error",
           "message": {
             "text": "Each test passed when `{ a == 2 }` became `{ true }` (return-value)."
           },

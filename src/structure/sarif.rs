@@ -19,11 +19,10 @@ const TOOL_NAME: &str = "cargo-fallow";
 const INFORMATION_URI: &str = "https://github.com/fallow-rs/cargo-fallow";
 
 /// The SARIF log. `rules` maps each rule id to its short description. Each
-/// finding is a result at `level`.
+/// finding is a result at the level of its severity.
 pub fn log(
     rules: &BTreeMap<String, String>,
     findings: &[Finding],
-    level: &str,
     gates: &BTreeMap<Gate, GateOutcome>,
 ) -> Value {
     let used: BTreeMap<&str, &str> = findings
@@ -38,10 +37,7 @@ pub fn log(
         .iter()
         .map(|(id, text)| json!({ "id": id, "shortDescription": { "text": text } }))
         .collect();
-    let results: Vec<Value> = findings
-        .iter()
-        .map(|finding| result(finding, level))
-        .collect();
+    let results: Vec<Value> = findings.iter().map(result).collect();
     let mut invocation = json!({ "executionSuccessful": true });
     let notifications: Vec<Value> = gates
         .iter()
@@ -69,10 +65,10 @@ pub fn log(
     })
 }
 
-fn result(finding: &Finding, level: &str) -> Value {
+fn result(finding: &Finding) -> Value {
     let mut value = json!({
         "ruleId": finding.rule,
-        "level": level,
+        "level": finding.severity.sarif_level(),
         "message": { "text": finding.message },
         "locations": [location(&finding.location)],
     });
@@ -118,11 +114,6 @@ fn notification(gate: Gate, outcome: &GateOutcome) -> Value {
     })
 }
 
-/// The SARIF level of a finding: `error` when an enforced gate counts it.
-pub fn level(enforced: bool) -> &'static str {
-    if enforced { "error" } else { "warning" }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -151,7 +142,7 @@ mod tests {
         })
         .with_related(vec![place("y.rs", 4)])];
         let gates = BTreeMap::from([(Gate::FileGrowth, count_gate(1, true))]);
-        let log = log(&rules, &items, "error", &gates);
+        let log = log(&rules, &items, &gates);
         let run = &log["runs"][0];
         assert_eq!(
             run["tool"]["driver"]["rules"].as_array().map(Vec::len),
@@ -162,6 +153,8 @@ mod tests {
             3
         );
         assert_eq!(run["results"][0]["relatedLocations"][0]["id"], 0);
+        // A warning stays a warning, also when its gate is enforced.
+        assert_eq!(run["results"][0]["level"], "warning");
         let notes = &run["invocations"][0]["toolExecutionNotifications"];
         assert_eq!(notes[0]["descriptor"]["id"], "file-growth");
         assert_eq!(notes[0]["level"], "error");
@@ -171,7 +164,7 @@ mod tests {
     #[test]
     fn a_passed_gate_has_no_notification() {
         let gates = BTreeMap::from([(Gate::FileGrowth, count_gate(0, true))]);
-        let log = log(&BTreeMap::new(), &[], "warning", &gates);
+        let log = log(&BTreeMap::new(), &[], &gates);
         assert!(
             log["runs"][0]["invocations"][0]
                 .get("toolExecutionNotifications")

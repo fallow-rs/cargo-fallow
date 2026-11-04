@@ -285,7 +285,7 @@ fn human_summary_and_progress() {
 }
 
 #[test]
-fn a_gate_finding_is_an_error_in_json_and_sarif_follows_the_gate() {
+fn a_gate_finding_is_an_error_in_json_and_in_sarif() {
     let fixture = Fixture::new("ws-ok");
     let json = check(&fixture, &["--format", "json", "--quiet"]).json();
     let findings = json["findings"].as_array().expect("an array");
@@ -295,9 +295,55 @@ fn a_gate_finding_is_an_error_in_json_and_sarif_follows_the_gate() {
             .iter()
             .all(|finding| finding["severity"] == "error")
     );
-    // No gate is enforced, so the SARIF result is a warning.
+    // The SARIF level follows the severity, also when no gate is enforced.
     let sarif = check(&fixture, &["--format", "sarif", "--quiet"]).json();
-    assert_eq!(sarif["runs"][0]["results"][0]["level"], "warning");
+    assert_eq!(sarif["runs"][0]["results"][0]["level"], "error");
+}
+
+/// The `(rule, level)` pairs of the SARIF results, sorted.
+fn sarif_levels(log: &Value) -> Vec<(String, String)> {
+    let mut pairs: Vec<(String, String)> = log["runs"][0]["results"]
+        .as_array()
+        .expect("the results")
+        .iter()
+        .map(|result| {
+            let text = |key: &str| result[key].as_str().unwrap_or_default().to_owned();
+            (text("ruleId"), text("level"))
+        })
+        .collect();
+    pairs.sort();
+    pairs
+}
+
+#[test]
+fn each_sarif_level_follows_the_severity_of_its_finding() {
+    let fixture = Fixture::new("ws-structure");
+    let json = check(&fixture, &["--format", "json", "--quiet"]).json();
+    let mut wanted: Vec<(String, String)> = json["findings"]
+        .as_array()
+        .expect("the findings")
+        .iter()
+        .map(|finding| {
+            let level = match finding["severity"].as_str() {
+                Some("error") => "error",
+                _ => "warning",
+            };
+            let rule = finding["rule"].as_str().unwrap_or_default();
+            (rule.to_owned(), level.to_owned())
+        })
+        .collect();
+    wanted.sort();
+    assert!(wanted.iter().any(|(_, level)| level == "error"), "{json:#}");
+    // No gate flag: each gate is not enforced.
+    let sarif = check(&fixture, &["--format", "sarif", "--quiet"]).json();
+    assert_eq!(sarif_levels(&sarif), wanted, "{sarif:#}");
+    // An enforced gate does not change the level of a finding.
+    let enforced = check(
+        &fixture,
+        &["--format", "sarif", "--quiet", "--fail-on-issues"],
+    )
+    .json();
+    assert_eq!(sarif_levels(&enforced), wanted, "{enforced:#}");
 }
 
 #[test]
@@ -317,7 +363,7 @@ fn sarif_log_for_a_clean_workspace() {
     assert_eq!(run["tool"]["driver"]["version"], env!("CARGO_PKG_VERSION"));
     assert_eq!(run["tool"]["driver"]["rules"][0]["id"], "dead-public");
     assert_eq!(run["results"].as_array().map(Vec::len), Some(1));
-    assert_eq!(run["results"][0]["level"], "warning");
+    assert_eq!(run["results"][0]["level"], "error");
     assert_eq!(run["invocations"][0]["executionSuccessful"], true);
     let notes = &run["invocations"][0]["toolExecutionNotifications"];
     assert_eq!(notes[0]["descriptor"]["id"], "visibility-findings");
@@ -759,6 +805,47 @@ fn deep_tree_from_an_operator_chain_is_too_deep_and_does_not_abort() {
         let gate = &result.json()["gate_outcomes"]["parse-error"];
         assert_eq!(gate["files"][0]["reason"], "nesting-too-deep", "{gate}");
     }
+}
+
+/// The parse stack grows with the nesting depth, not with the file size. A
+/// stack of 4 KiB for each source byte asks for 32 GiB here. That is over the
+/// stack cap, and Linux can refuse it, so the file then counts as too deep.
+/// CI runs this test on Linux.
+#[test]
+fn large_flat_generated_root_file_parses() {
+    use std::fmt::Write as _;
+    const SIZE: usize = 8 << 20;
+    let mut source = String::from("// @generated\npub static TABLE: &[u32] = &[");
+    for value in 0..100_000 {
+        let _ = write!(source, "{value}, ");
+    }
+    source.push_str("];\n");
+    let mut index = 0;
+    while source.len() < SIZE {
+        let _ = write!(
+            source,
+            "pub const C{index}: [u32; 2] = [{index}, 1];\n\
+             pub fn f{index}(a: u32) -> u32 {{ if a > {index} {{ a }} else {{ a + 1 }} }}\n\
+             pub struct S{index} {{ pub a: Vec<u32>, b: Option<u8> }}\n"
+        );
+        index += 1;
+    }
+    let fixture = Fixture::package(&[("src/lib.rs", source.as_bytes())]);
+    let result = check(
+        &fixture,
+        &[
+            "--only",
+            "parse",
+            "--format",
+            "json",
+            "--quiet",
+            "--fail-on-parse-error",
+        ],
+    );
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    let gate = &result.json()["gate_outcomes"]["parse-error"];
+    assert_eq!(gate["status"], "pass", "{gate}");
+    assert_eq!(gate["observed"], 0.0, "{gate}");
 }
 
 #[test]

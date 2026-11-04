@@ -119,17 +119,7 @@ impl ChangedFiles {
         base: String,
         changed_files: BTreeSet<String>,
     ) -> Self {
-        let dirs: Vec<(&str, &str)> = workspace
-            .members
-            .iter()
-            .map(|member| {
-                let dir = member
-                    .manifest_path
-                    .strip_suffix(MANIFEST)
-                    .unwrap_or_default();
-                (dir, member.manifest_path.as_str())
-            })
-            .collect();
+        let dirs = member_dirs(workspace);
         let manifests = changed_files
             .iter()
             .map(|path| owner(&dirs, path))
@@ -148,11 +138,22 @@ impl ChangedFiles {
     pub fn keeps(&self, path: &str) -> bool {
         self.files.contains(path) || (is_manifest(path) && self.manifests.contains(path))
     }
+}
 
-    /// True when the scope keeps a finding with one of these places.
-    pub fn keeps_any<'a>(&self, mut paths: impl Iterator<Item = &'a str>) -> bool {
-        paths.any(|path| self.keeps(path))
-    }
+/// The folder and the manifest of each member, relative to the workspace root.
+/// The folder ends with `/`, or is empty for a package in the root.
+pub fn member_dirs(workspace: &Workspace) -> Vec<(&str, &str)> {
+    workspace
+        .members
+        .iter()
+        .map(|member| {
+            let dir = member
+                .manifest_path
+                .strip_suffix(MANIFEST)
+                .unwrap_or_default();
+            (dir, member.manifest_path.as_str())
+        })
+        .collect()
 }
 
 /// True for the path of a `Cargo.toml`.
@@ -162,7 +163,7 @@ fn is_manifest(path: &str) -> bool {
 
 /// The manifest of the member with the deepest folder that holds `path`, or the
 /// root `Cargo.toml` when no member folder holds it.
-fn owner(dirs: &[(&str, &str)], path: &str) -> String {
+pub fn owner(dirs: &[(&str, &str)], path: &str) -> String {
     dirs.iter()
         .filter(|(dir, _)| path.starts_with(dir))
         .max_by_key(|(dir, _)| dir.len())

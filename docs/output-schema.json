@@ -514,6 +514,16 @@
           ],
           "description": "The changed files of `--changed-since`. A run without the flag has no\nsuch member."
         },
+        "packages": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "The members of `--package`, sorted. A run without the flag has no\nsuch member."
+        },
         "baseline": {
           "anyOf": [
             {
@@ -3779,9 +3789,10 @@
         },
         "scope": {
           "type": "string",
-          "description": "The scope of the run: `changed` for `--changed-since`, `baseline` for\n`--baseline`.",
+          "description": "The scope of the run: `changed` for `--changed-since`, `package` for\n`--package`, `baseline` for `--baseline`.",
           "enum": [
             "changed",
+            "package",
             "baseline"
           ]
         }

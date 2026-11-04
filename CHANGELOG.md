@@ -42,6 +42,9 @@ GitHub release. Each release needs a `## [X.Y.Z] - YYYY-MM-DD` section.
   `docs/output-schema.json` holds a copy. A test fails when the two differ.
   The `check` report now has `schema_version` 1, the same as each other
   report.
+- `--package <NAME>` (`-p`) on `check` and the static commands keeps only the
+  findings of the named workspace members. The analysis still reads the whole
+  workspace. An unknown name exits 2.
 
 ### Fixed
 

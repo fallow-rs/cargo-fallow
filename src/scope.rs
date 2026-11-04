@@ -6,14 +6,15 @@
 //! findings in the changed files, and `--baseline` leaves out the findings of
 //! an earlier run.
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use clap::Args;
 use serde_json::Value;
 
 use crate::baseline::{self, Entry, Loaded, Recorder};
-use crate::diff::ChangedFiles;
-use crate::error::CliError;
+use crate::diff::{ChangedFiles, member_dirs, owner};
+use crate::error::{CliError, ErrorCode};
 use crate::finding::Finding;
 use crate::gates::RustGateName;
 use crate::render;
@@ -42,6 +43,84 @@ pub struct ScopeArgs {
     /// Exit 1 when the baseline has an entry with no finding in the run.
     #[arg(long, requires = "baseline")]
     pub fail_on_stale_baseline: bool,
+    /// Report only the findings of this workspace member. The flag can repeat.
+    /// The analysis still reads the whole workspace.
+    #[arg(
+        long = "package",
+        short = 'p',
+        value_name = "NAME",
+        conflicts_with = "save_baseline"
+    )]
+    pub packages: Vec<String>,
+}
+
+/// The members of `--package`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Packages {
+    /// The names, sorted.
+    pub names: Vec<String>,
+    /// The manifests of the named members.
+    manifests: BTreeSet<String>,
+    /// The folder and the manifest of each member.
+    dirs: Vec<(String, String)>,
+}
+
+impl Packages {
+    /// The members with these names. A name that no member has is an error.
+    pub fn new(workspace: &Workspace, names: &[String]) -> Result<Self, CliError> {
+        let mut sorted: Vec<String> = names.to_vec();
+        sorted.sort();
+        sorted.dedup();
+        let mut manifests = BTreeSet::new();
+        for name in &sorted {
+            let Some(member) = workspace.members.iter().find(|member| &member.name == name) else {
+                let known: Vec<&str> = workspace
+                    .members
+                    .iter()
+                    .map(|member| member.name.as_str())
+                    .collect();
+                return Err(CliError::new(
+                    ErrorCode::InvalidArgument,
+                    format!("`--package {name}` names no workspace member"),
+                )
+                .with_help(format!("The members are: {}.", known.join(", "))));
+            };
+            manifests.insert(member.manifest_path.clone());
+        }
+        let dirs = member_dirs(workspace)
+            .into_iter()
+            .map(|(dir, manifest)| (dir.to_owned(), manifest.to_owned()))
+            .collect();
+        Ok(Self {
+            names: sorted,
+            manifests,
+            dirs,
+        })
+    }
+
+    /// True when a named member owns `path`: the member with the deepest
+    /// folder that holds the path.
+    pub fn keeps(&self, path: &str) -> bool {
+        let dirs: Vec<(&str, &str)> = self
+            .dirs
+            .iter()
+            .map(|(dir, manifest)| (dir.as_str(), manifest.as_str()))
+            .collect();
+        self.manifests.contains(&owner(&dirs, path))
+    }
+}
+
+/// The line of the human output that names the packages.
+pub fn packages_line(packages: &Packages) -> String {
+    format!(
+        "Scope: {} {}\n",
+        if packages.names.len() == 1 {
+            "package"
+        } else {
+            "packages"
+        },
+        packages.names.join(", ")
+    )
 }
 
 /// The line of the human output that names the changed files.
@@ -75,6 +154,8 @@ pub fn baseline_line(summary: &baseline::Summary) -> String {
 pub struct Scope {
     /// The changed files of `--changed-since`, or `None` for each file.
     pub changed: Option<ChangedFiles>,
+    /// The members of `--package`, or `None` for each member.
+    pub packages: Option<Packages>,
     /// The baseline of `--baseline`.
     baseline: Option<Loaded>,
     /// The entries for `--save-baseline`.
@@ -96,6 +177,11 @@ impl Scope {
                 .as_deref()
                 .map(|reference| ChangedFiles::load(workspace, CHANGED_SINCE_FLAG, reference))
                 .transpose()?,
+            packages: if args.packages.is_empty() {
+                None
+            } else {
+                Some(Packages::new(workspace, &args.packages)?)
+            },
             baseline: args.baseline.as_deref().map(Loaded::read).transpose()?,
             recorder: args.save_baseline.clone().map(Recorder::new),
             fail_on_stale: args.fail_on_stale_baseline,
@@ -125,7 +211,19 @@ impl Scope {
     /// count: it removes known findings, and the rest of the report still
     /// covers the whole workspace.
     pub const fn is_full(&self) -> bool {
-        self.changed.is_none()
+        self.changed.is_none() && self.packages.is_none()
+    }
+
+    /// The name of the file filter of the run: `changed` for
+    /// `--changed-since`, `package` for `--package`, or `None`.
+    pub const fn filter(&self) -> Option<&'static str> {
+        if self.changed.is_some() {
+            Some("changed")
+        } else if self.packages.is_some() {
+            Some("package")
+        } else {
+            None
+        }
     }
 
     /// True when the scope keeps a finding at `path`.
@@ -133,13 +231,16 @@ impl Scope {
         self.changed
             .as_ref()
             .is_none_or(|changed| changed.keeps(path))
+            && self
+                .packages
+                .as_ref()
+                .is_none_or(|packages| packages.keeps(path))
     }
 
-    /// True when the scope keeps a finding with one of these places.
-    pub fn keeps_any<'a>(&self, paths: impl Iterator<Item = &'a str>) -> bool {
-        self.changed
-            .as_ref()
-            .is_none_or(|changed| changed.keeps_any(paths))
+    /// True when the scope keeps a finding with one of these places: one
+    /// place passes each filter of the scope.
+    pub fn keeps_any<'a>(&self, mut paths: impl Iterator<Item = &'a str>) -> bool {
+        self.is_full() || paths.any(|path| self.keeps(path))
     }
 
     /// True when the baseline does not hold the entry. The entry then goes to
@@ -237,6 +338,10 @@ impl Scope {
         if let Some(changed) = &self.changed {
             insert(&mut section.json, "changed_since", to_value(changed)?);
             lines.push_str(&changed_line(changed));
+        }
+        if let Some(packages) = &self.packages {
+            insert(&mut section.json, "packages", to_value(&packages.names)?);
+            lines.push_str(&packages_line(packages));
         }
         if let Some(summary) = self.baseline_summary(&[check]) {
             let gate = self.stale_gate(&summary);

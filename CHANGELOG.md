@@ -4,8 +4,10 @@ All notable changes to `cargo-fallow` are in this file. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-The release workflow copies the section of the released version into the
-GitHub release. Each release needs a `## [X.Y.Z] - YYYY-MM-DD` section.
+A pull request does not edit this file. It adds a fragment to `changelog.d/`,
+and the release commit collects the fragments. Each release needs a
+`## [X.Y.Z] - YYYY-MM-DD` section, and the owner writes the release notes from
+it.
 
 ## [Unreleased]
 

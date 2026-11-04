@@ -280,6 +280,13 @@ jobs:
         run: node scripts/check-comment-quality.mjs --all
       - name: Script tests
         run: node --test scripts/*.test.mjs .github/scripts/*.test.mjs
+      # A pull request adds a fragment to changelog.d/ and does not edit the
+      # [Unreleased] section of CHANGELOG.md. See changelog.d/README.md.
+      - name: Changelog fragments
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: node scripts/changelog-fragments.mjs check --base "origin/$BASE_REF"
       # Same rule as the file-size pre-commit step, against the merge base.
       # It is the last step and runs after a failed step, so a growth failure
       # hides no other result.

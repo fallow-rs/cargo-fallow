@@ -1,28 +1,34 @@
 name: Release
 
-# A push of a `v*` tag is a release. A manual run is a dry run: it checks the
-# package with `cargo publish --dry-run` and builds the binaries, but it
-# publishes nothing. A manual run with `dry-run` set to false publishes only
-# when it runs on a tag ref, so a run on a branch is always a dry run. The
-# owner steps before the first release are in docs/release-procedure.md.
+# The owner starts a release by hand on main. The workflow never creates the
+# tag or the GitHub release. It checks the release commit, builds, attests and
+# signs the binaries, publishes the crate, and stores the complete asset set
+# as the `release-assets` artifact. After `Release ready for signed tag`
+# passes, the owner runs scripts/publish-github-release.mjs. That script
+# creates the signed tag and the GitHub release. A run keeps the dry-run
+# default unless the owner sets it to false. docs/release-procedure.md has the
+# procedure.
 on:
-  push:
-    tags: ['v*']
   workflow_dispatch:
     inputs:
+      version:
+        description: The version to release, for example 0.2.0. A dry run can leave it empty.
+        required: false
+        default: ''
+        type: string
       dry-run:
         description: Check the package and build the binaries, but publish nothing
         required: false
         default: true
         type: boolean
 
-run-name: ${{ (github.ref_type == 'tag' && (github.event_name == 'push' || inputs.dry-run == false)) && format('Release {0}', github.ref_name) || format('Release dry run on {0}', github.ref_name) }}
+run-name: ${{ (github.event_name == 'workflow_dispatch' && inputs.dry-run == false) && format('Release v{0}', inputs.version) || format('Release dry run on {0}', github.ref_name) }}
 
 # A release has the group `release`, so two releases never run at the same
 # time. Each dry run has a group of its own, so a dry run never queues a
 # release or cancels a release that waits.
 concurrency:
-  group: ${{ (github.ref_type == 'tag' && (github.event_name == 'push' || inputs.dry-run == false)) && 'release' || format('release-dry-run-{0}', github.run_id) }}
+  group: ${{ (github.event_name == 'workflow_dispatch' && inputs.dry-run == false) && 'release' || format('release-dry-run-{0}', github.run_id) }}
   cancel-in-progress: false
 
 # Deny all permissions by default, grant per job as needed.
@@ -32,7 +38,7 @@ env:
   CARGO_TERM_COLOR: always
   # The one switch between a dry run and a release. Each publication job reads
   # it through the `publish` output of the `plan` job.
-  PUBLISH: ${{ github.ref_type == 'tag' && (github.event_name == 'push' || inputs.dry-run == false) }}
+  PUBLISH: ${{ github.event_name == 'workflow_dispatch' && inputs.dry-run == false }}
 
 jobs:
   plan:
@@ -45,7 +51,7 @@ jobs:
       publish: ${{ steps.mode.outputs.publish }}
       version: ${{ steps.mode.outputs.version }}
     steps:
-      # A full clone, so the release check can see whether main holds the tag.
+      # A full clone, so the context check can read the HEAD subject.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
@@ -61,64 +67,58 @@ jobs:
           node-version: '26'
           package-manager-cache: false
 
-      - name: Read the version and the mode
+      # A release stops here when the ref is not main, when HEAD is not the
+      # release commit `chore: release vX.Y.Z` on origin/main, when the version
+      # is not the Cargo.toml version, or when the tag exists. A dry run
+      # reports the same problems as warnings.
+      - name: Check the release context
         id: mode
         shell: bash
+        env:
+          VERSION_INPUT: ${{ inputs.version }}
+          DRY_RUN: ${{ inputs.dry-run }}
         run: |
           set -euo pipefail
-          version="$(cargo metadata --no-deps --format-version 1 --locked | jq -r '.packages[] | select(.name == "cargo-fallow") | .version')"
-          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          node scripts/verify-release-context.mjs --version "$VERSION_INPUT" --dry-run "$DRY_RUN"
           echo "publish=${PUBLISH}" >> "$GITHUB_OUTPUT"
-          echo "cargo-fallow ${version}, publish: ${PUBLISH}" >> "$GITHUB_STEP_SUMMARY"
+          echo "publish: ${PUBLISH}" >> "$GITHUB_STEP_SUMMARY"
 
-      # Only a release runs these checks. A dry run on a branch can have a
-      # version that is not tagged yet.
-      - name: Check the release tag, the manifest and the branch
-        if: ${{ steps.mode.outputs.publish == 'true' }}
+      # The owner writes the release notes from the CHANGELOG section of the
+      # version. A release stops when that section is not ready. A dry run
+      # before the release commit has no such section, so it only warns.
+      - name: Check the release metadata
         shell: bash
         env:
           VERSION: ${{ steps.mode.outputs.version }}
-          TAG_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          if [ "$TAG_NAME" != "v${VERSION}" ]; then
-            echo "::error::The tag ${TAG_NAME} does not match the package version ${VERSION}"
-            exit 1
+          if [ "$PUBLISH" = "true" ]; then
+            node scripts/verify-release-metadata.mjs --tag "v${VERSION}"
+          elif ! node scripts/verify-release-metadata.mjs --tag "v${VERSION}"; then
+            echo "::warning::The release metadata check failed. A release with this CHANGELOG stops here."
           fi
+
+      - name: Check the manifest
+        if: ${{ steps.mode.outputs.publish == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
           # `publish = false` gives an empty list in the metadata.
           publish_field="$(cargo metadata --no-deps --format-version 1 --locked | jq -c '.packages[] | select(.name == "cargo-fallow") | .publish')"
           if [ "$publish_field" != "null" ]; then
             echo "::error::Cargo.toml still has 'publish = false'. Remove it in the release commit."
             exit 1
           fi
-          git fetch --no-tags origin main
-          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
-            echo "::error::The tag ${TAG_NAME} points to a commit that is not on main"
-            exit 1
-          fi
 
-      - name: Write the release notes from the CHANGELOG
+      - name: Show the CHANGELOG section
         shell: bash
         env:
           VERSION: ${{ steps.mode.outputs.version }}
-          PUBLISH_MODE: ${{ steps.mode.outputs.publish }}
         run: |
           set -euo pipefail
-          mkdir -p notes
-          if [ "$PUBLISH_MODE" = "true" ]; then
-            node scripts/release-notes.mjs "$VERSION" > notes/release-notes.md
-          else
-            node scripts/release-notes.mjs "$VERSION" --allow-unreleased > notes/release-notes.md
+          if ! node scripts/release-notes.mjs "$VERSION" --allow-unreleased >> "$GITHUB_STEP_SUMMARY"; then
+            echo "The CHANGELOG has no section for ${VERSION} yet." >> "$GITHUB_STEP_SUMMARY"
           fi
-          cat notes/release-notes.md >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Upload the release notes
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: release-notes
-          path: notes/release-notes.md
-          if-no-files-found: error
-          retention-days: 7
 
       - name: Check the package file list
         shell: bash
@@ -227,10 +227,10 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  # Every job below publishes, so each one runs only for a release. Each one
-  # that holds a credential runs in the `release` environment. Its deployment
-  # rule admits `v*` tags only, so a copy of this workflow on a branch gets no
-  # OIDC token that the crates.io trusted publisher accepts.
+  # Each job below runs only for a release. Each job that holds a credential
+  # runs in the `release` environment. Its deployment rule admits the branch
+  # `main` only, so a copy of this workflow on another branch gets no OIDC
+  # token that the crates.io trusted publisher accepts.
   attest:
     name: Attest build provenance
     needs: [plan, build]
@@ -360,20 +360,38 @@ jobs:
           fi
           exit 1
 
-  github-release:
-    name: Create the GitHub release
-    needs: [plan, attest, sign, publish-crate]
+  # The complete flat asset set of the GitHub release, as one artifact. The
+  # owner downloads it with scripts/publish-github-release.mjs.
+  release-assets:
+    name: Stage the release assets
+    needs: [plan, publish-crate]
     if: ${{ needs.plan.outputs.publish == 'true' }}
-    environment: release
     runs-on: ubuntu-26.04
     timeout-minutes: 15
     permissions:
-      contents: write
+      contents: read
     steps:
+      - name: Require the release tag to stay absent
+        shell: bash
+        env:
+          TAG_NAME: v${{ needs.plan.outputs.version }}
+        run: |
+          set -uo pipefail
+          git ls-remote --exit-code --tags "https://github.com/${GITHUB_REPOSITORY}.git" "refs/tags/${TAG_NAME}"
+          status=$?
+          if [ "$status" -eq 0 ]; then
+            echo "::error::The tag ${TAG_NAME} exists. The owner creates it after this run."
+            exit 1
+          fi
+          if [ "$status" -ne 2 ]; then
+            echo "::error::Could not read the tag ${TAG_NAME} (git exit ${status})"
+            exit 1
+          fi
+
       - name: Download the archives
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
-          path: dist
+          path: release-assets
           pattern: binary-*
           merge-multiple: true
 
@@ -381,33 +399,73 @@ jobs:
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: signatures
-          path: dist
+          path: release-assets
 
-      - name: Download the release notes
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: release-notes
-          path: notes
-
-      - name: Create the release
+      # Five targets, each with an archive, a `.sha256` file and a `.sig`
+      # file, plus one SHA256SUMS file.
+      - name: Assemble the asset set
         shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG_NAME: ${{ github.ref_name }}
+        working-directory: release-assets
         run: |
           set -euo pipefail
-          cd dist
+          shopt -s nullglob
           cat ./*.sha256 > SHA256SUMS
-          # A run again after a partial failure finds the release. It then
-          # replaces the assets and keeps the release.
-          if gh release view "$TAG_NAME" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
-            gh release upload "$TAG_NAME" --repo "$GITHUB_REPOSITORY" --clobber \
-              ./*.tar.gz ./*.zip ./*.sha256 ./*.sig SHA256SUMS
-            exit 0
+          sha256sum --check --strict SHA256SUMS
+          for archive in ./*.tar.gz ./*.zip; do
+            for suffix in sha256 sig; do
+              if [ ! -s "${archive}.${suffix}" ]; then
+                echo "::error::${archive} has no .${suffix} file"
+                exit 1
+              fi
+            done
+          done
+          expected=$(( 5 * 3 + 1 ))
+          found="$(find . -maxdepth 1 -type f | wc -l)"
+          if [ "$found" -ne "$expected" ]; then
+            echo "::error::The asset set has ${found} files, expected ${expected}"
+            ls -l
+            exit 1
           fi
-          gh release create "$TAG_NAME" \
-            --repo "$GITHUB_REPOSITORY" \
-            --verify-tag \
-            --title "cargo-fallow ${TAG_NAME}" \
-            --notes-file ../notes/release-notes.md \
-            ./*.tar.gz ./*.zip ./*.sha256 ./*.sig SHA256SUMS
+          ls -l
+
+      - name: Upload the asset set
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: release-assets
+          path: release-assets/
+          if-no-files-found: error
+          retention-days: 14
+
+  release-ready:
+    name: Release ready for signed tag
+    needs: [plan, release-assets]
+    if: ${{ needs.plan.outputs.publish == 'true' }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Require the release tag to stay absent
+        shell: bash
+        env:
+          TAG_NAME: v${{ needs.plan.outputs.version }}
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          set -uo pipefail
+          git ls-remote --exit-code --tags "https://github.com/${GITHUB_REPOSITORY}.git" "refs/tags/${TAG_NAME}"
+          status=$?
+          if [ "$status" -eq 0 ]; then
+            echo "::error::The tag ${TAG_NAME} appeared before the release workflow completed"
+            exit 1
+          fi
+          if [ "$status" -ne 2 ]; then
+            echo "::error::Could not read the tag ${TAG_NAME} (git exit ${status})"
+            exit 1
+          fi
+          {
+            echo "The release is ready. The tag ${TAG_NAME} is still absent. Run:"
+            echo
+            echo '```bash'
+            echo "node scripts/publish-github-release.mjs --run ${GITHUB_RUN_ID} --version ${VERSION} --title \"${TAG_NAME}: <summary>\" --notes <notes file>"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

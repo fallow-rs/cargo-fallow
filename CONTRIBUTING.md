@@ -109,11 +109,17 @@ These fallow gates do not apply now:
 - Mutation testing on this crate: `cargo fallow mutants` exists, and M1 adds the
   CI job. `--fail-on-survivors` is the gate of that job.
 
+## Changelog
+
+Do not edit `CHANGELOG.md` in a pull request. Add one fragment file to
+`changelog.d/` instead. `changelog.d/README.md` describes the format. The
+`Changelog fragments` CI step fails a pull request that edits the
+`[Unreleased]` section. A change that a user cannot see needs no fragment.
+
 ## Releases
 
 `docs/release-procedure.md` describes the release workflow, the package
-checks and the one-time steps before the first release. Only the owner
-releases.
+checks and the steps of the owner. Only the owner releases.
 
 ## Developer Certificate of Origin
 

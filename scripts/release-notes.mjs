@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 
-// Print the CHANGELOG section of one version, for the GitHub release:
+// Print the CHANGELOG section of one version. The owner writes the release
+// notes from it, and the release workflow shows it in the run summary:
 //
 //   node scripts/release-notes.mjs 0.1.0 [--allow-unreleased]
 //
 // A section starts at `## [0.1.0]` and ends before the next `## ` heading.
 // `--allow-unreleased` prints the `## [Unreleased]` section when the version
-// has no section. Only the dry run of the release workflow uses it.
+// has no section. A dry run before the release commit uses it.
 
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";

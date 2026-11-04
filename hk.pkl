@@ -62,9 +62,16 @@ hooks {
       ["js-lint"] {
         check = "sh scripts/hook-js-lint.sh"
       }
-      // fallow also runs miri-cfg and changelog-fragments here. This
-      // repository has no Miri job and no changelog fragments, so those steps
-      // do not apply.
+      // Changelog entries go to changelog.d/, never to [Unreleased] in
+      // CHANGELOG.md. The step reads the working tree. CI checks the committed
+      // result. A release `collect` commit skips it with
+      // HK_SKIP_STEPS=changelog-fragments.
+      ["changelog-fragments"] {
+        glob = List("CHANGELOG.md", "changelog.d/**")
+        check = "if command -v node >/dev/null 2>&1; then sh scripts/hook-changelog-fragments.sh; else sh scripts/hook-tool-hint.sh node; fi"
+      }
+      // fallow also runs miri-cfg here. This repository has no Miri job, so
+      // that step does not apply.
     }
   }
   ["commit-msg"] {

@@ -1,6 +1,8 @@
-// Policy tests for .github/workflows/release.yml and the action pins of every
-// workflow. The release workflow must not publish on a branch, on a pull
-// request or on a manual run that keeps the dry-run default.
+// Policy tests for .github/workflows/release.yml, release-published.yml and
+// the action pins of every workflow. The release workflow must not publish on
+// a manual run that keeps the dry-run default. It never creates the tag or the
+// GitHub release: the owner does that last, with
+// scripts/publish-github-release.mjs.
 
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
@@ -45,32 +47,37 @@ const jobPermissions = (job) => {
 
 const job = (name) => block(RELEASE, name, 2);
 
-test("the release runs only on a v* tag push or a manual run", () => {
+const PUBLISH_EXPRESSION =
+  "${{ github.event_name == 'workflow_dispatch' && inputs.dry-run == false }}";
+const RELEASE_IF = "    if: ${{ needs.plan.outputs.publish == 'true' }}";
+const PUBLISHED = read(".github/workflows/release-published.yml");
+
+test("the release starts only by hand, never on a push or a tag", () => {
   const triggers = block(RELEASE, "on", 0);
   assert.deepEqual(
     Array.from(triggers.matchAll(/^ {2}([a-z_]+):/gmu), (match) => match[1]),
-    ["push", "workflow_dispatch"],
+    ["workflow_dispatch"],
   );
-  assert.match(triggers, /^ {4}tags: \['v\*'\]$/mu);
-  assert.doesNotMatch(triggers, /branches|paths|schedule|pull_request|workflow_run/u);
+  assert.doesNotMatch(triggers, /push|tags|branches|paths|schedule|pull_request|workflow_run/u);
 });
 
-test("a manual run is a dry run by default", () => {
-  const input = block(RELEASE, "dry-run", 6);
-  assert.match(input, /^ {8}default: true$/mu);
-  assert.match(input, /^ {8}type: boolean$/mu);
+test("a manual run takes the version and is a dry run by default", () => {
+  const dryRun = block(RELEASE, "dry-run", 6);
+  assert.match(dryRun, /^ {8}default: true$/mu);
+  assert.match(dryRun, /^ {8}type: boolean$/mu);
+  const version = block(RELEASE, "version", 6);
+  assert.match(version, /^ {8}type: string$/mu);
+  assert.match(version, /^ {8}required: false$/mu);
 });
 
-test("only a tag ref can publish", () => {
-  const expected =
-    "${{ github.ref_type == 'tag' && (github.event_name == 'push' || inputs.dry-run == false) }}";
-  assert.equal(RELEASE.match(/^ {2}PUBLISH: (.*)$/mu)?.[1], expected);
+test("only a manual run with dry-run set to false can publish", () => {
+  assert.equal(RELEASE.match(/^ {2}PUBLISH: (.*)$/mu)?.[1], PUBLISH_EXPRESSION);
   assert.match(job("plan"), /echo "publish=\$\{PUBLISH\}" >> "\$GITHUB_OUTPUT"/u);
 });
 
 test("only a release joins the release concurrency group", () => {
   const expected =
-    "${{ (github.ref_type == 'tag' && (github.event_name == 'push' || inputs.dry-run == false)) && 'release' || format('release-dry-run-{0}', github.run_id) }}";
+    "${{ (github.event_name == 'workflow_dispatch' && inputs.dry-run == false) && 'release' || format('release-dry-run-{0}', github.run_id) }}";
   assert.equal(block(RELEASE, "concurrency", 0).match(/^ {2}group: (.*)$/mu)?.[1], expected);
   assert.match(block(RELEASE, "concurrency", 0), /^ {2}cancel-in-progress: false$/mu);
 });
@@ -79,15 +86,90 @@ test("no job or step sets PUBLISH again", () => {
   assert.equal(RELEASE.match(/^\s+PUBLISH:/gmu)?.length, 1);
 });
 
-test("a release checks the tag, the manifest and the branch before it publishes", () => {
+test("the plan job checks the release context and the metadata before each build", () => {
   const plan = job("plan");
-  assert.match(plan, /if \[ "\$TAG_NAME" != "v\$\{VERSION\}" \]/u);
+  assert.match(
+    plan,
+    /node scripts\/verify-release-context\.mjs --version "\$VERSION_INPUT" --dry-run "\$DRY_RUN"/u,
+  );
+  assert.match(plan, /VERSION_INPUT: \$\{\{ inputs\.version \}\}/u);
+  assert.match(plan, /DRY_RUN: \$\{\{ inputs\.dry-run \}\}/u);
+  assert.match(plan, /node scripts\/verify-release-metadata\.mjs --tag "v\$\{VERSION\}"/u);
   assert.match(plan, /\.publish'\)"\n\s+if \[ "\$publish_field" != "null" \]/u);
-  assert.match(plan, /git merge-base --is-ancestor "\$GITHUB_SHA" origin\/main/u);
-  assert.match(plan, /node scripts\/release-notes\.mjs "\$VERSION" > notes/u);
-  assert.match(job("publish-crate"), /^ {4}needs: \[plan, build, attest, sign\]$/mu);
-  assert.match(job("github-release"), /^ {4}needs: \[plan, attest, sign, publish-crate\]$/mu);
-  assert.match(job("attest"), /^ {4}needs: \[plan, build\]$/mu);
+  // An input reaches a script only through an environment variable.
+  for (const line of RELEASE.split("\n").filter((text) => /\$\{\{ inputs\./u.test(text))) {
+    assert.match(line, /^\s*[A-Za-z_-]+: /u, line);
+    assert.doesNotMatch(line, /^\s*run: /u, line);
+  }
+});
+
+test("the jobs run in the release order", () => {
+  const expected = {
+    plan: null,
+    build: "plan",
+    attest: "[plan, build]",
+    sign: "[plan, build]",
+    "publish-crate": "[plan, build, attest, sign]",
+    "release-assets": "[plan, publish-crate]",
+    "release-ready": "[plan, release-assets]",
+  };
+  assert.deepEqual(jobNames(RELEASE), Object.keys(expected));
+  for (const [name, needs] of Object.entries(expected)) {
+    const actual = job(name).match(/^ {4}needs: (.*)$/mu)?.[1] ?? null;
+    assert.equal(actual, needs, name);
+  }
+  assert.match(job("release-ready"), /^ {4}name: Release ready for signed tag$/mu);
+});
+
+test("no job creates a tag or a release", () => {
+  const scripts = RELEASE.split("\n").filter((line) => !line.trimStart().startsWith("#"));
+  for (const line of scripts) {
+    assert.doesNotMatch(
+      line,
+      /gh release (?:create|upload|edit)|git tag|git push|git\/refs/u,
+      line,
+    );
+  }
+  assert.doesNotMatch(RELEASE, /contents: write/u);
+});
+
+test("release-assets uploads the complete flat asset set as one artifact", () => {
+  const assets = job("release-assets");
+  assert.ok(assets.split("\n").includes(RELEASE_IF));
+  assert.match(assets, /pattern: binary-\*/u);
+  assert.match(assets, /name: signatures/u);
+  assert.match(assets, /cat \.\/\*\.sha256 > SHA256SUMS/u);
+  assert.match(assets, /name: release-assets\n\s+path: release-assets\//u);
+  assert.match(assets, /if-no-files-found: error/u);
+  assert.match(assets, /expected=\$\(\( 5 \* 3 \+ 1 \)\)/u);
+});
+
+test("release-assets and release-ready require the tag to stay absent", () => {
+  for (const name of ["release-assets", "release-ready"]) {
+    const text = job(name);
+    assert.match(
+      text,
+      /git ls-remote --exit-code --tags "https:\/\/github\.com\/\$\{GITHUB_REPOSITORY\}\.git" "refs\/tags\/\$\{TAG_NAME\}"/u,
+      name,
+    );
+    assert.match(text, /if \[ "\$status" -eq 0 \]; then/u, name);
+    assert.match(text, /if \[ "\$status" -ne 2 \]; then/u, name);
+  }
+});
+
+test("the published release has its own metadata check", () => {
+  const triggers = block(PUBLISHED, "on", 0);
+  assert.match(triggers, /^ {2}release:\n {4}types: \[published\]$/mu);
+  assert.doesNotMatch(triggers, /push|pull_request|workflow_dispatch/u);
+  assert.match(PUBLISHED, /^permissions: \{\}$/mu);
+  const check = block(PUBLISHED, "release-metadata", 2);
+  assert.deepEqual(jobPermissions(check), ["contents: read"]);
+  assert.doesNotMatch(check, /environment:/u);
+  assert.match(
+    check,
+    /node scripts\/verify-release-metadata\.mjs \\\n\s+--tag "\$TAG_NAME" \\\n\s+--release-json release\.json/u,
+  );
+  assert.match(check, /TAG_NAME: \$\{\{ github\.event\.release\.tag_name \}\}/u);
 });
 
 test("the workflow denies all permissions by default", () => {
@@ -101,7 +183,8 @@ test("each job has exactly the permissions it needs", () => {
     attest: ["attestations: write", "contents: read", "id-token: write"],
     sign: ["contents: read"],
     "publish-crate": ["contents: read", "id-token: write"],
-    "github-release": ["contents: write"],
+    "release-assets": ["contents: read"],
+    "release-ready": ["contents: read"],
   };
   assert.deepEqual(jobNames(RELEASE).toSorted(), Object.keys(expected).toSorted());
   for (const [name, permissions] of Object.entries(expected)) {
@@ -109,18 +192,24 @@ test("each job has exactly the permissions it needs", () => {
   }
 });
 
-test("each job that can write or holds a token runs only for a release, in the release environment", () => {
+test("each job that holds a credential runs only for a release, in the release environment", () => {
   for (const name of jobNames(RELEASE)) {
     const text = job(name);
     const privileged =
       /^ {6}(?:id-token|attestations|contents): write$/mu.test(text) ||
-      /secrets\.(?!GITHUB_TOKEN\b)/u.test(text) ||
-      /CARGO_REGISTRY_TOKEN/u.test(text) ||
-      /gh release/u.test(text);
-    const gated =
-      /^ {4}environment: release$/mu.test(text) &&
-      /^ {4}if: \$\{\{ needs\.plan\.outputs\.publish == 'true' \}\}$/mu.test(text);
-    assert.equal(gated, privileged, `${name}: privileged=${privileged} gated=${gated}`);
+      /secrets\./u.test(text) ||
+      /CARGO_REGISTRY_TOKEN/u.test(text);
+    const inEnvironment = /^ {4}environment: release$/mu.test(text);
+    assert.equal(inEnvironment, privileged, `${name}: privileged=${privileged}`);
+  }
+});
+
+test("each job after the build runs only for a release", () => {
+  for (const name of ["attest", "sign", "publish-crate", "release-assets", "release-ready"]) {
+    assert.ok(job(name).split("\n").includes(RELEASE_IF), name);
+  }
+  for (const name of ["plan", "build"]) {
+    assert.doesNotMatch(job(name), /^ {4}if:/mu, name);
   }
 });
 
@@ -187,12 +276,5 @@ test("a release signs each archive and checks the signature with the action key"
     /node action\/scripts\/verify-signature\.mjs "\$archive" "\$\{archive\}\.sig"/u,
   );
   assert.doesNotMatch(sign, /CARGO_FALLOW_SIGNING_PUBLIC_KEY/u);
-  const release = job("github-release");
-  assert.match(release, /name: signatures/u);
-  const uploads = release.split("\n").filter((text) => /\.\/\*\.zip \.\/\*\.sha256/u.test(text));
-  assert.equal(uploads.length, 2, "the create and the upload command");
-  for (const line of uploads) {
-    assert.match(line, /\.\/\*\.sig\b/u, line);
-  }
   assert.doesNotMatch(RELEASE.replace(job("sign"), ""), /ED25519_BINARY_SIGNING_PRIVATE_KEY/u);
 });

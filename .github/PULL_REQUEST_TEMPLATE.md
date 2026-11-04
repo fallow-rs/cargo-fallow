@@ -10,6 +10,11 @@
 
 <!-- How was this tested? -->
 
+## Changelog
+
+<!-- Add one fragment file to changelog.d/ for a change that a user can see.
+Do not edit CHANGELOG.md. See changelog.d/README.md. -->
+
 ## Not in this change
 
 <!-- Optional. List work that this change leaves for later. Link a tracking

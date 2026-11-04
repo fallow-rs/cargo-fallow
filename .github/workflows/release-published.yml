@@ -1,0 +1,46 @@
+# The second half of the release metadata check. `release.yml` does not create
+# the GitHub release, so it cannot read the title and the body. They exist
+# first when the owner publishes the release. The assets, the tag and the
+# target do not change after that, but the title and the body can. So repair a
+# failure here with `gh release edit --title` or `--notes-file`.
+name: Release Published
+
+on:
+  release:
+    types: [published]
+
+permissions: {}
+
+jobs:
+  release-metadata:
+    name: Verify published release metadata
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      # The default branch, not the tag. The release commit is on main before
+      # the tag exists, so main has the released CHANGELOG section, and no
+      # value of the event reaches `ref:`. The script checks only that section,
+      # which does not change.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '26'
+          package-manager-cache: false
+
+      - name: Verify the release title and body
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          gh release view "$TAG_NAME" --repo "$GITHUB_REPOSITORY" \
+            --json name,body,isDraft,isPrerelease > release.json
+          node scripts/verify-release-metadata.mjs \
+            --tag "$TAG_NAME" \
+            --release-json release.json

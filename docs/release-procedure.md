@@ -1,53 +1,194 @@
 # Release procedure
 
-This document describes how the owner releases `cargo-fallow`. First, it
-lists the one-time steps before the first release, 0.1.0. Then it gives the
-procedure for each later release.
+This document describes how the owner releases `cargo-fallow`. The tag comes
+last. The release workflow publishes the crate while the tag is still absent.
+Then the owner creates the signed tag and the GitHub release on the release
+commit.
 
 ## What the release workflow does
 
-`.github/workflows/release.yml` has two modes.
+The owner starts `.github/workflows/release.yml` by hand on `main`. The run has
+two inputs:
 
-- **Dry run.** A manual run (`workflow_dispatch`) is a dry run by default. It
-  checks the package file list, runs `cargo publish --dry-run`, builds the
-  binaries and writes their checksums. A dry run does not publish anything.
-- **Release.** A push of a `v*` tag starts a release. A manual run on a tag
-  ref with `dry-run` set to false is also a release. Use a manual release only
-  to finish a release that stopped. A run on a branch is always a dry run.
+- `version`: the version to release, for example `0.2.0`. A dry run can leave
+  it empty. The run then uses the version in `Cargo.toml`.
+- `dry-run`: true by default. A dry run checks the package, builds the
+  binaries and publishes nothing.
 
-A release runs these jobs in this order:
+The workflow has no tag trigger. It never creates a tag or a GitHub release.
+The jobs run in this order:
 
-1. The `plan` job checks that the tag is `v` plus the package version. It
-   also checks that `Cargo.toml` has no `publish = false` line, and that `main`
-   contains the tag commit. Then the job writes the release notes from the
-   CHANGELOG section of the version, checks the package file list, and runs
-   `cargo publish --dry-run`.
-2. The `build` job builds `cargo-fallow` for five targets:
+1. `plan` runs `scripts/verify-release-context.mjs`. A release stops when one
+   of these is true:
+   - the ref is not `main`;
+   - the subject of the HEAD commit is not exactly `chore: release vX.Y.Z`;
+   - `origin/main` is not the HEAD commit;
+   - the version input is not the version in `Cargo.toml`;
+   - the tag `vX.Y.Z` already exists on the remote.
+
+   Then `plan` runs `scripts/verify-release-metadata.mjs` on `CHANGELOG.md`.
+   A release stops when the `## [X.Y.Z] - YYYY-MM-DD` section is missing, is
+   empty, has no real date, has an em dash, or repeats a `###` heading. It
+   also stops when `[Unreleased]` is not empty or when a fragment is left in
+   `changelog.d/`. Last, `plan` checks the package file list and runs
+   `cargo publish --dry-run`. A dry run reports the context and metadata
+   problems as warnings.
+2. `build` builds `cargo-fallow` for five targets:
    `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`,
    `x86_64-apple-darwin`, `aarch64-apple-darwin` and `x86_64-pc-windows-msvc`.
    The job writes a `.sha256` file for each archive.
-3. The `attest` job writes a build provenance attestation for each archive.
-4. The `sign` job uses the `ED25519_BINARY_SIGNING_PRIVATE_KEY` secret to
-   write an Ed25519 signature `<archive>.sig` for each archive. Then the job
-   verifies each signature with the public key in
-   `action/scripts/verify-signature.mjs`. This key pair is for cargo-fallow
-   only. The fallow repo uses a different key pair.
-5. The `publish-crate` job publishes the crate to crates.io with trusted
-   publishing. The job gets a short-lived token through OIDC. The repository
-   does not store a crates.io token.
-6. The `github-release` job creates the GitHub release with the notes, the
-   archives, the `.sha256` files, the `.sig` files and one `SHA256SUMS` file.
+3. `attest` writes a build provenance attestation for each archive.
+4. `sign` uses the `ED25519_BINARY_SIGNING_PRIVATE_KEY` secret to write an
+   Ed25519 signature `<archive>.sig` for each archive. Then the job verifies
+   each signature with the public key in `action/scripts/verify-signature.mjs`.
+   This key pair is for cargo-fallow only.
+5. `publish-crate` publishes the crate to crates.io with trusted publishing.
+   The job gets a short-lived token through OIDC. The repository stores no
+   crates.io token. A run again after a partial failure skips a version that
+   is already published.
+6. `release-assets` checks that the tag is still absent. Then it puts the
+   archives, the `.sha256` files, the `.sig` files and one `SHA256SUMS` file
+   into one flat `release-assets` artifact. It checks `SHA256SUMS` and the
+   count of the files.
+7. `release-ready` ("Release ready for signed tag") checks that the tag is
+   still absent. Its summary shows the command for the last step.
 
-Jobs 3 to 6 run only for a release, in the `release` environment.
-`.github/scripts/release-workflow.test.mjs` checks the triggers, the
-permissions, the environment of each job and the action pins.
+Jobs 3 to 7 run only for a release. Each job that holds a credential (`attest`,
+`sign` and `publish-crate`) runs in the `release` environment.
+`.github/scripts/release-workflow.test.mjs` checks the trigger, the order of
+the jobs, the permissions, the environment of each job and the action pins.
+
+After the owner publishes the GitHub release, `release-published.yml` runs
+`scripts/verify-release-metadata.mjs` on the title and the body. It checks the
+`vX.Y.Z: ` title prefix, a body that is not empty, the compare URL and the em
+dash. A failure there is repairable: the title and the body of an immutable
+release can change with `gh release edit`.
+
+## Changelog fragments
+
+A pull request does not edit `CHANGELOG.md`. It adds one fragment file to
+`changelog.d/`. `changelog.d/README.md` describes the format. The
+`Changelog fragments` CI step and the pre-commit hook run
+`node scripts/changelog-fragments.mjs check --base origin/main`. The release
+commit collects the fragments.
+
+## Prepare the release commit
+
+1. Make a branch from the newest `main`: `git switch -c chore/release-vX.Y.Z`.
+2. Run `node scripts/changelog-fragments.mjs collect`. The command moves each
+   fragment into `[Unreleased]` and deletes the fragment files.
+3. In `CHANGELOG.md`, rename `## [Unreleased]` to
+   `## [X.Y.Z] - YYYY-MM-DD` and add a new empty `## [Unreleased]` section
+   above it. Check each entry against the commits since the previous tag.
+4. Set `version = "X.Y.Z"` in `Cargo.toml`, and run `cargo check` so that
+   `Cargo.lock` has the new version.
+5. Run `node scripts/verify-release-metadata.mjs --tag vX.Y.Z`. It runs the
+   same metadata check as the `plan` job.
+6. Commit with the subject `chore: release vX.Y.Z`. The pre-commit hook sees
+   an emptied `[Unreleased]` section with the new version heading, and accepts
+   it. If an older hook rejects the `collect` result, set
+   `HK_SKIP_STEPS=changelog-fragments` for this commit only.
+7. Open a pull request. When every check passes, merge it with the exact
+   subject. A default squash subject adds ` (#N)`, and the `plan` job then
+   stops:
+
+   ```bash
+   gh pr merge <N> --squash --match-head-commit <head SHA> \
+     --subject "chore: release vX.Y.Z"
+   ```
+
+8. Wait until the CI run of the release commit on `main` passes.
+
+## Write the release notes
+
+Write the notes in a file outside the repository, for example
+`~/.cache/cargo-fallow-release-vX.Y.Z.md`. Write them from the CHANGELOG
+section. The notes must:
+
+- tell the user what changed, not repeat the commit subjects;
+- contain no em dash;
+- end with the compare URL to the previous tag,
+  `https://github.com/fallow-rs/cargo-fallow/compare/vP.Q.R...vX.Y.Z`. The URL
+  of a first release is
+  `https://github.com/fallow-rs/cargo-fallow/commits/vX.Y.Z`.
+
+The title is `vX.Y.Z: <summary>`. The published release is immutable, so
+check the notes before the last step.
+
+## Run the release
+
+1. Run a dry run on `main`:
+
+   ```bash
+   gh workflow run release.yml --ref main
+   ```
+
+   Make sure that each job passes. A dry run on the release commit shows no
+   warning.
+
+2. Start the release:
+
+   ```bash
+   gh workflow run release.yml --ref main -f version=X.Y.Z -f dry-run=false
+   ```
+
+3. Read back the run and make sure that its `headSha` is the release commit.
+   Each time the run asks for approval, approve the `release` environment.
+   GitHub asks one time for each of the jobs `attest`, `sign` and
+   `publish-crate`.
+4. Wait until `Release ready for signed tag` passes.
+
+## Create the tag and the GitHub release
+
+Run the last step right after `release-ready` passes, from a clean checkout
+with your signing key:
+
+```bash
+node scripts/publish-github-release.mjs --run <run ID> --version X.Y.Z \
+  --title "vX.Y.Z: <summary>" --notes ~/.cache/cargo-fallow-release-vX.Y.Z.md
+```
+
+Add `--check-only` first to run each check and change nothing. The script:
+
+1. checks the title and the notes file;
+2. checks that the run is a successful `Release` run on `main` with a passed
+   `Release ready for signed tag` job;
+3. checks that `origin/main` is the commit of the run, that its subject is
+   `chore: release vX.Y.Z`, and that the tag is absent on the remote and in
+   the clone;
+4. downloads `release-assets` from the run. It checks that the set is
+   complete, that each archive matches `SHA256SUMS`, and that each signature
+   is valid;
+5. creates the signed tag with `git tag -s` on the release commit, checks it
+   with `git verify-tag`, and pushes it;
+6. runs `gh release create --verify-tag` with the title, the notes file and
+   the assets.
+
+If the workflow fails, repair it and run it again. No tag is used yet. If the
+release creation fails after the tag push, keep the signed tag. Remove only an
+incomplete draft, then run `gh release create` again with the same values.
+Never move or create the signed tag again.
+
+## Change the release environment after this procedure merges
+
+The `release` environment admitted only the tag rule `v*` for the 0.1.0
+release. A release now runs on `main` and never on a tag. Make this change one
+time, after the pull request that adds this procedure merges:
+
+1. Open **Settings**, **Environments**, `release`.
+2. Under **Deployment branches and tags**, remove the tag rule `v*`.
+3. Add the branch rule `main`. Keep **Required reviewers** with yourself.
+
+Until you make this change, a release run on `main` cannot start the jobs in
+the `release` environment. The crates.io trusted publisher stays the same: it
+names `release.yml` and the environment `release`.
 
 ## The package
 
 `include` in `Cargo.toml` limits the package to the source under `src/`, the
 manifest, the lock file, `LICENSE`, `README.md` and `CHANGELOG.md`. Test
-fixtures, the fuzz crate, corpus data and repository tools are not in the
-package. `scripts/check-package.mjs` reads the output of
+fixtures, the fuzz crate, corpus data, the changelog fragments and repository
+tools are not in the package. `scripts/check-package.mjs` reads the output of
 `cargo package --list`. The script fails when it finds a file outside that
 list, a missing required file, or a file over 128 KiB.
 
@@ -63,140 +204,20 @@ git checkout -- Cargo.toml
 
 `cargo publish --dry-run` fails for a package with `publish = false`. The CI
 job and the dry run of the release workflow remove the line only in their own
-checkout, and put it back after the dry run. With `--allow-dirty`, Cargo
-accepts that one change. The 0.1.0 release commit removed the line, so the
-`sed` step now changes nothing. The step stays as a guard. A release does not
-edit the manifest. If the line comes back in `Cargo.toml`, the `plan` job
-fails.
+checkout, and put it back after the dry run. The `sed` step stays as a guard.
+A release does not edit the manifest. If the line comes back in `Cargo.toml`,
+the `plan` job of a release fails.
 
-To run the same check on your machine, use a separate git worktree, not your
-own work tree:
+## Repository settings
 
-```bash
-git worktree add ../cargo-fallow-dry-run HEAD
-cd ../cargo-fallow-dry-run
-sed -i.bak '/^publish = false$/d' Cargo.toml && rm Cargo.toml.bak
-cargo publish --dry-run --locked --allow-dirty
-cd - && git worktree remove --force ../cargo-fallow-dry-run
-```
+These settings exist since the 0.1.0 release:
 
-## One-time steps before 0.1.0
-
-Do these steps one time, in this order. Steps 1 to 3 make no public change.
-
-### 1. Run a dry run
-
-```bash
-gh workflow run release.yml --ref main
-```
-
-The `dry-run` input is true by default. Make sure that each job passes, and
-that the summary of the `plan` job shows the release notes that you expect.
-
-### 2. Create the `release` environment
-
-In the repository settings, open **Environments** and create `release`:
-
-- **Deployment branches and tags**: select **Selected branches and tags** and
-  add the tag rule `v*`. Do not add a branch rule. Then a run on a branch
-  does not get an OIDC token for this environment.
-- **Required reviewers**: add yourself. Then each release waits for your
-  approval before the jobs that use credentials start. GitHub asks one time
-  for each of the four jobs `attest`, `sign`, `publish-crate` and
-  `github-release`.
-- Add one secret, `ED25519_BINARY_SIGNING_PRIVATE_KEY`, with the private key
-  of the cargo-fallow pair. The value is the 32-byte Ed25519 seed in base64.
-  Do not use the key of the `fallow-rs/fallow` repository. Without this
-  secret, the `sign` job fails. Trusted publishing does not need a crates.io
-  secret.
-
-Also add a tag ruleset for `v*` that lets only the owner create, update or
-delete a release tag.
-
-### 3. Prepare the 0.1.0 release commit
-
-On a branch, make one commit with the subject `chore: release v0.1.0`:
-
-1. In `Cargo.toml`, set `version = "0.1.0"` and remove the `publish = false`
-   line and the comment above it.
-2. Run `cargo check --locked`. If it fails because `Cargo.lock` needs an
-   update, run `cargo check` without `--locked`. `Cargo.lock` then has
-   version 0.1.0.
-3. In `CHANGELOG.md`, rename `## [Unreleased]` to `## [0.1.0] - YYYY-MM-DD`
-   and add a new empty `## [Unreleased]` section above it.
-4. In `README.md`, replace the install section with `cargo install
-   cargo-fallow --locked` and a link to the binaries of the GitHub release.
-5. Remove the M4 note in the `msrv` job of `.github/workflows/ci.yml`.
-6. If the user documentation for Rust is public, set `documentation` in
-   `Cargo.toml` to its URL.
-
-When CI passes, merge the pull request.
-
-### 4. Make the repository public
-
-Before you change the visibility, make sure that the history has no secrets
-and no private text. Then open **Settings**, **General**, **Danger Zone**, and
-select **Change visibility**. The `attest` job (step 3 of the release
-workflow) needs a public repository.
-
-### 5. Publish 0.1.0 to crates.io by hand
-
-The crates.io page on trusted publishing (checked on 2026-11-03) states that
-the crate must already be on crates.io. The first publish needs an API token,
-so publish 0.1.0 by hand. If crates.io later accepts a trusted publisher for a
-new crate name, do step 6 first and skip this step.
-
-1. On crates.io, create an API token with the scope `publish-new` for the
-   crate `cargo-fallow` and a short expiry.
-2. In a clean checkout of the release commit on `main`, run this command:
-
-   ```bash
-   cargo publish --locked
-   ```
-
-3. Delete the token on crates.io.
-
-### 6. Register the trusted publisher
-
-On crates.io, open the settings of `cargo-fallow`, then **Trusted
-Publishing**, and add a GitHub publisher with these values:
-
-| Field | Value |
-| --- | --- |
-| Repository owner | `fallow-rs` |
-| Repository name | `cargo-fallow` |
-| Workflow filename | `release.yml` |
-| Environment | `release` |
-
-### 7. Push the tag
-
-```bash
-git switch main && git pull --ff-only
-git tag -s v0.1.0 -m "cargo-fallow v0.1.0"
-git push origin v0.1.0
-```
-
-Each time the workflow asks for approval, approve the `release` environment.
-After step 5, version 0.1.0 is already on crates.io. The `publish-crate` job
-reports that the version is published, and the workflow continues. The
-workflow also attests the archives and creates the GitHub release.
-
-## Each later release
-
-1. Make a commit `chore: release vX.Y.Z`. In this commit, set the version in
-   `Cargo.toml` and `Cargo.lock`. Also move the `[Unreleased]` entries of the
-   CHANGELOG to a `## [X.Y.Z] - YYYY-MM-DD` section. Merge the commit to
-   `main`.
-2. Run a dry run on `main` (step 1 above).
-3. Push a signed tag `vX.Y.Z` on the merged commit. Then approve the
-   `release` environment.
-
-If a release stops after the crate is on crates.io, run the workflow again on
-the tag with `dry-run` set to false:
-
-```bash
-gh workflow run release.yml --ref vX.Y.Z -f dry-run=false
-```
-
-The `publish-crate` job skips a version that is already published, so the
-new run does only the steps that are missing.
+- The `release` environment has the owner as the required reviewer and the
+  secret `ED25519_BINARY_SIGNING_PRIVATE_KEY`, the 32-byte Ed25519 seed in
+  base64.
+- A tag ruleset for `v*` lets only the owner create, update or delete a
+  release tag.
+- Immutable releases are on.
+- On crates.io, the trusted publisher of `cargo-fallow` is the repository
+  `fallow-rs/cargo-fallow`, the workflow `release.yml` and the environment
+  `release`. Do not rename the workflow file or the environment.

@@ -13,7 +13,8 @@ use serde::Serialize;
 use crate::visibility::report::{CHANGE_ACTION, FindingRow, Range, VisibilityReport};
 
 /// One planned edit. The field order is the wire order.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
+#[schemars(rename = "FixVisibilityEdit")]
 pub struct Edit {
     /// Always `change-visibility`.
     #[serde(rename = "type")]

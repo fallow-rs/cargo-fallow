@@ -85,8 +85,9 @@ impl FixArgs {
 }
 
 /// One edit of the report.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 #[serde(untagged)]
+#[schemars(rename = "FixEntry")]
 pub enum Fix {
     /// An edit of a `Cargo.toml`.
     Dependency(deps::Edit),
@@ -228,7 +229,7 @@ fn plan(
             uniform_fields: false,
             kinds: Vec::new(),
             fail_on_issues: false,
-            changed_since: None,
+            scope: crate::scope::ScopeArgs::default(),
             precise: None,
         },
     )?;

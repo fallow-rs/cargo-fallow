@@ -1531,8 +1531,7 @@ fn fix_has_no_compact_or_markdown_output() {
             .expect("run cargo-fallow");
         assert_eq!(explain.status.code(), Some(2), "{format}");
         assert!(
-            String::from_utf8_lossy(&explain.stderr)
-                .contains("no SARIF, CodeClimate, compact, markdown, GitHub or badge"),
+            String::from_utf8_lossy(&explain.stderr).contains("[possible values: human, json]"),
             "{format}: {explain:?}"
         );
     }

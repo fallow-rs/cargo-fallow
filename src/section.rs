@@ -11,7 +11,7 @@ use fallow_report_protocol::exit_code::{EXIT_GATE_FAILED, EXIT_OK};
 use serde_json::{Value, json};
 
 use crate::cli::Format;
-use crate::error::CliError;
+use crate::error::{CliError, ErrorCode};
 use std::fmt::Write as _;
 
 use crate::finding::{Category, Draft, Finding, Impact, Location, Severity, codeclimate};
@@ -47,6 +47,11 @@ impl Section {
             Format::Json => pretty(&self.json),
             Format::Sarif => pretty(&self.sarif),
             Format::Codeclimate => pretty(&codeclimate(&self.findings)),
+            Format::Badge => Err(CliError::new(
+                ErrorCode::InvalidArgument,
+                "`--format badge` needs the health score of `cargo fallow check`",
+            )
+            .with_help("Run `cargo fallow check --format badge`.")),
         }
     }
 

@@ -210,6 +210,7 @@ impl CheckReport {
             Format::Json => pretty(self)?,
             Format::Sarif => pretty(&self.sarif())?,
             Format::Codeclimate => pretty(&codeclimate(&self.findings))?,
+            Format::Badge => render::badge::health(self.health.as_ref()),
         };
         render::write_stdout(text.trim_end()).map_err(|err| CliError::output(&err))?;
         Ok(if self.fails_run() {

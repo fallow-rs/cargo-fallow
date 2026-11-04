@@ -11,6 +11,8 @@ GitHub release. Each release needs a `## [X.Y.Z] - YYYY-MM-DD` section.
 
 ### Added
 
+- `cargo fallow check --format badge` writes an SVG badge with the health
+  grade, or a `no score` badge for a run with no score.
 - One suppression model for each check: `// fallow-ignore-next-line <kind>`
   now also works for `visibility`, `size`, `boundaries` and `files`,
   `// fallow-ignore-file <kind>` hides the findings of a file, and

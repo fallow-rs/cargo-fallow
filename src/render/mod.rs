@@ -1,5 +1,6 @@
 //! The output of a run.
 
+pub mod badge;
 pub mod deps;
 mod human;
 pub mod mutants;

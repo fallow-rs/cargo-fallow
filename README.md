@@ -1048,6 +1048,16 @@ prints the same schema.
   change without a schema change fails CI. Run the tests with
   `CARGO_FALLOW_UPDATE_SCHEMA=1` to write the file again.
 
+- `badge`: a flat SVG badge with the health grade, for example
+  `fallow rust: A (92)`, on stdout. Only `check` gives it. A run with no
+  health score, for example `check --only deps` or a scoped run, gives a grey
+  `no score` badge. Another command with `--format badge` exits 2. The badge
+  has the shape and the colors of the fallow badge for JavaScript.
+
+```bash
+cargo fallow check --format badge --quiet > fallow-badge.svg
+```
+
 ## Structure checks
 
 Four commands check the structure of the workspace. Each command has the

@@ -54,7 +54,7 @@ and take minutes. Run them as separate commands.
 | Flag | Meaning |
 | --- | --- |
 | `--manifest-path <PATH>` | The `Cargo.toml` of the workspace. The default is the manifest that Cargo finds from the current directory. |
-| `--format human\|json\|sarif\|codeclimate\|compact\|markdown\|badge` | The output format. The default is `human`. `badge` is an SVG badge with the health grade (see [Output formats](#output-formats)). |
+| `--format human\|json\|sarif\|codeclimate\|compact\|markdown\|github-annotations\|github-summary\|badge` | The output format. The default is `human`. `badge` is an SVG badge with the health grade (see [Output formats](#output-formats)). |
 | `--quiet` | Hide the progress lines on stderr. |
 | `--only <CHECK>,...` | Run only these checks. |
 | `--skip <CHECK>,...` | Do not run these checks. |
@@ -312,7 +312,7 @@ cargo fallow mutants --package my-crate --list --format json
 | `--in-diff <REF>` | Run only the mutants on changed lines. See [Changed code](#changed-code). |
 | `--file <PATH>` | Put mutants only in this file or folder, by the path from the workspace root. The flag can repeat. A value that matches no file is an error. |
 | `--test-workspace` | Run each mutant that the tests of the package do not detect against the tests of each workspace member. |
-| `--format human\|json\|sarif\|codeclimate\|compact\|markdown` | The output format. The default is `human`. `--inspect` has no SARIF, CodeClimate, compact or markdown form. |
+| `--format human\|json\|sarif\|codeclimate\|compact\|markdown\|github-annotations\|github-summary` | The output format. The default is `human`. `--inspect` has only the `human` and `json` forms. |
 | `--quiet` | Hide the progress lines on stderr. |
 | `--jobs <N>` | The test processes that run at the same time. |
 | `--max-mutants <N>` | Run at most this many mutants. The other mutants stay `pending`. |
@@ -677,7 +677,7 @@ cargo fallow deps --fail-on-issues --format sarif --quiet
 | Flag | Meaning |
 | --- | --- |
 | `--manifest-path <PATH>` | The `Cargo.toml` of the workspace. |
-| `--format human\|json\|sarif\|codeclimate\|compact\|markdown` | The output format. The default is `human`. |
+| `--format human\|json\|sarif\|codeclimate\|compact\|markdown\|github-annotations\|github-summary` | The output format. The default is `human`. |
 | `--quiet` | Hide the progress lines on stderr. |
 | `--fail-on-issues` | Exit 1 when a finding has the `error` severity. |
 | `--changed-since <REF>` | Report only the findings in the files that changed since the fork point of `REF`. See [Changed files](#changed-files). |
@@ -1077,9 +1077,34 @@ This section describes `check`. [Output](#output) describes `mutants`.
   span, the tool escapes each character that markdown or HTML reads. The parse gate has a table only when a
   file does not parse.
 
+- `github-annotations`: GitHub workflow commands, one annotation for each
+  SARIF result, at most 50, the errors first. A notice after the list gives
+  the count when the run has more results. Each path starts at the
+  repository root (`git rev-parse --show-prefix` of the workspace root), so
+  GitHub finds the file. An error of the run is an `::error` command on
+  stdout.
+- `github-summary`: a GitHub job summary in markdown: the issue count and the
+  exit code, a gate table with the observed values, and a table of at most 50
+  findings. Append it to `$GITHUB_STEP_SUMMARY`.
+
+```bash
+cargo fallow check --format github-annotations --quiet
+cargo fallow check --format github-summary --quiet >> "$GITHUB_STEP_SUMMARY"
+```
+
+Each format is one run. For `mutants`, which takes minutes, pick one format
+for the run.
+
+The annotations are the same text as the jq filter of the GitHub Action, so
+a workflow without the action gets the same annotations. The summary escapes
+more characters than the jq filter, so its text can differ, but GitHub shows
+it the same. An error of the run is an `::error` command in
+`github-annotations`, and a short summary in `github-summary`.
+
 Each command has the `compact` and `markdown` formats, `mutants` too. A
-`mutants --list` run has no finding, so these formats show no mutant. `fix`
-and `mutants --inspect` have no `compact` and no `markdown` output, and exit 2.
+`mutants --list` run has no finding, so these formats show no mutant. The
+GitHub formats are on the same commands. `fix` and `mutants --inspect` have
+none of these four formats, and exit 2.
 
 A finding `id` and a CodeClimate `fingerprint` are the same value: 16 hex
 digits of an FNV-1a hash of the check, the rule and the identity of the
@@ -1140,7 +1165,7 @@ cargo fallow check --format badge --quiet > fallow-badge.svg
 ## Structure checks
 
 Four commands check the structure of the workspace. Each command has the
-`--manifest-path`, `--format human|json|sarif|codeclimate|compact|markdown` and `--quiet` flags,
+`--manifest-path`, `--format human|json|sarif|codeclimate|compact|markdown|github-annotations|github-summary` and `--quiet` flags,
 the [`--changed-since <REF>`](#changed-files), [`--package`](#packages) and
 [baseline](#baselines) flags,
 and its own

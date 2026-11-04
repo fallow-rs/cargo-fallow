@@ -3,6 +3,7 @@
 pub mod badge;
 pub mod compact;
 pub mod deps;
+pub mod github;
 mod human;
 pub mod markdown;
 pub mod mutants;

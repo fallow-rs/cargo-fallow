@@ -280,11 +280,17 @@ pub fn find(name: &str) -> Option<&'static Explanation> {
 pub fn run(args: &ExplainArgs) -> Result<u8, CliError> {
     if matches!(
         args.format,
-        Format::Sarif | Format::Codeclimate | Format::Compact | Format::Markdown | Format::Badge
+        Format::Sarif
+            | Format::Codeclimate
+            | Format::Compact
+            | Format::Markdown
+            | Format::GithubAnnotations
+            | Format::GithubSummary
+            | Format::Badge
     ) {
         return Err(CliError::new(
             ErrorCode::InvalidArgument,
-            "`explain` has no SARIF, CodeClimate, compact, markdown or badge output",
+            "`explain` has no SARIF, CodeClimate, compact, markdown, GitHub or badge output",
         )
         .with_help("Use `--format human` or `--format json`."));
     }

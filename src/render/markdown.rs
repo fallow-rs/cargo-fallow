@@ -129,7 +129,7 @@ fn place(location: &Location) -> String {
 
 /// The text as inline code. The fence is one backtick longer than the
 /// longest backtick run of the text, so the text cannot close the span.
-fn code(text: &str) -> String {
+pub fn code(text: &str) -> String {
     let text = cell_code(&one_line(text));
     let fence = "`".repeat(longest_run(&text) + 1);
     if text.starts_with('`') || text.ends_with('`') {
@@ -155,7 +155,7 @@ fn longest_run(text: &str) -> usize {
 /// of the same length closes is a code span, the CommonMark rule, and only its
 /// `|` is escaped. Outside a code span, each character that markdown or HTML
 /// reads is escaped, also a backtick run that no run closes.
-fn escape(text: &str) -> String {
+pub fn escape(text: &str) -> String {
     let chars: Vec<char> = one_line(text).chars().collect();
     let mut out = String::with_capacity(chars.len());
     let mut index = 0;

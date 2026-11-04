@@ -246,11 +246,13 @@ fn inspect_report(options: &mutation::run::Options, id: &str) -> Result<u8, CliE
             | cli::Format::Codeclimate
             | cli::Format::Compact
             | cli::Format::Markdown
+            | cli::Format::GithubAnnotations
+            | cli::Format::GithubSummary
             | cli::Format::Badge
     ) {
         return Err(CliError::new(
             error::ErrorCode::InvalidArgument,
-            "`--inspect` has no SARIF, CodeClimate, compact, markdown or badge output",
+            "`--inspect` has no SARIF, CodeClimate, compact, markdown, GitHub or badge output",
         )
         .with_help("Use `--format human` or `--format json`."));
     }

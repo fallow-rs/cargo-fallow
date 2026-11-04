@@ -189,6 +189,20 @@ input to turn the gate on.
 An execution error (exit code 2) fails the job also with
 `fail-on-issues: false`.
 
+### Without the action
+
+The binary writes the same annotations as the action, and a job summary that
+GitHub shows the same:
+
+```yaml
+- run: cargo fallow check --format github-annotations --quiet
+- run: cargo fallow check --format github-summary --quiet >> "$GITHUB_STEP_SUMMARY"
+```
+
+The action builds its annotations and its summary from the JSON report and
+the SARIF log of one run with jq. A second run of `cargo fallow mutants` takes
+minutes, so the action does not run the binary again for these formats.
+
 ## Outputs
 
 | Output | Meaning |

@@ -72,6 +72,11 @@ GitHub release. Each release needs a `## [X.Y.Z] - YYYY-MM-DD` section.
   `path:line:col: rule: message`, and `--format markdown` gives a gate table
   and one table for each check. Each command has both formats, except `fix`
   and `mutants --inspect`.
+- `--format github-annotations` writes GitHub workflow commands, at most 50,
+  the errors first, with paths from the repository root.
+  `--format github-summary` writes a GitHub job summary. The annotations are
+  the same text as the jq filter of the GitHub Action, and the summary shows
+  the same in GitHub.
 
 ### Fixed
 

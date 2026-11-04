@@ -3,6 +3,7 @@
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use cargo_metadata::camino::{Utf8Path, Utf8PathBuf};
 use cargo_metadata::{DependencyKind, MetadataCommand, Package, Target as CargoTarget};
@@ -196,8 +197,19 @@ fn metadata(
     Ok(metadata)
 }
 
+/// The root of the first workspace that the run read.
+static LOADED_ROOT: OnceLock<PathBuf> = OnceLock::new();
+
+/// The root of the first workspace that the run read, or `None` before the
+/// first read. The GitHub formats rebase each path from it to the repository
+/// root.
+pub fn loaded_root() -> Option<&'static Path> {
+    LOADED_ROOT.get().map(PathBuf::as_path)
+}
+
 fn model(metadata: &cargo_metadata::Metadata) -> Workspace {
     let root = metadata.workspace_root.clone();
+    LOADED_ROOT.get_or_init(|| root.clone().into_std_path_buf());
     let mut members: Vec<Member> = metadata
         .workspace_packages()
         .into_iter()

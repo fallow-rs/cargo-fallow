@@ -31,6 +31,11 @@ pub enum Format {
     /// Markdown with a gate table and one table for each check, for a pull
     /// request body.
     Markdown,
+    /// GitHub workflow commands: one annotation for each finding, at most 50,
+    /// the errors first.
+    GithubAnnotations,
+    /// A GitHub job summary in markdown: the gate table and the findings.
+    GithubSummary,
     /// A flat SVG badge with the health grade. Only `check` gives it, and it
     /// exits 0 also when a gate fails.
     Badge,

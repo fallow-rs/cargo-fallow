@@ -102,7 +102,7 @@ pub fn run(args: &InitArgs) -> Result<u8, CliError> {
     if !matches!(args.format, Format::Human | Format::Json) {
         return Err(CliError::new(
             ErrorCode::InvalidArgument,
-            "`init` has only the human and the JSON output",
+            "`init` has only human and JSON output",
         )
         .with_help("Use `--format human` or `--format json`."));
     }

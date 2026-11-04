@@ -1494,7 +1494,12 @@ fn markdown_has_a_gate_table_and_a_table_for_each_check() {
 #[test]
 fn fix_has_no_compact_or_markdown_output() {
     let fixture = Fixture::new();
-    for format in ["compact", "markdown"] {
+    for format in [
+        "compact",
+        "markdown",
+        "github-annotations",
+        "github-summary",
+    ] {
         let run = fixture.run(&["fix", "--dry-run", "--format", format]);
         assert_eq!(run.code, 2, "{format}: {}", run.stdout);
         // `explain` reads no workspace, so the run has no `--manifest-path`.
@@ -1506,8 +1511,156 @@ fn fix_has_no_compact_or_markdown_output() {
         assert_eq!(explain.status.code(), Some(2), "{format}");
         assert!(
             String::from_utf8_lossy(&explain.stderr)
-                .contains("no SARIF, CodeClimate, compact, markdown or badge"),
+                .contains("no SARIF, CodeClimate, compact, markdown, GitHub or badge"),
             "{format}: {explain:?}"
         );
     }
+}
+
+/// The output of a jq filter of the action, or `None` when jq is missing.
+fn action_jq(filter: &str, input: &str, args: &[(&str, &str)]) -> Option<String> {
+    let mut command = StdCommand::new("jq");
+    command.arg("-r");
+    for (name, value) in args {
+        command.args(["--arg", name, value]);
+    }
+    let output = command
+        .arg("-f")
+        .arg(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("action/jq")
+                .join(filter),
+        )
+        .arg(input)
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+#[test]
+fn github_annotations_equal_the_filter_of_the_action() {
+    let fixture = committed();
+    for command in ["check", "boundaries", "complexity", "dupes", "visibility"] {
+        let sarif = fixture.run(&[command, "--format", "sarif"]);
+        let path = fixture.root().join("../log.sarif");
+        fs::write(&path, &sarif.stdout).expect("write the log");
+        let annotations = fixture.run(&[command, "--format", "github-annotations"]);
+        assert_eq!(annotations.code, 0, "{command}");
+        let Some(expected) = action_jq(
+            "annotations.jq",
+            path.to_str().expect("UTF-8"),
+            &[("max", "50"), ("prefix", "")],
+        ) else {
+            // A machine without jq cannot run the filter. The CI runners have it.
+            return;
+        };
+        assert_eq!(annotations.stdout, expected, "{command}");
+        assert!(!annotations.stdout.is_empty(), "{command}");
+    }
+}
+
+#[test]
+fn github_annotations_start_at_the_repository_root() {
+    let fixture = Fixture::new();
+    let repo = fixture.root().join("../repo");
+    // The workspace is a folder of a larger repository.
+    copy_dir(fixture.root(), &repo.join("tools/ws"));
+    git_in(&repo, &["init", "--quiet"]);
+    let output = Command::cargo_bin("cargo-fallow")
+        .expect("find the binary")
+        .current_dir(repo.join("tools/ws"))
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .args([
+            "fallow",
+            "boundaries",
+            "--format",
+            "github-annotations",
+            "--quiet",
+        ])
+        .output()
+        .expect("run cargo-fallow");
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        text.lines()
+            .all(|line| line.contains("file=tools/ws/crates/")),
+        "{text}"
+    );
+    // The same lines as the filter of the action with the prefix.
+    let sarif = Command::cargo_bin("cargo-fallow")
+        .expect("find the binary")
+        .current_dir(repo.join("tools/ws"))
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .args(["fallow", "boundaries", "--format", "sarif", "--quiet"])
+        .output()
+        .expect("run cargo-fallow");
+    let path = repo.join("log.sarif");
+    fs::write(&path, &sarif.stdout).expect("write the log");
+    if let Some(expected) = action_jq(
+        "annotations.jq",
+        path.to_str().expect("UTF-8"),
+        &[("max", "50"), ("prefix", "tools/ws/")],
+    ) {
+        assert_eq!(text, expected);
+    }
+}
+
+#[test]
+fn github_summary_has_the_gates_and_the_findings() {
+    let fixture = Fixture::new();
+    let run = fixture.run(&[
+        "boundaries",
+        "--format",
+        "github-summary",
+        "--fail-on-issues",
+    ]);
+    assert_eq!(run.code, 1);
+    assert!(
+        run.stdout
+            .starts_with("### cargo fallow boundaries\n\n4 issues, exit code 1.\n"),
+        "{}",
+        run.stdout
+    );
+    assert!(
+        run.stdout
+            .contains("| `boundary-violations` | fail | yes | 4 |"),
+        "{}",
+        run.stdout
+    );
+    assert!(run.stdout.contains("\n#### Findings\n"), "{}", run.stdout);
+    // An error is an annotation on stdout with the code in the title.
+    let error = fixture.run(&[
+        "size",
+        "--base",
+        "no-such-ref",
+        "--format",
+        "github-annotations",
+    ]);
+    assert_eq!(error.code, 2);
+    assert!(
+        error
+            .stdout
+            .starts_with("::error title=cargo-fallow CARGO_FALLOW_INVALID_ARGUMENT::"),
+        "{}",
+        error.stdout
+    );
+    let summary = fixture.run(&[
+        "size",
+        "--base",
+        "no-such-ref",
+        "--format",
+        "github-summary",
+    ]);
+    assert_eq!(summary.code, 2);
+    assert!(
+        summary
+            .stdout
+            .starts_with("### cargo fallow\n\nThe run failed with exit code 2: "),
+        "{}",
+        summary.stdout
+    );
 }

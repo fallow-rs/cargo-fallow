@@ -103,6 +103,8 @@ impl CliError {
             | Format::Compact
             | Format::Markdown
             | Format::Badge => self.emit_text(),
+            Format::GithubSummary => self.emit_summary(),
+            Format::GithubAnnotations => self.emit_annotation(),
         };
     }
 
@@ -112,6 +114,38 @@ impl CliError {
             .with_help(self.help.clone());
         let text = serde_json::to_string_pretty(&document).map_err(io::Error::other)?;
         render::write_stdout(&text)
+    }
+
+    /// The error as a workflow command on stdout, so the job shows it, and as
+    /// text on stderr.
+    fn emit_annotation(&self) -> io::Result<()> {
+        let mut text = self.message.clone();
+        if let Some(help) = &self.help {
+            text.push(' ');
+            text.push_str(help);
+        }
+        render::write_stdout(&format!(
+            "::error title=cargo-fallow {}::{}",
+            self.code.as_str(),
+            render::github::data_escape(&text)
+        ))?;
+        self.emit_text()
+    }
+
+    /// The error as a job summary on stdout, the same as the summary filter
+    /// of the action, and as text on stderr.
+    fn emit_summary(&self) -> io::Result<()> {
+        let mut text = format!(
+            "### cargo fallow\n\nThe run failed with exit code {EXIT_INVALID_INPUT}: {}\n\n- Code: `{}`",
+            render::markdown::escape(&self.message),
+            self.code.as_str()
+        );
+        if let Some(help) = &self.help {
+            text.push_str("\n- Help: ");
+            text.push_str(&render::markdown::escape(help));
+        }
+        render::write_stdout(&text)?;
+        self.emit_text()
     }
 
     fn emit_text(&self) -> io::Result<()> {

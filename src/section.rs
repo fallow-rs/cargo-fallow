@@ -48,6 +48,21 @@ impl Section {
             Format::Sarif => pretty(&self.sarif),
             Format::Codeclimate => pretty(&codeclimate(&self.findings)),
             Format::Compact => Ok(render::compact::lines(&self.findings)),
+            Format::GithubAnnotations => Ok(render::github::annotations(
+                &self.sarif,
+                render::github::path_prefix(),
+            )),
+            Format::GithubSummary => Ok(render::github::summary(
+                &render::github::Summary {
+                    kind: self.json["kind"].as_str().unwrap_or("check"),
+                    total_issues: self.findings_count(),
+                    exit_code: self.exit_code(),
+                    mutants_line: render::github::mutants_line(&self.json),
+                    gates: &self.gates,
+                    sarif: &self.sarif,
+                },
+                render::github::path_prefix(),
+            )),
             Format::Markdown => {
                 let command = self.json["kind"].as_str().unwrap_or("check");
                 Ok(render::markdown::render(&render::markdown::Document {
@@ -72,11 +87,24 @@ impl Section {
     pub fn write(&self, format: Format) -> Result<u8, CliError> {
         let text = self.render(format)?;
         render::write_report(text.trim_end()).map_err(|err| CliError::output(&err))?;
-        Ok(if self.fails() {
+        Ok(self.exit_code())
+    }
+
+    /// The exit code of the section: 1 when an enforced gate failed.
+    pub fn exit_code(&self) -> u8 {
+        if self.fails() {
             EXIT_GATE_FAILED
         } else {
             EXIT_OK
-        })
+        }
+    }
+
+    /// The `total_issues` of the JSON report, or the number of findings.
+    fn findings_count(&self) -> usize {
+        self.json["total_issues"]
+            .as_u64()
+            .and_then(|count| usize::try_from(count).ok())
+            .unwrap_or(self.findings.len())
     }
 }
 

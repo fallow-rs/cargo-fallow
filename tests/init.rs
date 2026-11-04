@@ -181,3 +181,26 @@ fn a_configured_baseline_outside_the_root_or_missing_exits_2() {
         assert!(error.contains(text), "{error}");
     }
 }
+
+#[test]
+fn init_has_only_human_and_json_output() {
+    let dir = package();
+    let before = fs::read_to_string(dir.path().join("Cargo.toml")).expect("read the manifest");
+    for format in [
+        "sarif",
+        "codeclimate",
+        "compact",
+        "markdown",
+        "github-annotations",
+        "github-summary",
+    ] {
+        let (code, stdout) = run(
+            dir.path(),
+            &["init", "--write", "--quiet", "--format", format],
+        );
+        assert_eq!(code, 2, "{format}: {stdout}");
+    }
+    // No run wrote the configuration.
+    let after = fs::read_to_string(dir.path().join("Cargo.toml")).expect("read the manifest");
+    assert_eq!(before, after);
+}

@@ -8,8 +8,8 @@
 
 <p align="center">
   <strong>Codebase intelligence for Rust workspaces.</strong><br>
-  Unused dependencies, dead public API, duplication, complexity, boundaries and mutation testing, from one module graph of your workspace.<br>
-  One Cargo subcommand. It runs on stable Rust and the static checks build nothing.
+  cargo-fallow finds unused dependencies, <code>pub</code> items that only their own crate uses, duplicated code, complex functions and boundary violations.<br>
+  Its mutation tests show the code changes that your tests do not detect.
 </p>
 
 <p align="center">
@@ -36,33 +36,34 @@ Run it in the root of any Cargo workspace:
 cargo fallow
 ```
 
-`cargo fallow` is the Rust part of [Fallow](https://github.com/fallow-rs/fallow).
-It reads `cargo metadata`, parses the source with `ra_ap_syntax` (the parser of
-rust-analyzer), and builds one module graph of the workspace. Each check reads
-that graph. The static checks compile nothing and need no nightly toolchain.
+`cargo fallow` is the Rust version of [fallow](https://github.com/fallow-rs/fallow).
+It reads `cargo metadata`, parses your source with `ra_ap_syntax` (the parser
+of rust-analyzer), and builds a module graph of the workspace. The static
+checks work from this graph and the syntax tree, so you do not have to
+compile the workspace first.
 
 > [!IMPORTANT]
-> cargo-fallow is pre-release. The crate is not on crates.io yet, and the JSON
-> shapes can change before the first release. The
-> [CHANGELOG](CHANGELOG.md) records each change.
+> cargo-fallow is pre-release. It is not on crates.io yet, and the JSON
+> output can change before the first release. See the
+> [CHANGELOG](CHANGELOG.md) for each change.
 
 ## What cargo-fallow finds
 
 | Question | Check | Command |
 |---|---|---|
 | Which dependencies does no code use? | [Unused, misplaced and feature-only dependencies](docs/dependencies.md), with an [auto-fix](docs/fix.md) that keeps the format of `Cargo.toml` | `cargo fallow deps`, `cargo fallow fix` |
-| Which `pub` items are too visible? | [Dead public items and items that only their own crate uses](docs/visibility.md), with an optional rust-analyzer pass for the cases that syntax cannot decide | `cargo fallow visibility` |
-| Which `.rs` files does no target compile? | [Files that no `mod` item, `#[path]` or `include!` reaches](docs/unused-files.md) | `cargo fallow files` |
+| Which `pub` items are too visible? | [Dead public items and items that only their own crate uses](docs/visibility.md), with an optional rust-analyzer pass for method calls and macro output | `cargo fallow visibility` |
+| Which `.rs` files does no target compile? | [`.rs` files outside the module tree of each target](docs/unused-files.md) | `cargo fallow files` |
 | What is copied? | [Clone groups](docs/structure.md) on normalized token streams, in four modes from `strict` to `semantic` | `cargo fallow dupes` |
 | Where is the code hard to change? | [Functions over the cyclomatic or the cognitive limit](docs/structure.md), and a [0 to 100 health score](docs/check.md#health-score) | `cargo fallow complexity` |
-| Does the architecture hold? | [Crate, module and source rules](docs/structure.md) in `Cargo.toml` | `cargo fallow boundaries` |
+| Do crates and modules follow your dependency rules? | [Crate, module and source rules](docs/structure.md) in `Cargo.toml` | `cargo fallow boundaries` |
 | Do large files grow? | [Line limits for files and functions](docs/structure.md), and a growth gate against a base ref | `cargo fallow size` |
 | Do the tests detect a code change? | [Mutation testing](docs/mutation-testing.md) with test selection from a coverage map (opt-in, runs the tests) | `cargo fallow mutants` |
 
-`cargo fallow check` runs each static check in one pass: it reads
-`cargo metadata` once, builds the graph once and parses each file once. It
-writes one report with a health score. `cargo fallow explain <rule>` gives the
-meaning, an example and the fix of each rule.
+`cargo fallow check` runs all the static checks and writes one report with a
+health score. It reads `cargo metadata` one time and parses each file one time
+for all the checks. To see what a rule means and how to fix a finding, run
+`cargo fallow explain <rule>`.
 
 ## Install
 
@@ -72,16 +73,16 @@ The crate is not on crates.io yet. Install it from source:
 cargo install --git https://github.com/fallow-rs/cargo-fallow --locked
 ```
 
-`--locked` builds with the versions in `Cargo.lock`, the versions that CI
-tests. The package installs one binary, `cargo-fallow`. Cargo finds it as the
-`cargo fallow` subcommand.
+`--locked` uses the dependency versions in `Cargo.lock`, which are the
+versions that CI tests. The package installs one binary, `cargo-fallow`, and
+you run it as `cargo fallow`.
 
 > [!WARNING]
-> Do not run `cargo install fallow`. That crate is
+> Do not run `cargo install fallow`. That command installs
 > [fallow for TypeScript and JavaScript](https://github.com/fallow-rs/fallow).
-> cargo-fallow never installs a binary named `fallow`.
+> The cargo-fallow package does not install a binary named `fallow`.
 
-Two parts need more setup:
+`mutants` and `visibility --precise` need more tools:
 
 - `cargo fallow mutants` needs [`cargo-nextest`](https://nexte.st) and the
   `llvm-tools` component (`rustup component add llvm-tools`).
@@ -98,8 +99,8 @@ cargo fallow fix --dry-run                           # show the edits, then run 
 cargo fallow explain unused-dependency               # the meaning and the fix of a rule
 ```
 
-The report starts with the health score, then gives each check, then one gate
-block. This is an extract of cargo-fallow on its own repository:
+The report shows the health score first, then the findings of each check, and
+then the gates. Here is part of the report for the cargo-fallow repository:
 
 ```text
 cargo fallow check: 1 member, 19 targets
@@ -127,10 +128,8 @@ Gates:
   ...
 ```
 
-<sub>Abridged. The full report has each check and each gate.</sub>
-
-A gate is in each report, but it fails the run only with `--fail-on-issues`.
-The exit codes are the same for each command:
+Each report lists the gates. A failed gate changes the exit code only when
+you add `--fail-on-issues`. All commands use the same exit codes:
 
 | Exit code | Meaning |
 |---|---|
@@ -138,14 +137,14 @@ The exit codes are the same for each command:
 | `1` | An enforced gate failed. |
 | `2` | The input was not valid, or the run could not complete. With `--format json`, a JSON error document goes to stdout. |
 
-A script that reads the JSON output can treat `0` and `1` as a complete run.
-It must not hide exit code `2` with `|| true`.
+In a script that reads the JSON output, treat `0` and `1` as a complete run.
+Do not hide exit code `2` with `|| true`.
 
 ## In pull requests
 
-This repository is also a GitHub Action. It runs one command, writes the job
-summary, shows each finding as an annotation, and can post one sticky comment
-on the pull request.
+This repository is also a GitHub Action. The action runs one `cargo fallow`
+command and writes the result to the job summary. It adds an annotation for
+each finding, and it can post a comment on the pull request.
 
 ```yaml
 name: cargo-fallow
@@ -171,9 +170,9 @@ jobs:
           auto-changed-since: 'true'
 ```
 
-`auto-changed-since` keeps only the findings in the files that the pull
-request changed, so old findings do not fail the job. Pin each action to a
-full commit SHA.
+With `auto-changed-since`, the report has only the findings in the files
+that the pull request changed. Old findings then do not fail the job. Pin each
+action to a full commit SHA.
 
 | GitHub surface | Turn it on with | Job permission |
 |---|---|---|
@@ -181,28 +180,29 @@ full commit SHA.
 | Sticky pull request comment | `comment: 'true'` | `pull-requests: write` |
 | Code scanning | `sarif: 'true'` | `security-events: write` |
 
-`cargo fallow init --ci github` writes a starting workflow. The
-[action guide](action/README.md) lists each input and each output. Without the
-action, `--format github-annotations` and `--format github-summary` give the
-same annotations and summary. GitLab reads `--format codeclimate` as a code
-quality report.
+To get a starting workflow, run `cargo fallow init --ci github`. The
+[action guide](action/README.md) lists all inputs and outputs. If you do not
+use the action, `--format github-annotations` and `--format github-summary`
+write the same annotations and summary. For GitLab, use `--format codeclimate`
+to get a code quality report.
 
 ## Adopt cargo-fallow on an existing workspace
 
 You do not have to fix each finding before you turn on the gates.
 
-1. Run `cargo fallow init`. It prints the configuration tables with each limit
-   at the current maximum of the workspace. It changes no file.
-2. Run `cargo fallow init --write`. It adds the tables to the root
-   `Cargo.toml` and saves a baseline of the current findings. The first
-   `cargo fallow check --fail-on-issues` then passes, and a new finding fails.
-3. In pull requests, use `--changed-since <ref>`. The run then judges only the
-   changed files, and needs no baseline.
-4. Lower the limits over time. `cargo fallow fix` removes the unused
-   dependencies and narrows the visibility of each `pub` item that it can.
+1. Run `cargo fallow init`. The command prints the configuration tables, with
+   each limit set to the current maximum in the workspace. It does not change
+   a file.
+2. Run `cargo fallow init --write`. The command adds the tables to the root
+   `Cargo.toml` and saves the current findings as a baseline. After this,
+   `cargo fallow check --fail-on-issues` passes, and only new findings fail it.
+3. In pull requests, add `--changed-since <ref>`. The report then has only the
+   findings in the changed files, and you do not need a baseline.
+4. Lower the limits over time. To remove unused dependencies and narrow the
+   visibility of `pub` items, run `cargo fallow fix`.
 
-The configuration lives in `Cargo.toml`, so Cargo parses it and no extra file
-is necessary:
+The configuration is in `Cargo.toml`. You do not need a separate
+configuration file:
 
 ```toml
 [workspace.metadata.fallow]
@@ -223,15 +223,16 @@ To keep an intentional finding, add a suppression comment:
 pub fn hook() {}
 ```
 
-`[workspace.metadata.fallow.rules]` sets a rule to `error`, `warn` or `off`.
-[Adoption](docs/adoption.md) covers rule severity, baselines, `--package`,
-`--changed-since` and each suppression kind.
+To change the severity of a rule, set it to `error`, `warn` or `off` in
+`[workspace.metadata.fallow.rules]`. The [adoption guide](docs/adoption.md)
+describes rule severity, baselines, `--package`, `--changed-since` and all
+suppression kinds.
 
 ## Mutation testing
 
 `cargo fallow mutants` makes small changes (mutants) in the source of one
-package, runs the tests against each mutant, and reports the mutants that no
-test detects.
+package and runs the tests against each mutant. The report lists each mutant
+that no test detects.
 
 ```bash
 cargo fallow mutants --package my-crate
@@ -248,55 +249,53 @@ Survived (2)
     :8:5 relational-operator `a == 2` -> `!=` [3f6c1d2a9b804e57]
 ```
 
-- Most mutants go into one build. A runtime switch selects the active mutant,
-  so a mutant costs no compile.
-- A coverage map selects the tests of each mutant, and the fastest test runs
-  first.
-- `--in-diff <ref>` runs only the mutants on changed lines.
-- The run works in a copy, so the checkout does not change. A memory guard
-  stops a mutant that uses too much memory, and a watchdog stops the tests
-  when `cargo fallow` stops.
-- A journal keeps each result. A run that stops continues where it stopped.
+- One build contains most of the mutants. At run time, a switch selects the
+  active mutant, so these mutants do not need a compile of their own.
+- A coverage map tells which tests execute the lines of a mutant. Only those
+  tests run, and the fastest test runs first.
+- With `--in-diff <ref>`, you test only the mutants on changed lines.
+- All work happens in a copy of the workspace, so your checkout does not
+  change. cargo-fallow kills a test process above 4096 MiB (`--memory-limit`
+  sets another limit). If `cargo fallow` dies, a watchdog kills the tests.
+- Each result goes to a journal. When a run stops early, the next run with the
+  same source and options reads the journal and tests only the other mutants.
 
 [Mutation testing](docs/mutation-testing.md) describes the tiers, each status,
 the test selection and the limits.
 
-## Why you can depend on cargo-fallow
+## What cargo-fallow guarantees
 
-- The same input gives the same output. Each finding has a stable id that does
+- If the source does not change, the report does not change. Finding ids do
   not use line numbers, so an edit above a finding keeps its id.
-- The static checks read syntax and `cargo metadata`. They compile nothing and
-  run no build script, so a full `check` takes seconds.
-- When syntax cannot decide, a check gives credit and does not report. A
-  method call on an unknown type, a name in macro tokens and an `OUT_DIR`
-  include keep an item in use.
-- `Cargo.lock` stays as it was before each run, also when `deps` resolves the
+- When cargo-fallow cannot tell from the syntax if code uses an item, it
+  counts the item as used. Examples are a method call on an unknown type, a
+  name in macro tokens, and an `include!` from `OUT_DIR`.
+- A `check` run does not change `Cargo.lock`, also when `deps` resolves the
   dependencies.
-- Each parse runs on a bounded stack, so a deeply nested file cannot crash the
-  run. A file that does not parse fails the `parse-error` gate and never
-  passes in silence.
-- Each command has a typed JSON output, documented exit codes, and a published
-  [JSON Schema](docs/output-schema.json). A test fails CI when a report and the
-  schema disagree.
-- The finding ids, the health score model and most gate names are the same as
-  in fallow for JavaScript.
+- cargo-fallow parses each file on a thread with a stack sized for that file,
+  so a deeply nested file cannot crash the run. A file that does not parse
+  fails the `parse-error` gate.
+- Each JSON document matches the [JSON Schema](docs/output-schema.json). A test
+  in CI fails when a report and the schema differ.
+- cargo-fallow computes finding ids and the health score the same way as
+  fallow for JavaScript. Most gate names are also the same.
 
 ## With scripts and coding agents
 
-Scripts and agents add `--format json --quiet`. Each command then writes one
-JSON document to stdout:
+In a script or a coding agent, add `--format json --quiet`. Each command then
+writes one JSON document to stdout:
 
-- `kind` names the command, and `schema_version` names the shape.
+- `kind` is the name of the command, and `schema_version` is the version of
+  the document shape.
 - Each finding has `id`, `check`, `rule`, `severity`, `location` and an
-  `actions[]` array. `auto_fixable` tells if `cargo fallow fix` applies the
-  action.
-- `--explain` adds a `_meta.rules` object with the meaning and the fix of each
-  rule with a finding.
+  `actions[]` array. When `auto_fixable` is `true`, `cargo fallow fix` can
+  apply the action.
+- With `--explain`, the document has a `_meta.rules` object. It gives the
+  meaning and the fix of each rule that has a finding.
 - `cargo fallow schema` prints the JSON Schema of each document.
 
-`--format compact` gives one `path:line:col: rule: message` line for each
-finding, for grep and for agents. [Output formats](docs/output.md) describes
-each format.
+For grep, use `--format compact`. It writes one `path:line:col: rule: message`
+line for each finding. [Output formats](docs/output.md) describes all formats.
 
 ## Documentation
 
@@ -304,21 +303,21 @@ each format.
 |---|---|
 | [The check command](docs/check.md) | Flags of `check`, and the health score |
 | [Adoption](docs/adoption.md) | Changed files, packages, rule severity, baselines, `init` and suppressions |
-| [Unused dependencies](docs/dependencies.md) | Rules of `deps`, and how it gives credit |
+| [Unused dependencies](docs/dependencies.md) | Rules of `deps`, and the cases where it counts a dependency as used |
 | [Fix](docs/fix.md) | What `cargo fallow fix` changes, and how it checks the result |
 | [Unused files](docs/unused-files.md) | How `files` finds the files that no target compiles |
 | [Visibility](docs/visibility.md) | Kinds of `visibility`, and precise mode |
 | [Structure checks](docs/structure.md) | `boundaries`, `size`, `complexity` and `dupes` |
 | [Mutation testing](docs/mutation-testing.md) | `mutants`: tiers, status, test selection and safety |
+| [Trace](docs/trace.md) | `--trace` of `visibility`, `deps` and `dupes`, to see why a check reports one item or does not |
 | [Output formats](docs/output.md) | Each format, the JSON Schema, `explain` and the exit codes |
 | [GitHub Action](action/README.md) | Inputs, outputs and install methods of the action |
 
 ## Contributing
 
 To report a false positive or a missing case, [open an issue](https://github.com/fallow-rs/cargo-fallow/issues).
-[CONTRIBUTING.md](CONTRIBUTING.md) covers the build, the quality gates and the
-DCO sign-off. [SECURITY.md](SECURITY.md) tells you how to report a
-vulnerability.
+[CONTRIBUTING.md](CONTRIBUTING.md) describes the build, the quality gates and
+the DCO sign-off. To report a vulnerability, follow [SECURITY.md](SECURITY.md).
 
 ## License
 

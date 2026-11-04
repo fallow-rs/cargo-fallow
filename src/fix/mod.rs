@@ -240,6 +240,7 @@ fn plan(
             fail_on_issues: false,
             scope: crate::scope::ScopeArgs::default(),
             precise: None,
+            trace: None,
         },
     )?;
     progress.step("Building the module graph");

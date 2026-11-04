@@ -84,29 +84,38 @@ impl PackageUsage {
         let mut contexts = self.names.get(name).cloned().unwrap_or_default();
         // The output of a derive or macro crate names its runtime crate, for
         // example `serde_derive` output names `serde`.
-        let macro_crates = MACRO_SUFFIXES
-            .iter()
-            .map(|suffix| format!("{name}{suffix}"))
-            .chain(
-                MACRO_PAIRS
-                    .iter()
-                    .filter(|(_, runtime)| *runtime == name)
-                    .map(|(macro_crate, _)| (*macro_crate).to_owned()),
-            );
-        for macro_crate in macro_crates {
+        for macro_crate in macro_crates(name) {
             if let Some(used) = self.names.get(&macro_crate) {
                 contexts.extend(used.iter().copied());
             }
         }
-        let generated = self
-            .generated
-            .as_ref()
-            .is_none_or(|names| names.contains(name));
-        if generated {
+        if self.can_generate(name) {
             contexts.extend(self.included.iter().copied());
         }
         contexts
     }
+
+    /// True when the code of an `include!` call that the graph cannot read
+    /// can name `name`.
+    pub fn can_generate(&self, name: &str) -> bool {
+        self.generated
+            .as_ref()
+            .is_none_or(|names| names.contains(name))
+    }
+}
+
+/// The macro crates whose output names the crate `name`, for example
+/// `serde_derive` for `serde`.
+pub fn macro_crates(name: &str) -> impl Iterator<Item = String> + '_ {
+    MACRO_SUFFIXES
+        .iter()
+        .map(move |suffix| format!("{name}{suffix}"))
+        .chain(
+            MACRO_PAIRS
+                .iter()
+                .filter(move |(_, runtime)| *runtime == name)
+                .map(|(macro_crate, _)| (*macro_crate).to_owned()),
+        )
 }
 
 /// The suffixes of a macro crate whose output uses the crate without the suffix,
@@ -126,6 +135,96 @@ const MACRO_SUFFIXES: [&str; 7] = [
 /// tells the user to add the runtime crate. A pair that is not here needs an
 /// entry in the `ignored` list.
 const MACRO_PAIRS: [(&str, &str); 2] = [("num_derive", "num_traits"), ("serde_repr", "serde")];
+
+/// One place in the code of a package that names a crate.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Site {
+    /// The file, relative to the workspace root.
+    pub file: String,
+    /// The one-based line, or `None` when the place is not known.
+    pub line: Option<u32>,
+    /// The part of the package.
+    pub context: Context,
+    /// How the code names the crate: `import`, `path`, `macro-tokens`,
+    /// `attribute`, `doc-code`, or `include` for an `include!` call that the
+    /// graph cannot read.
+    pub via: &'static str,
+    /// The crate name in the code.
+    pub name: String,
+}
+
+/// The places in the code of `package` whose first path segment is one of
+/// `names`. With `include` true, each `include!` call that the graph cannot
+/// read is a place too, because its code can name each crate.
+pub fn sites(graph: &Graph, package: &str, names: &[String], include: bool) -> Vec<Site> {
+    let path_of = |file: crate::graph::FileId| {
+        usize::try_from(file)
+            .ok()
+            .and_then(|file| graph.paths.get(file))
+            .cloned()
+            .unwrap_or_default()
+    };
+    let wanted = |name: &str| {
+        let name = name.strip_prefix("r#").unwrap_or(name);
+        names.iter().find(|wanted| *wanted == name).cloned()
+    };
+    let mut found = Vec::new();
+    for import in &graph.imports {
+        let krate = &graph.crates[import.krate];
+        if krate.package != package {
+            continue;
+        }
+        let Some(context) = context_of(krate.kind, is_test_module(graph, import.module), false)
+        else {
+            continue;
+        };
+        if let Some(name) = import.path.first().and_then(|first| wanted(first)) {
+            found.push(Site {
+                file: path_of(import.file),
+                line: (import.line > 0).then_some(import.line),
+                context,
+                via: "import",
+                name,
+            });
+        }
+    }
+    for reference in &graph.refs {
+        let krate = &graph.crates[reference.krate];
+        if krate.package != package {
+            continue;
+        }
+        let test = reference.test_only || is_test_module(graph, reference.module);
+        let Some(context) = context_of(krate.kind, test, reference.origin == Origin::Doc) else {
+            continue;
+        };
+        let (name, via) = match &reference.kind {
+            RefKind::Path { segments, .. } | RefKind::RecordField { segments, .. } => {
+                let Some(name) = segments.first().and_then(|first| wanted(first)) else {
+                    continue;
+                };
+                let via = match reference.origin {
+                    Origin::Body | Origin::Signature => "path",
+                    Origin::Macro => "macro-tokens",
+                    Origin::Attr => "attribute",
+                    Origin::Doc => "doc-code",
+                };
+                (name, via)
+            }
+            RefKind::Macro(name) if include && name == "include" => (name.clone(), "include"),
+            _ => continue,
+        };
+        found.push(Site {
+            file: path_of(reference.file),
+            line: (reference.line > 0).then_some(reference.line),
+            context,
+            via,
+            name,
+        });
+    }
+    found.sort();
+    found.dedup();
+    found
+}
 
 /// The usage of each package, keyed by package name. `root` is the
 /// workspace root, for the files of the build scripts.

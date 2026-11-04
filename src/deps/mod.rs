@@ -24,6 +24,7 @@
 mod analyze;
 pub mod manifest;
 pub mod report;
+pub mod trace;
 pub mod usage;
 
 use std::path::PathBuf;
@@ -57,6 +58,8 @@ pub struct Options {
     pub cargo_flags: Vec<String>,
     /// The scope flags: `--changed-since` and the baseline flags.
     pub scope: crate::scope::ScopeArgs,
+    /// The dependency of `--trace`.
+    pub trace: Option<String>,
 }
 
 /// Runs the analysis and builds the section of the report.

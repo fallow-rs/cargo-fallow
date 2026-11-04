@@ -89,6 +89,9 @@ GitHub release. Each release needs a `## [X.Y.Z] - YYYY-MM-DD` section.
 
 ### Fixed
 
+- `fix` honors the rules table: a rule at `off` gets no edit. `fix` takes
+  `--package` (`-p`) to keep only the edits of the named members. When the
+  workspace does not build before the edits, the help names the next step.
 - The action input `base: auto` now takes the commit before a push on a push
   event. A new branch and a commit that the checkout cannot fetch give no base
   and a notice. The size self-test runs on push again.

@@ -7,7 +7,18 @@
 cargo fallow fix --dry-run                 # show the edits, write nothing
 cargo fallow fix --dry-run --format json   # the edits as a list
 cargo fallow fix --yes                     # apply the edits
+cargo fallow fix --dry-run -p my-crate     # only the edits in one member
 ```
+
+- `--package <NAME>` (`-p`) keeps only the edits in the files of the named
+  workspace members. The flag can repeat. The analysis still reads the whole
+  workspace. A name that is not a member exits 2. An edit of the root
+  `Cargo.toml` of a virtual workspace, for example an unused
+  `[workspace.dependencies]` entry, belongs to no member, so `--package` leaves
+  it out.
+- A rule at `off` in `[workspace.metadata.fallow.rules]` gets no edit. A
+  suppression comment keeps its finding out of the edits. A baseline does not
+  hide an edit, because `fix` changes the old findings too.
 
 - It removes each `unused-dependency`, `unused-dev-dependency`,
   `unused-build-dependency` and `unused-workspace-dependency` entry, also in a
@@ -26,8 +37,9 @@ cargo fallow fix --yes                     # apply the edits
 - With a visibility edit, the command runs `cargo check --workspace
   --all-targets --all-features` before the edits, and without
   `--all-features` when that build fails. When neither build passes, the
-  command changes nothing and exits 2. After the edits, it runs the same check
-  again.
+  command changes nothing and exits 2. Make the build pass, or use
+  `--dry-run` and make the edits by hand. After the edits, the command runs
+  the same check again.
 - When the check after the edits fails, the command writes back each file and
   `Cargo.lock`. It then leaves out the edits of the items that the compiler
   errors name, and tries again, at most five times. The report gives each

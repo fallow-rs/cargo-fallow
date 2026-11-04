@@ -345,3 +345,93 @@ fn misplaced_entry_moves_when_the_dev_entry_is_for_another_platform() {
         assert_eq!(types, ["move-to-dev-dependencies"], "{dev}: {report}");
     }
 }
+
+#[test]
+fn a_rule_that_the_rules_table_turns_off_gets_no_edit() {
+    let dir = workspace(
+        "[workspace.metadata.fallow.rules]\nunused-dependency = \"off\"\n",
+        APP_DEPS,
+        &[],
+    );
+    let (code, stdout, stderr) = fix(&dir, &["--dry-run", "--format", "json", "--quiet"], &[]);
+    assert_eq!(code, 0, "{stderr}");
+    let report = json(&stdout);
+    assert_eq!(report["fixes"], Value::Array(Vec::new()), "{report}");
+}
+
+/// `alpha` has an unused dependency on `delta`, and `app` one on `beta`.
+const ALPHA_DEPS: &str = "[package]\nname = \"alpha\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n[features]\nextra = []\n\n[dependencies]\ndelta = { path = \"../delta\" }\n";
+
+#[test]
+fn package_limits_the_edits_to_the_named_members() {
+    let dir = workspace("", APP_DEPS, &[("libs/alpha/Cargo.toml", ALPHA_DEPS)]);
+    let edits = |args: &[&str]| -> Vec<String> {
+        let mut all = vec!["--dry-run", "--format", "json", "--quiet"];
+        all.extend_from_slice(args);
+        let (code, stdout, stderr) = fix(&dir, &all, &[]);
+        assert_eq!(code, 0, "{stderr}");
+        json(&stdout)["fixes"]
+            .as_array()
+            .expect("fixes is an array")
+            .iter()
+            .filter_map(|fix| fix["dependency"].as_str().map(str::to_owned))
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    };
+    assert_eq!(edits(&[]), ["beta", "delta"]);
+    assert_eq!(edits(&["--package", "app"]), ["beta"]);
+    assert_eq!(edits(&["-p", "alpha"]), ["delta"]);
+    let (code, stdout, _) = fix(
+        &dir,
+        &[
+            "--dry-run",
+            "--format",
+            "json",
+            "--quiet",
+            "--package",
+            "nope",
+        ],
+        &[],
+    );
+    assert_eq!(code, 2, "{stdout}");
+    assert_eq!(json(&stdout)["code"], "CARGO_FALLOW_INVALID_ARGUMENT");
+}
+
+#[test]
+fn a_configured_baseline_does_not_hide_an_edit() {
+    let dir = workspace(
+        "[workspace.metadata.fallow]\nbaseline = \"fallow-baseline.json\"\n",
+        APP_DEPS,
+        &[],
+    );
+    let saved = Command::cargo_bin("cargo-fallow")
+        .expect("the binary exists")
+        .current_dir(dir.path())
+        .args(["deps", "--quiet", "--save-baseline", "fallow-baseline.json"])
+        .output()
+        .expect("run the binary");
+    assert!(saved.status.success(), "{saved:?}");
+    let (code, stdout, stderr) = fix(&dir, &["--dry-run", "--format", "json", "--quiet"], &[]);
+    assert_eq!(code, 0, "{stderr}");
+    let report = json(&stdout);
+    let baseline = read(&dir, "fallow-baseline.json");
+    assert!(baseline.contains("unused-dependency"), "{baseline}");
+    let fixes = report["fixes"].as_array().expect("fixes is an array");
+    assert_eq!(fixes.len(), 1, "{report}");
+    assert_eq!(fixes[0]["dependency"], "beta", "{report}");
+}
+
+#[test]
+fn package_leaves_out_the_skips_of_the_other_members() {
+    let dir = workspace("", APP_DEPS, &[("app/src/lib.rs", &"(".repeat(20_000))]);
+    let skipped = |args: &[&str]| -> Value {
+        let mut all = vec!["--dry-run", "--format", "json", "--quiet"];
+        all.extend_from_slice(args);
+        let (code, stdout, stderr) = fix(&dir, &all, &[]);
+        assert_eq!(code, 0, "{stderr}");
+        json(&stdout)["skipped_packages"].clone()
+    };
+    assert_eq!(skipped(&[])[0]["package"], "app");
+    assert!(skipped(&["--package", "alpha"]).is_null());
+}

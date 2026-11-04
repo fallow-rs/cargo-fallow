@@ -34,6 +34,8 @@ pub struct Edit {
     pub from: String,
     /// The new keyword. An empty text removes the keyword.
     pub to: String,
+    /// The item kind, for example `function` or `reexport`.
+    pub item_kind: &'static str,
     /// True when the command wrote the edit.
     pub applied: bool,
     /// The range of the keyword. It is not part of the report.
@@ -89,6 +91,7 @@ fn edit(row: &FindingRow) -> Option<Edit> {
         column: range.column,
         from: action.from.clone(),
         to: action.to.clone(),
+        item_kind: row.item_kind,
         applied: false,
         range,
     })
@@ -119,17 +122,40 @@ pub fn by_file(edits: &[Edit]) -> BTreeMap<&str, Vec<&Edit>> {
     grouped
 }
 
-/// Applies the edits of one file to its text and returns the new text.
-pub fn apply(text: &str, edits: &[&Edit]) -> Result<String, String> {
-    // The parser does not count a byte order mark, so line 1 starts after it.
+/// True when the edit changes the keyword of a `use` with a `{...}` group.
+/// The keyword then changes each name of the group, also the names that keep
+/// their uses, so `fix` leaves such an edit out.
+pub fn changes_a_group(text: &str, edit: &Edit) -> bool {
+    if edit.item_kind != REEXPORT {
+        return false;
+    }
+    let starts: Vec<usize> = line_starts(text);
+    let Some(start) = offset(text, &starts, edit.range.line, edit.range.column) else {
+        return false;
+    };
+    let statement = text[start..].split(';').next().unwrap_or_default();
+    statement.contains('{')
+}
+
+/// The item kind of a `use` item.
+const REEXPORT: &str = "reexport";
+
+/// The byte offset of the start of each line. The parser does not count a
+/// byte order mark, so line 1 starts after it.
+fn line_starts(text: &str) -> Vec<usize> {
     let first = if text.starts_with('\u{feff}') {
         '\u{feff}'.len_utf8()
     } else {
         0
     };
-    let starts: Vec<usize> = std::iter::once(first)
+    std::iter::once(first)
         .chain(text.match_indices('\n').map(|(at, _)| at + 1))
-        .collect();
+        .collect()
+}
+
+/// Applies the edits of one file to its text and returns the new text.
+pub fn apply(text: &str, edits: &[&Edit]) -> Result<String, String> {
+    let starts = line_starts(text);
     let mut spans: Vec<(usize, usize, &Edit)> = edits
         .iter()
         .map(|edit| {
@@ -203,6 +229,7 @@ mod tests {
             column,
             from: from.to_owned(),
             to: to.to_owned(),
+            item_kind: "function",
             applied: false,
             range: Range {
                 line,
@@ -271,6 +298,18 @@ mod tests {
         let names: Vec<&str> = named_items(message).into_iter().collect();
         assert_eq!(names, ["ConvertParams", "Y", "helper"]);
         assert_eq!(last_segment("a::b::c"), "c");
+    }
+
+    #[test]
+    fn keyword_of_a_grouped_use_is_a_group_change() {
+        let text = "pub use a::{B, C};\npub use a::D;\n";
+        let mut grouped = edit(1, 1, "pub", "pub(crate)");
+        grouped.item_kind = REEXPORT;
+        let mut single = edit(2, 1, "pub", "pub(crate)");
+        single.item_kind = REEXPORT;
+        assert!(changes_a_group(text, &grouped));
+        assert!(!changes_a_group(text, &single));
+        assert!(!changes_a_group(text, &edit(1, 1, "pub", "pub(crate)")));
     }
 
     #[test]

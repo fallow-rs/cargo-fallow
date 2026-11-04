@@ -245,7 +245,14 @@ fn plan(
     progress.step("Checking the visibility");
     let visibility_report =
         crate::visibility::fast_report(&module_graph, &options, workspace, &scope);
-    let visibility_edits = visibility::plan(&visibility_report);
+    let mut visibility_edits = visibility::plan(&visibility_report);
+    // An edit of a grouped `use` changes the names of the group that keep
+    // their uses too, so it stays for a person.
+    let root = workspace.root.as_std_path();
+    visibility_edits.retain(|edit| {
+        fs::read_to_string(root.join(&edit.path))
+            .is_ok_and(|text| !visibility::changes_a_group(&text, edit))
+    });
     let fixable_rows = visibility_report
         .findings
         .iter()
@@ -308,8 +315,10 @@ fn apply_all(
                 progress.step("Checking that the workspace builds after the edits");
                 workspace::cargo_check(manifest, root, &flags, all_features).map_err(
                     |message| {
-                        let text =
-                            format!("the workspace does not build after the edits: {message}");
+                        let text = format!(
+                            "the workspace does not build after the edits: {}",
+                            first_lines(&message)
+                        );
                         compiler = Some(message);
                         text
                     },
@@ -340,7 +349,19 @@ fn apply_all(
 
 /// The most write and check rounds. A round after a failed `cargo check`
 /// leaves out the edits of the items that the compiler errors name.
-const CHECK_ROUNDS: usize = 3;
+const CHECK_ROUNDS: usize = 5;
+
+/// The most compiler error lines in an error message.
+const MESSAGE_LINES: usize = 10;
+
+/// The first lines of a compiler message.
+fn first_lines(message: &str) -> String {
+    message
+        .lines()
+        .take(MESSAGE_LINES)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
 
 /// Checks that the workspace builds before the edits, with all features when
 /// it can, as the analysis reads it. Returns true for an all-features build.
@@ -353,7 +374,8 @@ fn baseline(manifest: Option<&Path>, root: &Path, flags: &[String]) -> Result<bo
         .map_err(|message| {
             unchanged(&format!(
                 "the workspace does not build before the edits, so `fix` cannot judge them: \
-                 {message}"
+                 {}",
+                first_lines(&message)
             ))
         })
 }

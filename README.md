@@ -644,7 +644,7 @@ cargo fallow fix --yes                     # apply the edits
   again.
 - When the check after the edits fails, the command writes back each file and
   `Cargo.lock`. It then leaves out the edits of the items that the compiler
-  errors name, and tries again, at most three times. The report gives each
+  errors name, and tries again, at most five times. The report gives each
   left-out edit `applied: false`. When no edit is left to leave out, the
   command exits 2 with the compiler errors.
 - The check builds one platform. Code under a `cfg` for another platform, and

@@ -332,7 +332,7 @@ pub fn absolute_path(root: &Utf8Path, relative: &str) -> PathBuf {
 
 /// Runs `cargo check --workspace --all-targets` with `flags`, for example
 /// `--offline`, and with `--all-features` when `all_features` is true.
-/// Returns the first error lines of the compiler on a failure.
+/// Returns each error line of the compiler on a failure.
 pub fn cargo_check(
     manifest_path: Option<&Path>,
     root: &Path,
@@ -376,7 +376,6 @@ pub fn cargo_check(
     let errors: Vec<&str> = stderr
         .lines()
         .filter(|line| line.starts_with("error") || line.contains(": error"))
-        .take(CHECK_ERROR_LINES)
         .collect();
     Err(if errors.is_empty() {
         format!("`cargo check` failed with {}", output.status)
@@ -384,9 +383,6 @@ pub fn cargo_check(
         errors.join("\n")
     })
 }
-
-/// The most compiler error lines in the message of a failed `cargo check`.
-const CHECK_ERROR_LINES: usize = 10;
 
 #[cfg(test)]
 mod tests {

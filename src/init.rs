@@ -244,14 +244,23 @@ fn write(root: &Path, limits: &Limits, saved: &Path) -> Result<bool, CliError> {
     let dupes = table(&mut doc, &["workspace", "metadata", "fallow", "dupes"])?;
     keep_or_set(dupes, "threshold", value(limits.threshold));
     let new = doc.to_string();
-    let mut written = false;
-    if new != text {
+    let mut written = if new == text {
+        false
+    } else {
         fs::write(&manifest, new).map_err(|err| failed(&manifest, &err))?;
-        written = true;
-    }
+        true
+    };
     let baseline = root.join(BASELINE_FILE);
-    if !baseline.exists() {
-        fs::copy(saved, &baseline).map_err(|err| failed(&baseline, &err))?;
+    // `symlink_metadata` sees a link, also a broken one, so an existing path
+    // stays. `create_new` does not follow a link that appears after the check.
+    if fs::symlink_metadata(&baseline).is_err() {
+        let bytes = fs::read(saved).map_err(|err| failed(saved, &err))?;
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&baseline)
+            .map_err(|err| failed(&baseline, &err))?;
+        std::io::Write::write_all(&mut file, &bytes).map_err(|err| failed(&baseline, &err))?;
         written = true;
     }
     Ok(written)
@@ -401,5 +410,19 @@ mod tests {
         assert!(!write(dir.path(), &LIMITS, &saved).expect("the second write works"));
         let second = fs::read_to_string(dir.path().join("Cargo.toml")).expect("read the manifest");
         assert_eq!(first, second);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_at_the_baseline_path_is_not_followed() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        fs::write(dir.path().join("Cargo.toml"), "[workspace]\nmembers = []\n")
+            .expect("write the manifest");
+        let saved = dir.path().join("saved.json");
+        fs::write(&saved, "{}").expect("write a baseline");
+        let target = dir.path().join("elsewhere.txt");
+        std::os::unix::fs::symlink(&target, dir.path().join(BASELINE_FILE)).expect("make a link");
+        write(dir.path(), &LIMITS, &saved).expect("the write works");
+        assert!(!target.exists(), "the write followed the link");
     }
 }

@@ -177,6 +177,37 @@ cargo fallow check --baseline fallow-baseline.json --fail-on-issues
 The file has `schema_version` 1, the `kind` of the command that saved it,
 `language: "rust"`, the key scheme in `identity` and the sorted `findings`.
 
+`baseline = "<PATH>"` in `[workspace.metadata.fallow]` is the baseline of each
+run without `--baseline`. The path is relative to the workspace root. A run
+with `--save-baseline` does not read it.
+
+### Init
+
+`cargo fallow init` gives a starting configuration for a workspace.
+
+```bash
+cargo fallow init            # print the tables
+cargo fallow init --write    # add them to Cargo.toml and write the baseline
+cargo fallow init --ci github > .github/workflows/cargo-fallow.yml
+```
+
+- The command runs the static checks. It prints the tables of
+  `[workspace.metadata.fallow]` with the limits at the current maximum of the
+  workspace: `max-cyclomatic` and `max-cognitive` of `complexity`,
+  `max-file-lines` of `size` and `threshold` of `dupes`. A limit is never
+  under its default.
+- It saves the current findings as a baseline, and the tables set
+  `baseline = "fallow-baseline.json"`. So the first
+  `cargo fallow check --fail-on-issues` passes, and a new finding fails it.
+- `--write` adds the tables to the root `Cargo.toml` with the comments and the
+  format kept, and writes `fallow-baseline.json`. A key that the manifest has
+  keeps its value, and a baseline file that exists stays. A second `--write`
+  changes nothing.
+- `--ci github` prints a GitHub Actions workflow that runs `check` with the
+  action. Pin each action to a commit before you use it.
+- `--format json` gives `kind`, `version`, `tables`, `baseline`,
+  `baseline_findings` and `written`.
+
 ### Suppressions
 
 A comment hides the findings that a person accepts. Each check reads the same

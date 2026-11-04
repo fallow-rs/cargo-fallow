@@ -15,6 +15,7 @@ mod cli;
 mod deps;
 mod diff;
 mod error;
+mod explain;
 mod files;
 mod finding;
 mod fix;
@@ -58,6 +59,10 @@ pub fn run(args: Vec<OsString>) -> ExitCode {
         Parsed::Run(options) => check::run(&options),
         Parsed::Mutants(options) => run_mutants(&options),
         Parsed::Deps(options) => run_deps(&options),
+        Parsed::Explain(args) => explain::run(&args).unwrap_or_else(|err| {
+            err.emit(args.format());
+            EXIT_INVALID_INPUT
+        }),
         Parsed::Fix(args) => fix::run(&args).unwrap_or_else(|err| {
             err.emit(args.format());
             EXIT_INVALID_INPUT
@@ -95,6 +100,7 @@ fn refuse_badge(parsed: &Parsed) -> Option<u8> {
         Parsed::Visibility(options) => options.format,
         Parsed::Files(args) => args.format(),
         Parsed::Fix(args) => args.format(),
+        Parsed::Explain(args) => args.format(),
         Parsed::Structure(command) => command.format(),
         _ => return None,
     };

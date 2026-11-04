@@ -67,6 +67,12 @@ pub enum Kind {
     NewLargeFile,
 }
 
+#[cfg(test)]
+impl Kind {
+    /// Each kind.
+    pub const ALL: [Self; 2] = [Self::GrownFile, Self::NewLargeFile];
+}
+
 /// A file that the growth rule rejects.
 #[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 #[schemars(rename = "SizeFinding")]
@@ -281,7 +287,7 @@ pub fn section(inputs: &Inputs<'_>) -> Result<Section, CliError> {
     })
 }
 
-const fn rule(kind: Kind) -> &'static str {
+pub const fn rule(kind: Kind) -> &'static str {
     match kind {
         Kind::GrownFile => "grown-file",
         Kind::NewLargeFile => "new-large-file",

@@ -63,6 +63,9 @@ pub struct CheckReport {
     /// member.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub baseline: Option<baseline::Summary>,
+    /// The meaning of each rule with a finding, with `--explain`.
+    #[serde(rename = "_meta", skip_serializing_if = "Option::is_none")]
+    pub meta: Option<Value>,
     /// The report of each check that ran, keyed by check name. Each report is
     /// the JSON report of the command of the same name. The parse gate has no
     /// report of its own.
@@ -167,6 +170,7 @@ impl CheckReport {
             changed_since: None,
             packages: None,
             baseline: None,
+            meta: None,
             sections,
             parts,
         }
@@ -176,6 +180,7 @@ impl CheckReport {
     /// with `--save-baseline` writes the file here, and enforces no gate.
     pub fn with_scope(mut self, scope: &Scope) -> Result<Self, CliError> {
         self.changed_since.clone_from(&scope.changed);
+        self.meta = scope.meta(&self.findings)?;
         self.packages = scope
             .packages
             .as_ref()

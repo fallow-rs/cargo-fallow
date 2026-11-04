@@ -184,8 +184,9 @@ full commit SHA.
 `cargo fallow init --ci github` writes a starting workflow. The
 [action guide](action/README.md) lists each input and each output. Without the
 action, `--format github-annotations` and `--format github-summary` give the
-same annotations and summary. GitLab reads `--format codeclimate` as a code
-quality report.
+same annotations and summary. For GitLab, the [CI template](docs/gitlab.md)
+writes the code quality report of the merge request widget, and can post one
+merge request note.
 
 ## Adopt cargo-fallow on an existing workspace
 

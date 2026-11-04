@@ -15,7 +15,8 @@ This page describes `check`. [Output](mutation-testing.md#output) describes `mut
 - `sarif`: a SARIF 2.1.0 log on stdout, with one run. The results, the rules
   and the gate notifications are those of the SARIF log of each check.
 - `codeclimate`: a JSON array with one CodeClimate issue for each finding, for
-  the code quality report of GitLab. Each command has this format.
+  the code quality report of GitLab. Each command has this format. The
+  [GitLab CI template](gitlab.md) writes it for the merge request widget.
 - `compact`: one line for each finding, `path:line:col: rule: message`, for
   grep and for agents. A finding with no column has `path:line: rule: message`,
   and a finding with no line has `path: rule: message`. A line break in a

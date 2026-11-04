@@ -11,6 +11,9 @@ GitHub release. Each release needs a `## [X.Y.Z] - YYYY-MM-DD` section.
 
 ### Added
 
+- `ci/gitlab-ci.yml` is a GitLab CI template. The job writes the code quality
+  report of the merge request widget, and with `CARGO_FALLOW_COMMENT` posts or
+  updates one merge request note with the markdown report.
 - `--trace` shows why a check keeps or reports one item.
   `visibility --trace <crate>::<path>` lists each use and each credit of an
   item, with the verdict. `deps --trace <dependency>` lists each declaration

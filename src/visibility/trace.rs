@@ -283,7 +283,9 @@ fn credit_label(graph: &Graph, credit: &Credit) -> &'static str {
         Origin::Doc => return "doc-code",
         Origin::DocLink => return "doc-link",
         Origin::Attr => return "attribute",
-        Origin::Macro if !matches!(reference.kind, RefKind::Macro(_)) => return "macro-tokens",
+        Origin::Macro | Origin::PublicMacro if !matches!(reference.kind, RefKind::Macro(_)) => {
+            return "macro-tokens";
+        }
         _ => {}
     }
     match &reference.kind {

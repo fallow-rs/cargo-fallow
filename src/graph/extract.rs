@@ -124,9 +124,6 @@ pub struct ItemFlags {
     /// An attribute macro is on the item, for example `#[wasm_bindgen]`. Its
     /// output can use the item from any place.
     pub attr_macro: bool,
-    /// The item is a `macro_rules!` or `macro` definition whose body has a
-    /// `pub` keyword, so its output can hold a `pub` item.
-    pub emits_pub: bool,
 }
 
 /// A range of text, with one-based lines and columns in characters. The end
@@ -246,6 +243,9 @@ pub enum Origin {
     Signature,
     /// In the tokens of a macro call or a `macro_rules!` body.
     Macro,
+    /// In the tokens of a macro call or a macro body that can write a `pub`
+    /// item: the tokens have `pub` or a `vis` fragment.
+    PublicMacro,
     /// In the tokens of an attribute.
     Attr,
     /// In a code block of the documentation.
@@ -536,14 +536,20 @@ impl<'a> Walker<'a> {
             line,
         };
         // `Self` is the self type of the `impl` block, or the documented type.
+        // For a field or a variant, the type is the enclosing item.
         let self_path = self.impl_self().or_else(|| {
-            let named = matches!(
-                node.kind(),
-                SyntaxKind::STRUCT | SyntaxKind::ENUM | SyntaxKind::UNION | SyntaxKind::TRAIT
-            );
-            ast::AnyHasName::cast(node.clone())
+            node.ancestors()
+                .find(|ancestor| {
+                    matches!(
+                        ancestor.kind(),
+                        SyntaxKind::STRUCT
+                            | SyntaxKind::ENUM
+                            | SyntaxKind::UNION
+                            | SyntaxKind::TRAIT
+                    )
+                })
+                .and_then(ast::AnyHasName::cast)
                 .and_then(|item| item.name())
-                .filter(|_| named)
                 .map(|name| vec![plain_name(&name)])
         });
         let mut refs = Vec::new();
@@ -1167,7 +1173,12 @@ impl<'a> Walker<'a> {
             }
         }
         if let Some(tree) = call.token_tree() {
-            self.token_refs(tree.syntax(), Origin::Macro);
+            let origin = if writes_pub(tree.syntax()) {
+                Origin::PublicMacro
+            } else {
+                Origin::Macro
+            };
+            self.token_refs(tree.syntax(), origin);
         }
     }
 
@@ -1182,12 +1193,13 @@ impl<'a> Walker<'a> {
             .children()
             .filter(|child| child.kind() == SyntaxKind::TOKEN_TREE)
             .collect::<Vec<_>>();
-        self.facts.items[index].flags.emits_pub = tree.iter().any(|tree| {
-            tree.descendants_with_tokens()
-                .any(|token| token.kind() == SyntaxKind::PUB_KW)
-        });
         for tree in tree {
-            self.token_refs(&tree, Origin::Macro);
+            let origin = if writes_pub(&tree) {
+                Origin::PublicMacro
+            } else {
+                Origin::Macro
+            };
+            self.token_refs(&tree, origin);
         }
     }
 
@@ -1484,12 +1496,14 @@ fn doc_meta(meta: ast::Meta, line: u32, docs: &mut DocText) {
                             .text()
                             .to_string()
                             .contains("CARGO_MANIFEST_DIR");
-                        docs.includes.extend(
-                            string_literals(tree.syntax())
-                                .into_iter()
-                                .filter(|path| path != "CARGO_MANIFEST_DIR")
-                                .map(|path| (path, line, manifest)),
-                        );
+                        // The literals of a `concat!` form one path.
+                        let path: String = string_literals(tree.syntax())
+                            .into_iter()
+                            .filter(|part| part != "CARGO_MANIFEST_DIR")
+                            .collect();
+                        if !path.is_empty() {
+                            docs.includes.push((path, line, manifest));
+                        }
                     }
                 }
                 _ => {
@@ -1509,6 +1523,25 @@ fn doc_meta(meta: ast::Meta, line: u32, docs: &mut DocText) {
         | ast::Meta::CfgMeta(_)
         | ast::Meta::PathMeta(_) => {}
     }
+}
+
+/// True when macro tokens can write a `pub` item: they hold the `pub`
+/// keyword or a `$name:vis` fragment.
+fn writes_pub(tree: &SyntaxNode) -> bool {
+    let mut after_colon = false;
+    for token in tree
+        .descendants_with_tokens()
+        .filter_map(ra_ap_syntax::NodeOrToken::into_token)
+    {
+        match token.kind() {
+            SyntaxKind::PUB_KW => return true,
+            SyntaxKind::COLON => after_colon = true,
+            SyntaxKind::IDENT if after_colon && token.text() == "vis" => return true,
+            SyntaxKind::WHITESPACE | SyntaxKind::COMMENT => {}
+            _ => after_colon = false,
+        }
+    }
+    false
 }
 
 fn vis_of(node: &SyntaxNode) -> Vis {

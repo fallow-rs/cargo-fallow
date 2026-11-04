@@ -192,3 +192,77 @@ fn a_type_in_a_macro_that_writes_a_public_item_gets_no_finding() {
     let (found, _) = findings(&dir, &[]);
     assert_eq!(found, set(&["unnecessary-public Plain"]));
 }
+
+/// A label that also has a URL definition still gives credit: the syntax
+/// cannot show which form rustdoc links.
+#[test]
+fn a_label_with_a_url_definition_still_holds_its_target() {
+    let dir = workspace(&[
+        ("app/src/main.rs", "fn main() { mid::run(); }\n"),
+        (
+            "mid/src/lib.rs",
+            "/// See [Both], [`Both`], [Fenced] and [Indented].\n///\n/// ```text\n\
+             /// [Fenced]: https://example.com\n/// ```\n///\n/// [Both]: https://example.com\n\
+             pub fn run() { let _ = (Both, Fenced, Indented); }\n\
+             pub struct Both;\npub struct Fenced;\npub struct Indented;\n",
+        ),
+    ]);
+    let (found, _) = findings(&dir, &[]);
+    assert_eq!(found, set(&[]));
+}
+
+/// In the documentation of a field or a variant, `Self` is the enclosing
+/// type.
+#[test]
+fn a_self_path_in_the_docs_of_a_field_or_a_variant_names_the_type() {
+    let dir = workspace(&[
+        (
+            "app/src/main.rs",
+            "fn main() { let _ = mid::F { x: 0 }; let _ = mid::E::A; }\n",
+        ),
+        (
+            "mid/src/lib.rs",
+            "pub struct F {\n    /// See [`Self::fld`].\n    pub x: u8,\n}\nimpl F { pub fn fld() {} }\n\
+             pub enum E {\n    /// See [`Self::vm`].\n    A,\n}\nimpl E { pub fn vm() {} }\n\
+             fn local() { F::fld(); E::vm(); }\n",
+        ),
+    ]);
+    let (found, _) = findings(&dir, &[]);
+    assert_eq!(found, set(&[]));
+}
+
+/// The literals of a `concat!` form one path.
+#[test]
+fn an_include_path_from_more_than_one_literal_holds_its_link_targets() {
+    let dir = workspace(&[
+        ("app/src/main.rs", "fn main() { mid::run(); }\n"),
+        (
+            "mid/src/lib.rs",
+            "#[doc = include_str!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/docs/\", \"four.md\"))]\n\
+             pub fn run() { let _ = Four; }\npub struct Four;\n",
+        ),
+        ("mid/docs/four.md", "See [`crate::Four`].\n"),
+    ]);
+    let (found, _) = findings(&dir, &[]);
+    assert_eq!(found, set(&[]));
+}
+
+/// A `vis` fragment and a call with `pub` tokens can write a `pub` item too.
+#[test]
+fn a_type_in_a_vis_macro_or_a_public_macro_call_gets_no_finding() {
+    let dir = workspace(&[
+        (
+            "app/src/main.rs",
+            "fn main() { mid::via_macro(); mid::viat(); }\n",
+        ),
+        (
+            "mid/src/lib.rs",
+            "macro_rules! mk { ($vis:vis $n:ident) => { $vis fn $n() -> Made { Made } }; }\n\
+             mk!(pub via_macro);\npub struct Made;\n\
+             macro_rules! pass { ($($t:tt)*) => { $($t)* }; }\n\
+             pass!(pub fn viat() -> Made2 { Made2 });\npub struct Made2;\n",
+        ),
+    ]);
+    let (found, _) = findings(&dir, &[]);
+    assert_eq!(found, set(&[]));
+}

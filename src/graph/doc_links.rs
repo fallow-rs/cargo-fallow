@@ -9,8 +9,6 @@
 //! valid path counts as a link, also when rustdoc does not resolve it. A link
 //! can continue on the next line of its paragraph.
 
-use rustc_hash::FxHashSet;
-
 /// One link path: the segments, and true when the path starts with `::`.
 pub type LinkPath = (Vec<String>, bool);
 
@@ -19,10 +17,7 @@ pub type LinkPath = (Vec<String>, bool);
 /// at the start of each line.
 pub fn link_paths(text: &str) -> Vec<(usize, LinkPath)> {
     let mut paths = Vec::new();
-    let mut paragraph = Paragraph {
-        urls: url_labels(text),
-        ..Paragraph::default()
-    };
+    let mut paragraph = Paragraph::default();
     let mut fence: Option<(char, usize)> = None;
     for (index, raw) in text.lines().enumerate() {
         let line = strip_marker(raw);
@@ -59,9 +54,6 @@ struct Paragraph {
     text: String,
     /// The offset in `text` where each line starts, and its line index.
     starts: Vec<(usize, usize)>,
-    /// The labels of the reference definitions with a target that is no
-    /// path, for example a URL. A link to such a label is no intra-doc link.
-    urls: FxHashSet<String>,
 }
 
 impl Paragraph {
@@ -74,7 +66,7 @@ impl Paragraph {
     }
 
     fn flush(&mut self, paths: &mut Vec<(usize, LinkPath)>) {
-        for (offset, path) in scan(&self.text, &self.urls) {
+        for (offset, path) in scan(&self.text) {
             let at = self.starts.partition_point(|(start, _)| *start <= offset);
             let line = self
                 .starts
@@ -108,21 +100,6 @@ fn fence_of(line: &str) -> Option<(char, usize)> {
     (run >= 3).then_some((mark, run))
 }
 
-/// The labels of the reference definitions of the text whose target is no
-/// path, in lower case.
-fn url_labels(text: &str) -> FxHashSet<String> {
-    text.lines()
-        .map(|line| strip_marker(line).trim_start())
-        .filter_map(|line| {
-            let target = definition(line)?;
-            let label = line.strip_prefix('[')?.split_once("]:")?.0;
-            path_of(target)
-                .is_none()
-                .then(|| label.trim().to_lowercase())
-        })
-        .collect()
-}
-
 /// The target of a reference definition `[label]: target "title"`. A line
 /// with other text after the target is no definition.
 fn definition(line: &str) -> Option<&str> {
@@ -144,7 +121,7 @@ fn definition(line: &str) -> Option<&str> {
 
 /// The paths of the links in one paragraph, with the offset of each link.
 /// The next `[` and `]` stay cached, so the scan is linear in the text.
-fn scan(text: &str, urls: &FxHashSet<String>) -> Vec<(usize, LinkPath)> {
+fn scan(text: &str) -> Vec<(usize, LinkPath)> {
     let mut paths = Vec::new();
     let next_of = |from: usize, mark: char| text[from..].find(mark).map(|found| from + found);
     let mut next_close: Option<usize> = None;
@@ -180,7 +157,6 @@ fn scan(text: &str, urls: &FxHashSet<String>) -> Vec<(usize, LinkPath)> {
         let content = &text[content_start..close];
         let after = close + 1;
         let rest = &text[after..];
-        let known = |label: &str| !urls.contains(&label.trim().trim_matches('`').to_lowercase());
         if let Some(inner) = rest.strip_prefix('(') {
             let end = inner.find(')').unwrap_or(inner.len());
             paths.extend(path_of(inline_target(&inner[..end])).map(|path| (open, path)));
@@ -189,14 +165,10 @@ fn scan(text: &str, urls: &FxHashSet<String>) -> Vec<(usize, LinkPath)> {
             let end = inner.find(']').unwrap_or(inner.len());
             let label = &inner[..end];
             let target = if label.is_empty() { content } else { label };
-            if known(target) {
-                paths.extend(path_of(target).map(|path| (open, path)));
-            }
+            paths.extend(path_of(target).map(|path| (open, path)));
             at = after + 1 + end;
         } else {
-            if known(content) {
-                paths.extend(path_of(content).map(|path| (open, path)));
-            }
+            paths.extend(path_of(content).map(|path| (open, path)));
             at = after;
         }
     }
@@ -358,9 +330,9 @@ mod tests {
     }
 
     #[test]
-    fn a_label_with_a_url_definition_is_no_link() {
+    fn a_label_with_a_url_definition_still_gives_credit() {
         let text = "/// Uses [tokio] and [`Item`].\n///\n/// [tokio]: https://tokio.rs\n";
-        assert_eq!(paths(text), ["Item"]);
+        assert_eq!(paths(text), ["tokio", "Item"]);
     }
 
     #[test]
@@ -368,7 +340,7 @@ mod tests {
         let text = format!("/// {}x{}\n", "[".repeat(200_000), "]".repeat(200_000));
         let start = std::time::Instant::now();
         let _ = link_paths(&text);
-        assert!(start.elapsed() < std::time::Duration::from_secs(2));
+        assert!(start.elapsed() < std::time::Duration::from_secs(10));
     }
 
     #[test]

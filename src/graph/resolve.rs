@@ -252,7 +252,10 @@ impl<'g> Resolver<'g> {
     }
 
     fn credit_ref(&self, credits: &mut Vec<Credit>, base: Credit, kind: &RefKind) {
-        let untyped_origin = matches!(base.origin, Origin::Macro | Origin::Attr | Origin::Doc);
+        let untyped_origin = matches!(
+            base.origin,
+            Origin::Macro | Origin::PublicMacro | Origin::Attr | Origin::Doc
+        );
         let doc = base.origin == Origin::Doc;
         match kind {
             RefKind::Path { segments, global } => {

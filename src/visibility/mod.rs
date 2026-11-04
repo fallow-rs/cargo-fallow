@@ -784,11 +784,7 @@ fn required_items(
     for credit in credits {
         // The output of a macro can hold a `pub` item that names the type,
         // and the syntax cannot show its signature.
-        let from_public_macro = credit.owner.is_some_and(|owner| {
-            let macro_item = &graph.items[owner];
-            macro_item.kind == ItemKind::Macro && macro_item.flags.emits_pub
-        });
-        if from_public_macro && is_type(graph.items[credit.item].kind) {
+        if credit.origin == Origin::PublicMacro && is_type(graph.items[credit.item].kind) {
             work.push(Work::Require(credit.item));
         }
         if !matches!(credit.origin, Origin::Signature | Origin::DocLink) {

@@ -71,7 +71,7 @@ impl Options {
 pub struct Options {
     /// The manifest of the workspace or the package.
     pub manifest_path: Option<PathBuf>,
-    /// The flags for each `cargo metadata` call, for example `--offline`.
+    /// The flags for each cargo call, also in the copies, for example `--offline`.
     pub cargo_flags: Vec<String>,
     /// The package to mutate. A workspace with one package needs no value.
     pub package: Option<String>,
@@ -217,8 +217,14 @@ impl<'a> Run<'a> {
     fn run_in(&self, dirs: &WorkDirs) -> Result<Report, CliError> {
         let guard = start_guard(self.options, dirs)?;
         let target_dir = self.workspace.target_dir.as_std_path();
-        prepare_copies(self.workspace.root.as_std_path(), target_dir, dirs, &guard)
-            .map_err(|err| failure("copy the source tree", &err))?;
+        prepare_copies(
+            self.workspace.root.as_std_path(),
+            target_dir,
+            dirs,
+            &guard,
+            &self.options.cargo_flags,
+        )
+        .map_err(|err| failure("copy the source tree", &err))?;
         let (collected, sites_outside) = self.files(&dirs.scratch)?;
         let (rows, stages) = self.engine(&guard, dirs, &collected.files).run()?;
         Ok(self.report(rows, stages, &collected, sites_outside, guard.kills()))
@@ -367,8 +373,14 @@ pub fn inspect(options: &Options, id: &str) -> Result<InspectReport, CliError> {
         (|| {
             let guard = start_guard(options, &dirs)?;
             let target_dir = workspace.target_dir.as_std_path();
-            prepare_copies(workspace.root.as_std_path(), target_dir, &dirs, &guard)
-                .map_err(|err| failure("copy the source tree", &err))?;
+            prepare_copies(
+                workspace.root.as_std_path(),
+                target_dir,
+                &dirs,
+                &guard,
+                &options.cargo_flags,
+            )
+            .map_err(|err| failure("copy the source tree", &err))?;
             run.engine(&guard, &dirs, &files).map_only()
         })()
     };

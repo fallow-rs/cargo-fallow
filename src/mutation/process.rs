@@ -49,6 +49,19 @@ pub fn cargo(dir: &Path, target_dir: &Path, jobs: usize) -> Command {
     cargo_with_flags(dir, target_dir, jobs, "")
 }
 
+/// True when the cargo flags of the user forbid the network.
+pub fn offline(cargo_flags: &[String]) -> bool {
+    cargo_flags
+        .iter()
+        .any(|flag| flag == "--offline" || flag == "--frozen")
+}
+
+/// Forbids the network in `command` and in each cargo call of its children, for
+/// example a test that starts cargo. A child does not get the flags of the user.
+pub fn stay_offline(command: &mut Command) {
+    command.env("CARGO_NET_OFFLINE", "true");
+}
+
 /// The same command with more compiler flags for each crate of the selected package.
 pub fn cargo_with_flags(dir: &Path, target_dir: &Path, jobs: usize, extra: &str) -> Command {
     let mut command = new_command("cargo");

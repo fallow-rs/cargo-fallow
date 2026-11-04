@@ -24,7 +24,7 @@ cargo fallow mutants --package my-crate --list --format json
 | `--test-workspace` | Run each mutant that the package tests do not detect against the tests of each workspace member. |
 | `--format human\|json\|sarif\|codeclimate\|compact\|markdown\|github-annotations\|github-summary` | The output format. The default is `human`. `--inspect` supports only `human` and `json`. |
 | `--quiet` | Hide the progress lines on stderr. |
-| `--locked`, `--offline`, `--frozen` | Give the flag to the `cargo metadata` call that reads the workspace. The builds, the test runs and the `cargo metadata` call in each build do not get it. |
+| `--locked`, `--offline`, `--frozen` | Give the flag to each cargo call: the `cargo metadata` call that reads the workspace, and each build, test run and `cargo metadata` call in the copies. A new lock file of a copy gets only `--offline`. With `--offline` or `--frozen`, each such call also sets `CARGO_NET_OFFLINE=true`, so a test that starts cargo does not use the network. |
 | `--jobs <N>` | The number of test processes that run at the same time. |
 | `--max-mutants <N>` | Run at most this many mutants. The other mutants keep the status `pending`. |
 | `--timeout <SECONDS>` | The time limit of each mutant run. |

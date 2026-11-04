@@ -78,6 +78,12 @@ GitHub release. Each release needs a `## [X.Y.Z] - YYYY-MM-DD` section.
   the same text as the jq filter of the GitHub Action, and the summary shows
   the same in GitHub.
 
+### Changed
+
+- The reference for each command moved from the README to `docs/`. The
+  README is now an overview with a logo. The `docs` address of
+  `cargo fallow explain` and `_meta.docs` point to the new pages.
+
 ### Fixed
 
 - The action input `base: auto` now takes the commit before a push on a push

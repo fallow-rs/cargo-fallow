@@ -1402,3 +1402,100 @@ fn a_clone_group_needs_one_copy_that_passes_each_filter() {
     ]);
     assert_eq!(report["total_issues"], 1, "{report:#}");
 }
+
+#[test]
+fn compact_writes_one_line_for_each_finding() {
+    let fixture = Fixture::new();
+    let run = fixture.run(&["boundaries", "--format", "compact"]);
+    assert_eq!(run.code, 0);
+    assert_eq!(
+        run.stdout,
+        "crates/process/Cargo.toml:8:1: process-stays-a-leaf: process must not depend on workspace crate core\n\
+         crates/app/src/lib.rs:9:13: process-tree-in-process: crates/app/src/lib.rs contains process_group(0), which belongs to process\n\
+         crates/app/src/render.rs:1:5: render-does-not-run: crate::render must not use crate::engine::run\n\
+         crates/app/src/render.rs:6:5: render-does-not-run: crate::render must not use crate::engine::stop\n"
+    );
+    let gated = fixture.run(&["boundaries", "--format", "compact", "--fail-on-issues"]);
+    assert_eq!(gated.code, 1);
+    // A run with no finding writes nothing.
+    let empty = fixture.run(&["size", "--format", "compact"]);
+    assert_eq!((empty.code, empty.stdout.as_str()), (0, ""));
+    // Each command has the format.
+    for command in [
+        "check",
+        "deps",
+        "visibility",
+        "files",
+        "complexity",
+        "dupes",
+    ] {
+        let run = fixture.run(&[command, "--format", "compact"]);
+        assert_eq!(run.code, 0, "{command}");
+        for line in run.stdout.lines() {
+            assert!(line.contains(": "), "{command}: {line}");
+        }
+    }
+}
+
+#[test]
+fn markdown_has_a_gate_table_and_a_table_for_each_check() {
+    let fixture = Fixture::new();
+    let run = fixture.run(&[
+        "check",
+        "--skip",
+        "deps",
+        "--format",
+        "markdown",
+        "--fail-on-issues",
+    ]);
+    assert_eq!(run.code, 1);
+    let text = &run.stdout;
+    assert!(text.starts_with("## cargo fallow check: "), "{text}");
+    assert!(text.contains("\n| Gate | Status | Enforced |\n"), "{text}");
+    assert!(
+        text.contains("| `boundary-violations` | **fail** | yes |"),
+        "{text}"
+    );
+    assert!(text.contains("\n### boundaries (4)\n"), "{text}");
+    assert!(text.contains("\n### size (0)\n\nNo issues.\n"), "{text}");
+    assert!(!text.contains("### parse"), "{text}");
+    assert!(
+        text.contains("| `crates/app/src/render.rs:1` | `render-does-not-run` | crate::render must not use crate::engine::run |"),
+        "{text}"
+    );
+    let single = fixture.run(&["deps", "--format", "markdown"]);
+    assert!(
+        single
+            .stdout
+            .starts_with("## cargo fallow deps: 3 issues\n"),
+        "{}",
+        single.stdout
+    );
+    for command in ["visibility", "files", "boundaries", "complexity", "dupes"] {
+        let run = fixture.run(&[command, "--format", "markdown"]);
+        assert!(
+            run.stdout
+                .starts_with(&format!("## cargo fallow {command}: "))
+                && run.stdout.contains(&format!("\n### {command} (")),
+            "{command}: {}",
+            run.stdout
+        );
+    }
+    let empty = fixture.run(&["size", "--format", "markdown"]);
+    assert!(
+        empty
+            .stdout
+            .starts_with("## cargo fallow size: no issues found\n"),
+        "{}",
+        empty.stdout
+    );
+}
+
+#[test]
+fn fix_has_no_compact_or_markdown_output() {
+    let fixture = Fixture::new();
+    for format in ["compact", "markdown"] {
+        let run = fixture.run(&["fix", "--dry-run", "--format", format]);
+        assert_eq!(run.code, 2, "{format}: {}", run.stdout);
+    }
+}

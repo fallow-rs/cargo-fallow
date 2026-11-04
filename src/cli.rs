@@ -26,6 +26,11 @@ pub enum Format {
     Sarif,
     /// A CodeClimate report: a JSON array of issues, for GitLab code quality.
     Codeclimate,
+    /// One line for each finding: `path:line:col: rule: message`.
+    Compact,
+    /// Markdown with a gate table and one table for each check, for a pull
+    /// request body.
+    Markdown,
 }
 
 /// The options of the `visibility` command.

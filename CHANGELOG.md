@@ -49,6 +49,10 @@ GitHub release. Each release needs a `## [X.Y.Z] - YYYY-MM-DD` section.
 - `--package <NAME>` (`-p`) on `check` and the static commands keeps only the
   findings of the named workspace members. The analysis still reads the whole
   workspace. An unknown name exits 2.
+- `--format compact` gives one line for each finding,
+  `path:line:col: rule: message`, and `--format markdown` gives a gate table
+  and one table for each check. Each command has both formats, except `fix`
+  and `mutants --inspect`.
 
 ### Fixed
 

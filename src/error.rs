@@ -97,7 +97,11 @@ impl CliError {
         // A failed write of the error changes nothing: the exit code stays 2.
         let _ = match format {
             Format::Json => self.emit_json(),
-            Format::Human | Format::Sarif | Format::Codeclimate => self.emit_text(),
+            Format::Human
+            | Format::Sarif
+            | Format::Codeclimate
+            | Format::Compact
+            | Format::Markdown => self.emit_text(),
         };
     }
 

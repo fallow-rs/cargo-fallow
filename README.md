@@ -54,7 +54,7 @@ and take minutes. Run them as separate commands.
 | Flag | Meaning |
 | --- | --- |
 | `--manifest-path <PATH>` | The `Cargo.toml` of the workspace. The default is the manifest that Cargo finds from the current directory. |
-| `--format human\|json\|sarif\|codeclimate` | The output format. The default is `human`. |
+| `--format human\|json\|sarif\|codeclimate\|compact\|markdown` | The output format. The default is `human`. |
 | `--quiet` | Hide the progress lines on stderr. |
 | `--only <CHECK>,...` | Run only these checks. |
 | `--skip <CHECK>,...` | Do not run these checks. |
@@ -237,7 +237,7 @@ cargo fallow mutants --package my-crate --list --format json
 | `--in-diff <REF>` | Run only the mutants on changed lines. See [Changed code](#changed-code). |
 | `--file <PATH>` | Put mutants only in this file or folder, by the path from the workspace root. The flag can repeat. A value that matches no file is an error. |
 | `--test-workspace` | Run each mutant that the tests of the package do not detect against the tests of each workspace member. |
-| `--format human\|json\|sarif\|codeclimate` | The output format. The default is `human`. `--inspect` has no SARIF or CodeClimate form. |
+| `--format human\|json\|sarif\|codeclimate\|compact\|markdown` | The output format. The default is `human`. `--inspect` has no SARIF, CodeClimate, compact or markdown form. |
 | `--quiet` | Hide the progress lines on stderr. |
 | `--jobs <N>` | The test processes that run at the same time. |
 | `--max-mutants <N>` | Run at most this many mutants. The other mutants stay `pending`. |
@@ -602,7 +602,7 @@ cargo fallow deps --fail-on-issues --format sarif --quiet
 | Flag | Meaning |
 | --- | --- |
 | `--manifest-path <PATH>` | The `Cargo.toml` of the workspace. |
-| `--format human\|json\|sarif\|codeclimate` | The output format. The default is `human`. |
+| `--format human\|json\|sarif\|codeclimate\|compact\|markdown` | The output format. The default is `human`. |
 | `--quiet` | Hide the progress lines on stderr. |
 | `--fail-on-issues` | Exit 1 when a finding has the `error` severity. |
 | `--changed-since <REF>` | Report only the findings in the files that changed since the fork point of `REF`. See [Changed files](#changed-files). |
@@ -968,6 +968,22 @@ This section describes `check`. [Output](#output) describes `mutants`.
   and the gate notifications are those of the SARIF log of each check.
 - `codeclimate`: a JSON array with one CodeClimate issue for each finding, for
   the code quality report of GitLab. Each command has this format.
+- `compact`: one line for each finding, `path:line:col: rule: message`, for
+  grep and for agents. A finding with no column has `path:line: rule: message`,
+  and a finding with no line has `path: rule: message`. A line break in a
+  message becomes a space. A run with no finding writes nothing. The tool
+  does not escape a path, so a path with `:` makes the place ambiguous.
+- `markdown`: a title with the issue count, the scope and health lines, a
+  table of the gates, and one table for each check that ran, for a pull
+  request body or a job summary. A table shows at most 50 findings, and a line
+  under it gives the count of the rest. The tables stop before the document
+  is 60000 bytes, under the size limit of a GitHub comment. Outside a code
+  span, the tool escapes each character that markdown or HTML reads. The parse gate has a table only when a
+  file does not parse.
+
+Each command has the `compact` and `markdown` formats, `mutants` too. A
+`mutants --list` run has no finding, so these formats show no mutant. `fix`
+and `mutants --inspect` have no `compact` and no `markdown` output, and exit 2.
 
 A finding `id` and a CodeClimate `fingerprint` are the same value: 16 hex
 digits of an FNV-1a hash of the check, the rule and the identity of the
@@ -1016,7 +1032,7 @@ prints the same schema.
 ## Structure checks
 
 Four commands check the structure of the workspace. Each command has the
-`--manifest-path`, `--format human|json|sarif|codeclimate` and `--quiet` flags,
+`--manifest-path`, `--format human|json|sarif|codeclimate|compact|markdown` and `--quiet` flags,
 the [`--changed-since <REF>`](#changed-files), [`--package`](#packages) and
 [baseline](#baselines) flags,
 and its own

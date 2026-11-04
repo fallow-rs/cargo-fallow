@@ -202,11 +202,14 @@ fn mutants_report(options: &mutation::run::Options) -> Result<u8, CliError> {
 fn inspect_report(options: &mutation::run::Options, id: &str) -> Result<u8, CliError> {
     if matches!(
         options.format,
-        cli::Format::Sarif | cli::Format::Codeclimate
+        cli::Format::Sarif
+            | cli::Format::Codeclimate
+            | cli::Format::Compact
+            | cli::Format::Markdown
     ) {
         return Err(CliError::new(
             error::ErrorCode::InvalidArgument,
-            "`--inspect` has no SARIF or CodeClimate output",
+            "`--inspect` has no SARIF, CodeClimate, compact or markdown output",
         )
         .with_help("Use `--format human` or `--format json`."));
     }

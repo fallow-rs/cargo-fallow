@@ -741,3 +741,22 @@ fn a_ref_that_looks_like_a_flag_is_not_an_option_of_git() {
     assert_eq!(run.code, Some(2), "{}", run.stderr);
     assert!(!source.path().join("written").exists());
 }
+
+#[test]
+fn a_list_has_compact_and_markdown_output_and_inspect_has_neither() {
+    let source = fixture(&[("src/lib.rs", KNOWN)]);
+    let compact = mutants(source.path(), &["--list", "--format", "compact"]);
+    assert_eq!(compact.code, Some(0), "{}", compact.stderr);
+    let markdown = mutants(source.path(), &["--list", "--format", "markdown"]);
+    assert_eq!(markdown.code, Some(0), "{}", markdown.stderr);
+    assert!(
+        markdown.stdout.starts_with("## cargo fallow mutants: "),
+        "{}",
+        markdown.stdout
+    );
+    let id = id_on_line(source.path(), 3);
+    for format in ["compact", "markdown"] {
+        let run = mutants(source.path(), &["--inspect", &id, "--format", format]);
+        assert_eq!(run.code, Some(2), "{format}: {}", run.stderr);
+    }
+}

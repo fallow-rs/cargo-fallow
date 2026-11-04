@@ -1,13 +1,15 @@
 #!/bin/sh
 # Check that the branch does not edit the [Unreleased] section of CHANGELOG.md
-# and that each changelog.d/ fragment is valid. hk.pkl calls this script. The
+# and that each changelog.d/ fragment is valid. The commit does not exist yet,
+# so --pending-release accepts the version heading of the Cargo.toml version.
+# CI checks the subject of the release commit. hk.pkl calls this script. The
 # base is origin/main, or upstream/main in a fork clone. A clone without
 # either ref skips the check, because CI still runs it.
 set -e
 
 for base in origin/main upstream/main; do
   if git rev-parse --verify --quiet "${base}^{commit}" >/dev/null 2>&1; then
-    exec node scripts/changelog-fragments.mjs check --base "$base"
+    exec node scripts/changelog-fragments.mjs check --base "$base" --pending-release
   fi
 done
 

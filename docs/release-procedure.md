@@ -77,8 +77,9 @@ release can change with `gh release edit`.
 
 A pull request does not edit `CHANGELOG.md`. It adds one fragment file to
 `changelog.d/`. `changelog.d/README.md` describes the format. The
-`Changelog fragments` CI step and the pre-commit hook run
-`node scripts/changelog-fragments.mjs check --base origin/main`. The release
+`Changelog fragments` CI step runs
+`node scripts/changelog-fragments.mjs check --base origin/main`. The
+pre-commit hook runs the same check with `--pending-release`. The release
 commit collects the fragments.
 
 ## Prepare the release commit
@@ -95,8 +96,11 @@ commit collects the fragments.
    same metadata check as the `plan` job.
 6. Commit with the subject `chore: release vX.Y.Z`. The pre-commit hook sees
    an emptied `[Unreleased]` section with the new version heading, and accepts
-   it. If an older hook rejects the `collect` result, set
-   `HK_SKIP_STEPS=changelog-fragments` for this commit only.
+   it when the heading has the version of `Cargo.toml`. The CI check accepts
+   a new version heading only in a branch with the commit
+   `chore: release vX.Y.Z` of that version. If an older hook rejects the
+   `collect` result, set `HK_SKIP_STEPS=changelog-fragments` for this commit
+   only.
 7. Open a pull request. When every check passes, merge it with the exact
    subject. A default squash subject adds ` (#N)`, and the `plan` job then
    stops:

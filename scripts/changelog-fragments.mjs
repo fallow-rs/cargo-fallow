@@ -33,10 +33,15 @@ export const KINDS = [
 const USAGE = `Usage: node scripts/changelog-fragments.mjs <command> [options]
 
 Commands:
-  check [--base <ref>]  Check each fragment in ${FRAGMENT_DIR}/. With --base,
+  check [--base <ref>] [--pending-release]
+                        Check each fragment in ${FRAGMENT_DIR}/. With --base,
                         also fail when the [Unreleased] section of ${CHANGELOG}
                         is not the same as at the fork point with <ref>: a pull
                         request adds a fragment and does not edit ${CHANGELOG}.
+                        A new "## [X.Y.Z]" heading also fails, except in a
+                        branch with the commit "chore: release vX.Y.Z".
+                        --pending-release also accepts the heading of the
+                        Cargo.toml version, for a commit that is not made yet.
   collect [--dry-run]   Move each fragment into the [Unreleased] section of
                         ${CHANGELOG} and delete the fragment files. --dry-run
                         prints the section and changes nothing.`;
@@ -188,7 +193,14 @@ const checkFragments = (root) => {
   );
 };
 
-const VERSION_HEADING = /^## \[\d+\.\d+\.\d+\]/gmu;
+const VERSION_HEADING = /^## \[\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?\]/gmu;
+const RELEASE_SUBJECT =
+  /^chore: release v(?<version>\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)(?: \(#\d+\))?$/u;
+// The `version` key of the `[package]` table, up to the next table header.
+const MANIFEST_VERSION =
+  /^\[package\][^\S\n]*\r?\n(?:(?!\[)[^\n]*\n)*?version\s*=\s*"(?<version>[^"]+)"/mu;
+
+const headingVersion = (heading) => heading.slice("## [".length, -"]".length);
 
 const versionHeadings = (changelog) => new Set(changelog.match(VERSION_HEADING) ?? []);
 
@@ -240,6 +252,50 @@ const checkUnreleasedUnchanged = (root, base) => {
   ];
 };
 
+// The versions that the commits of the branch release. Merge commits do not
+// count: in CI the HEAD of a pull request is a merge commit.
+const releasedVersions = (root, forkPoint) =>
+  new Set(
+    git(root, ["log", "--no-merges", "--format=%s", `${forkPoint}..HEAD`])
+      .split("\n")
+      .map((subject) => RELEASE_SUBJECT.exec(subject)?.groups.version)
+      .filter((version) => version !== undefined),
+  );
+
+const manifestVersion = (root) => {
+  const path = join(root, "Cargo.toml");
+  return existsSync(path)
+    ? MANIFEST_VERSION.exec(readFileSync(path, "utf8"))?.groups.version
+    : undefined;
+};
+
+/**
+ * Only the release commit `chore: release vX.Y.Z` adds the heading
+ * `## [X.Y.Z]`. A pre-commit hook runs before the commit has a subject. With
+ * `pendingRelease`, the version in `Cargo.toml` also counts, and CI checks
+ * the subject later.
+ */
+const checkVersionHeadings = (root, base, pendingRelease) => {
+  const forkPoint = forkPointOf(root, base);
+  const forkHeadings = versionHeadings(git(root, ["show", `${forkPoint}:${CHANGELOG}`]));
+  const added = [...versionHeadings(readFileSync(join(root, CHANGELOG), "utf8"))].filter(
+    (heading) => !forkHeadings.has(heading),
+  );
+  if (added.length === 0) {
+    return [];
+  }
+  const allowed = releasedVersions(root, forkPoint);
+  if (pendingRelease) {
+    allowed.add(manifestVersion(root));
+  }
+  return added
+    .filter((heading) => !allowed.has(headingVersion(heading)))
+    .map(
+      (heading) =>
+        `${CHANGELOG}: this branch adds the version heading "${heading}". Only a commit with the subject "chore: release v${headingVersion(heading)}" can add it.`,
+    );
+};
+
 const collect = (root, dryRun, log) => {
   assertNoProblems(checkFragments(root));
   const dir = join(root, FRAGMENT_DIR);
@@ -265,7 +321,7 @@ const collect = (root, dryRun, log) => {
 };
 
 const COMMAND_OPTIONS = {
-  check: { base: { type: "string" } },
+  check: { base: { type: "string" }, "pending-release": { type: "boolean" } },
   collect: { "dry-run": { type: "boolean" } },
 };
 
@@ -274,7 +330,12 @@ export const parseArgs = ([command, ...args]) => {
     throw new Error(USAGE);
   }
   const { values } = parseOptions({ args, options: COMMAND_OPTIONS[command], strict: true });
-  return { command, base: values.base, dryRun: values["dry-run"] === true };
+  return {
+    command,
+    base: values.base,
+    dryRun: values["dry-run"] === true,
+    pendingRelease: values["pending-release"] === true,
+  };
 };
 
 /** Runs one command on the repository at `root` and returns the exit code. */
@@ -289,7 +350,12 @@ export const changelogFragments = (
   }
   assertNoProblems([
     ...checkFragments(root),
-    ...(options.base === undefined ? [] : checkUnreleasedUnchanged(root, options.base)),
+    ...(options.base === undefined
+      ? []
+      : [
+          ...checkUnreleasedUnchanged(root, options.base),
+          ...checkVersionHeadings(root, options.base, options.pendingRelease),
+        ]),
   ]);
   log(`${FRAGMENT_DIR}: ${fragmentNames(join(root, FRAGMENT_DIR)).length} fragment(s) are valid.`);
   return 0;

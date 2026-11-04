@@ -181,6 +181,97 @@ test("check with a base passes for a fragment and for a release commit", (t) => 
   assert.equal(run(repo, "check", "--base", "base").code, 0);
 });
 
+// A branch from `base` with one pending entry in [Unreleased] on `base`.
+const pendingRepo = (t) => {
+  const repo = createRepo(t);
+  repo.commit("chore: init", { "CHANGELOG.md": changelog("### Added", "", "- A.", "") });
+  repo.git("branch", "base");
+  return repo;
+};
+
+const released = (repo, version) =>
+  repo
+    .read("CHANGELOG.md")
+    .replace(
+      "## [Unreleased]\n\n### Added\n\n- A.\n\n",
+      `## [Unreleased]\n\n## [${version}] - 2026-12-01\n\n### Added\n\n- A.\n\n`,
+    );
+
+test("check with a base fails when a commit that is not the release adds a version heading", (t) => {
+  const repo = pendingRepo(t);
+  repo.commit("feat: something", { "CHANGELOG.md": released(repo, "0.2.0") });
+  assert.throws(
+    () => run(repo, "check", "--base", "base"),
+    /CHANGELOG\.md: this branch adds the version heading "## \[0\.2\.0\]"\. Only a commit with the subject "chore: release v0\.2\.0" can add it\./u,
+  );
+});
+
+test("check with a base fails when a release commit adds the heading of another version", (t) => {
+  const repo = pendingRepo(t);
+  repo.commit("chore: release v0.3.0", { "CHANGELOG.md": released(repo, "0.2.0") });
+  assert.throws(
+    () => run(repo, "check", "--base", "base"),
+    /adds the version heading "## \[0\.2\.0\]"/u,
+  );
+});
+
+test("check with a base fails on a new version section that leaves Unreleased as it is", (t) => {
+  const repo = pendingRepo(t);
+  const text = repo
+    .read("CHANGELOG.md")
+    .replace(
+      "## [0.1.0] - 2026-11-04",
+      "## [0.1.1] - 2026-11-05\n\n### Fixed\n\n- B.\n\n## [0.1.0] - 2026-11-04",
+    );
+  repo.commit("docs: add a section", { "CHANGELOG.md": text });
+  assert.throws(
+    () => run(repo, "check", "--base", "base"),
+    /adds the version heading "## \[0\.1\.1\]"/u,
+  );
+});
+
+test("check with a base accepts the release commit among other commits of the branch", (t) => {
+  const repo = pendingRepo(t);
+  repo.commit("chore: release v0.2.0 (#64)", { "CHANGELOG.md": released(repo, "0.2.0") });
+  repo.commit("fix: a late fix", { "src.txt": "x\n" });
+  assert.equal(run(repo, "check", "--base", "base").code, 0);
+});
+
+test("check with --pending-release accepts the heading of the Cargo.toml version", (t) => {
+  const repo = pendingRepo(t);
+  repo.write("CHANGELOG.md", released(repo, "0.2.0"));
+  repo.write("Cargo.toml", '[package]\nname = "x"\nversion = "0.2.0"\n');
+  assert.equal(run(repo, "check", "--base", "base", "--pending-release").code, 0);
+  assert.throws(() => run(repo, "check", "--base", "base"), /adds the version heading/u);
+  repo.write("Cargo.toml", '[package]\nname = "x"\nversion = "0.3.0"\n');
+  assert.throws(
+    () => run(repo, "check", "--base", "base", "--pending-release"),
+    /adds the version heading "## \[0\.2\.0\]"/u,
+  );
+});
+
+test("check with a base fails on a new pre-release heading", (t) => {
+  const repo = pendingRepo(t);
+  repo.commit("feat: something", { "CHANGELOG.md": released(repo, "1.0.0-rc.1") });
+  assert.throws(
+    () => run(repo, "check", "--base", "base"),
+    /adds the version heading "## \[1\.0\.0-rc\.1\]"/u,
+  );
+});
+
+test("check with --pending-release reads the version of the [package] table", (t) => {
+  const repo = pendingRepo(t);
+  repo.write("CHANGELOG.md", released(repo, "0.2.0"));
+  repo.write(
+    "Cargo.toml",
+    '[dependencies.y]\nversion = "0.2.0"\n\n[package]\nname = "x"\nversion = "0.1.0"\n',
+  );
+  assert.throws(
+    () => run(repo, "check", "--base", "base", "--pending-release"),
+    /adds the version heading "## \[0\.2\.0\]"/u,
+  );
+});
+
 test("check with a base that does not resolve names the fix", (t) => {
   const repo = createRepo(t);
   repo.commit("chore: init", { "CHANGELOG.md": changelog() });
@@ -224,6 +315,7 @@ test("an unknown command prints the usage", () => {
     command: "collect",
     base: undefined,
     dryRun: true,
+    pendingRelease: false,
   });
 });
 

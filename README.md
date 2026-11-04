@@ -60,6 +60,7 @@ and take minutes. Run them as separate commands.
 | `--skip <CHECK>,...` | Do not run these checks. |
 | `--fail-on-issues` | Enforce the gate of each check that ran. |
 | `--fail-on-parse-error` | Enforce only the `parse-error` gate. |
+| `--changed-since <REF>` | Report only the findings in the files that changed since the fork point of `REF`. See [Changed files](#changed-files). |
 | `--locked`, `--offline`, `--frozen` | Give the flag to the `cargo metadata` call of `deps`. |
 
 The `deps` check resolves the dependencies with `cargo metadata`, so Cargo can
@@ -71,6 +72,42 @@ The configuration of each check is the same as for its command, in
 a limit: change the table instead. The `size` check has no old version to
 compare with in a `check` run, so its `file-growth` gate is `skipped`. Use
 `cargo fallow size --base <REF>` for the growth rule.
+
+### Changed files
+
+`--changed-since <REF>` scopes a run to the files that a branch changed. The
+flag is on `check`, `deps`, `visibility`, `boundaries`, `size`, `complexity`
+and `dupes`. Use it for a pull request gate that judges only the changed code.
+
+```bash
+cargo fallow check --changed-since origin/main --fail-on-issues
+```
+
+- The analysis still reads the whole workspace. Only the report changes.
+- The base is the fork point of `REF` and `HEAD`, the same rule as
+  `mutants --in-diff`. A committed, a staged, an unstaged and an untracked
+  change count.
+- The report keeps a finding when its file changed.
+- A finding in a `Cargo.toml` (for example a `deps` finding) stays when a file
+  of its package changed: the manifest, or a file in the package folder that
+  no nested member owns.
+- A clone group of `dupes` stays when one of its copies is in a changed file.
+- The gates count only the kept findings. The `duplication-threshold` gate
+  measures the whole workspace, so a scoped run does not give it.
+- The `parse-error` gate always judges each target root file. A file that does
+  not parse makes each check incomplete.
+- The JSON report has a `changed_since` member with `ref`, `base` (the fork
+  point) and `changed_files`. The human output has a `Scope:` line: first for
+  a single command, and under the header for `check`.
+- The `dupes` summary counts only the kept groups and their families. Its
+  line, token and file counts stay those of the whole workspace.
+- With `visibility --precise --fail-on-issues`, a run that leaves a candidate
+  undecided exits 2 also when the candidate is outside the scope.
+- A `check` run with the flag has no health score: its `health` object has
+  `scope: "changed"` and no penalties.
+- An unknown ref, a ref that starts with `-`, a shallow clone without the fork
+  point, or a run outside a git work tree exits 2. The run never falls back to
+  the whole workspace.
 
 ### Health score
 
@@ -500,6 +537,7 @@ cargo fallow deps --fail-on-issues --format sarif --quiet
 | `--format human\|json\|sarif\|codeclimate` | The output format. The default is `human`. |
 | `--quiet` | Hide the progress lines on stderr. |
 | `--fail-on-issues` | Exit 1 when a finding has the `error` severity. |
+| `--changed-since <REF>` | Report only the findings in the files that changed since the fork point of `REF`. See [Changed files](#changed-files). |
 | `--locked` | Give `--locked` to `cargo metadata`. |
 | `--offline` | Give `--offline` to `cargo metadata`. |
 | `--frozen` | Give `--frozen` to `cargo metadata`. |
@@ -655,6 +693,7 @@ cargo fallow visibility --precise
 | `--uniform-fields` | The fields of one struct with one written visibility change as a group. |
 | `--kind <KIND>` | Report only this kind: `dead-public`, `unnecessary-public` or `unnecessary-restricted-visibility`. The flag can repeat. |
 | `--fail-on-issues` | Exit 1 when the run has a finding. |
+| `--changed-since <REF>` | Report only the findings in the files that changed since the fork point of `REF`. See [Changed files](#changed-files). |
 | `--precise` | Decide the undecided candidates with rust-analyzer. See below. |
 
 The table `[workspace.metadata.fallow.visibility]` in the root `Cargo.toml`
@@ -818,7 +857,8 @@ other formats, the error goes to stderr.
 ## Structure checks
 
 Four commands check the structure of the workspace. Each command has the
-`--manifest-path`, `--format human|json|sarif|codeclimate` and `--quiet` flags, and its own
+`--manifest-path`, `--format human|json|sarif|codeclimate`, `--quiet` and
+[`--changed-since <REF>`](#changed-files) flags, and its own
 gate. A gate is in the report each time, but it fails the run only with its flag.
 Each command accepts `--fail-on-issues` as its gate flag. The older flag of
 each command is the same flag. `size` has no growth gate without `--base` or

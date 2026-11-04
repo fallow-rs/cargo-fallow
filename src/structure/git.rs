@@ -1,11 +1,11 @@
 //! The git reads of the size check: the changed files and their old versions.
 //!
-//! This module is the one place in the structure checks that spawns a
-//! process. Each command runs `git` in the workspace root and only reads.
+//! The git runner is in [`crate::diff`]. Each command runs `git` in the
+//! workspace root and only reads.
 
 use std::path::Path;
-use std::process::{Command, Stdio};
 
+use crate::diff::{git, is_shallow, run_git};
 use crate::error::{CliError, ErrorCode};
 
 /// One changed file.
@@ -32,20 +32,6 @@ pub struct Changes {
     /// valid replaced. The growth rule cannot check them.
     pub skipped: Vec<String>,
 }
-
-/// The variables that move git to another repository, index or object store.
-/// A hook or a parent process can set them, so each command removes them.
-const SCRUBBED_VARIABLES: [&str; 9] = [
-    "GIT_DIR",
-    "GIT_WORK_TREE",
-    "GIT_INDEX_FILE",
-    "GIT_OBJECT_DIRECTORY",
-    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-    "GIT_COMMON_DIR",
-    "GIT_NAMESPACE",
-    "GIT_CEILING_DIRECTORIES",
-    "GIT_DISCOVERY_ACROSS_FILESYSTEM",
-];
 
 /// The arguments of the diff: added, changed and renamed files, with renames.
 const DIFF_ARGS: [&str; 6] = [
@@ -213,12 +199,6 @@ fn verify_base(root: &Path, base: &str) -> Result<String, CliError> {
     }
 }
 
-/// True when the repository is a shallow clone.
-fn is_shallow(root: &Path) -> bool {
-    git(root, &["rev-parse", "--is-shallow-repository"])
-        .is_ok_and(|output| output.trim_ascii() == b"true")
-}
-
 /// The output as text, or an error that names `subject`.
 fn text(output: Vec<u8>, subject: &str) -> Result<String, CliError> {
     String::from_utf8(output).map_err(|_| {
@@ -278,37 +258,6 @@ fn cannot_read(subject: &str, detail: &str) -> CliError {
         format!("cannot read {subject}: {}", detail.trim()),
     )
     .with_help("Run the command in a git work tree, and give a ref that git knows.")
-}
-
-/// Runs git in `root`. The error is the stderr text or the spawn error.
-fn git(root: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
-    let output = run_git(root, args)?;
-    if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).into_owned());
-    }
-    Ok(output.stdout)
-}
-
-/// Runs git in `root` with a clean environment: no variable of
-/// [`SCRUBBED_VARIABLES`], and no optional locks, so a read does not write
-/// the index.
-fn run_git(root: &Path, args: &[&str]) -> Result<std::process::Output, String> {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the size check reads the changed files and the old blobs from git"
-    )]
-    let mut command = Command::new("git");
-    for name in SCRUBBED_VARIABLES {
-        command.env_remove(name);
-    }
-    command
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .arg("-C")
-        .arg(root)
-        .args(args)
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|err| format!("git does not run: {err}"))
 }
 
 #[cfg(test)]

@@ -34,6 +34,7 @@ use crate::gates::parse_edition;
 use crate::modules::{TargetRoot, normalize, walk};
 use crate::parse::with_parsed;
 use crate::render::Progress;
+use crate::scope::Scope;
 use crate::section::{Section, to_value};
 use crate::structure::CommonArgs;
 use crate::structure::config::{self, matches_prefix};
@@ -133,7 +134,8 @@ pub fn run(args: &FilesArgs) -> Result<Section, CliError> {
     let progress = Progress::new(args.common.quiet);
     progress.step("Reading cargo metadata");
     let workspace = workspace::load(args.common.manifest_path.as_deref())?;
-    section(&workspace, args.fail_on_issues, progress)
+    let scope = Scope::load(&workspace, args.common.changed_since.as_deref())?;
+    scope.annotate(section(&workspace, args.fail_on_issues, &scope, progress)?)
 }
 
 /// Finds the unused files of the workspace. `enforced` is true when a finding
@@ -141,6 +143,7 @@ pub fn run(args: &FilesArgs) -> Result<Section, CliError> {
 pub fn section(
     workspace: &Workspace,
     enforced: bool,
+    scope: &Scope,
     progress: Progress,
 ) -> Result<Section, CliError> {
     let settings: Settings = config::section(workspace, "files")?;
@@ -156,6 +159,7 @@ pub fn section(
             && reached_folders.contains(parent(path))
             && !reached.skipped.contains_key(package.as_str())
             && !matches_prefix(path, &settings.exclude)
+            && scope.keeps(path)
             && !generated(root, path);
         if unused {
             findings.push(Finding {

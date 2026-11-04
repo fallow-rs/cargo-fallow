@@ -47,6 +47,8 @@ pub struct VisibilityOptions {
     pub kinds: Vec<crate::visibility::FindingKind>,
     /// True when a finding fails the run.
     pub fail_on_issues: bool,
+    /// The ref of `--changed-since`.
+    pub changed_since: Option<String>,
     /// The limits of `--precise` mode, or `None` for the fast mode.
     pub precise: Option<crate::visibility::precise::Limits>,
 }
@@ -337,6 +339,11 @@ struct VisibilityArgs {
     /// Exit 1 when the run has a finding.
     #[arg(long)]
     fail_on_issues: bool,
+    /// Report only the findings in the files that changed since the fork point
+    /// of this ref and `HEAD`. Uncommitted and untracked files count. The
+    /// analysis still reads the whole workspace.
+    #[arg(long, value_name = "REF")]
+    changed_since: Option<String>,
     /// Decide the findings that the syntax cannot decide with rust-analyzer: method
     /// calls on an unknown type and the output of proc-macros. This needs a build
     /// with the `precise` feature, and it runs the build scripts and proc-macros of
@@ -401,6 +408,7 @@ impl From<VisibilityArgs> for VisibilityOptions {
                 })
                 .collect(),
             fail_on_issues: args.fail_on_issues,
+            changed_since: args.changed_since,
             precise: args.precise.then_some(crate::visibility::precise::Limits {
                 timeout: Duration::from_secs(args.precise_timeout),
                 memory_mib: args.precise_memory_limit,
@@ -424,6 +432,11 @@ struct DepsArgs {
     /// Exit 1 when a finding has the `error` severity. A warning does not count.
     #[arg(long)]
     fail_on_issues: bool,
+    /// Report only the findings in the files that changed since the fork point
+    /// of this ref and `HEAD`. Uncommitted and untracked files count. The
+    /// analysis still reads the whole workspace.
+    #[arg(long, value_name = "REF")]
+    changed_since: Option<String>,
     /// Give `--locked` to `cargo metadata`: fail when `Cargo.lock` must change.
     #[arg(long)]
     locked: bool,
@@ -445,6 +458,7 @@ impl From<DepsArgs> for crate::deps::Options {
             quiet: args.quiet,
             fail_on_issues: args.fail_on_issues,
             cargo_flags,
+            changed_since: args.changed_since,
         }
     }
 }
@@ -481,6 +495,11 @@ struct CheckArgs {
     /// Exit 1 when a target root file does not parse.
     #[arg(long)]
     fail_on_parse_error: bool,
+    /// Report only the findings in the files that changed since the fork point
+    /// of this ref and `HEAD`. Uncommitted and untracked files count. The
+    /// analysis still reads the whole workspace.
+    #[arg(long, value_name = "REF")]
+    changed_since: Option<String>,
     /// Give `--locked` to the `cargo metadata` call of the deps check.
     #[arg(long)]
     locked: bool,
@@ -516,6 +535,7 @@ impl From<CheckArgs> for crate::check::Options {
             fail_on_issues: args.fail_on_issues,
             fail_on_parse_error: args.fail_on_parse_error,
             cargo_flags: cargo_flags(args.locked, args.offline, args.frozen),
+            changed_since: args.changed_since,
         }
     }
 }

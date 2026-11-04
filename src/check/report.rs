@@ -11,12 +11,14 @@ use serde_json::{Map, Value};
 
 use super::CheckName;
 use crate::cli::Format;
+use crate::diff::ChangedFiles;
 use crate::error::CliError;
 use crate::finding::{Finding, codeclimate};
 use crate::gates::RustGateName;
-use crate::health::HealthScore;
+use crate::health::Health;
 use crate::render;
 use crate::report::TOOL_VERSION;
+use crate::scope::Scope;
 use crate::section::{Section, pretty};
 use crate::workspace::{Member, Workspace};
 
@@ -43,11 +45,15 @@ pub struct CheckReport {
     pub total_issues: usize,
     /// The health score of the Rust code, when a check with a penalty ran.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub health: Option<HealthScore>,
+    pub health: Option<Health>,
     /// The findings of each check in the shared shape, in check order.
     pub findings: Vec<Finding>,
     /// The gate outcomes of each check that ran, keyed by gate name.
     pub gate_outcomes: BTreeMap<RustGateName, GateOutcome>,
+    /// The changed files of `--changed-since`. A run without the flag has no
+    /// such member.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub changed_since: Option<ChangedFiles>,
     /// The report of each check that ran, keyed by check name. Each report is
     /// the JSON report of the command of the same name. The parse gate has no
     /// report of its own.
@@ -70,7 +76,7 @@ impl CheckReport {
     pub fn new(
         workspace: Workspace,
         parts: Vec<(CheckName, Section)>,
-        health: Option<HealthScore>,
+        health: Option<Health>,
     ) -> Self {
         let mut gate_outcomes = BTreeMap::new();
         let mut findings = Vec::new();
@@ -99,9 +105,17 @@ impl CheckReport {
             health,
             findings,
             gate_outcomes,
+            changed_since: None,
             sections,
             parts,
         }
+    }
+
+    /// The report with the changed files of a scoped run.
+    #[must_use]
+    pub fn with_scope(mut self, scope: &Scope) -> Self {
+        self.changed_since.clone_from(&scope.changed);
+        self
     }
 
     /// True when an enforced gate of a check failed.
@@ -146,8 +160,14 @@ impl CheckReport {
         );
         let names: Vec<&str> = self.checks.iter().map(|name| name.as_str()).collect();
         let _ = writeln!(text, "Checks: {}", names.join(", "));
-        if let Some(health) = &self.health {
-            match (health.score, health.grade) {
+        if let Some(changed) = &self.changed_since {
+            text.push_str(&crate::scope::changed_line(changed));
+        }
+        match &self.health {
+            Some(Health::Scoped(_)) => {
+                text.push_str("Health (rust): no score. A run with `--changed-since` sees only part of the findings.\n");
+            }
+            Some(Health::Score(health)) => match (health.score, health.grade) {
                 (Some(score), Some(grade)) => {
                     let _ = writeln!(
                         text,
@@ -162,7 +182,8 @@ impl CheckReport {
                         health.missing_checks.join(", ")
                     );
                 }
-            }
+            },
+            None => {}
         }
         if self.total_issues == 0 {
             text.push_str("No issues found\n");

@@ -462,3 +462,39 @@ fn macro_module_forms_that_the_scan_cannot_follow_give_credit() {
         assert_eq!(paths(&report), set(unused), "{text}");
     }
 }
+
+/// Runs git in `dir` with a fixed test identity.
+fn git(dir: &Path, args: &[&str]) {
+    let status = std::process::Command::new("git")
+        .current_dir(dir)
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .args([
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "commit.gpgsign=false",
+        ])
+        .args(args)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .expect("run git");
+    assert!(status.success(), "git {args:?}");
+}
+
+#[test]
+fn changed_since_keeps_only_the_changed_files() {
+    let dir = workspace("", &[("app/src/old.rs", "")]);
+    git(dir.path(), &["init", "-q", "-b", "main"]);
+    git(dir.path(), &["add", "."]);
+    git(dir.path(), &["commit", "-q", "-m", "base"]);
+    write(dir.path(), "app/src/new.rs", "");
+    let (_, report) = run(&dir, &["--changed-since", "HEAD"]);
+    assert_eq!(paths(&report), set(&["app/src/new.rs"]));
+    let (_, full) = run(&dir, &[]);
+    assert_eq!(paths(&full), set(&["app/src/new.rs", "app/src/old.rs"]));
+}

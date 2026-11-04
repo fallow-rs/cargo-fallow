@@ -12,6 +12,7 @@ mod attrs;
 mod check;
 mod cli;
 mod deps;
+mod diff;
 mod error;
 mod files;
 mod finding;
@@ -23,6 +24,7 @@ mod mutation;
 mod parse;
 mod render;
 mod report;
+mod scope;
 mod section;
 mod structure;
 mod visibility;
@@ -78,6 +80,7 @@ fn visibility_report(options: &cli::VisibilityOptions) -> Result<u8, CliError> {
     progress.step("Reading cargo metadata");
     let workspace = workspace::load(options.manifest_path.as_deref())?;
     let options = &visibility::config::resolve(&workspace, options)?;
+    let scope = scope::Scope::load(&workspace, options.changed_since.as_deref())?;
     progress.step("Building the module graph");
     let production = graph::Production {
         bins: options.production.clone(),
@@ -85,8 +88,10 @@ fn visibility_report(options: &cli::VisibilityOptions) -> Result<u8, CliError> {
     let module_graph = graph::build(&workspace, &production);
     progress.step("Checking the visibility");
     let Some(limits) = options.precise else {
-        return visibility::fast_report(&module_graph, options, &workspace)
-            .section()?
+        return scope
+            .annotate(
+                visibility::fast_report(&module_graph, options, &workspace, &scope).section()?,
+            )?
             .write(options.format);
     };
     let check_options =
@@ -102,6 +107,7 @@ fn visibility_report(options: &cli::VisibilityOptions) -> Result<u8, CliError> {
     let summary = visibility::precise::decide(&module_graph, &mut analysis, &run)?;
     visibility::refine(&module_graph, &check_options, &mut analysis);
     visibility::skip_generated(&module_graph, &mut analysis);
+    analysis.retain_scope(&module_graph, &scope);
     // A gate must not pass on a part of the decisions.
     if options.fail_on_issues && summary.incomplete() {
         return Err(error::CliError::new(
@@ -127,7 +133,7 @@ fn visibility_report(options: &cli::VisibilityOptions) -> Result<u8, CliError> {
         precise,
         enforced: options.fail_on_issues,
     });
-    report.section()?.write(options.format)
+    scope.annotate(report.section()?)?.write(options.format)
 }
 
 /// Runs the `files` command and returns the process exit code.
@@ -149,7 +155,7 @@ fn run_deps(options: &deps::Options) -> u8 {
 }
 
 fn deps_report(options: &deps::Options) -> Result<u8, CliError> {
-    deps::section(&deps::run(options)?)?.write(options.format)
+    deps::run(options)?.write(options.format)
 }
 
 /// Runs the `mutants` command and returns the process exit code.

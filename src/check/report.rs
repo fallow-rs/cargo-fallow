@@ -55,6 +55,10 @@ pub struct CheckReport {
     /// such member.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub changed_since: Option<ChangedFiles>,
+    /// The members of `--package`, sorted. A run without the flag has no
+    /// such member.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub packages: Option<Vec<String>>,
     /// The baseline of `--baseline`. A run without the flag has no such
     /// member.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -161,6 +165,7 @@ impl CheckReport {
             findings,
             gate_outcomes,
             changed_since: None,
+            packages: None,
             baseline: None,
             sections,
             parts,
@@ -171,6 +176,10 @@ impl CheckReport {
     /// with `--save-baseline` writes the file here, and enforces no gate.
     pub fn with_scope(mut self, scope: &Scope) -> Result<Self, CliError> {
         self.changed_since.clone_from(&scope.changed);
+        self.packages = scope
+            .packages
+            .as_ref()
+            .map(|packages| packages.names.clone());
         let checks: Vec<&str> = self.checks.iter().map(|name| name.as_str()).collect();
         if let Some(summary) = scope.baseline_summary(&checks) {
             self.gate_outcomes
@@ -234,15 +243,27 @@ impl CheckReport {
         if let Some(changed) = &self.changed_since {
             text.push_str(&crate::scope::changed_line(changed));
         }
+        if let Some(names) = &self.packages {
+            let _ = writeln!(
+                text,
+                "Scope: {} {}",
+                if names.len() == 1 {
+                    "package"
+                } else {
+                    "packages"
+                },
+                names.join(", ")
+            );
+        }
         if let Some(summary) = &self.baseline {
             text.push_str(&crate::scope::baseline_line(summary));
         }
         match &self.health {
             Some(Health::Scoped(scoped)) => {
-                let flag = if scoped.scope == "baseline" {
-                    "--baseline"
-                } else {
-                    "--changed-since"
+                let flag = match scoped.scope {
+                    "baseline" => "--baseline",
+                    "package" => "--package",
+                    _ => "--changed-since",
                 };
                 let _ = writeln!(
                     text,

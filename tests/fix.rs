@@ -14,6 +14,10 @@ use assert_cmd::Command;
 use serde_json::Value;
 use tempfile::TempDir;
 
+/// The crates of the fixture are an external API for the visibility check,
+/// so these tests see only the `Cargo.toml` edits.
+const VISIBILITY_API: &str = "[workspace.metadata.fallow.visibility]\nexclude-crates = [\"app\", \"alpha\", \"beta\", \"gamma\", \"delta\"]\n";
+
 /// The dependency crates that the tests can use.
 const LIBS: &[&str] = &["alpha", "beta", "gamma", "delta"];
 
@@ -27,7 +31,7 @@ fn workspace(root_extra: &str, app_manifest: &str, files: &[(&str, &str)]) -> Te
         dir.path(),
         "Cargo.toml",
         &format!(
-            "[workspace]\nmembers = [{}]\nresolver = \"3\"\n{root_extra}",
+            "[workspace]\nmembers = [{}]\nresolver = \"3\"\n{root_extra}\n{VISIBILITY_API}",
             members.join(", ")
         ),
     );

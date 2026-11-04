@@ -309,8 +309,8 @@ fn run_metrics(
 /// a scoped run gives no score.
 fn scoped_health(metrics: Metrics, scope: &Scope) -> Option<Health> {
     health::score(metrics).map(|health| {
-        if !scope.is_full() {
-            Health::Scoped(ScopedHealth::changed())
+        if let Some(filter) = scope.filter() {
+            Health::Scoped(ScopedHealth::filtered(filter))
         } else if scope.has_baseline() {
             Health::Scoped(ScopedHealth::baseline())
         } else {

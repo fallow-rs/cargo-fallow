@@ -1265,3 +1265,140 @@ fn a_narrowing_flag_or_a_save_does_not_judge_or_enforce_the_baseline() {
     assert_eq!(report["health"]["scope"], "baseline", "{report:#}");
     assert!(report["health"]["penalties"].is_null());
 }
+
+#[test]
+fn package_keeps_only_the_findings_of_the_named_members() {
+    let fixture = Fixture::new();
+    let (code, report) = fixture.json(&["boundaries", "-p", "process", "--fail-on-issues"]);
+    assert_eq!(code, 1, "{report:#}");
+    assert_eq!(
+        strings(&report, "rule"),
+        ["process-stays-a-leaf"],
+        "{report:#}"
+    );
+    assert_eq!(report["packages"], serde_json::json!(["process"]));
+
+    let (_, report) = fixture.json(&["boundaries", "--package", "app"]);
+    assert_eq!(
+        strings(&report, "rule"),
+        [
+            "process-tree-in-process",
+            "render-does-not-run",
+            "render-does-not-run"
+        ],
+        "{report:#}"
+    );
+
+    let (code, report) = fixture.json(&[
+        "complexity",
+        "-p",
+        "app",
+        "-p",
+        "process",
+        "--fail-on-issues",
+    ]);
+    assert_eq!(code, 0, "{report:#}");
+    assert_eq!(report["packages"], serde_json::json!(["app", "process"]));
+
+    let (_, report) = fixture.json(&["deps", "-p", "process"]);
+    let manifests: Vec<&str> = report["findings"]
+        .as_array()
+        .expect("findings")
+        .iter()
+        .filter_map(|finding| finding["manifest_path"].as_str())
+        .collect();
+    assert_eq!(manifests, ["crates/process/Cargo.toml"], "{report:#}");
+
+    // A clone group stays when one copy is in a named member.
+    let (_, report) = fixture.json(&["dupes", "--min-tokens", "30", "-p", "process"]);
+    assert_eq!(report["total_issues"], 1, "{report:#}");
+
+    let (_, full) = fixture.json(&["check", "--skip", "deps"]);
+    let (_, report) = fixture.json(&["check", "--skip", "deps", "-p", "core"]);
+    assert_eq!(report["health"]["scope"], "package", "{report:#}");
+    assert_eq!(report["packages"], serde_json::json!(["core"]));
+    let expected: Vec<&str> = full["findings"]
+        .as_array()
+        .expect("findings")
+        .iter()
+        .filter(|finding| {
+            finding["location"]["path"]
+                .as_str()
+                .is_some_and(|path| path.starts_with("crates/core/"))
+                || finding["check"] == "dupes"
+        })
+        .filter_map(|finding| finding["id"].as_str())
+        .collect();
+    let scoped: Vec<&str> = report["findings"]
+        .as_array()
+        .expect("findings")
+        .iter()
+        .filter_map(|finding| finding["id"].as_str())
+        .collect();
+    assert_eq!(scoped, expected, "{report:#}");
+    let human = fixture.run(&["check", "--skip", "deps", "-p", "core"]);
+    assert!(
+        human.stdout.contains("Scope: package core"),
+        "{}",
+        human.stdout
+    );
+}
+
+#[test]
+fn an_unknown_package_exits_2_and_names_the_members() {
+    let fixture = Fixture::new();
+    for command in [
+        "check",
+        "deps",
+        "visibility",
+        "files",
+        "boundaries",
+        "size",
+        "complexity",
+        "dupes",
+    ] {
+        let (code, report) = fixture.json(&[command, "-p", "nope"]);
+        assert_eq!(code, 2, "{command}: {report:#}");
+        assert_eq!(report["code"], "CARGO_FALLOW_INVALID_ARGUMENT", "{command}");
+        assert!(
+            report["help"]
+                .as_str()
+                .is_some_and(|help| help.contains("app, core, process")),
+            "{command}: {report:#}"
+        );
+    }
+    let (code, _) = fixture.json(&["size", "-p", "core", "--save-baseline", "x.json"]);
+    assert_eq!(code, 2);
+}
+
+#[test]
+fn a_clone_group_needs_one_copy_that_passes_each_filter() {
+    let fixture = committed();
+    let process =
+        fs::read_to_string(fixture.root().join("crates/process/src/lib.rs")).expect("read");
+    fixture.write(
+        "crates/process/src/lib.rs",
+        &format!("{process}// A change.\n"),
+    );
+    // The copy in `core` did not change, and the changed copy is not in `core`.
+    let (_, report) = fixture.json(&[
+        "dupes",
+        "--min-tokens",
+        "30",
+        "--changed-since",
+        "main",
+        "-p",
+        "core",
+    ]);
+    assert_eq!(report["total_issues"], 0, "{report:#}");
+    let (_, report) = fixture.json(&[
+        "dupes",
+        "--min-tokens",
+        "30",
+        "--changed-since",
+        "main",
+        "-p",
+        "process",
+    ]);
+    assert_eq!(report["total_issues"], 1, "{report:#}");
+}

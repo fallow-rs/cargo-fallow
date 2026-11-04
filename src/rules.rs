@@ -178,7 +178,7 @@ mod tests {
         assert!(!rules.counts(&["complexity"], true));
         assert!(rules.counts(&["code-duplication"], true));
         assert_eq!(
-            rules.severity(&["dead_public"], Severity::Warning),
+            rules.severity(&["dead_public"], Severity::Error),
             Severity::Error
         );
         assert_eq!(
@@ -186,8 +186,8 @@ mod tests {
             Severity::Warning
         );
         assert_eq!(
-            rules.severity(&["unused-file"], Severity::Warning),
-            Severity::Warning
+            rules.severity(&["unused-file"], Severity::Error),
+            Severity::Error
         );
     }
 

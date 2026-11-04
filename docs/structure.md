@@ -8,6 +8,9 @@ structure of the workspace. They have these flags:
 - the [baseline](adoption.md#baselines) flags,
 - `--locked`, `--offline` and `--frozen`, which go to `cargo metadata`.
 
+Each finding has the `error` severity, because it counts for the gate of
+the command. See [Rule severity](adoption.md#rule-severity).
+
 Each command also has its own gate. The report always shows the gate, but the
 gate fails the run only when you give its flag. `--fail-on-issues` is the
 gate flag of each command. The older gate flag of a command, for example

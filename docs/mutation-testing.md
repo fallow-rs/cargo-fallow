@@ -91,6 +91,10 @@ The SARIF log has one result for each survivor, on the line of the survivor. The
 `mutantId` partial fingerprint contains the mutant id. The results have no column.
 The report counts a column in bytes, but SARIF counts it in UTF-16 code units.
 
+In the shared finding shape, each surviving mutant has the rule
+`surviving-mutant` and the `error` severity, because it counts for the
+survivor gate.
+
 ## Gate
 
 `gate_outcomes` always has `surviving-mutants`. In this gate, `observed` is the

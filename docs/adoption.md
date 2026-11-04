@@ -79,7 +79,8 @@ table has its default severity and gate.
 
 A finding that counts for a gate has the default severity `error`: the
 `error` rules of `deps`, and each rule of `files`, `visibility`,
-`boundaries`, `size`, `complexity`, `dupes` and `mutants`. A finding that
+`boundaries`, `size`, `complexity`, `dupes`, and the surviving mutants of
+`mutants`. The rules table cannot change `surviving-mutant`. A finding that
 counts for no gate is a warning, for example `unused-optional-dependency` or
 `stale-suppression`. `cargo fallow explain <rule>` shows the default of each
 rule. A gate fails the run only with its flag, for example
@@ -98,7 +99,9 @@ code-duplication = "off"
   level `error`. The finding counts for the gate of its check, for example
   `error-severity-findings` of `deps`.
 - `warn`: the finding has the `warn` severity, and its SARIF result has the
-  level `warning`. The finding does not count for the gate of its check.
+  level `warning`. The finding does not count for the gate of its check. The
+  `duplication-threshold` gate of `dupes` measures the duplicated lines, not
+  the findings, so `code-duplication = "warn"` does not change that gate.
 - A rule name is one of the names of `cargo fallow explain`. `_` and `-` are
   equal, so `dead_public` and `dead-public` are one rule.
 - For a boundary rule, you can use three names. The first name is the `rule`

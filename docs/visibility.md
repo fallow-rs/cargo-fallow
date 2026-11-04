@@ -22,6 +22,9 @@ finding. A binary and a library with `publish = false` keep each rule. When a li
 | `unnecessary-public` | A `pub` item that only its own crate uses. | `pub` to `pub(crate)`. |
 | `unnecessary-restricted-visibility` | A `pub(crate)`, `pub(super)` or `pub(in path)` item that only its own module and its child modules use. | Remove the keyword. |
 
+Each finding has the `error` severity, because it counts for the gate of
+the command. See [Rule severity](adoption.md#rule-severity).
+
 The rule ids are kebab-case in each output format. The snake_case form of
 hawk, for example `dead_public`, names the same rule in the rules table, in
 `kinds`, in a suppression comment and in `cargo fallow explain`. The finding

@@ -32,6 +32,9 @@ pub enum ErrorCode {
     /// `mutants --inspect --no-build` found no coverage map for this source in
     /// the cache.
     NoCachedMap,
+    /// `fix` cannot apply its edits, or the workspace does not load after the
+    /// edits. The command wrote back the old bytes of each file.
+    FixFailed,
 }
 
 impl ErrorCode {
@@ -47,6 +50,7 @@ impl ErrorCode {
             Self::TimedOut => "CARGO_FALLOW_TIMED_OUT",
             Self::PreciseFailed => "CARGO_FALLOW_PRECISE_FAILED",
             Self::NoCachedMap => "CARGO_FALLOW_NO_CACHED_MAP",
+            Self::FixFailed => "CARGO_FALLOW_FIX_FAILED",
         }
     }
 }

@@ -20,6 +20,10 @@ GitHub release. Each release needs a `## [X.Y.Z] - YYYY-MM-DD` section.
 - Each release archive has an Ed25519 signature (`.sig`). The GitHub Action
   installer checks it before the SHA-256 and fails closed. The installer now
   downloads the archive names that the release workflow writes.
+- `cargo fallow fix` removes each unused dependency entry and moves each
+  misplaced entry to `[dev-dependencies]`. `--dry-run` shows the edits. The
+  edit keeps comments, and a failed load after the edit writes back the old
+  bytes. The `error` findings of `deps` now have `auto_fixable: true`.
 - `boundaries`, `size`, `complexity`, `dupes` and `mutants` accept
   `--fail-on-issues` as their gate flag. The older gate flags stay. The GitHub
   Action now gives `--fail-on-issues` to each command.

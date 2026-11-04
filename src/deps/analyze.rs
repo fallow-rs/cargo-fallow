@@ -1,5 +1,6 @@
 //! The rules of the `deps` command.
 
+use crate::fix::deps::fixes;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 
@@ -343,6 +344,7 @@ fn package_findings(metadata: &Metadata, package: &Package, used: &PackageUsage)
             (entry.dependency.name != entry.key).then(|| entry.dependency.name.clone());
         found.optional = entry.dependency.optional;
         found.used_by = used_by;
+        found.sets_features = !entry.dependency.features.is_empty();
         found.in_dev = declared.iter().any(|other| {
             other.section == Section::Dev && other.dependency.name == entry.dependency.name
         });
@@ -478,6 +480,7 @@ fn finding(
         optional: false,
         used_by: Vec::new(),
         in_dev: false,
+        sets_features: false,
         actions: Vec::new(),
     }
 }
@@ -557,9 +560,17 @@ fn actions(finding: &Finding) -> Vec<Action> {
             ("remove-dependency", format!("Remove `{key}` from {table}."))
         }
     };
+    let description = if finding.sets_features && fixes(finding.rule) {
+        format!(
+            "{description} The entry turns on features, and another dependency can need them, \
+             so `cargo fallow fix` does not change it."
+        )
+    } else {
+        description
+    };
     vec![Action {
         kind,
-        auto_fixable: false,
+        auto_fixable: fixes(finding.rule) && !finding.sets_features,
         description,
         file: finding.manifest_path.clone(),
         line: finding.line,

@@ -145,7 +145,7 @@ fn unused_normal_dependency_is_reported_and_used_ones_are_not() {
     assert_eq!(finding["line"], 11);
     assert_eq!(finding["severity"], "error");
     assert_eq!(finding["actions"][0]["type"], "remove-dependency");
-    assert_eq!(finding["actions"][0]["auto_fixable"], false);
+    assert_eq!(finding["actions"][0]["auto_fixable"], true);
     assert_eq!(report["total_issues"], 1);
 }
 

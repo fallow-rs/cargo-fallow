@@ -601,7 +601,13 @@ pub fn baseline_entry(graph: &Graph, finding: &Finding) -> crate::baseline::Entr
     crate::baseline::Entry {
         check: KIND.to_owned(),
         rule: row.kind.to_owned(),
-        id: crate::finding::fingerprint(&[KIND, row.kind, &row.krate, &row.item, row.item_kind]),
+        id: crate::finding::fingerprint(&[
+            KIND,
+            crate::finding::id_rule(row.kind),
+            &row.krate,
+            &row.item,
+            row.item_kind,
+        ]),
     }
 }
 

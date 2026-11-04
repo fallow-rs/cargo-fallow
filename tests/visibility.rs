@@ -301,6 +301,65 @@ fn each_format_names_the_rule_in_kebab_case_and_the_config_takes_the_snake_case_
 }
 
 #[test]
+fn a_saved_baseline_has_the_ids_of_the_report() {
+    let dir = workspace(&[("mid/src/lib.rs", "pub fn unused() {}\n")]);
+    let baseline = dir.path().join("baseline.json");
+    let saved = Command::cargo_bin("cargo-fallow")
+        .expect("find the binary")
+        .args([
+            "visibility",
+            "--format",
+            "json",
+            "--quiet",
+            "--save-baseline",
+        ])
+        .arg(&baseline)
+        .current_dir(dir.path())
+        .output()
+        .expect("run the binary");
+    assert_eq!(saved.status.code(), Some(0));
+    let file: Value =
+        serde_json::from_str(&fs::read_to_string(&baseline).expect("read the baseline"))
+            .expect("JSON");
+    let output = Command::cargo_bin("cargo-fallow")
+        .expect("find the binary")
+        .args([
+            "check",
+            "--only",
+            "visibility",
+            "--format",
+            "json",
+            "--quiet",
+        ])
+        .current_dir(dir.path())
+        .output()
+        .expect("run the binary");
+    let report: Value = serde_json::from_slice(&output.stdout).expect("JSON");
+    let ids = |value: &Value| -> BTreeSet<String> {
+        let mut found = BTreeSet::new();
+        let mut stack = vec![value];
+        while let Some(next) = stack.pop() {
+            match next {
+                Value::Object(map) => {
+                    if let (Some(Value::String(id)), Some(Value::String(_))) =
+                        (map.get("id"), map.get("rule"))
+                    {
+                        found.insert(id.clone());
+                    }
+                    stack.extend(map.values());
+                }
+                Value::Array(items) => stack.extend(items),
+                _ => {}
+            }
+        }
+        found
+    };
+    let saved_ids = ids(&file);
+    assert_eq!(saved_ids.len(), 1, "{file:#}");
+    assert_eq!(saved_ids, ids(&report), "{file:#}\n{report:#}");
+}
+
+#[test]
 fn an_excluded_crate_gets_no_findings() {
     let dir = workspace(&[(
         "mid/src/lib.rs",

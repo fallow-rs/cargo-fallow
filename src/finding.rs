@@ -193,7 +193,7 @@ const SNAKE_CASE_RULES: [(&str, &str); 3] = [
 /// The rule name in the hash of a finding id. A rule that had a snake_case
 /// id keeps that form in the hash, so that the ids in a saved baseline still
 /// match.
-fn id_rule(rule: &str) -> &str {
+pub fn id_rule(rule: &str) -> &str {
     SNAKE_CASE_RULES
         .iter()
         .find(|(kebab, _)| *kebab == rule)

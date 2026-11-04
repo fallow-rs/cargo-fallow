@@ -8,7 +8,7 @@
 //! ```toml
 //! [workspace.metadata.fallow.rules]
 //! unused-optional-dependency = "error"
-//! dead_public = "warn"
+//! dead-public = "warn"
 //! code-duplication = "off"
 //! ```
 

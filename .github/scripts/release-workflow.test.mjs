@@ -85,6 +85,18 @@ test("only a release joins the release concurrency group", () => {
   assert.match(block(RELEASE, "concurrency", 0), /^ {2}cancel-in-progress: false$/mu);
 });
 
+test("a release waits for CI on the release commit before each build", () => {
+  const plan = job("plan");
+  const gate = plan.indexOf("node scripts/verify-release-ci.mjs");
+  assert.notEqual(gate, -1, "the plan job runs the release CI gate");
+  assert.match(plan, /node scripts\/verify-release-ci\.mjs --sha "\$GITHUB_SHA"/u);
+  assert.match(plan, /GH_TOKEN: \$\{\{ github\.token \}\}/u);
+  assert.match(
+    plan.slice(plan.lastIndexOf("- name:", gate)),
+    /^\s+if: \$\{\{ steps\.mode\.outputs\.publish == 'true' \}\}$/mu,
+  );
+});
+
 test("no job or step sets PUBLISH again", () => {
   assert.equal(RELEASE.match(/^\s+PUBLISH:/gmu)?.length, 1);
 });
@@ -230,7 +242,7 @@ test("the workflow denies all permissions by default", () => {
 
 test("each job has exactly the permissions it needs", () => {
   const expected = {
-    plan: ["contents: read"],
+    plan: ["actions: read", "contents: read"],
     build: ["contents: read"],
     attest: ["attestations: write", "contents: read", "id-token: write"],
     sign: ["contents: read"],

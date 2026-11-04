@@ -44,8 +44,9 @@ jobs:
   plan:
     name: Plan and check the package
     runs-on: ubuntu-26.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     permissions:
+      actions: read
       contents: read
     outputs:
       publish: ${{ steps.mode.outputs.publish }}
@@ -145,6 +146,17 @@ jobs:
             cargo publish --dry-run --locked --allow-dirty
             git checkout -- Cargo.toml
           fi
+
+      # A pull request runs only part of CI. The push to main runs the rest,
+      # so a green pull request does not prove a green release commit. This
+      # gate waits for each push run on the release commit. It fails when a
+      # required run is missing or when a run failed. It is the last step of
+      # this job, so the fast checks above fail first.
+      - name: Check CI on the release commit
+        if: ${{ steps.mode.outputs.publish == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/verify-release-ci.mjs --sha "$GITHUB_SHA" --timeout-minutes 20
 
   build:
     name: Build (${{ matrix.target }})

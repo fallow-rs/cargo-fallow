@@ -17,7 +17,7 @@ const SCHEMA_ID: &str =
 
 /// The JSON documents, keyed by the name of their definition: the `kind` of a
 /// report, or a name for a document with no `kind`.
-const DOCUMENTS: [&str; 13] = [
+const DOCUMENTS: [&str; 14] = [
     "check",
     "deps",
     "fix",
@@ -30,6 +30,7 @@ const DOCUMENTS: [&str; 13] = [
     "mutants",
     "mutants-inspect",
     "baseline",
+    "explain",
     "error",
 ];
 
@@ -61,14 +62,14 @@ pub fn document() -> Value {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$id": SCHEMA_ID,
         "title": "cargo-fallow JSON output",
-        "description": "Each JSON document that cargo-fallow writes: the report of each command (also `fix`), the inspect report of `mutants --inspect`, the baseline file of `--save-baseline` and the error document of exit code 2. The `document-<name>` definitions name each document.",
+        "description": "Each JSON document that cargo-fallow writes: the report of each command (also `fix`), the inspect report of `mutants --inspect`, the baseline file of `--save-baseline`, the rule of `explain` and the error document of exit code 2. The `document-<name>` definitions name each document.",
         "anyOf": any_of,
         "$defs": defs,
     })
 }
 
 /// The documents with no `kind` and no `language` member.
-const NO_KIND: [&str; 2] = ["baseline", "error"];
+const NO_KIND: [&str; 3] = ["baseline", "explain", "error"];
 
 /// The document schema with the fixed `kind` and `language` of the document.
 /// The structure reports share one type, so the type cannot give the value.
@@ -83,6 +84,14 @@ fn with_constants(name: &str, schema: Value) -> Value {
                 "properties": {
                     "kind": { "const": name },
                     "language": { "const": "rust" },
+                    "_meta": {
+                        "description": "With `--explain`: the meaning, an example and the fix of each rule with a finding, keyed by rule, and the documentation address.",
+                        "type": "object",
+                        "properties": {
+                            "rules": { "type": "object" },
+                            "docs": { "type": "string" },
+                        },
+                    },
                 },
             },
         ],
@@ -147,6 +156,7 @@ fn subschema(generator: &mut SchemaGenerator, name: &str) -> Schema {
         "mutants" => generator.subschema_for::<crate::mutation::report::Report>(),
         "mutants-inspect" => generator.subschema_for::<crate::mutation::report::InspectReport>(),
         "baseline" => generator.subschema_for::<crate::baseline::File>(),
+        "explain" => generator.subschema_for::<crate::explain::Explanation>(),
         _ => generator.subschema_for::<fallow_report_protocol::ErrorOutput>(),
     }
 }

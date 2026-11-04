@@ -38,8 +38,9 @@ impl ExplainArgs {
 }
 
 /// The explanation of one rule. The field order is the wire order.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub struct Rule {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, schemars::JsonSchema)]
+#[schemars(rename = "ExplainRule")]
+pub struct Explanation {
     /// The rule name, as it appears in a finding.
     pub rule: &'static str,
     /// The check that reports it.
@@ -57,8 +58,8 @@ pub struct Rule {
 }
 
 /// Each rule of each check.
-pub const RULES: &[Rule] = &[
-    Rule {
+pub const RULES: &[Explanation] = &[
+    Explanation {
         rule: "parse-error",
         check: "parse",
         severity: "error",
@@ -67,7 +68,7 @@ pub const RULES: &[Rule] = &[
         fix: "Fix the syntax error. The other checks cannot judge a file that does not parse.",
         docs: "https://github.com/fallow-rs/cargo-fallow#usage",
     },
-    Rule {
+    Explanation {
         rule: "unused-dependency",
         check: "deps",
         severity: "error",
@@ -76,7 +77,7 @@ pub const RULES: &[Rule] = &[
         fix: "Remove the entry, or run `cargo fallow fix`. Add the key to `ignored` when a tool needs it with no name in the code.",
         docs: "https://github.com/fallow-rs/cargo-fallow#unused-dependencies",
     },
-    Rule {
+    Explanation {
         rule: "unused-dev-dependency",
         check: "deps",
         severity: "error",
@@ -85,7 +86,7 @@ pub const RULES: &[Rule] = &[
         fix: "Remove the entry, or run `cargo fallow fix`.",
         docs: "https://github.com/fallow-rs/cargo-fallow#unused-dependencies",
     },
-    Rule {
+    Explanation {
         rule: "unused-build-dependency",
         check: "deps",
         severity: "error",
@@ -94,7 +95,7 @@ pub const RULES: &[Rule] = &[
         fix: "Remove the entry, or run `cargo fallow fix`.",
         docs: "https://github.com/fallow-rs/cargo-fallow#unused-dependencies",
     },
-    Rule {
+    Explanation {
         rule: "unused-workspace-dependency",
         check: "deps",
         severity: "error",
@@ -103,7 +104,7 @@ pub const RULES: &[Rule] = &[
         fix: "Remove the entry from the root Cargo.toml, or run `cargo fallow fix`.",
         docs: "https://github.com/fallow-rs/cargo-fallow#unused-dependencies",
     },
-    Rule {
+    Explanation {
         rule: "misplaced-dependency",
         check: "deps",
         severity: "error",
@@ -112,7 +113,7 @@ pub const RULES: &[Rule] = &[
         fix: "Move the entry to [dev-dependencies], or run `cargo fallow fix`.",
         docs: "https://github.com/fallow-rs/cargo-fallow#unused-dependencies",
     },
-    Rule {
+    Explanation {
         rule: "unused-optional-dependency",
         check: "deps",
         severity: "warn",
@@ -121,7 +122,7 @@ pub const RULES: &[Rule] = &[
         fix: "Remove the entry and its feature values, or use the dependency under its feature.",
         docs: "https://github.com/fallow-rs/cargo-fallow#unused-dependencies",
     },
-    Rule {
+    Explanation {
         rule: "feature-only-dependency",
         check: "deps",
         severity: "warn",
@@ -130,7 +131,7 @@ pub const RULES: &[Rule] = &[
         fix: "Remove the entry and its feature values. When the feature must set the features of the dependency, add it to `ignored`.",
         docs: "https://github.com/fallow-rs/cargo-fallow#unused-dependencies",
     },
-    Rule {
+    Explanation {
         rule: "redundant-ignore",
         check: "deps",
         severity: "warn",
@@ -139,7 +140,7 @@ pub const RULES: &[Rule] = &[
         fix: "Remove the entry from the `ignored` list.",
         docs: "https://github.com/fallow-rs/cargo-fallow#unused-dependencies",
     },
-    Rule {
+    Explanation {
         rule: "unused-file",
         check: "files",
         severity: "warn",
@@ -148,7 +149,7 @@ pub const RULES: &[Rule] = &[
         fix: "Delete the file, or declare it with a `mod` item.",
         docs: "https://github.com/fallow-rs/cargo-fallow#unused-files",
     },
-    Rule {
+    Explanation {
         rule: "dead_public",
         check: "visibility",
         severity: "warn",
@@ -157,7 +158,7 @@ pub const RULES: &[Rule] = &[
         fix: "Make the item `pub(crate)`, or run `cargo fallow fix`. The compiler then reports it as dead code when no code of the crate uses it.",
         docs: "https://github.com/fallow-rs/cargo-fallow#visibility",
     },
-    Rule {
+    Explanation {
         rule: "unnecessary_public",
         check: "visibility",
         severity: "warn",
@@ -166,7 +167,7 @@ pub const RULES: &[Rule] = &[
         fix: "Make the item `pub(crate)`, or run `cargo fallow fix`.",
         docs: "https://github.com/fallow-rs/cargo-fallow#visibility",
     },
-    Rule {
+    Explanation {
         rule: "unnecessary_restricted_visibility",
         check: "visibility",
         severity: "warn",
@@ -175,7 +176,7 @@ pub const RULES: &[Rule] = &[
         fix: "Remove the visibility keyword, or run `cargo fallow fix`.",
         docs: "https://github.com/fallow-rs/cargo-fallow#visibility",
     },
-    Rule {
+    Explanation {
         rule: "crate-dependency",
         check: "boundaries",
         severity: "warn",
@@ -184,7 +185,7 @@ pub const RULES: &[Rule] = &[
         fix: "Remove the dependency, or change the rule in [workspace.metadata.fallow.boundaries].",
         docs: "https://github.com/fallow-rs/cargo-fallow#structure-checks",
     },
-    Rule {
+    Explanation {
         rule: "source-pattern",
         check: "boundaries",
         severity: "warn",
@@ -193,7 +194,7 @@ pub const RULES: &[Rule] = &[
         fix: "Move the code to the package that owns the pattern, or change the rule.",
         docs: "https://github.com/fallow-rs/cargo-fallow#structure-checks",
     },
-    Rule {
+    Explanation {
         rule: "module-path",
         check: "boundaries",
         severity: "warn",
@@ -202,7 +203,7 @@ pub const RULES: &[Rule] = &[
         fix: "Move the code, or change the rule.",
         docs: "https://github.com/fallow-rs/cargo-fallow#structure-checks",
     },
-    Rule {
+    Explanation {
         rule: "grown-file",
         check: "size",
         severity: "warn",
@@ -211,7 +212,7 @@ pub const RULES: &[Rule] = &[
         fix: "Split the file, or move the new code to another file.",
         docs: "https://github.com/fallow-rs/cargo-fallow#structure-checks",
     },
-    Rule {
+    Explanation {
         rule: "new-large-file",
         check: "size",
         severity: "warn",
@@ -220,7 +221,7 @@ pub const RULES: &[Rule] = &[
         fix: "Split the file. A generated file with a generator header does not count.",
         docs: "https://github.com/fallow-rs/cargo-fallow#structure-checks",
     },
-    Rule {
+    Explanation {
         rule: "complexity",
         check: "complexity",
         severity: "warn",
@@ -229,7 +230,7 @@ pub const RULES: &[Rule] = &[
         fix: "Split the function, or put `// fallow-ignore-next-line complexity` above it.",
         docs: "https://github.com/fallow-rs/cargo-fallow#structure-checks",
     },
-    Rule {
+    Explanation {
         rule: "code-duplication",
         check: "dupes",
         severity: "warn",
@@ -238,7 +239,7 @@ pub const RULES: &[Rule] = &[
         fix: "Move the code to one function, or put `// fallow-ignore-next-line code-duplication` above a copy.",
         docs: "https://github.com/fallow-rs/cargo-fallow#structure-checks",
     },
-    Rule {
+    Explanation {
         rule: "surviving-mutant",
         check: "mutants",
         severity: "error",
@@ -250,7 +251,7 @@ pub const RULES: &[Rule] = &[
 ];
 
 /// The rule with this name. A `_` and a `-` are the same.
-pub fn find(name: &str) -> Option<&'static Rule> {
+pub fn find(name: &str) -> Option<&'static Explanation> {
     let wanted = name.replace('_', "-");
     RULES
         .iter()
@@ -282,7 +283,7 @@ pub fn run(args: &ExplainArgs) -> Result<u8, CliError> {
     Ok(EXIT_OK)
 }
 
-fn human(rule: &Rule) -> String {
+fn human(rule: &Explanation) -> String {
     let mut text = format!("{} ({}, {})\n", rule.rule, rule.check, rule.severity);
     let _ = writeln!(text, "\n{}", rule.meaning);
     let _ = writeln!(text, "\nExample: {}", rule.example);

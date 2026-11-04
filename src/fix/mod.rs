@@ -295,7 +295,7 @@ fn apply_all(
     // `cargo check` can write `Cargo.lock`, so a failed run writes back its
     // old bytes too.
     let lock = LockFile::read(root);
-    let (all_features, before) = if compiles {
+    let (all_features, known) = if compiles {
         progress.step("Checking that the workspace builds before the edits");
         let (all, warnings) =
             baseline(manifest, root, &args.cargo_flags(true)).inspect_err(|_| lock.restore())?;
@@ -315,6 +315,7 @@ fn apply_all(
         }
         progress.step("Writing the edits");
         let mut compiler = None;
+        let mut warned: Vec<check::Diagnostic> = Vec::new();
         let outcome = write_and_check(&planned, || {
             if !plan.deps.is_empty() {
                 workspace::load_resolved(manifest, &flags).map_err(|err| {
@@ -336,16 +337,16 @@ fn apply_all(
                         text
                     },
                 )?;
-                let added: Vec<String> = check::new_warnings(&before, &after)
+                warned = check::new_warnings(&known, &after)
                     .into_iter()
-                    .map(check::Diagnostic::line)
+                    .cloned()
                     .collect();
-                if !added.is_empty() {
-                    let message = added.join("\n");
-                    let text =
-                        format!("the edits add compiler warnings: {}", first_lines(&message));
-                    compiler = Some(message);
-                    return Err(text);
+                if !warned.is_empty() {
+                    let lines: Vec<String> = warned.iter().map(check::Diagnostic::line).collect();
+                    return Err(format!(
+                        "the edits add compiler warnings: {}",
+                        first_lines(&lines.join("\n"))
+                    ));
                 }
             }
             Ok(())
@@ -358,9 +359,8 @@ fn apply_all(
         // leaves out the edits of those items, and the next round starts from
         // the old bytes again.
         let before = kept.len();
-        if let Some(message) = compiler.filter(|_| round < CHECK_ROUNDS) {
-            let names = visibility::named_items(&message);
-            kept.retain(|edit| !names.contains(visibility::last_segment(&edit.item)));
+        if round < CHECK_ROUNDS {
+            leave_out(&mut kept, compiler.as_deref(), &warned);
         }
         if kept.len() == before || (kept.is_empty() && plan.deps.is_empty()) {
             lock.restore();
@@ -370,6 +370,25 @@ fn apply_all(
     }
     lock.restore();
     Err(failed("the workspace does not build after the edits"))
+}
+
+/// Leaves out the edits of the items that the compiler errors or the new
+/// warnings name. A warning names an item of its own file. A
+/// `private_interfaces` or `private_bounds` warning names the type of another
+/// file too.
+fn leave_out(kept: &mut Vec<visibility::Edit>, errors: Option<&str>, warned: &[check::Diagnostic]) {
+    if let Some(message) = errors {
+        let names = visibility::named_items(message);
+        kept.retain(|edit| !names.contains(visibility::last_segment(&edit.item)));
+    }
+    for warning in warned {
+        let names = visibility::named_items(&warning.message);
+        let any_file = warning.code.starts_with("private_");
+        kept.retain(|edit| {
+            !(names.contains(visibility::last_segment(&edit.item))
+                && (any_file || edit.path == warning.file))
+        });
+    }
 }
 
 /// The most write and check rounds. A round after a failed `cargo check`
@@ -632,5 +651,65 @@ fn line(fix: &Fix) -> String {
                 fix.kind, fix.item, fix.from, fix.path, fix.line
             )
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::visibility::report::{CHANGE_ACTION, Range};
+
+    fn edit(item: &str, path: &str) -> visibility::Edit {
+        visibility::Edit {
+            kind: CHANGE_ACTION,
+            rule: "unnecessary-public",
+            package: "app".to_owned(),
+            item: item.to_owned(),
+            path: path.to_owned(),
+            line: 1,
+            column: 1,
+            from: "pub".to_owned(),
+            to: "pub(crate)".to_owned(),
+            item_kind: "function",
+            applied: false,
+            range: Range {
+                line: 1,
+                column: 1,
+                end_line: 1,
+                end_column: 4,
+            },
+        }
+    }
+
+    fn warning(code: &str, message: &str, file: &str) -> check::Diagnostic {
+        check::Diagnostic {
+            error: false,
+            code: code.to_owned(),
+            message: message.to_owned(),
+            file: file.to_owned(),
+            line: 1,
+            column: 1,
+        }
+    }
+
+    #[test]
+    fn a_warning_leaves_out_only_the_edits_of_its_file_or_of_a_private_type() {
+        let mut kept = vec![
+            edit("a::x", "src/a.rs"),
+            edit("b::x", "src/b.rs"),
+            edit("c::Data", "src/c.rs"),
+            edit("c::other", "src/c.rs"),
+        ];
+        let warned = [
+            warning("unused_variables", "unused variable: `x`", "src/a.rs"),
+            warning(
+                "private_interfaces",
+                "type `Data` is more private than the item `run`",
+                "src/a.rs",
+            ),
+        ];
+        leave_out(&mut kept, None, &warned);
+        let items: Vec<&str> = kept.iter().map(|edit| edit.item.as_str()).collect();
+        assert_eq!(items, ["b::x", "c::other"]);
     }
 }

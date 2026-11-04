@@ -423,6 +423,9 @@ pub fn cargo_check(
     })
 }
 
+/// The longest time that one `rustfmt` run can take.
+const RUSTFMT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Formats Rust source text with `rustfmt` through stdin, so the run does not
 /// follow `mod` declarations to other files. `rustfmt` reads its config from
 /// `folder` and the folders above it. Returns `None` when `rustfmt` is not
@@ -444,14 +447,33 @@ pub fn rustfmt(text: &str, edition: &str, folder: &Path) -> Option<String> {
         .spawn()
         .ok()?;
     let mut stdin = child.stdin.take()?;
+    let mut stdout = child.stdout.take()?;
     let input = text.to_owned();
     let writer = std::thread::spawn(move || stdin.write_all(input.as_bytes()));
-    let output = child.wait_with_output().ok()?;
+    let reader = std::thread::spawn(move || {
+        let mut out = Vec::new();
+        std::io::Read::read_to_end(&mut stdout, &mut out).map(|_| out)
+    });
+    // A `rustfmt` that does not end, for example a toolchain shim that waits
+    // for a download, does not hold the run.
+    let deadline = std::time::Instant::now() + RUSTFMT_TIMEOUT;
+    let status = loop {
+        if let Some(status) = child.try_wait().ok()? {
+            break status;
+        }
+        if std::time::Instant::now() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
     writer.join().ok()?.ok()?;
-    if !output.status.success() {
+    let out = reader.join().ok()?.ok()?;
+    if !status.success() {
         return None;
     }
-    String::from_utf8(output.stdout).ok()
+    String::from_utf8(out).ok()
 }
 
 #[cfg(test)]

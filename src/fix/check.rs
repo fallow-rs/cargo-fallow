@@ -4,7 +4,7 @@
 //! adds a warning breaks a workspace that builds with `-D warnings`, so the
 //! guard leaves it out, the same as an edit that adds an error.
 
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use serde_json::Value;
 
 /// The lint that a `dead-public` edit makes the compiler report on purpose.
@@ -36,6 +36,9 @@ impl Diagnostic {
         } else {
             format!("[{}]", self.code)
         };
+        if self.file.is_empty() {
+            return format!("{level}{code}: {}", self.message);
+        }
         format!(
             "{}:{}:{}: {level}{code}: {}",
             self.file, self.line, self.column, self.message
@@ -88,12 +91,20 @@ pub fn diagnostics(stdout: &str) -> Vec<Diagnostic> {
 }
 
 /// The warnings of `after` that `before` does not have. A warning that is
-/// in both counts as new only when `after` has it more times. A `dead_code`
-/// warning is never new: a `dead-public` edit shows the dead code on purpose.
+/// in both counts as new only when `after` has it more times. A warning that
+/// only names what the warnings of its file and lint named before is not
+/// new, for example "unused imports: `A` and `B`" after "unused import: `A`"
+/// and "unused import: `B`". A `dead_code` warning is never new: a
+/// `dead-public` edit shows the dead code on purpose.
 pub fn new_warnings<'a>(before: &[Diagnostic], after: &'a [Diagnostic]) -> Vec<&'a Diagnostic> {
     let mut known: FxHashMap<(&str, &str, &str), usize> = FxHashMap::default();
+    let mut named: FxHashMap<(&str, &str), FxHashSet<&str>> = FxHashMap::default();
     for warning in before {
         *known.entry(warning.key()).or_default() += 1;
+        named
+            .entry((&warning.file, &warning.code))
+            .or_default()
+            .extend(crate::fix::visibility::named_items(&warning.message));
     }
     after
         .iter()
@@ -104,6 +115,11 @@ pub fn new_warnings<'a>(before: &[Diagnostic], after: &'a [Diagnostic]) -> Vec<&
                 false
             }
             _ => true,
+        })
+        .filter(|warning| {
+            let names = crate::fix::visibility::named_items(&warning.message);
+            let old = named.get(&(warning.file.as_str(), warning.code.as_str()));
+            names.is_empty() || !old.is_some_and(|old| names.iter().all(|name| old.contains(name)))
         })
         .collect()
 }
@@ -132,6 +148,31 @@ mod tests {
         let found = diagnostics(stdout);
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].line(), "a.rs:3:5: warning[private_interfaces]: m");
+    }
+
+    #[test]
+    fn a_merged_warning_with_only_old_names_is_not_new() {
+        let before = [warning("unused_imports", "unused import: `A`", 1)];
+        let after = [
+            warning("unused_imports", "unused imports: `A` and `B`", 1),
+            warning("unused_imports", "unused import: `C`", 2),
+        ];
+        let new = new_warnings(&before, &after);
+        assert_eq!(new.len(), 2, "B is new, so the merged warning is new too");
+        let before = [
+            warning("unused_imports", "unused import: `A`", 1),
+            warning("unused_imports", "unused import: `B`", 1),
+        ];
+        let after = [warning("unused_imports", "unused imports: `A` and `B`", 1)];
+        assert!(new_warnings(&before, &after).is_empty());
+    }
+
+    #[test]
+    fn a_message_without_a_file_has_no_place() {
+        let mut message = warning("", "aborting", 0);
+        message.file = String::new();
+        message.error = true;
+        assert_eq!(message.line(), "error: aborting");
     }
 
     #[test]

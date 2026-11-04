@@ -575,23 +575,23 @@ struct CheckArgs {
     health: crate::hotspots::HealthArgs,
 }
 
-/// The flags that the command gives to each `cargo metadata` call.
+/// The flags that the command gives to each of its cargo calls.
 #[derive(Debug, Clone, Copy, Default, Args)]
 pub struct CargoArgs {
-    /// Give `--locked` to `cargo metadata`: fail when `Cargo.lock` must change.
+    /// Give `--locked` to each cargo call: fail when `Cargo.lock` must change.
     #[arg(long)]
     pub locked: bool,
-    /// Give `--offline` to `cargo metadata`: do not use the network.
+    /// Give `--offline` to each cargo call: do not use the network.
     #[arg(long)]
     pub offline: bool,
-    /// Give `--frozen` to `cargo metadata`: the same as `--locked` and
+    /// Give `--frozen` to each cargo call: the same as `--locked` and
     /// `--offline`.
     #[arg(long)]
     pub frozen: bool,
 }
 
 impl CargoArgs {
-    /// The `cargo metadata` flags that are on.
+    /// The cargo flags that are on.
     pub fn flags(self) -> Vec<String> {
         [
             (self.locked, "--locked"),

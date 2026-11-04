@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use crate::mutation::files::copy_tree;
 use crate::mutation::guard::{Guard, Scope};
-use crate::mutation::process::{cargo, run_to_files};
+use crate::mutation::process::{cargo, offline, run_to_files, stay_offline};
 
 /// The time limit of the lock file generation.
 const LOCK_LIMIT: Duration = Duration::from_mins(10);
@@ -189,16 +189,24 @@ fn copy_parent_configs(root: &Path, levels: &[ConfigLevel]) -> io::Result<PathBu
 
 /// Writes the scratch copy with a lock file, then the schema copy from it, so
 /// both builds use the same dependency versions.
+///
+/// Of the flags in `cargo_flags`, only the offline part reaches the new lock
+/// file. `--locked` refuses each new lock file, and the copy has none yet.
 pub fn prepare_copies(
     root: &Path,
     target_dir: &Path,
     dirs: &WorkDirs,
     guard: &Guard,
+    cargo_flags: &[String],
 ) -> io::Result<()> {
     copy_tree(root, &dirs.scratch, Some(target_dir))?;
     if !dirs.scratch.join("Cargo.lock").exists() {
         let mut command = cargo(&dirs.scratch, &dirs.target_scratch, 1);
         command.arg("generate-lockfile");
+        if offline(cargo_flags) {
+            command.arg("--offline");
+            stay_offline(&mut command);
+        }
         let out = dirs.logs.join("lockfile.out");
         let err = dirs.logs.join("lockfile.err");
         run_to_files(command, &out, &err, LOCK_LIMIT, guard, Scope::Build)?;

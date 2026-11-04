@@ -16,7 +16,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::mutation::coverage::Objects;
 use crate::mutation::guard::{Guard, Scope};
-use crate::mutation::process::{Exit, cargo_with_flags, run_to_files, with_active_mutant};
+use crate::mutation::process::{
+    Exit, cargo_with_flags, offline, run_to_files, stay_offline, with_active_mutant,
+};
 use crate::mutation::status::{Status, Verdict};
 
 /// The exit code of nextest when tests ran and one failed.
@@ -155,6 +157,8 @@ pub struct TestTree<'a> {
     pub rustflags: &'a str,
     /// The flags that select the packages of a build and of the doctests.
     pub select: &'a [String],
+    /// The flags of the user for each cargo call, for example `--offline`.
+    pub cargo_flags: &'a [String],
 }
 
 impl TestTree<'_> {
@@ -165,6 +169,9 @@ impl TestTree<'_> {
             cargo_with_flags(self.dir, self.target_dir, self.build_jobs, self.rustflags);
         if !self.rustflags.is_empty() {
             command.env("LLVM_PROFILE_FILE", self.logs.join("build-%p-%m.profraw"));
+        }
+        if offline(self.cargo_flags) {
+            stay_offline(&mut command);
         }
         command
     }
@@ -353,6 +360,7 @@ pub fn prepare(tree: TestTree<'_>, label: &str) -> io::Result<Result<BuildMeta, 
         "--message-format",
         "json",
     ]);
+    command.args(tree.cargo_flags);
     command.args(tree.select);
     let exit = run_to_files(
         command,
@@ -374,6 +382,7 @@ pub fn prepare(tree: TestTree<'_>, label: &str) -> io::Result<Result<BuildMeta, 
         "--all-features",
         "--no-deps",
     ]);
+    command.args(tree.cargo_flags);
     let exit = run_to_files(command, &meta, &err, LIST_LIMIT, tree.guard, Scope::Build)?;
     if exit != Exit::Code(Some(0)) {
         return Ok(Err(fs::read_to_string(err)?));
@@ -384,7 +393,9 @@ pub fn prepare(tree: TestTree<'_>, label: &str) -> io::Result<Result<BuildMeta, 
     }))
 }
 
-/// Runs nextest on the prepared binaries. The call runs no build.
+/// Runs nextest on the prepared binaries. The call runs no build and no cargo
+/// command, so it gets no cargo flags. nextest refuses them next to
+/// `--binaries-metadata`.
 pub fn run_nextest(
     tree: TestTree<'_>,
     meta: &BuildMeta,
@@ -610,6 +621,7 @@ fn seconds_to_ms(seconds: f64) -> u64 {
 pub fn run_doctests(tree: TestTree<'_>, spec: &RunSpec) -> io::Result<(Exit, Suite)> {
     let mut command = tree.cargo();
     command.args(["test", "--doc", "--no-fail-fast"]);
+    command.args(tree.cargo_flags);
     command.args(tree.select);
     command.args(["--", "--test-threads", &spec.jobs.to_string()]);
     activate(&mut command, tree, spec)?;

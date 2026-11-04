@@ -760,3 +760,130 @@ fn a_list_has_compact_and_markdown_output_and_inspect_has_neither() {
         assert_eq!(run.code, Some(2), "{format}: {}", run.stderr);
     }
 }
+
+/// A `cargo` on the `PATH` that writes its arguments and `CARGO_NET_OFFLINE` to
+/// `cargo.log` and then runs the real `cargo`.
+fn logging_cargo(dir: &Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let real = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
+    let bin = dir.join("bin");
+    fs::create_dir_all(&bin).expect("create the folder");
+    let script = bin.join("cargo");
+    fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\necho \"$* net=$CARGO_NET_OFFLINE\" >> \"{}\"\nexec \"{real}\" \"$@\"\n",
+            dir.join("cargo.log").display()
+        ),
+    )
+    .expect("write the script");
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).expect("set the mode");
+    bin
+}
+
+#[test]
+fn a_cargo_flag_reaches_each_cargo_call_in_the_copies() {
+    let source = fixture(&[("src/lib.rs", ONLY_KILLED)]);
+    let tools = tempfile::tempdir().expect("create a temporary directory");
+    let bin = logging_cargo(tools.path());
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let mut paths = vec![bin.clone()];
+    paths.extend(std::env::split_paths(&path));
+    let path = std::env::join_paths(paths).expect("a valid PATH");
+    for (flag, lock_file) in [
+        ("--offline", false),
+        ("--frozen", false),
+        ("--locked", true),
+        ("--locked", false),
+    ] {
+        let lock = source.path().join("Cargo.lock");
+        if lock_file {
+            fs::write(
+                &lock,
+                "version = 4\n\n[[package]]\nname = \"fixture\"\nversion = \"0.1.0\"\n",
+            )
+            .expect("write the lock file");
+        } else {
+            let _ = fs::remove_file(&lock);
+        }
+        let log = tools.path().join("cargo.log");
+        let _ = fs::remove_file(&log);
+        let _one_run = ONE_RUN.lock().unwrap_or_else(PoisonError::into_inner);
+        let output = Command::cargo_bin("cargo-fallow")
+            .expect("the binary exists")
+            .env("MBX_DISABLE", "1")
+            .env_remove("NEXTEST_PROFILE")
+            .env("PATH", &path)
+            .env_remove("CARGO_NET_OFFLINE")
+            .env("CARGO", bin.join("cargo"))
+            .args([
+                "mutants",
+                "--quiet",
+                "--jobs",
+                "2",
+                "--no-cache",
+                "--format",
+                "json",
+            ])
+            .arg(flag)
+            .arg("--manifest-path")
+            .arg(source.path().join("Cargo.toml"))
+            .timeout(Duration::from_secs(280))
+            .output()
+            .expect("the binary runs");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert_eq!(output.status.code(), Some(0), "{flag}: {stdout}{stderr}");
+        let calls = fs::read_to_string(&log).expect("read the log");
+        for start in [
+            "metadata",
+            "test --no-run",
+            "nextest list",
+            "nextest run",
+            "test --doc",
+        ] {
+            assert!(
+                calls.lines().any(|line| line.starts_with(start)),
+                "{flag}: no `{start}` call:\n{calls}"
+            );
+        }
+        if !lock_file {
+            assert!(
+                calls
+                    .lines()
+                    .any(|line| line.starts_with("generate-lockfile")),
+                "{flag}: {calls}"
+            );
+        }
+        let offline = flag != "--locked";
+        for line in calls.lines() {
+            let args: Vec<&str> = line.split(' ').collect();
+            // Each call, also a test process that starts cargo, gets the offline
+            // setting from the environment.
+            // The read of the workspace takes the flag itself.
+            let net = if offline { "net=true" } else { "net=" };
+            assert!(
+                args.contains(&net) || args.contains(&"--manifest-path"),
+                "{flag}: `{line}`:\n{calls}"
+            );
+            // A nextest run on the prepared binaries calls no cargo command, and
+            // nextest refuses a cargo flag next to `--binaries-metadata`.
+            if line.starts_with("nextest run") {
+                continue;
+            }
+            if line.starts_with("generate-lockfile") {
+                // `--locked` refuses a new lock file, so only `--offline` goes there.
+                assert_eq!(args.contains(&"--offline"), offline, "{flag}: `{line}`");
+                assert!(
+                    !args.contains(&"--locked") && !args.contains(&"--frozen"),
+                    "{line}"
+                );
+                continue;
+            }
+            assert!(
+                args.contains(&flag),
+                "{flag}: `{line}` has no `{flag}`:\n{calls}"
+            );
+        }
+    }
+}

@@ -27,7 +27,7 @@ use crate::mutation::journal::Journal;
 use crate::mutation::plan::{
     Planned, keep_rebuild_only, lines_of, rebuild_mutants, rewrites_of, schema_mutants,
 };
-use crate::mutation::process::{Exit, cargo, run_to_files};
+use crate::mutation::process::{Exit, cargo, offline, run_to_files, stay_offline};
 use crate::mutation::removal::{
     Build, CompilerError, LoopResult, Removal, parse_build, render_all, run_loop,
 };
@@ -133,10 +133,14 @@ fn baseline_with(tree: TestTree<'_>, meta: &BuildMeta, spec: &RunSpec) -> io::Re
 /// The compile command. It runs in the package folder, because `-p name` is
 /// ambiguous when a dependency has the same name. `select` holds the flags for the
 /// cases where that folder does not select the right packages.
-fn build_command(dir: &Path, target_dir: &Path, jobs: usize, select: &[String]) -> Command {
-    let mut command = cargo(dir, target_dir, jobs);
+fn build_command(tree: TestTree<'_>, jobs: usize) -> Command {
+    let mut command = cargo(tree.dir, tree.target_dir, jobs);
     command.args(["test", "--no-run", "--message-format=json"]);
-    command.args(select);
+    command.args(tree.cargo_flags);
+    command.args(tree.select);
+    if offline(tree.cargo_flags) {
+        stay_offline(&mut command);
+    }
     command
 }
 
@@ -291,6 +295,7 @@ impl Engine<'_> {
             guard: self.guard,
             rustflags: "",
             select: &self.select,
+            cargo_flags: &self.options.cargo_flags,
         }
     }
 
@@ -1074,7 +1079,7 @@ impl Engine<'_> {
     ) -> io::Result<Build> {
         let out = self.dirs.logs.join(format!("{label}.json"));
         let err = self.dirs.logs.join(format!("{label}.err"));
-        let mut command = build_command(tree.dir, tree.target_dir, self.options.jobs, tree.select);
+        let mut command = build_command(tree, self.options.jobs);
         command.args(targets);
         let exit = run_to_files(command, &out, &err, limit, self.guard, Scope::Build)?;
         if let Exit::Killed(reason) = &exit {

@@ -166,8 +166,10 @@ pub struct Action {
     #[serde(rename = "type")]
     pub kind: &'static str,
     /// True for a `change-visibility` step of a finding with a keyword range:
-    /// `cargo fallow fix` applies it. An undecided candidate and a
-    /// `remove-item` step stay false.
+    /// `cargo fallow fix` applies it, and checks the build after the edit. A
+    /// change can still need a change in other code, so `fix` leaves out an
+    /// edit that breaks the build. An undecided candidate and a `remove-item`
+    /// step stay false.
     pub auto_fixable: bool,
     /// What the step does.
     pub description: &'static str,

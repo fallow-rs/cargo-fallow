@@ -638,9 +638,20 @@ cargo fallow fix --yes                     # apply the edits
   before the keyword on the same line does not move it. The analysis holds the
   target of a narrowed `pub use`, so each change stays valid with the others.
 - With a visibility edit, the command runs `cargo check --workspace
-  --all-targets` before the edits. When that check fails, the command changes
-  nothing and exits 2. After the edits, it runs the check again. When the
-  check fails, it writes back each file and exits 2 with the compiler errors.
+  --all-targets --all-features` before the edits, and without
+  `--all-features` when that build fails. When neither build passes, the
+  command changes nothing and exits 2. After the edits, it runs the same check
+  again.
+- When the check after the edits fails, the command writes back each file and
+  `Cargo.lock`. It then leaves out the edits of the items that the compiler
+  errors name, and tries again, at most three times. The report gives each
+  left-out edit `applied: false`. When no edit is left to leave out, the
+  command exits 2 with the compiler errors.
+- The check builds one platform. Code under a `cfg` for another platform, and
+  doc tests, are not part of it. An edit can break such code. Run the tests of
+  each platform after `fix`, or use `--dry-run` and review the edits.
+- A stop of the process during the check leaves the edits on disk. Use the
+  version control of the workspace to undo them.
 - These findings stay for a person, with `auto_fixable: false`:
   - a warning: `unused-optional-dependency`, `feature-only-dependency` and
     `redundant-ignore`,

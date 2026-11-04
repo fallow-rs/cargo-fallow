@@ -222,3 +222,78 @@ fn real_check_passes_after_a_re_export_and_its_target_change() {
     let after = read(&dir, "core/src/lib.rs");
     assert!(after.contains("pub(crate) use inner::f;"), "{after}");
 }
+
+#[cfg(unix)]
+#[test]
+fn relative_manifest_path_reaches_the_check_from_the_current_folder() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let dir = tempfile::tempdir().expect("create a temporary directory");
+    let inner = workspace(CORE, APP);
+    let sub = dir.path().join("sub");
+    fs::rename(inner.path(), &sub).expect("move the workspace");
+    // A fake check that fails when its `--manifest-path` names no file.
+    let real = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
+    let script = dir.path().join("fake-cargo");
+    fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = check ]; then\n  while [ $# -gt 0 ]; do\n    if [ \"$1\" = --manifest-path ]; then shift; [ -f \"$1\" ] || {{ echo \"error: no manifest $1\" >&2; exit 101; }}; fi\n    shift\n  done\n  exit 0\nfi\nexec '{real}' \"$@\"\n"
+        ),
+    )
+    .expect("write the script");
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).expect("make it executable");
+    let output = Command::cargo_bin("cargo-fallow")
+        .expect("the binary exists")
+        .current_dir(dir.path())
+        .env("CARGO", &script)
+        .args([
+            "fix",
+            "--yes",
+            "--format",
+            "json",
+            "--quiet",
+            "--manifest-path",
+            "sub/Cargo.toml",
+        ])
+        .output()
+        .expect("run the binary");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(output.status.code(), Some(0), "{stdout}");
+    assert_eq!(json(&stdout)["total_fixed"], 1, "{stdout}");
+}
+
+#[cfg(unix)]
+#[test]
+fn edit_that_the_compiler_names_is_left_out_and_the_rest_stays() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let core = "pub fn used() { helper(); other(); }\npub fn helper() {}\npub fn other() {}\n";
+    let dir = workspace(core, APP);
+    // The check fails while `helper` is `pub(crate)`, and names it.
+    let real = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
+    let lib = dir.path().join("core/src/lib.rs");
+    let script = dir.path().join("fake-cargo");
+    fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = check ]; then\n  if grep -q 'pub(crate) fn helper' '{lib}'; then echo 'core/src/lib.rs:2:1: error[E0446]: crate-private type `helper` in public interface' >&2; exit 101; fi\n  exit 0\nfi\nexec '{real}' \"$@\"\n",
+            lib = lib.display()
+        ),
+    )
+    .expect("write the script");
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).expect("make it executable");
+    let script = script.to_str().expect("the path is UTF-8").to_owned();
+    let (code, stdout, stderr) = fix(
+        &dir,
+        &["--yes", "--format", "json", "--quiet"],
+        Some(&script),
+    );
+    assert_eq!(code, 0, "{stderr} {stdout}");
+    let report = json(&stdout);
+    assert_eq!(report["total_fixed"], 1, "{report}");
+    assert_eq!(
+        read(&dir, "core/src/lib.rs"),
+        "pub fn used() { helper(); other(); }\npub fn helper() {}\npub(crate) fn other() {}\n"
+    );
+}

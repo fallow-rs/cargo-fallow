@@ -331,11 +331,13 @@ pub fn absolute_path(root: &Utf8Path, relative: &str) -> PathBuf {
 }
 
 /// Runs `cargo check --workspace --all-targets` with `flags`, for example
-/// `--offline`. Returns the first error lines of the compiler on a failure.
+/// `--offline`, and with `--all-features` when `all_features` is true.
+/// Returns the first error lines of the compiler on a failure.
 pub fn cargo_check(
     manifest_path: Option<&Path>,
     root: &Path,
     flags: &[String],
+    all_features: bool,
 ) -> Result<(), String> {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     #[expect(
@@ -343,8 +345,15 @@ pub fn cargo_check(
         reason = "the workspace loader is the one module that spawns cargo: `cargo check` after `fix`"
     )]
     let mut command = std::process::Command::new(cargo);
+    // A relative `--manifest-path` names a file from the current folder, the
+    // same as for `cargo metadata`, so only a run without it starts at the root.
+    if manifest_path.is_none() {
+        command.current_dir(root);
+    }
+    if all_features {
+        command.arg("--all-features");
+    }
     command
-        .current_dir(root)
         .args([
             "check",
             "--workspace",
@@ -366,7 +375,7 @@ pub fn cargo_check(
     let stderr = String::from_utf8_lossy(&output.stderr);
     let errors: Vec<&str> = stderr
         .lines()
-        .filter(|line| line.contains("error"))
+        .filter(|line| line.starts_with("error") || line.contains(": error"))
         .take(CHECK_ERROR_LINES)
         .collect();
     Err(if errors.is_empty() {

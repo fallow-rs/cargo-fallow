@@ -174,11 +174,21 @@ pub fn run(args: &FixArgs) -> Result<u8, CliError> {
         .map(Fix::Dependency)
         .chain(plan.visibility.iter().cloned().map(Fix::Visibility))
         .collect();
+    let mut skipped = plan.skipped;
     if !args.dry_run && !fixes.is_empty() {
-        apply_all(args, &workspace, &plan, progress)?;
+        let kept = apply_all(args, &workspace, &plan, progress)?;
         for fix in &mut fixes {
-            fix.mark_applied();
+            let applied = match fix {
+                Fix::Dependency(_) => true,
+                Fix::Visibility(edit) => {
+                    kept.iter().any(|other| visibility::same_place(edit, other))
+                }
+            };
+            if applied {
+                fix.mark_applied();
+            }
         }
+        skipped += plan.visibility.len() - kept.len();
     }
     let total_fixed = fixes.iter().filter(|fix| fix.applied()).count();
     let report = FixReport {
@@ -189,7 +199,7 @@ pub fn run(args: &FixArgs) -> Result<u8, CliError> {
         dry_run: args.dry_run,
         fixes,
         total_fixed,
-        skipped: plan.skipped,
+        skipped,
         skipped_packages: plan.skipped_packages,
     };
     let text = match args.format {
@@ -242,8 +252,11 @@ fn plan(
         .filter(|row| row.actions.iter().any(|action| action.auto_fixable))
         .count();
     Ok(Plan {
-        skipped: report.findings.len() - deps_edits.len() + visibility_report.findings.len()
-            - fixable_rows,
+        skipped: report.findings.len().saturating_sub(deps_edits.len())
+            + visibility_report
+                .findings
+                .len()
+                .saturating_sub(fixable_rows),
         deps: deps_edits,
         visibility: visibility_edits,
         skipped_packages: report.skipped,
@@ -257,45 +270,115 @@ fn apply_all(
     workspace: &Workspace,
     plan: &Plan,
     progress: Progress,
-) -> Result<(), CliError> {
+) -> Result<Vec<visibility::Edit>, CliError> {
     let root = workspace.root.as_std_path();
     let manifest = args.manifest_path.as_deref();
     let flags = args.cargo_flags(false);
     let compiles = !plan.visibility.is_empty();
-    if compiles {
+    // `cargo check` can write `Cargo.lock`, so a failed run writes back its
+    // old bytes too.
+    let lock = LockFile::read(root);
+    let all_features = if compiles {
         progress.step("Checking that the workspace builds before the edits");
-        workspace::cargo_check(manifest, root, &flags).map_err(|message| {
+        Some(baseline(manifest, root, &args.cargo_flags(true)).inspect_err(|_| lock.restore())?)
+    } else {
+        None
+    };
+    let mut kept = plan.visibility.clone();
+    for round in 1..=CHECK_ROUNDS {
+        let mut planned = Vec::new();
+        for (path, edits) in deps::by_manifest(&plan.deps) {
+            planned.push(edited(root, path, |text| deps::apply(text, &edits))?);
+        }
+        for (path, edits) in visibility::by_file(&kept) {
+            planned.push(edited(root, path, |text| visibility::apply(text, &edits))?);
+        }
+        progress.step("Writing the edits");
+        let mut compiler = None;
+        let outcome = write_and_check(&planned, || {
+            if !plan.deps.is_empty() {
+                workspace::load_resolved(manifest, &flags).map_err(|err| {
+                    format!(
+                        "the workspace does not load after the edits: {}",
+                        err.message
+                    )
+                })?;
+            }
+            if let Some(all_features) = all_features {
+                progress.step("Checking that the workspace builds after the edits");
+                workspace::cargo_check(manifest, root, &flags, all_features).map_err(
+                    |message| {
+                        let text =
+                            format!("the workspace does not build after the edits: {message}");
+                        compiler = Some(message);
+                        text
+                    },
+                )?;
+            }
+            Ok(())
+        });
+        let Err(error) = outcome else {
+            return Ok(kept);
+        };
+        // The compiler names the items that the edits broke. Each round
+        // leaves out the edits of those items, and the next round starts from
+        // the old bytes again.
+        let before = kept.len();
+        if let Some(message) = compiler.filter(|_| round < CHECK_ROUNDS) {
+            let names = visibility::named_items(&message);
+            kept.retain(|edit| !names.contains(visibility::last_segment(&edit.item)));
+        }
+        if kept.len() == before || (kept.is_empty() && plan.deps.is_empty()) {
+            lock.restore();
+            return Err(error);
+        }
+        progress.step("Leaving out the edits that the compiler names, and checking again");
+    }
+    lock.restore();
+    Err(failed("the workspace does not build after the edits"))
+}
+
+/// The most write and check rounds. A round after a failed `cargo check`
+/// leaves out the edits of the items that the compiler errors name.
+const CHECK_ROUNDS: usize = 3;
+
+/// Checks that the workspace builds before the edits, with all features when
+/// it can, as the analysis reads it. Returns true for an all-features build.
+fn baseline(manifest: Option<&Path>, root: &Path, flags: &[String]) -> Result<bool, CliError> {
+    if workspace::cargo_check(manifest, root, flags, true).is_ok() {
+        return Ok(true);
+    }
+    workspace::cargo_check(manifest, root, flags, false)
+        .map(|()| false)
+        .map_err(|message| {
             unchanged(&format!(
                 "the workspace does not build before the edits, so `fix` cannot judge them: \
                  {message}"
             ))
-        })?;
+        })
+}
+
+/// The `Cargo.lock` of the workspace before the run.
+struct LockFile {
+    path: PathBuf,
+    bytes: Option<Vec<u8>>,
+}
+
+impl LockFile {
+    fn read(root: &Path) -> Self {
+        let path = root.join("Cargo.lock");
+        let bytes = fs::read(&path).ok();
+        Self { path, bytes }
     }
-    let mut planned = Vec::new();
-    for (path, edits) in deps::by_manifest(&plan.deps) {
-        planned.push(edited(root, path, |text| deps::apply(text, &edits))?);
+
+    /// Writes back the old bytes, or removes a new lock file. A failure here
+    /// leaves a lock file that the next cargo run corrects.
+    fn restore(&self) {
+        let _ = match &self.bytes {
+            Some(bytes) => replace(&self.path, bytes),
+            None => fs::remove_file(&self.path),
+        };
     }
-    for (path, edits) in visibility::by_file(&plan.visibility) {
-        planned.push(edited(root, path, |text| visibility::apply(text, &edits))?);
-    }
-    progress.step("Writing the edits");
-    write_and_check(&planned, || {
-        if !plan.deps.is_empty() {
-            workspace::load_resolved(manifest, &flags).map_err(|err| {
-                format!(
-                    "the workspace does not load after the edits: {}",
-                    err.message
-                )
-            })?;
-        }
-        if compiles {
-            progress.step("Checking that the workspace builds after the edits");
-            workspace::cargo_check(manifest, root, &flags).map_err(|message| {
-                format!("the workspace does not build after the edits: {message}")
-            })?;
-        }
-        Ok(())
-    })
 }
 
 /// The path, the old bytes and the new text of one file.
@@ -361,6 +444,11 @@ const RESTORED_HELP: &str = "The command wrote back the old bytes of each file. 
 /// Writes the bytes to a new file next to `path`, then renames it over
 /// `path`. A stop between the two steps leaves the old file.
 fn replace(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    // A rename replaces a symlink with a plain file, so a symlink gets a
+    // plain write through the link.
+    if fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+        return fs::write(path, bytes);
+    }
     let folder = path.parent().unwrap_or_else(|| Path::new("."));
     let mut file = tempfile::NamedTempFile::new_in(folder)?;
     std::io::Write::write_all(&mut file, bytes)?;

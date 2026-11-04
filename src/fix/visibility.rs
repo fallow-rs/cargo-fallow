@@ -44,10 +44,33 @@ pub struct Edit {
 /// The edits for the findings with a `change-visibility` action that `fix`
 /// applies. A file that more than one crate holds gives one edit.
 pub fn plan(report: &VisibilityReport) -> Vec<Edit> {
-    let mut edits: Vec<Edit> = report.findings.iter().filter_map(edit).collect();
+    merge(report.findings.iter().filter_map(edit).collect())
+}
+
+/// Sorts the edits and joins the edits of one keyword. Two crates can hold
+/// one file: the same change once is one edit, and two other changes of one
+/// keyword disagree, so the keyword stays.
+fn merge(mut edits: Vec<Edit>) -> Vec<Edit> {
     edits.sort_by(|a, b| (&a.path, a.line, a.column).cmp(&(&b.path, b.line, b.column)));
-    edits.dedup_by(|a, b| (&a.path, a.line, a.column) == (&b.path, b.line, b.column));
-    edits
+    let mut planned: Vec<Edit> = Vec::new();
+    let mut conflicts = Vec::new();
+    for edit in edits {
+        match planned.last() {
+            Some(last) if same_place(last, &edit) => {
+                if (&last.from, &last.to) != (&edit.from, &edit.to) {
+                    conflicts.push((edit.path.clone(), edit.line, edit.column));
+                }
+            }
+            _ => planned.push(edit),
+        }
+    }
+    planned.retain(|edit| !conflicts.contains(&(edit.path.clone(), edit.line, edit.column)));
+    planned
+}
+
+/// True when two edits change the same keyword.
+pub fn same_place(a: &Edit, b: &Edit) -> bool {
+    (&a.path, a.line, a.column) == (&b.path, b.line, b.column)
 }
 
 fn edit(row: &FindingRow) -> Option<Edit> {
@@ -71,6 +94,22 @@ fn edit(row: &FindingRow) -> Option<Edit> {
     })
 }
 
+/// The names in backticks in compiler errors, without a path or generic
+/// arguments: `crate::a::Item<T>` gives `Item`.
+pub fn named_items(message: &str) -> std::collections::BTreeSet<&str> {
+    message
+        .split('`')
+        .skip(1)
+        .step_by(2)
+        .map(|name| last_segment(name.split('<').next().unwrap_or(name)))
+        .collect()
+}
+
+/// The last segment of an item path.
+pub fn last_segment(path: &str) -> &str {
+    path.rsplit("::").next().unwrap_or(path)
+}
+
 /// The edits of each file, in file order.
 pub fn by_file(edits: &[Edit]) -> BTreeMap<&str, Vec<&Edit>> {
     let mut grouped: BTreeMap<&str, Vec<&Edit>> = BTreeMap::new();
@@ -82,7 +121,13 @@ pub fn by_file(edits: &[Edit]) -> BTreeMap<&str, Vec<&Edit>> {
 
 /// Applies the edits of one file to its text and returns the new text.
 pub fn apply(text: &str, edits: &[&Edit]) -> Result<String, String> {
-    let starts: Vec<usize> = std::iter::once(0)
+    // The parser does not count a byte order mark, so line 1 starts after it.
+    let first = if text.starts_with('\u{feff}') {
+        '\u{feff}'.len_utf8()
+    } else {
+        0
+    };
+    let starts: Vec<usize> = std::iter::once(first)
         .chain(text.match_indices('\n').map(|(at, _)| at + 1))
         .collect();
     let mut spans: Vec<(usize, usize, &Edit)> = edits
@@ -101,20 +146,23 @@ pub fn apply(text: &str, edits: &[&Edit]) -> Result<String, String> {
             }
         })
         .collect::<Result<_, _>>()?;
-    // The last edit goes first, so each earlier offset stays valid.
-    spans.sort_by_key(|(start, _, _)| std::cmp::Reverse(*start));
-    let mut out = text.to_owned();
-    for (start, end, edit) in spans {
-        // A removed keyword takes the space after it too.
-        let end = if edit.to.is_empty() {
-            end + text[end..]
+    // A removed keyword takes the space after it too.
+    for (_, end, edit) in &mut spans {
+        if edit.to.is_empty() {
+            *end += text[*end..]
                 .chars()
                 .take_while(|c| *c == ' ' || *c == '\t')
                 .map(char::len_utf8)
-                .sum::<usize>()
-        } else {
-            end
-        };
+                .sum::<usize>();
+        }
+    }
+    spans.sort_by_key(|(start, _, _)| *start);
+    if spans.windows(2).any(|pair| pair[1].0 < pair[0].1) {
+        return Err("two edits overlap".to_owned());
+    }
+    // The last edit goes first, so each earlier offset stays valid.
+    let mut out = text.to_owned();
+    for (start, end, edit) in spans.into_iter().rev() {
         out.replace_range(start..end, &edit.to);
     }
     Ok(out)
@@ -187,6 +235,57 @@ mod tests {
         )
         .expect("the edits apply");
         assert_eq!(out, "struct A; struct B;\n");
+    }
+
+    #[test]
+    fn line_one_starts_after_a_byte_order_mark_and_crlf_lines_keep_their_columns() {
+        let text = "\u{feff}pub fn a() {}\r\npub fn b() {}\r\n";
+        let out = apply(
+            text,
+            &[
+                &edit(1, 1, "pub", "pub(crate)"),
+                &edit(2, 1, "pub", "pub(crate)"),
+            ],
+        )
+        .expect("the edits apply");
+        assert_eq!(
+            out,
+            "\u{feff}pub(crate) fn a() {}\r\npub(crate) fn b() {}\r\n"
+        );
+    }
+
+    #[test]
+    fn one_keyword_with_two_changes_stays_and_a_repeat_is_one_edit() {
+        let narrow = edit(1, 1, "pub", "pub(crate)");
+        let remove = edit(1, 1, "pub", "");
+        let other = edit(2, 1, "pub", "pub(crate)");
+        let merged = merge(vec![narrow.clone(), other.clone(), remove, other.clone()]);
+        assert_eq!(merged, [other]);
+        assert_eq!(merge(vec![narrow.clone(), narrow.clone()]), [narrow]);
+    }
+
+    #[test]
+    fn compiler_errors_name_items_in_backticks() {
+        let message = "a.rs:1:1: error[E0446]: crate-private type `ConvertParams` in public interface\n\
+                       b.rs:2:2: error[E0603]: function `helper` is private in `crate::x::Y<T>`";
+        let names: Vec<&str> = named_items(message).into_iter().collect();
+        assert_eq!(names, ["ConvertParams", "Y", "helper"]);
+        assert_eq!(last_segment("a::b::c"), "c");
+    }
+
+    #[test]
+    fn overlapping_edits_are_an_error() {
+        let text = "pub(crate) fn f() {}\n";
+        assert!(
+            apply(
+                text,
+                &[
+                    &edit(1, 1, "pub(crate)", ""),
+                    &edit(1, 1, "pub", "pub(crate)")
+                ]
+            )
+            .is_err()
+        );
     }
 
     #[test]

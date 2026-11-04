@@ -391,8 +391,9 @@ fn code_start(node: &SyntaxNode) -> ra_ap_syntax::TextSize {
 }
 
 /// The severity band of a finding.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "kebab-case")]
+#[schemars(rename = "ComplexitySeverity")]
 pub enum Severity {
     /// Over a limit, under the `high` band.
     Moderate,
@@ -413,7 +414,7 @@ fn severity(cyclomatic: u32, cognitive: u32) -> Severity {
 }
 
 /// The limits that a function went over.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Exceeded {
     /// Only the cyclomatic limit.
@@ -425,7 +426,8 @@ pub enum Exceeded {
 }
 
 /// One function over a limit.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
+#[schemars(rename = "ComplexityFinding")]
 pub struct Finding {
     /// The file.
     pub path: String,
@@ -452,7 +454,8 @@ pub struct Finding {
 }
 
 /// The summary of a complexity run.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
+#[schemars(rename = "ComplexitySummary")]
 pub struct Summary {
     /// The parsed files.
     pub files: usize,
@@ -490,7 +493,10 @@ pub fn run(args: &ComplexityArgs) -> Result<Section, CliError> {
             tokens: None,
         },
     );
-    let scope = Scope::load(&workspace, args.common.changed_since.as_deref())?;
+    // A limit flag changes the findings, so a baseline entry can be stale
+    // with no change of the code.
+    let scope = Scope::load(&workspace, &args.common.scope)?
+        .narrowed(args.max_cyclomatic.is_some() || args.max_cognitive.is_some());
     scope.annotate(section(
         &loaded,
         &settings,
@@ -550,11 +556,12 @@ pub fn section(
         skipped_files: loaded.skipped_files(),
     };
     let mut report = Report::new("complexity", summary, findings);
+    let mut findings = shared_findings(&report);
+    report.retain_baseline(scope, &mut findings);
     report.gate_outcomes.insert(
         Gate::HealthFindings,
         count_gate(report.findings.len(), enforced),
     );
-    let findings = shared_findings(&report);
     Ok(Section {
         human: human(&report),
         json: to_value(&report)?,

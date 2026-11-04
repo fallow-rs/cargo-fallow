@@ -69,7 +69,7 @@ pub fn is_shallow(root: &Path) -> bool {
 }
 
 /// The files that the working tree changed since the fork point of a ref.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 pub struct ChangedFiles {
     /// The ref of the flag.
     #[serde(rename = "ref")]

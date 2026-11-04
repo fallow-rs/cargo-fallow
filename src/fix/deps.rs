@@ -41,7 +41,8 @@ pub const fn fixes(rule: Rule) -> bool {
 }
 
 /// One planned edit. The field order is the wire order.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
+#[schemars(rename = "FixEdit")]
 pub struct Edit {
     /// The action type of the finding: `remove-dependency` or
     /// `move-to-dev-dependencies`.

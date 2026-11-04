@@ -47,8 +47,8 @@ pub struct VisibilityOptions {
     pub kinds: Vec<crate::visibility::FindingKind>,
     /// True when a finding fails the run.
     pub fail_on_issues: bool,
-    /// The ref of `--changed-since`.
-    pub changed_since: Option<String>,
+    /// The scope flags: `--changed-since` and the baseline flags.
+    pub scope: crate::scope::ScopeArgs,
     /// The limits of `--precise` mode, or `None` for the fast mode.
     pub precise: Option<crate::visibility::precise::Limits>,
 }
@@ -81,6 +81,8 @@ pub enum Parsed {
         /// True when the folder of the run goes when the parent is gone.
         remove: bool,
     },
+    /// Print the JSON Schema of the output.
+    Schema,
     /// Stop with this exit code. The parser already wrote its output.
     Exit(u8),
 }
@@ -147,6 +149,9 @@ enum Command {
     PreciseWorker(crate::visibility::precise::WorkerArgs),
     #[command(flatten)]
     Structure(crate::structure::Command),
+    /// Print the JSON Schema of each JSON document that the tool writes: the
+    /// report of each command, the baseline file and the error document.
+    Schema,
     /// Kill the test processes when the parent process dies. The memory guard
     /// starts this command.
     #[command(hide = true, name = "mutation-watchdog")]
@@ -352,11 +357,8 @@ struct VisibilityArgs {
     /// Exit 1 when the run has a finding.
     #[arg(long)]
     fail_on_issues: bool,
-    /// Report only the findings in the files that changed since the fork point
-    /// of this ref and `HEAD`. Uncommitted and untracked files count. The
-    /// analysis still reads the whole workspace.
-    #[arg(long, value_name = "REF")]
-    changed_since: Option<String>,
+    #[command(flatten)]
+    scope: crate::scope::ScopeArgs,
     /// Decide the findings that the syntax cannot decide with rust-analyzer: method
     /// calls on an unknown type and the output of proc-macros. This needs a build
     /// with the `precise` feature, and it runs the build scripts and proc-macros of
@@ -421,7 +423,7 @@ impl From<VisibilityArgs> for VisibilityOptions {
                 })
                 .collect(),
             fail_on_issues: args.fail_on_issues,
-            changed_since: args.changed_since,
+            scope: args.scope,
             precise: args.precise.then_some(crate::visibility::precise::Limits {
                 timeout: Duration::from_secs(args.precise_timeout),
                 memory_mib: args.precise_memory_limit,
@@ -445,11 +447,8 @@ struct DepsArgs {
     /// Exit 1 when a finding has the `error` severity. A warning does not count.
     #[arg(long)]
     fail_on_issues: bool,
-    /// Report only the findings in the files that changed since the fork point
-    /// of this ref and `HEAD`. Uncommitted and untracked files count. The
-    /// analysis still reads the whole workspace.
-    #[arg(long, value_name = "REF")]
-    changed_since: Option<String>,
+    #[command(flatten)]
+    scope: crate::scope::ScopeArgs,
     /// Give `--locked` to `cargo metadata`: fail when `Cargo.lock` must change.
     #[arg(long)]
     locked: bool,
@@ -471,7 +470,7 @@ impl From<DepsArgs> for crate::deps::Options {
             quiet: args.quiet,
             fail_on_issues: args.fail_on_issues,
             cargo_flags,
-            changed_since: args.changed_since,
+            scope: args.scope,
         }
     }
 }
@@ -508,11 +507,8 @@ struct CheckArgs {
     /// Exit 1 when a target root file does not parse.
     #[arg(long)]
     fail_on_parse_error: bool,
-    /// Report only the findings in the files that changed since the fork point
-    /// of this ref and `HEAD`. Uncommitted and untracked files count. The
-    /// analysis still reads the whole workspace.
-    #[arg(long, value_name = "REF")]
-    changed_since: Option<String>,
+    #[command(flatten)]
+    scope: crate::scope::ScopeArgs,
     /// Give `--locked` to the `cargo metadata` call of the deps check.
     #[arg(long)]
     locked: bool,
@@ -548,7 +544,7 @@ impl From<CheckArgs> for crate::check::Options {
             fail_on_issues: args.fail_on_issues,
             fail_on_parse_error: args.fail_on_parse_error,
             cargo_flags: cargo_flags(args.locked, args.offline, args.frozen),
-            changed_since: args.changed_since,
+            scope: args.scope,
         }
     }
 }
@@ -573,6 +569,7 @@ pub fn parse(args: &[OsString]) -> Parsed {
             Some(Command::Fix(args)) => Parsed::Fix(args),
             Some(Command::Files(args)) => Parsed::Files(args),
             Some(Command::Structure(command)) => Parsed::Structure(Box::new(command)),
+            Some(Command::Schema) => Parsed::Schema,
             Some(Command::MutationWatchdog {
                 roots,
                 sweep,

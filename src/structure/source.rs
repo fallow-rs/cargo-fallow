@@ -150,7 +150,7 @@ pub fn parse_reason(outcome: ParseOutcome) -> String {
 }
 
 /// A file that a check skips, with the reason.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, schemars::JsonSchema)]
 pub struct Skipped {
     /// The path relative to the workspace root.
     pub path: String,

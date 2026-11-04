@@ -139,49 +139,46 @@ pub fn sarif(report: &DepsReport) -> Value {
 /// The findings in the shared shape. The id uses the manifest, the table, the
 /// platform and the key, not the line.
 pub fn findings(report: &DepsReport) -> Vec<crate::finding::Finding> {
+    report.findings.iter().map(shared_finding).collect()
+}
+
+/// One finding in the shared shape.
+pub fn shared_finding(finding: &Finding) -> crate::finding::Finding {
     use crate::finding::{Action, Category, Draft, Finding as Shared, Impact, Location};
-    report
-        .findings
-        .iter()
-        .map(|finding| {
-            let (severity, impact) = match finding.severity {
-                Severity::Error => (crate::finding::Severity::Error, Impact::Major),
-                Severity::Warning => (crate::finding::Severity::Warning, Impact::Minor),
-            };
-            let platform = finding.platform.as_deref().unwrap_or_default();
-            let package = finding.package.as_deref().unwrap_or_default();
-            Shared::new(Draft {
-                check: "deps",
-                rule: finding.rule.as_str(),
-                severity,
-                message: message(finding),
-                location: Location {
-                    path: finding.manifest_path.clone(),
-                    line: finding.line,
-                    column: None,
-                    end_line: None,
-                },
-                identity: &[
-                    &finding.manifest_path,
-                    package,
-                    &finding.section,
-                    platform,
-                    &finding.dependency,
-                ],
-                category: Category::BugRisk,
-                impact,
-            })
-            .with_actions(
-                finding
-                    .actions
-                    .iter()
-                    .map(|action| {
-                        Action::new(action.kind, action.auto_fixable, &action.description)
-                    })
-                    .collect(),
-            )
-        })
-        .collect()
+    let (severity, impact) = match finding.severity {
+        Severity::Error => (crate::finding::Severity::Error, Impact::Major),
+        Severity::Warning => (crate::finding::Severity::Warning, Impact::Minor),
+    };
+    let platform = finding.platform.as_deref().unwrap_or_default();
+    let package = finding.package.as_deref().unwrap_or_default();
+    Shared::new(Draft {
+        check: "deps",
+        rule: finding.rule.as_str(),
+        severity,
+        message: message(finding),
+        location: Location {
+            path: finding.manifest_path.clone(),
+            line: finding.line,
+            column: None,
+            end_line: None,
+        },
+        identity: &[
+            &finding.manifest_path,
+            package,
+            &finding.section,
+            platform,
+            &finding.dependency,
+        ],
+        category: Category::BugRisk,
+        impact,
+    })
+    .with_actions(
+        finding
+            .actions
+            .iter()
+            .map(|action| Action::new(action.kind, action.auto_fixable, &action.description))
+            .collect(),
+    )
 }
 
 /// The message of a finding: its first step, or the detail line.

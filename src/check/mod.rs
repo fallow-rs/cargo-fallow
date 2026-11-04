@@ -37,7 +37,9 @@ use crate::workspace::{self, Workspace};
 use crate::{deps, files, visibility};
 
 /// One check of the run.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Serialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Serialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "kebab-case")]
 pub enum CheckName {
     /// The parse of each target root file: the `parse-error` gate.
@@ -105,8 +107,8 @@ pub struct Options {
     pub fail_on_parse_error: bool,
     /// The flags for the `cargo metadata` call of `deps`.
     pub cargo_flags: Vec<String>,
-    /// The ref of `--changed-since`.
-    pub changed_since: Option<String>,
+    /// The scope flags: `--changed-since` and the baseline flags.
+    pub scope: crate::scope::ScopeArgs,
 }
 
 impl Options {
@@ -195,7 +197,7 @@ pub fn execute(options: &Options) -> Result<report::CheckReport, CliError> {
         progress.step("Reading cargo metadata");
         (workspace::load(options.manifest_path.as_deref())?, None)
     };
-    let scope = Scope::load(&workspace, options.changed_since.as_deref())?;
+    let scope = Scope::load(&workspace, &options.scope)?;
     // Read each configuration table before the work starts, so an invalid
     // table stops the run at once.
     let visibility_options = if runs(CheckName::Visibility) {
@@ -277,10 +279,7 @@ pub fn execute(options: &Options) -> Result<report::CheckReport, CliError> {
             .into_iter()
             .filter_map(|(name, section)| section.map(|section| (name, section))),
     );
-    Ok(
-        report::CheckReport::new(workspace, sections, scoped_health(metrics, &scope))
-            .with_scope(&scope),
-    )
+    report::CheckReport::new(workspace, sections, scoped_health(metrics, &scope)).with_scope(&scope)
 }
 
 /// The inputs of the health score: the source counts with the counts of the
@@ -309,10 +308,12 @@ fn run_metrics(
 /// a scoped run gives no score.
 fn scoped_health(metrics: Metrics, scope: &Scope) -> Option<Health> {
     health::score(metrics).map(|health| {
-        if scope.is_full() {
-            Health::Score(Box::new(health))
-        } else {
+        if !scope.is_full() {
             Health::Scoped(ScopedHealth::changed())
+        } else if scope.has_baseline() {
+            Health::Scoped(ScopedHealth::baseline())
+        } else {
+            Health::Score(Box::new(health))
         }
     })
 }
@@ -346,7 +347,7 @@ fn visibility_flags(options: &Options, enforced: bool) -> VisibilityOptions {
         uniform_fields: false,
         kinds: Vec::new(),
         fail_on_issues: enforced,
-        changed_since: None,
+        scope: crate::scope::ScopeArgs::default(),
         precise: None,
     }
 }

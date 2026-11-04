@@ -93,9 +93,11 @@ pub struct Settings {
 }
 
 /// One unused file.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
+#[schemars(rename = "FilesFinding")]
 pub struct Finding {
     /// Always `unused-file`.
+    #[schemars(extend("const" = "unused-file"))]
     pub rule: &'static str,
     /// The package of the file.
     pub package: String,
@@ -108,7 +110,8 @@ pub struct Finding {
 }
 
 /// A package that the check skips, with the reason.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, schemars::JsonSchema)]
+#[schemars(rename = "FilesSkippedPackage")]
 pub struct SkippedPackage {
     /// The package name.
     pub package: String,
@@ -117,7 +120,8 @@ pub struct SkippedPackage {
 }
 
 /// The summary of a `files` run.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
+#[schemars(rename = "FilesSummary")]
 pub struct Summary {
     /// The workspace members.
     pub packages: usize,
@@ -134,7 +138,7 @@ pub fn run(args: &FilesArgs) -> Result<Section, CliError> {
     let progress = Progress::new(args.common.quiet);
     progress.step("Reading cargo metadata");
     let workspace = workspace::load(args.common.manifest_path.as_deref())?;
-    let scope = Scope::load(&workspace, args.common.changed_since.as_deref())?;
+    let scope = Scope::load(&workspace, &args.common.scope)?;
     scope.annotate(section(&workspace, args.fail_on_issues, &scope, progress)?)
 }
 
@@ -187,11 +191,12 @@ pub fn section(
             .collect(),
     };
     let mut report = Report::new("files", summary, findings);
+    let mut findings = shared_findings(&report);
+    report.retain_baseline(scope, &mut findings);
     report.gate_outcomes.insert(
         Gate::UnusedFiles,
         count_gate(report.findings.len(), enforced),
     );
-    let findings = shared_findings(&report);
     let rules = BTreeMap::from([(RULE.to_owned(), "No target compiles the file.".to_owned())]);
     Ok(Section {
         human: human(&report),

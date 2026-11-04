@@ -7,13 +7,15 @@ use serde::Serialize;
 
 use crate::gates::RustGateName as Gate;
 use crate::report::TOOL_VERSION;
+use crate::scope::Scope;
 
 /// The version of the report shape of the structure checks. A change that
 /// removes a member or changes its type increments it.
 pub const SCHEMA_VERSION: u32 = 1;
 
 /// The report of one structure check. The field order is the wire order.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
+#[schemars(rename = "Report_of_{S}")]
 pub struct Report<S, F> {
     /// The version of the report shape.
     pub schema_version: u32,
@@ -49,8 +51,19 @@ impl<S, F> Report<S, F> {
     }
 }
 
+impl<S, F> Report<S, F> {
+    /// Removes the findings that the baseline of `scope` holds. `shared` has
+    /// one finding in the shared shape for each finding, in the same order,
+    /// and loses the same entries. Call it before the gates count.
+    pub fn retain_baseline(&mut self, scope: &Scope, shared: &mut Vec<crate::finding::Finding>) {
+        scope.retain_pairs(&mut self.findings, shared);
+        self.total_issues = self.findings.len();
+    }
+}
+
 /// A next step for one finding. No step changes the code by itself.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
+#[schemars(rename = "StructureAction")]
 pub struct Action {
     /// The kind of the step.
     #[serde(rename = "type")]

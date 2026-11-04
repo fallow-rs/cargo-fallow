@@ -18,7 +18,7 @@ pub const INSPECT_KIND: &str = "mutants-inspect";
 pub const LANGUAGE: &str = "rust";
 
 /// One mutant in the report.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct MutantRow {
     /// The stable id: 16 hexadecimal digits.
     pub id: String,
@@ -66,7 +66,8 @@ pub struct MutantRow {
 }
 
 /// A read-only next step for one mutant.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
+#[schemars(rename = "MutantAction")]
 pub struct Action {
     /// The kind of the step.
     #[serde(rename = "type")]
@@ -163,7 +164,8 @@ pub fn survivor_gate(rows: &[MutantRow], no_run: bool, enforced: bool) -> GateOu
 }
 
 /// The count of each status.
-#[derive(Debug, Clone, Copy, Default, Serialize)]
+#[derive(Debug, Clone, Copy, Default, Serialize, schemars::JsonSchema)]
+#[schemars(rename = "MutantsSummary")]
 pub struct Summary {
     /// All mutants.
     pub total: usize,
@@ -213,7 +215,7 @@ impl Summary {
 }
 
 /// The time limit of each suite, in milliseconds.
-#[derive(Debug, Clone, Copy, Default, Serialize)]
+#[derive(Debug, Clone, Copy, Default, Serialize, schemars::JsonSchema)]
 pub struct Timeouts {
     /// A nextest run of a schema mutant.
     pub schema_nextest: u64,
@@ -226,7 +228,7 @@ pub struct Timeouts {
 }
 
 /// The baseline part of the report.
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, schemars::JsonSchema)]
 pub struct Baseline {
     /// The run on the unmodified copy.
     pub clean: Option<TestRun>,
@@ -244,7 +246,7 @@ pub struct Baseline {
 }
 
 /// The result of the schema build.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SchemaStatus {
     /// The schema compiles.
@@ -259,7 +261,7 @@ pub enum SchemaStatus {
 }
 
 /// One mutant that the removal loop removed.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct RemovedMutant {
     /// The id.
     pub id: String,
@@ -280,7 +282,7 @@ pub struct RemovedMutant {
 }
 
 /// One compiler error, without its spans.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct ErrorSummary {
     /// The error code.
     pub code: Option<String>,
@@ -289,7 +291,7 @@ pub struct ErrorSummary {
 }
 
 /// The schema part of the report.
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, schemars::JsonSchema)]
 pub struct SchemaInfo {
     /// The result of the build.
     pub status: SchemaStatus,
@@ -322,7 +324,7 @@ pub struct SchemaInfo {
 }
 
 /// The rebuild part of the report.
-#[derive(Debug, Clone, Copy, Default, Serialize)]
+#[derive(Debug, Clone, Copy, Default, Serialize, schemars::JsonSchema)]
 pub struct RebuildInfo {
     /// The mutants that the walk found.
     pub candidates: usize,
@@ -333,7 +335,7 @@ pub struct RebuildInfo {
 }
 
 /// A file that the walk reached but cannot use.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct FileSkip {
     /// The path.
     pub path: String,
@@ -342,7 +344,7 @@ pub struct FileSkip {
 }
 
 /// What the run does not cover. A score says nothing about this code.
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, schemars::JsonSchema)]
 pub struct Gaps {
     /// The source files with a mutant.
     pub files: usize,
@@ -369,7 +371,7 @@ pub struct Gaps {
 }
 
 /// The run of the survivors against the tests of each workspace member.
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, schemars::JsonSchema)]
 pub struct WorkspaceTests {
     /// The mutants that ran these tests.
     pub mutants_run: usize,
@@ -382,7 +384,7 @@ pub struct WorkspaceTests {
 }
 
 /// Where the coverage map of a run comes from.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum MapSource {
     /// The run has no map, so each mutant runs each test.
@@ -395,7 +397,7 @@ pub enum MapSource {
 }
 
 /// The test selection part of the report.
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, schemars::JsonSchema)]
 pub struct SelectionInfo {
     /// True when a coverage map selects the tests of each mutant.
     pub enabled: bool,
@@ -420,7 +422,7 @@ pub struct SelectionInfo {
 }
 
 /// The guard part of the report.
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize, schemars::JsonSchema)]
 pub struct GuardInfo {
     /// False only with `--no-memory-guard`.
     pub enabled: bool,
@@ -435,7 +437,7 @@ pub struct GuardInfo {
 }
 
 /// Why a run stopped before its last mutant.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum StopReason {
     /// The time budget ended.
@@ -445,7 +447,7 @@ pub enum StopReason {
 }
 
 /// The diff of an `--in-diff` run.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct DiffInfo {
     /// The ref of the flag.
     #[serde(rename = "ref")]
@@ -460,7 +462,8 @@ pub struct DiffInfo {
 }
 
 /// The report of one run.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
+#[schemars(rename = "MutantsReport")]
 pub struct Report {
     /// The version of the report shape.
     pub schema_version: u32,
@@ -519,7 +522,7 @@ impl Report {
 }
 
 /// How the coverage map sees the lines of one mutant.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum CoverageState {
     /// The listed tests execute a line of the mutant.
@@ -534,7 +537,7 @@ pub enum CoverageState {
 }
 
 /// The mutant of an inspect report.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct InspectedMutant {
     /// The stable id.
     pub id: String,
@@ -560,7 +563,7 @@ pub struct InspectedMutant {
 }
 
 /// The coverage part of an inspect report.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct InspectCoverage {
     /// Where the map comes from.
     pub map: MapSource,
@@ -574,7 +577,7 @@ pub struct InspectCoverage {
 }
 
 /// The report of `--inspect`.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct InspectReport {
     /// The version of the report shape.
     pub schema_version: u32,

@@ -17,7 +17,7 @@ use crate::parse::{Edition, ParseOutcome, parse_source};
 use crate::workspace::{self, Workspace};
 
 /// The name of a gate, as it appears in `gate_outcomes`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum RustGateName {
     /// `boundaries`: a rule found a violation.
@@ -34,6 +34,8 @@ pub enum RustGateName {
     HealthFindings,
     /// Fails when a target root file does not parse.
     ParseError,
+    /// `--baseline`: the baseline has an entry with no finding in the run.
+    StaleBaseline,
     /// Fails when a mutant survived the tests of a `mutants` run.
     SurvivingMutants,
     /// `files`: a `.rs` file that no target compiles.
@@ -44,8 +46,7 @@ pub enum RustGateName {
 
 impl RustGateName {
     /// Every gate name, in wire order.
-    #[cfg(test)]
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::BoundaryViolations,
         Self::DuplicationFindings,
         Self::DuplicationThreshold,
@@ -53,6 +54,7 @@ impl RustGateName {
         Self::FileGrowth,
         Self::HealthFindings,
         Self::ParseError,
+        Self::StaleBaseline,
         Self::SurvivingMutants,
         Self::UnusedFiles,
         Self::VisibilityFindings,
@@ -68,6 +70,7 @@ impl RustGateName {
             Self::HealthFindings => "health-findings",
             Self::ErrorSeverityFindings => "error-severity-findings",
             Self::ParseError => "parse-error",
+            Self::StaleBaseline => "stale-baseline",
             Self::SurvivingMutants => "surviving-mutants",
             Self::UnusedFiles => "unused-files",
             Self::VisibilityFindings => "visibility-findings",
@@ -86,6 +89,7 @@ impl RustGateName {
             Self::FileGrowth => "A file over the line limit grew.",
             Self::HealthFindings => "A function is over a complexity limit.",
             Self::ParseError => "A target root file does not parse.",
+            Self::StaleBaseline => "The baseline has an entry with no finding in the run.",
             Self::SurvivingMutants => "A mutant survived: each test passed with the change.",
             Self::UnusedFiles => "A `.rs` file in a target folder is not part of a target.",
             Self::VisibilityFindings => "An item has a larger visibility than its uses need.",

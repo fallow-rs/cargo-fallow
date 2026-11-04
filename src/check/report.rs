@@ -10,6 +10,7 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 
 use super::CheckName;
+use crate::baseline;
 use crate::cli::Format;
 use crate::diff::ChangedFiles;
 use crate::error::CliError;
@@ -24,10 +25,10 @@ use crate::workspace::{Member, Workspace};
 
 /// The version of the report shape of `check`. A change that removes a member
 /// or changes its type increments it.
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 1;
 
 /// The report of a `check` run. The field order is the wire order.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct CheckReport {
     /// The version of the report shape.
     pub schema_version: u32,
@@ -54,9 +55,14 @@ pub struct CheckReport {
     /// such member.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub changed_since: Option<ChangedFiles>,
+    /// The baseline of `--baseline`. A run without the flag has no such
+    /// member.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub baseline: Option<baseline::Summary>,
     /// The report of each check that ran, keyed by check name. Each report is
     /// the JSON report of the command of the same name. The parse gate has no
     /// report of its own.
+    #[schemars(with = "Sections")]
     pub sections: Map<String, Value>,
     /// The text and SARIF forms of each section. They are not part of the
     /// JSON report.
@@ -64,8 +70,57 @@ pub struct CheckReport {
     parts: Vec<(CheckName, Section)>,
 }
 
+/// The schema of the `sections` member: the report of each check that ran.
+/// The report writes the map, so the type only describes it.
+#[derive(schemars::JsonSchema)]
+#[schemars(rename = "CheckSections", deny_unknown_fields)]
+#[expect(dead_code, reason = "the type describes the JSON Schema only")]
+struct Sections {
+    /// The report of `cargo fallow deps`.
+    #[schemars(skip_serializing_if = "Option::is_none")]
+    deps: Option<crate::deps::report::DepsReport>,
+    /// The report of `cargo fallow visibility`.
+    #[schemars(skip_serializing_if = "Option::is_none")]
+    visibility: Option<crate::visibility::report::VisibilityReport>,
+    /// The report of `cargo fallow files`.
+    #[schemars(skip_serializing_if = "Option::is_none")]
+    files: Option<crate::structure::report::Report<crate::files::Summary, crate::files::Finding>>,
+    /// The report of `cargo fallow boundaries`.
+    #[schemars(skip_serializing_if = "Option::is_none")]
+    boundaries: Option<
+        crate::structure::report::Report<
+            crate::structure::boundaries::Summary,
+            crate::structure::boundaries::Finding,
+        >,
+    >,
+    /// The report of `cargo fallow size`.
+    #[schemars(skip_serializing_if = "Option::is_none")]
+    size: Option<
+        crate::structure::report::Report<
+            crate::structure::size::Summary,
+            crate::structure::size::Finding,
+        >,
+    >,
+    /// The report of `cargo fallow complexity`.
+    #[schemars(skip_serializing_if = "Option::is_none")]
+    complexity: Option<
+        crate::structure::report::Report<
+            crate::structure::complexity::Summary,
+            crate::structure::complexity::Finding,
+        >,
+    >,
+    /// The report of `cargo fallow dupes`.
+    #[schemars(skip_serializing_if = "Option::is_none")]
+    dupes: Option<
+        crate::structure::report::Report<
+            crate::structure::dupes::Summary,
+            crate::structure::dupes::CloneGroup,
+        >,
+    >,
+}
+
 /// The workspace part of the report.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct WorkspaceSummary {
     /// The members, sorted by name.
     pub members: Vec<Member>,
@@ -106,16 +161,32 @@ impl CheckReport {
             findings,
             gate_outcomes,
             changed_since: None,
+            baseline: None,
             sections,
             parts,
         }
     }
 
-    /// The report with the changed files of a scoped run.
-    #[must_use]
-    pub fn with_scope(mut self, scope: &Scope) -> Self {
+    /// The report with the changed files and the baseline of the run. A run
+    /// with `--save-baseline` writes the file here, and enforces no gate.
+    pub fn with_scope(mut self, scope: &Scope) -> Result<Self, CliError> {
         self.changed_since.clone_from(&scope.changed);
-        self
+        let checks: Vec<&str> = self.checks.iter().map(|name| name.as_str()).collect();
+        if let Some(summary) = scope.baseline_summary(&checks) {
+            self.gate_outcomes
+                .insert(RustGateName::StaleBaseline, scope.stale_gate(&summary));
+            self.baseline = Some(summary);
+        }
+        if scope.saves() {
+            scope.save("check")?;
+            for gate in self.gate_outcomes.values_mut() {
+                gate.enforced = false;
+            }
+            for section in self.sections.values_mut() {
+                crate::scope::unenforce(section);
+            }
+        }
+        Ok(self)
     }
 
     /// True when an enforced gate of a check failed.
@@ -163,9 +234,20 @@ impl CheckReport {
         if let Some(changed) = &self.changed_since {
             text.push_str(&crate::scope::changed_line(changed));
         }
+        if let Some(summary) = &self.baseline {
+            text.push_str(&crate::scope::baseline_line(summary));
+        }
         match &self.health {
-            Some(Health::Scoped(_)) => {
-                text.push_str("Health (rust): no score. A run with `--changed-since` sees only part of the findings.\n");
+            Some(Health::Scoped(scoped)) => {
+                let flag = if scoped.scope == "baseline" {
+                    "--baseline"
+                } else {
+                    "--changed-since"
+                };
+                let _ = writeln!(
+                    text,
+                    "Health (rust): no score. A run with `{flag}` sees only part of the findings."
+                );
             }
             Some(Health::Score(health)) => match (health.score, health.grade) {
                 (Some(score), Some(grade)) => {

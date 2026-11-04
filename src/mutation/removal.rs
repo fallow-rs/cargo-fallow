@@ -145,7 +145,7 @@ fn span_chain(span: &RustcSpan) -> Vec<SpanAt> {
 }
 
 /// The way that the loop found a broken mutant.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Via {
     /// An error span is inside the mutant arm.
@@ -172,7 +172,7 @@ pub struct Removal {
 }
 
 /// A record of one compile round.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 pub struct RoundRecord {
     /// The round number, from 1.
     pub round: u32,

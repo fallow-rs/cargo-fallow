@@ -57,8 +57,9 @@ pub fn is_checked_path(path: &str) -> bool {
 }
 
 /// The kind of a growth finding.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "kebab-case")]
+#[schemars(rename = "SizeKind")]
 pub enum Kind {
     /// A file over the limit has more lines than its old version.
     GrownFile,
@@ -67,7 +68,8 @@ pub enum Kind {
 }
 
 /// A file that the growth rule rejects.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
+#[schemars(rename = "SizeFinding")]
 pub struct Finding {
     /// The kind.
     pub kind: Kind,
@@ -87,7 +89,7 @@ pub struct Finding {
 }
 
 /// A file over the line limit.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct LargeFile {
     /// The file.
     pub path: String,
@@ -96,7 +98,7 @@ pub struct LargeFile {
 }
 
 /// A function over the function line limit.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct LargeFunction {
     /// The file.
     pub path: String,
@@ -109,7 +111,8 @@ pub struct LargeFunction {
 }
 
 /// The summary of a size run.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
+#[schemars(rename = "SizeSummary")]
 pub struct Summary {
     /// The file line limit.
     pub max_file_lines: u32,
@@ -143,7 +146,9 @@ pub fn run(args: &SizeArgs) -> Result<Section, CliError> {
     progress.step("Reading cargo metadata");
     let workspace = workspace::load(args.common.manifest_path.as_deref())?;
     let settings: config::Size = config::section(&workspace, "size")?;
-    let scope = Scope::load(&workspace, args.common.changed_since.as_deref())?;
+    // A growth finding depends on the old version of the run, so the run
+    // does not judge stale baseline entries.
+    let scope = Scope::load(&workspace, &args.common.scope)?.narrowed(true);
     let root = workspace.root.as_std_path();
     let changes = match (&args.base, args.staged) {
         (Some(base), _) => Some(git::since_base(root, base)?),
@@ -259,13 +264,14 @@ pub fn section(inputs: &Inputs<'_>) -> Result<Section, CliError> {
         skipped_files,
     };
     let mut report = Report::new("size", summary, findings);
+    let mut findings = shared_findings(&report);
+    report.retain_baseline(scope, &mut findings);
     let outcome = if changes.is_some() {
         count_gate(report.findings.len(), enforced)
     } else {
         GateOutcome::new(GateStatus::Skipped, false)
     };
     report.gate_outcomes.insert(Gate::FileGrowth, outcome);
-    let findings = shared_findings(&report);
     Ok(Section {
         human: human(&report),
         json: to_value(&report)?,

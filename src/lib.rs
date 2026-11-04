@@ -9,6 +9,7 @@
 #![cfg_attr(not(test), deny(clippy::disallowed_methods))]
 
 mod attrs;
+mod baseline;
 mod check;
 mod cli;
 mod deps;
@@ -25,6 +26,7 @@ mod mutation;
 mod parse;
 mod render;
 mod report;
+mod schema;
 mod scope;
 mod section;
 mod structure;
@@ -67,6 +69,13 @@ pub fn run(args: Vec<OsString>) -> ExitCode {
             mutation::guard::run_watchdog(&roots, sweep.as_deref(), remove);
             EXIT_OK
         }
+        Parsed::Schema => match render::write_stdout(schema::text().trim_end()) {
+            Ok(()) => EXIT_OK,
+            Err(err) => {
+                CliError::output(&err).emit(cli::Format::Human);
+                EXIT_INVALID_INPUT
+            }
+        },
         Parsed::Exit(code) => code,
     };
     ExitCode::from(code)
@@ -85,7 +94,9 @@ fn visibility_report(options: &cli::VisibilityOptions) -> Result<u8, CliError> {
     progress.step("Reading cargo metadata");
     let workspace = workspace::load(options.manifest_path.as_deref())?;
     let options = &visibility::config::resolve(&workspace, options)?;
-    let scope = scope::Scope::load(&workspace, options.changed_since.as_deref())?;
+    // `--kind` narrows the findings, so a baseline entry of another kind is
+    // not stale.
+    let scope = scope::Scope::load(&workspace, &options.scope)?.narrowed(!options.kinds.is_empty());
     progress.step("Building the module graph");
     let production = graph::Production {
         bins: options.production.clone(),
@@ -112,7 +123,6 @@ fn visibility_report(options: &cli::VisibilityOptions) -> Result<u8, CliError> {
     let summary = visibility::precise::decide(&module_graph, &mut analysis, &run)?;
     visibility::refine(&module_graph, &check_options, &mut analysis);
     visibility::skip_generated(&module_graph, &mut analysis);
-    analysis.retain_scope(&module_graph, &scope);
     // A gate must not pass on a part of the decisions.
     if options.fail_on_issues && summary.incomplete() {
         return Err(error::CliError::new(
@@ -132,6 +142,7 @@ fn visibility_report(options: &cli::VisibilityOptions) -> Result<u8, CliError> {
     }
     let precise = Some(summary);
     analysis.retain_kinds(&options.kinds);
+    analysis.retain_scope(&module_graph, &scope);
     let report = visibility::report::VisibilityReport::new(visibility::report::Inputs {
         graph: &module_graph,
         analysis: &analysis,

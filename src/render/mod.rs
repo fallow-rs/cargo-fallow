@@ -27,6 +27,17 @@ pub const fn parse_message(file: &GateFile) -> &'static str {
     sarif::file_message(RustGateName::ParseError, file)
 }
 
+/// The SARIF notification of a gate that did not pass, or `None` when it
+/// passed or did not run.
+pub fn gate_notification(name: RustGateName, outcome: &GateOutcome) -> Option<serde_json::Value> {
+    sarif::level(outcome).map(|level| sarif::notification(name, outcome, level))
+}
+
+/// The line of a gate in the human gate block.
+pub fn gate_block_line(name: RustGateName, outcome: &GateOutcome) -> String {
+    format!("\n  {}: {}", name.as_str(), human::gate_line(outcome))
+}
+
 /// The empty SARIF log of a run with no result.
 pub fn empty_sarif() -> serde_json::Value {
     sarif::document(&[], &[], &[])

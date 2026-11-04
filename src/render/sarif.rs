@@ -99,7 +99,7 @@ pub(super) const fn level(outcome: &GateOutcome) -> Option<&'static str> {
     }
 }
 
-fn notification(name: RustGateName, outcome: &GateOutcome, level: &str) -> Value {
+pub(super) fn notification(name: RustGateName, outcome: &GateOutcome, level: &str) -> Value {
     let status = if outcome.status == GateStatus::Warn {
         "warned"
     } else {
@@ -138,6 +138,7 @@ pub(super) const fn file_message(name: RustGateName, file: &GateFile) -> &'stati
             | RustGateName::DuplicationFindings
             | RustGateName::DuplicationThreshold
             | RustGateName::FileGrowth
+            | RustGateName::StaleBaseline
             | RustGateName::HealthFindings
             | RustGateName::UnusedFiles,
             _,

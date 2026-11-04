@@ -23,7 +23,7 @@ pub const CHANGE_ACTION: &str = "change-visibility";
 pub const REMOVE_ACTION: &str = "remove-item";
 
 /// The report.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct VisibilityReport {
     /// The version of the report shape.
     pub schema_version: u32,
@@ -34,6 +34,7 @@ pub struct VisibilityReport {
     /// Always `rust`.
     pub language: &'static str,
     /// `fast` or `precise`.
+    #[schemars(extend("enum" = ["fast", "precise"]))]
     pub mode: &'static str,
     /// The number of findings.
     pub total_issues: usize,
@@ -56,7 +57,8 @@ pub struct VisibilityReport {
 }
 
 /// The count of each finding kind.
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, schemars::JsonSchema)]
+#[schemars(rename = "VisibilitySummary")]
 pub struct Summary {
     /// The `dead_public` findings.
     pub dead_public: usize,
@@ -69,7 +71,7 @@ pub struct Summary {
 }
 
 /// The size of the graph.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct GraphSummary {
     /// The crates: one for each target.
     pub crates: usize,
@@ -87,7 +89,7 @@ pub struct GraphSummary {
 }
 
 /// One crate of the graph.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct CrateRow {
     /// The package.
     pub package: String,
@@ -106,7 +108,7 @@ pub struct CrateRow {
 }
 
 /// A crate name that the code can use.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct ExternRow {
     /// The name in code.
     pub name: String,
@@ -119,7 +121,7 @@ pub struct ExternRow {
 }
 
 /// A file that did not parse.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct SkippedRow {
     /// The path.
     pub path: String,
@@ -128,9 +130,10 @@ pub struct SkippedRow {
 }
 
 /// One finding.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct FindingRow {
     /// The finding kind.
+    #[schemars(extend("enum" = ["dead_public", "unnecessary_public", "unnecessary_restricted_visibility"]))]
     pub kind: &'static str,
     /// The package.
     pub package: String,
@@ -160,7 +163,8 @@ pub struct FindingRow {
 }
 
 /// The change of the visibility keyword.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
+#[schemars(rename = "VisibilityAction")]
 pub struct Action {
     /// `change-visibility`, or `remove-item` for an enum variant.
     #[serde(rename = "type")]
@@ -184,7 +188,7 @@ pub struct Action {
 
 /// A range of text with one-based lines and columns in characters. The end is
 /// the position after the last character.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 pub struct Range {
     /// The line of the first character.
     pub line: u32,
@@ -563,6 +567,17 @@ const fn description(kind: FindingKind) -> &'static str {
         }
         FindingKind::UnnecessaryPublic => "Make the item `pub(crate)`.",
         FindingKind::UnnecessaryRestricted => "Remove the visibility keyword.",
+    }
+}
+
+/// The baseline entry of a finding: the same id as its finding in the shared
+/// shape.
+pub fn baseline_entry(graph: &Graph, finding: &Finding) -> crate::baseline::Entry {
+    let row = row(graph, finding);
+    crate::baseline::Entry {
+        check: KIND.to_owned(),
+        rule: row.kind.to_owned(),
+        id: crate::finding::fingerprint(&[KIND, row.kind, &row.krate, &row.item, row.item_kind]),
     }
 }
 

@@ -167,6 +167,10 @@ struct GraphPart {
     /// The `pub` items and the `dead_public` findings of each file.
     dead_counts: Option<crate::hotspots::DeadCounts>,
     deps: Option<Section>,
+    /// The `files` section, from the scans of the graph parse.
+    /// The result stays apart, so an error of `files` keeps its place after
+    /// the errors of the other checks.
+    files: Option<Result<Section, CliError>>,
     visibility: Option<Section>,
     public_items: Option<usize>,
     dead_public: Option<usize>,
@@ -238,30 +242,33 @@ pub fn execute(options: &Options) -> Result<report::CheckReport, CliError> {
     ]
     .into_iter()
     .any(runs);
+    let inputs = GraphInputs {
+        workspace: &workspace,
+        metadata: metadata.as_ref(),
+        visibility: visibility_options.as_ref(),
+        files: runs(CheckName::Files),
+        enforced,
+        scope: &scope,
+        progress,
+    };
     let (graph_part, source_part, boundaries, files) = thread::scope(|threads| {
-        let graph_thread = needs_graph.then(|| {
-            threads.spawn(|| {
-                graph_checks(
-                    &workspace,
-                    metadata.as_ref(),
-                    visibility_options.as_ref(),
-                    enforced,
-                    &scope,
-                    progress,
-                )
-            })
-        });
+        let graph_thread = needs_graph.then(|| threads.spawn(|| graph_checks(&inputs)));
         let source_thread = needs_source.then(|| {
             threads.spawn(|| source_checks(&workspace, &settings, enforced, &scope, progress))
         });
         let boundaries_thread = runs(CheckName::Boundaries)
             .then(|| threads.spawn(|| boundaries::section(&workspace, enforced, &scope, progress)));
-        let files_thread = runs(CheckName::Files)
-            .then(|| threads.spawn(|| files::section(&workspace, enforced, &scope, progress)));
-        let graph_part = join(graph_thread)?;
+        // With the graph, the files check reads the scans of the graph parse.
+        let files_thread = (inputs.files && !needs_graph).then(|| {
+            threads.spawn(|| files::section(&workspace, enforced, &scope, progress, None))
+        });
+        let mut graph_part = join(graph_thread)?;
         let source_part = join(source_thread)?;
         let boundaries = join(boundaries_thread)?;
-        let files = join(files_thread)?;
+        let files = match graph_part.as_mut().and_then(|part| part.files.take()) {
+            Some(files) => Some(files?),
+            None => join(files_thread)?,
+        };
         Ok::<_, CliError>((graph_part, source_part, boundaries, files))
     })?;
     let graph_part = graph_part.unwrap_or_default();
@@ -408,15 +415,31 @@ fn visibility_flags(options: &Options, enforced: bool) -> VisibilityOptions {
     }
 }
 
-/// Builds the module graph once and runs `deps` and `visibility` on it.
-fn graph_checks(
-    workspace: &Workspace,
-    metadata: Option<&cargo_metadata::Metadata>,
-    visibility_options: Option<&VisibilityOptions>,
+/// The inputs of the checks on the module graph.
+struct GraphInputs<'a> {
+    workspace: &'a Workspace,
+    /// The resolve, when `deps` runs.
+    metadata: Option<&'a cargo_metadata::Metadata>,
+    /// The options, when `visibility` runs.
+    visibility: Option<&'a VisibilityOptions>,
+    /// True when `files` runs. It then reads the scans of the graph parse.
+    files: bool,
     enforced: bool,
-    scope: &Scope,
+    scope: &'a Scope,
     progress: Progress,
-) -> Result<GraphPart, CliError> {
+}
+
+/// Builds the module graph once and runs `deps`, `visibility` and `files` on
+/// its parse.
+fn graph_checks(inputs: &GraphInputs<'_>) -> Result<GraphPart, CliError> {
+    let GraphInputs {
+        workspace,
+        visibility: visibility_options,
+        enforced,
+        scope,
+        progress,
+        ..
+    } = *inputs;
     progress.step("Building the module graph");
     // Only the visibility check reads the production selection.
     let production = graph::Production {
@@ -424,11 +447,37 @@ fn graph_checks(
             .map(|options| options.production.clone())
             .unwrap_or_default(),
     };
-    let module_graph = graph::build(workspace, &production);
+    let (module_graph, scans) = if inputs.files {
+        let (module_graph, scans) = graph::build_with_scans(workspace, &production);
+        (module_graph, Some(scans))
+    } else {
+        (graph::build(workspace, &production), None)
+    };
+    thread::scope(|threads| {
+        let files_thread = scans.map(|scans| {
+            threads.spawn(|| files::section(workspace, enforced, scope, progress, Some(scans)))
+        });
+        let mut part = graph_sections(inputs, &module_graph)?;
+        part.files = join(files_thread).transpose();
+        Ok(part)
+    })
+}
+
+/// The `deps` and `visibility` sections on the module graph.
+fn graph_sections(inputs: &GraphInputs<'_>, module_graph: &Graph) -> Result<GraphPart, CliError> {
+    let GraphInputs {
+        workspace,
+        metadata,
+        visibility: visibility_options,
+        enforced,
+        scope,
+        progress,
+        ..
+    } = *inputs;
     let mut part = GraphPart::default();
     if let Some(metadata) = metadata {
         progress.step("Checking the dependencies");
-        let report = deps::report(workspace, metadata, &module_graph, enforced, scope);
+        let report = deps::report(workspace, metadata, module_graph, enforced, scope);
         part.unused_deps = Some(
             report
                 .findings
@@ -442,8 +491,8 @@ fn graph_checks(
     }
     if let Some(options) = visibility_options {
         progress.step("Checking the visibility");
-        let report = visibility::fast_report(&module_graph, options, workspace, scope);
-        part.public_items = Some(public_items(&module_graph, &options.exclude));
+        let report = visibility::fast_report(module_graph, options, workspace, scope);
+        part.public_items = Some(public_items(module_graph, &options.exclude));
         part.dead_public = Some(report.summary.dead_public);
         // A scope, a baseline or a kind filter hides findings, so the ratio
         // would read too low. The file scores then have no ratio.
@@ -451,7 +500,7 @@ fn graph_checks(
             && !scope.has_baseline()
             && (options.kinds.is_empty()
                 || options.kinds.contains(&visibility::FindingKind::DeadPublic));
-        part.dead_counts = all_dead.then(|| dead_counts(&module_graph, &options.exclude, &report));
+        part.dead_counts = all_dead.then(|| dead_counts(module_graph, &options.exclude, &report));
         part.visibility = Some(report.section()?);
     }
     Ok(part)

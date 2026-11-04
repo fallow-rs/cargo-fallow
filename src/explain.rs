@@ -26,7 +26,7 @@ pub struct ExplainArgs {
     /// The rule, for example `unused-dependency`. A `_` and a `-` are the same.
     rule: String,
     /// The output format: `human` or `json`.
-    #[arg(long, value_enum, default_value_t = Format::Human)]
+    #[arg(long, default_value = "human", value_parser = crate::cli::human_or_json())]
     format: Format,
 }
 
@@ -278,22 +278,6 @@ pub fn find(name: &str) -> Option<&'static Explanation> {
 
 /// Runs `explain` and returns the process exit code.
 pub fn run(args: &ExplainArgs) -> Result<u8, CliError> {
-    if matches!(
-        args.format,
-        Format::Sarif
-            | Format::Codeclimate
-            | Format::Compact
-            | Format::Markdown
-            | Format::GithubAnnotations
-            | Format::GithubSummary
-            | Format::Badge
-    ) {
-        return Err(CliError::new(
-            ErrorCode::InvalidArgument,
-            "`explain` has no SARIF, CodeClimate, compact, markdown, GitHub or badge output",
-        )
-        .with_help("Use `--format human` or `--format json`."));
-    }
     let Some(rule) = find(&args.rule) else {
         let known: Vec<&str> = RULES.iter().map(|rule| rule.rule).collect();
         return Err(CliError::new(

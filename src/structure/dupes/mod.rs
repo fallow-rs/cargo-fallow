@@ -1034,7 +1034,14 @@ fn human(report: &Report<Summary, CloneGroup>) -> String {
         stats.duplication_percentage,
     );
     if report.findings.is_empty() {
-        text.push_str("No clones found\n");
+        // The line counts are those of the whole workspace, so a run whose
+        // scope, baseline or `off` rule hides each group still counts lines.
+        // A suppressed clone leaves the line counts too.
+        text.push_str(if stats.duplicated_lines == 0 {
+            "No clones found\n"
+        } else {
+            "No clone group to report: the scope, the baseline or an `off` rule hides each group\n"
+        });
     }
     for group in &report.findings {
         let _ = writeln!(

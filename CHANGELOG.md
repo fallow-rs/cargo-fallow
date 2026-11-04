@@ -95,6 +95,12 @@ GitHub release. Each release needs a `## [X.Y.Z] - YYYY-MM-DD` section.
 
 ### Fixed
 
+- The human output of `check` ends with the gates that fail and a next step.
+  The gate block lists files only for the `parse-error` gate. The size
+  section names `cargo fallow size --base <ref>`, a command that runs, and
+  the dupes section no longer says "No clones found" when a baseline hides
+  each clone group. `fix`, `init` and `explain` list only `human` and `json`
+  in the help of `--format`.
 - The action input `base: auto` now takes the commit before a push on a push
   event. A new branch and a commit that the checkout cannot fetch give no base
   and a notice. The size self-test runs on push again.

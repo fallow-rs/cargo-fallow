@@ -40,7 +40,7 @@ pub struct FixArgs {
     #[arg(long, value_name = "PATH")]
     manifest_path: Option<PathBuf>,
     /// The output format: `human` or `json`.
-    #[arg(long, value_enum, default_value_t = Format::Human)]
+    #[arg(long, default_value = "human", value_parser = crate::cli::human_or_json())]
     format: Format,
     /// Hide the progress lines on stderr.
     #[arg(long)]
@@ -147,22 +147,6 @@ struct Plan {
 
 /// Runs `fix` and returns the process exit code.
 pub fn run(args: &FixArgs) -> Result<u8, CliError> {
-    if matches!(
-        args.format,
-        Format::Sarif
-            | Format::Codeclimate
-            | Format::Compact
-            | Format::Markdown
-            | Format::GithubAnnotations
-            | Format::GithubSummary
-            | Format::Badge
-    ) {
-        return Err(CliError::new(
-            ErrorCode::InvalidArgument,
-            "`fix` has no SARIF, CodeClimate, compact, markdown, GitHub or badge output",
-        )
-        .with_help("Use `--format human` or `--format json`."));
-    }
     if !args.dry_run && !args.yes && !std::io::stdin().is_terminal() {
         return Err(CliError::new(
             ErrorCode::InvalidArgument,

@@ -41,6 +41,18 @@ pub enum Format {
     Badge,
 }
 
+/// The value parser of `--format` for a command with only human and JSON
+/// output, so the help lists only these two values.
+pub fn human_or_json() -> impl clap::builder::TypedValueParser<Value = Format> {
+    clap::builder::PossibleValuesParser::new(["human", "json"]).map(|value| {
+        if value == "json" {
+            Format::Json
+        } else {
+            Format::Human
+        }
+    })
+}
+
 /// The options of the `visibility` command.
 #[derive(Debug, Clone)]
 pub struct VisibilityOptions {

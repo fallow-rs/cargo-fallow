@@ -4,8 +4,8 @@
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
-use fallow_report_protocol::GateOutcome;
 use fallow_report_protocol::exit_code::{EXIT_GATE_FAILED, EXIT_OK};
+use fallow_report_protocol::{GateOutcome, GateStatus};
 use serde::Serialize;
 use serde_json::{Map, Value};
 
@@ -75,6 +75,9 @@ pub struct CheckReport {
     /// JSON report.
     #[serde(skip)]
     parts: Vec<(CheckName, Section)>,
+    /// True for a run with `--save-baseline`, which enforces no gate.
+    #[serde(skip)]
+    saved: bool,
 }
 
 /// The schema of the `sections` member: the report of each check that ran.
@@ -173,6 +176,7 @@ impl CheckReport {
             meta: None,
             sections,
             parts,
+            saved: false,
         }
     }
 
@@ -193,6 +197,7 @@ impl CheckReport {
         }
         if scope.saves() {
             scope.save("check")?;
+            self.saved = true;
             for gate in self.gate_outcomes.values_mut() {
                 gate.enforced = false;
             }
@@ -376,6 +381,56 @@ impl CheckReport {
         }
         text.push('\n');
         text.push_str(&render::parse_human(&self.gate_outcomes));
+        text.push_str(&self.closing_lines());
+        text
+    }
+
+    /// The last lines for a person: the gates that fail, and the next step.
+    /// A clean run has none.
+    fn closing_lines(&self) -> String {
+        let failing = || {
+            self.gate_outcomes
+                .iter()
+                .filter(|(_, outcome)| outcome.status == GateStatus::Fail)
+        };
+        let mut text = String::new();
+        let enforced: Vec<String> = failing()
+            .filter(|(_, outcome)| outcome.enforced)
+            .map(|(name, outcome)| match outcome.observed {
+                Some(observed) if observed > 0.0 => format!("{} ({observed})", name.as_str()),
+                _ => name.as_str().to_owned(),
+            })
+            .collect();
+        if !enforced.is_empty() {
+            let _ = write!(text, "\n\nFailed: {}", enforced.join(", "));
+        }
+        let loose = failing().filter(|(_, outcome)| !outcome.enforced).count();
+        if loose > 0 && self.saved {
+            let _ = write!(
+                text,
+                "\n\n{loose} {} {}. A run with `--save-baseline` enforces no gate.",
+                plural(loose, "gate", "gates"),
+                plural(loose, "fails", "fail"),
+            );
+        } else if loose > 0 {
+            let _ = write!(
+                text,
+                "\n\n{loose} {} {}, not enforced. Add `--fail-on-issues` to fail the run on them.",
+                plural(loose, "gate", "gates"),
+                plural(loose, "fails", "fail"),
+            );
+        }
+        if self.total_issues > 0 {
+            text.push_str(if text.is_empty() { "\n\n" } else { "\n" });
+            text.push_str("Next: `cargo fallow explain <rule>` explains a rule.");
+            let fixable = self
+                .findings
+                .iter()
+                .any(|finding| finding.actions.iter().any(|action| action.auto_fixable));
+            if fixable {
+                text.push_str(" `cargo fallow fix --dry-run` shows the automatic edits.");
+            }
+        }
         text
     }
 

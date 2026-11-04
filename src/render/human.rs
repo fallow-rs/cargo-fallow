@@ -14,6 +14,11 @@ pub fn gates_block(gates: &BTreeMap<RustGateName, GateOutcome>) -> String {
     for (name, outcome) in gates {
         // Writing to a String does not fail.
         let _ = write!(text, "\n  {}: {}", name.as_str(), gate_line(outcome));
+        // The findings already name the files of the other gates. A file that
+        // does not parse has no finding, so only this gate lists its files.
+        if *name != RustGateName::ParseError {
+            continue;
+        }
         for file in &outcome.files {
             let _ = write!(text, "\n    {}", file.path);
             if file.reason == Some(GateFileReason::NestingTooDeep) {

@@ -4,7 +4,13 @@ This page describes the output of `check`. [Output](mutation-testing.md#output)
 describes the output of `mutants`.
 
 - `human`: the score, then the text of each check, then one gate block, on
-  stdout. The progress lines go to stderr.
+  stdout. The progress lines go to stderr. Only the `parse-error` gate lists
+  its files, because the findings name the files of the other gates. When a
+  gate fails, the last lines name it. A `Failed:` line lists each enforced
+  gate that fails, and a second line counts the gates that fail but are not
+  enforced. A run with findings ends with a `Next:` line that names
+  `cargo fallow explain` and, when an edit is automatic,
+  `cargo fallow fix --dry-run`.
 - `json`: the report on stdout. The report has `schema_version` (1),
   `version`, `kind`, `language`, `workspace`, `checks`, `total_issues`,
   `health`, `findings`, `gate_outcomes` and `sections`. When

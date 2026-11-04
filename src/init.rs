@@ -47,7 +47,7 @@ pub struct InitArgs {
     #[arg(long, value_name = "PATH")]
     manifest_path: Option<PathBuf>,
     /// The output format: `human` or `json`.
-    #[arg(long, value_enum, default_value_t = Format::Human)]
+    #[arg(long, default_value = "human", value_parser = crate::cli::human_or_json())]
     format: Format,
     /// Hide the progress lines on stderr.
     #[arg(long)]
@@ -99,13 +99,6 @@ struct Limits {
 
 /// Runs `init` and returns the process exit code.
 pub fn run(args: &InitArgs) -> Result<u8, CliError> {
-    if !matches!(args.format, Format::Human | Format::Json) {
-        return Err(CliError::new(
-            ErrorCode::InvalidArgument,
-            "`init` has only human and JSON output",
-        )
-        .with_help("Use `--format human` or `--format json`."));
-    }
     if args.ci == Some(Ci::Github) {
         render::write_stdout(github_workflow().trim_end()).map_err(|err| CliError::output(&err))?;
         return Ok(EXIT_OK);

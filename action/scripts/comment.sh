@@ -56,10 +56,16 @@ fi
 # The author of the comment: the login of the token. The default token cannot
 # read its own user, and its comments have the author github-actions[bot]. A
 # comment of another author with the marker is not the comment of the action.
+# A failed lookup can print an error body or `null`, so only a value in the
+# form of a login counts.
 if [ -z "${COMMENT_AUTHOR:-}" ]; then
   COMMENT_AUTHOR="$(gh api user --jq .login 2> /dev/null || true)"
-  [ -n "$COMMENT_AUTHOR" ] || COMMENT_AUTHOR="github-actions[bot]"
+  if ! [[ "$COMMENT_AUTHOR" =~ ^[A-Za-z0-9][A-Za-z0-9-]*(\[bot\])?$ ]] || [ "$COMMENT_AUTHOR" = "null" ]; then
+    COMMENT_AUTHOR="github-actions[bot]"
+  fi
 fi
+
+echo "The comment author is ${COMMENT_AUTHOR}."
 
 # An API error, for example a read-only token, gives a warning: the gates of
 # the run decide the job, not the comment.

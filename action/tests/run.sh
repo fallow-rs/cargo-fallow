@@ -658,6 +658,7 @@ cat > "$GH_DIR/gh" << 'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$GH_LOG"
 case "$*" in
+  "api user --jq .login") printf '%s\n' "${GH_USER_OUTPUT:-}"; exit "${GH_USER_EXIT:-1}" ;;
   *"--paginate"*) cat "$GH_COMMENTS" ;;
   *"body=@"*)
     for arg in "$@"; do
@@ -673,6 +674,7 @@ run_comment() {
   GH_BODY="$WORK/gh-body-$RANDOM$RANDOM"
   : > "$GH_LOG"
   OUT="$(env -i PATH="$GH_DIR:$BASE_PATH" GH_LOG="$GH_LOG" GH_BODY="$GH_BODY" \
+    GH_USER_OUTPUT="${GH_USER_OUTPUT:-}" GH_USER_EXIT="${GH_USER_EXIT:-1}" \
     GH_COMMENTS="${GH_COMMENTS:-/dev/null}" RUNNER_TEMP="$WORK" \
     ACTION_JQ_DIR="$JQ_DIR" RESULTS_FILE="$FIXTURES/complexity.json" SARIF_FILE="" \
     FALLOW_COMMAND=complexity EXIT_CODE=0 MAX_FINDINGS=50 GH_REPO=o/r "$@" \
@@ -689,6 +691,12 @@ printf '[{"id": 11, "body": "other", "user": {"login": "someone"}}, {"id": 13, "
 GH_COMMENTS="$WORK/comments-one.json" run_comment PR_NUMBER=7
 assert_contains "$(cat "$GH_LOG")" "-X PATCH repos/o/r/issues/comments/42" "comment: a second run updates the comment"
 assert_equals "$(grep -c -- '-X POST' "$GH_LOG")" "0" "comment: a second run posts no new comment"
+GH_USER_OUTPUT='{"message":"Resource not accessible by integration"}' GH_COMMENTS="$WORK/comments-one.json" run_comment PR_NUMBER=7
+assert_contains "$(cat "$GH_LOG")" "-X PATCH repos/o/r/issues/comments/42" "comment: a failed user lookup with an error body still finds the comment"
+GH_USER_OUTPUT=null GH_USER_EXIT=0 GH_COMMENTS="$WORK/comments-one.json" run_comment PR_NUMBER=7
+assert_contains "$(cat "$GH_LOG")" "-X PATCH repos/o/r/issues/comments/42" "comment: a null login still finds the comment"
+GH_USER_OUTPUT=someone GH_USER_EXIT=0 GH_COMMENTS="$WORK/comments-one.json" run_comment PR_NUMBER=7
+assert_contains "$(cat "$GH_LOG")" "-X PATCH repos/o/r/issues/comments/13" "comment: a personal token finds the comment of its user"
 GH_COMMENTS="$WORK/comments-one.json" run_comment PR_NUMBER=7 COMMENT_KEY=other-key
 assert_contains "$(cat "$GH_LOG")" "-X POST" "comment: another key posts its own comment"
 run_comment PR_NUMBER=7 IS_FORK=true

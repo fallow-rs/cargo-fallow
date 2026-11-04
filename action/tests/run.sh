@@ -293,9 +293,9 @@ assert_contains "$OUT" "Invalid 'timeout' input" "a number with text stops the s
 
 run_analyze INPUT_COMMAND=mutants STUB_JSON="$FIXTURES/mutants.json" STUB_SARIF=/dev/null \
   INPUT_PACKAGE=my-crate INPUT_MAX_MUTANTS=10 INPUT_TIME_BUDGET=600 INPUT_JOBS=2 INPUT_TIMEOUT=30 \
-  INPUT_BASE=auto PR_BASE_SHA=0123abc
+  INPUT_BASE=auto PR_BASE_SHA=0123abc00123abc00123abc00123abc00123abc0
 assert_equals "$(calls_made)" "1" "mutants: one run"
-assert_equals "$(call_args 1)" "mutants --fail-on-issues --in-diff 0123abc --package my-crate --max-mutants 10 --time-budget 600 --jobs 2 --timeout 30 --format json " "mutants: the inputs become flags"
+assert_equals "$(call_args 1)" "mutants --fail-on-issues --in-diff 0123abc00123abc00123abc00123abc00123abc0 --package my-crate --max-mutants 10 --time-budget 600 --jobs 2 --timeout 30 --format json " "mutants: the inputs become flags"
 if diff <(jq -S . "$(output_of sarif)") <(jq -S . "$FIXTURES/mutants.sarif") > /dev/null; then
   pass "mutants: the SARIF log comes from the JSON report"
 else
@@ -304,22 +304,46 @@ fi
 assert_equals "$(output_of mutation-score)" "66.7" "mutants: mutation-score output"
 assert_contains "$OUT" "The mutants run has no second human run" "mutants: format human explains the log"
 
+SHA_A=4567def04567def04567def04567def04567def0
+SHA_B=0123abc00123abc00123abc00123abc00123abc0
 run_analyze INPUT_COMMAND=mutants INPUT_BASE=auto STUB_JSON="$FIXTURES/mutants.json"
 assert_equals "$(call_args 1)" "mutants --fail-on-issues --format json " "base auto with no pull request and no push gives no flag"
-assert_contains "$OUT" "base: auto found no pull request base" "base auto with no base explains it"
-run_analyze INPUT_COMMAND=size INPUT_BASE=auto INPUT_FORMAT=json PUSH_BEFORE_SHA=4567def
-assert_equals "$(call_args 1)" "size --fail-on-issues --base 4567def --format json " "base auto on a push takes the commit before the push"
-run_analyze INPUT_COMMAND=size INPUT_BASE=auto INPUT_FORMAT=json PR_BASE_SHA=0123abc PUSH_BEFORE_SHA=4567def
-assert_equals "$(call_args 1)" "size --fail-on-issues --base 0123abc --format json " "base auto prefers the pull request base"
+assert_contains "$OUT" "found no pull request base and no push" "base auto with no base explains it"
+run_analyze INPUT_COMMAND=size INPUT_BASE=auto INPUT_FORMAT=json PUSH_BEFORE_SHA="$SHA_A"
+assert_equals "$(call_args 1)" "size --fail-on-issues --base $SHA_A --format json " "base auto on a push takes the commit before the push"
+run_analyze INPUT_COMMAND=mutants INPUT_BASE=auto STUB_JSON="$FIXTURES/mutants.json" PUSH_BEFORE_SHA="$SHA_A"
+assert_equals "$(call_args 1)" "mutants --fail-on-issues --in-diff $SHA_A --format json " "base auto on a push gives mutants the commit before the push"
+run_analyze INPUT_COMMAND=size INPUT_BASE=auto INPUT_FORMAT=json PR_BASE_SHA="$SHA_B" PUSH_BEFORE_SHA="$SHA_A"
+assert_equals "$(call_args 1)" "size --fail-on-issues --base $SHA_B --format json " "base auto prefers the pull request base"
 run_analyze INPUT_COMMAND=size INPUT_BASE=auto INPUT_FORMAT=json PUSH_BEFORE_SHA=0000000000000000000000000000000000000000
 assert_equals "$(call_args 1)" "size --fail-on-issues --format json " "base auto on the push of a new branch gives no base"
-assert_contains "$OUT" "a new branch" "base auto on a new branch explains it"
+assert_contains "$OUT" "a new branch or tag" "base auto on a new branch explains it"
+run_analyze INPUT_COMMAND=size INPUT_BASE=auto INPUT_FORMAT=json PUSH_BEFORE_SHA="--upload-pack=x"
+assert_equals "$(call_args 1)" "size --fail-on-issues --format json " "base auto refuses a value that is not a commit SHA"
+# A repository with a remote: the commit that the checkout lacks comes from
+# the remote, a commit that no remote has gives no base.
+GIT_ID=(-c user.name=Test -c user.email=test@example.com -c commit.gpgsign=false)
+REMOTE="$WORK/remote-repo"
+git init -q "$REMOTE"
+git -C "$REMOTE" "${GIT_ID[@]}" commit -q --allow-empty -m one
+REMOTE_SHA="$(git -C "$REMOTE" rev-parse HEAD)"
+git -C "$REMOTE" config uploadpack.allowReachableSHA1InWant true
 SHALLOW="$WORK/shallow-repo"
 git init -q "$SHALLOW"
+git -C "$SHALLOW" remote add origin "$REMOTE"
+run_analyze INPUT_COMMAND=size INPUT_BASE=auto INPUT_FORMAT=json INPUT_WORKING_DIRECTORY="$SHALLOW" \
+  PUSH_BEFORE_SHA="$REMOTE_SHA"
+assert_equals "$(call_args 1)" "size --fail-on-issues --base $REMOTE_SHA --format json " "base auto fetches a commit that the checkout lacks"
+run_analyze INPUT_COMMAND=size INPUT_BASE=auto INPUT_FORMAT=json INPUT_WORKING_DIRECTORY="$SHALLOW" \
+  PUSH_BEFORE_SHA="$REMOTE_SHA"
+assert_equals "$(call_args 1)" "size --fail-on-issues --base $REMOTE_SHA --format json " "base auto uses a commit that the checkout has"
 run_analyze INPUT_COMMAND=size INPUT_BASE=auto INPUT_FORMAT=json INPUT_WORKING_DIRECTORY="$SHALLOW" \
   PUSH_BEFORE_SHA=89abcdef0123456789abcdef0123456789abcdef
-assert_equals "$(call_args 1)" "size --fail-on-issues --format json " "base auto with a commit that the checkout does not have gives no base"
+assert_equals "$(call_args 1)" "size --fail-on-issues --format json " "base auto with a commit that no remote has gives no base"
 assert_contains "$OUT" "fetch-depth: 0" "base auto with a missing commit names the checkout fix"
+run_analyze INPUT_COMMAND=size INPUT_BASE=auto INPUT_FORMAT=json INPUT_WORKING_DIRECTORY="$SHALLOW" \
+  PR_BASE_SHA=89abcdef0123456789abcdef0123456789abcdef
+assert_equals "$(call_args 1)" "size --fail-on-issues --format json " "base auto checks the pull request base too"
 run_analyze INPUT_COMMAND=size INPUT_BASE=origin/main INPUT_FORMAT=json
 assert_equals "$(call_args 1)" "size --fail-on-issues --base origin/main --format json " "size: base becomes --base"
 run_analyze INPUT_COMMAND=complexity INPUT_BASE=origin/main INPUT_PACKAGE=x INPUT_FORMAT=json

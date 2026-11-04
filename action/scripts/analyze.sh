@@ -16,7 +16,8 @@ set -euo pipefail
 # Optional env: INPUT_WORKING_DIRECTORY, INPUT_MANIFEST_PATH, INPUT_FORMAT,
 #   INPUT_FAIL_ON_ISSUES, INPUT_ARGS, INPUT_BASE, INPUT_ARTIFACTS_DIR,
 #   INPUT_PACKAGE, INPUT_MAX_MUTANTS, INPUT_TIME_BUDGET, INPUT_JOBS,
-#   INPUT_TIMEOUT, PR_BASE_SHA, PUSH_BEFORE_SHA, GITHUB_WORKSPACE, GITHUB_OUTPUT, RUNNER_TEMP,
+#   INPUT_TIMEOUT, PR_BASE_SHA, PUSH_BEFORE_SHA,
+#   GITHUB_WORKSPACE, GITHUB_OUTPUT, RUNNER_TEMP,
 #   CARGO_FALLOW_BIN
 
 : "${INPUT_WORKING_DIRECTORY:=.}" "${INPUT_MANIFEST_PATH:=}" "${INPUT_FORMAT:=human}"
@@ -138,28 +139,48 @@ if [ "$INPUT_FAIL_ON_ISSUES" = "true" ]; then
 fi
 
 # The commit that `base: auto` compares with: the base commit of a pull
-# request, else the commit before a push. A push of a new branch has the zero
-# commit, and a shallow checkout can miss the commit; then the run has no base.
+# request, else the commit before a push. A push of a new branch or tag has the
+# zero commit. A shallow checkout can miss the commit, so the script fetches
+# it. With no usable commit, the run has no base. Each notice goes to stderr,
+# because the caller reads the commit from stdout.
 ZERO_SHA="0000000000000000000000000000000000000000"
+has_commit() {
+  git -C "$INPUT_WORKING_DIRECTORY" cat-file -e "${1}^{commit}" 2> /dev/null
+}
+usable_commit() {
+  local sha="$1"
+  if ! [[ "$sha" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]]; then
+    echo "::notice::base: auto got '${sha}', which is not a commit SHA. The run compares with no base." >&2
+    return 1
+  fi
+  if ! git -C "$INPUT_WORKING_DIRECTORY" rev-parse --git-dir > /dev/null 2>&1 || has_commit "$sha"; then
+    return 0
+  fi
+  GIT_TERMINAL_PROMPT=0 git -C "$INPUT_WORKING_DIRECTORY" fetch --no-tags --quiet --depth=1 \
+    origin -- "$sha" > /dev/null 2>&1 || true
+  if has_commit "$sha"; then
+    return 0
+  fi
+  echo "::notice::base: auto cannot read the commit ${sha}. Use fetch-depth: 0 in actions/checkout. After a force push, the old commit can be gone. The run compares with no base." >&2
+  return 1
+}
 auto_base() {
-  if [ -n "$PR_BASE_SHA" ]; then
-    printf '%s' "$PR_BASE_SHA"
+  local sha="$PR_BASE_SHA"
+  if [ -z "$sha" ]; then
+    sha="$PUSH_BEFORE_SHA"
+  fi
+  if [ -z "$sha" ]; then
+    echo "::notice::base: auto found no pull request base and no push. The run compares with no base." >&2
     return 0
   fi
-  if [ -z "$PUSH_BEFORE_SHA" ] || [ "$PUSH_BEFORE_SHA" = "$ZERO_SHA" ]; then
-    echo "::notice::base: auto found no pull request base and no earlier commit of the push (a new branch). The run compares with no base." >&2
+  if [ "$sha" = "$ZERO_SHA" ]; then
+    echo "::notice::base: auto found no commit before the push: the push made a new branch or tag. The run compares with no base." >&2
     return 0
   fi
-  local repo="$INPUT_WORKING_DIRECTORY"
-  if git -C "$repo" rev-parse --git-dir > /dev/null 2>&1 \
-    && ! git -C "$repo" cat-file -e "${PUSH_BEFORE_SHA}^{commit}" 2> /dev/null; then
-    git -C "$repo" fetch --no-tags --quiet --depth=1 origin "$PUSH_BEFORE_SHA" > /dev/null 2>&1 || true
-    if ! git -C "$repo" cat-file -e "${PUSH_BEFORE_SHA}^{commit}" 2> /dev/null; then
-      echo "::notice::base: auto cannot read the commit ${PUSH_BEFORE_SHA} before the push. Use fetch-depth: 0 in actions/checkout. The run compares with no base." >&2
-      return 0
-    fi
+  if usable_commit "$sha"; then
+    printf '%s' "$sha"
   fi
-  printf '%s' "$PUSH_BEFORE_SHA"
+  return 0
 }
 
 BASE="$INPUT_BASE"

@@ -117,9 +117,14 @@ The `mutants-*` inputs apply only to `command: mutants`. For other flags, use
   writes a notice. `size` then gives no growth gate, and `mutants` runs each
   mutant.
 
-A shallow checkout can miss the commit before a push. The action then fetches
-it. When the fetch fails, the run compares with no base and the notice names
-`fetch-depth: 0`.
+- On another event, for example `workflow_dispatch`, `schedule` or
+  `merge_group`, no commit.
+
+A shallow checkout can miss the commit. The action then fetches that one
+commit with `--depth=1`, so the clone gets it as a shallow commit. When the
+fetch fails, the run compares with no base, and the notice names
+`fetch-depth: 0`. After a force push, the old commit can be gone from the
+remote. Use `fetch-depth: 0` for a full comparison.
 
 ### Gate flags
 

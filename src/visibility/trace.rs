@@ -87,7 +87,7 @@ pub struct TracedUse {
     #[schemars(extend("enum" = [
         "import", "glob-import", "path", "name-match", "method-name",
         "field-name", "member-name", "record-field", "macro-call",
-        "macro-tokens", "attribute", "doc-code"
+        "macro-tokens", "attribute", "doc-code", "doc-link"
     ]))]
     pub credit: &'static str,
     /// How sure the credit is: `exact`, `fallback` (the path did not resolve,
@@ -281,6 +281,7 @@ fn credit_label(graph: &Graph, credit: &Credit) -> &'static str {
     };
     match reference.origin {
         Origin::Doc => return "doc-code",
+        Origin::DocLink => return "doc-link",
         Origin::Attr => return "attribute",
         Origin::Macro if !matches!(reference.kind, RefKind::Macro(_)) => return "macro-tokens",
         _ => {}

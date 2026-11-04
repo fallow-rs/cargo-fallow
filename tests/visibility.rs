@@ -1665,3 +1665,217 @@ fn precise_mode_with_a_proc_macro_crate_that_does_not_build_is_an_error() {
     let error: Value = serde_json::from_str(&text).expect("the output is JSON");
     assert_eq!(error["code"], "CARGO_FALLOW_PRECISE_FAILED", "{error}");
 }
+
+/// rustc warns with `private_interfaces` when an item that stays `pub` names a
+/// type that is less visible. An attribute macro keeps `start` public, so each
+/// type that its signature reaches keeps `pub` too.
+#[test]
+fn a_type_in_the_signature_of_an_item_that_stays_public_gets_no_finding() {
+    let dir = workspace(&[
+        ("app/src/main.rs", "fn main() { mid::shared(); }\n"),
+        (
+            "mid/src/lib.rs",
+            "pub fn shared() {}\n\
+             pub struct Task;\npub struct Output;\npub struct Extra;\npub struct Lonely;\n\
+             pub trait Runner { type Out; }\nimpl Runner for Task { type Out = Output; }\n\
+             mod inner {\n    pub struct Hidden;\n    impl Hidden { pub fn extra(&self) -> crate::Extra { crate::Extra } }\n}\n\
+             #[bridge(js_name = \"start\")]\n\
+             pub fn start(task: Task) -> (inner::Hidden, Wrapper<Task>) { todo!() }\n\
+             pub struct Wrapper<T>(T);\n",
+        ),
+    ]);
+    let (found, _) = findings(&dir, &[]);
+    assert_eq!(found, set(&["dead-public Lonely"]));
+}
+
+/// A `pub` item that gets its own finding does not hold the types of its
+/// signature: both change in the same run.
+#[test]
+fn a_type_in_the_signature_of_a_reported_item_keeps_its_finding() {
+    let dir = workspace(&[
+        ("app/src/main.rs", "fn main() { mid::shared(); }\n"),
+        (
+            "mid/src/lib.rs",
+            "pub fn shared() { let _ = local(); }\npub struct Data;\npub fn local() -> Data { Data }\n",
+        ),
+    ]);
+    let (found, _) = findings(&dir, &[]);
+    assert_eq!(
+        found,
+        set(&["unnecessary-public Data", "unnecessary-public local"])
+    );
+}
+
+/// rustdoc resolves an intra-doc link from the module of the doc comment. The
+/// link is a use, so the target keeps the visibility that the link needs.
+#[test]
+fn an_intra_doc_link_is_a_use_from_the_module_of_the_doc_comment() {
+    let dir = workspace(&[
+        ("app/src/main.rs", "fn main() { mid::run(); }\n"),
+        (
+            "mid/src/lib.rs",
+            "mod tools;\npub fn run() { tools::audit::run_audit(); }\n",
+        ),
+        (
+            "mid/src/tools.rs",
+            "pub(crate) mod api;\npub(crate) mod audit;\n",
+        ),
+        (
+            "mid/src/tools/api.rs",
+            "pub(super) fn plain() {}\npub(super) fn inline() {}\npub(super) fn labeled() {}\n\
+             pub(super) fn tagged() {}\npub(super) fn called() {}\npub(super) fn defined() {}\n\
+             pub(super) fn only_here() {}\nfn use_it() { only_here(); plain(); inline(); labeled(); \
+             tagged(); called(); defined(); }\n",
+        ),
+        (
+            "mid/src/tools/audit.rs",
+            "/// See [`super::api::plain`], [the call](super::api::inline) and\n\
+             /// [text][`super::api::labeled`], [fn@super::api::tagged],\n\
+             /// [`super::api::called()`] and [the label].\n\
+             ///\n\
+             /// [the label]: super::api::defined\n\
+             pub(crate) fn run_audit() {}\n",
+        ),
+    ]);
+    let (found, _) = findings(&dir, &[]);
+    assert_eq!(
+        found,
+        set(&[
+            "unnecessary-restricted-visibility tools::api",
+            "unnecessary-restricted-visibility tools::api::only_here",
+        ])
+    );
+}
+
+/// rustdoc warns with `private_intra_doc_links` when the documentation of an
+/// item that stays `pub` links to an item that is less visible.
+#[test]
+fn an_intra_doc_link_from_an_item_that_stays_public_keeps_the_target_public() {
+    let dir = workspace(&[
+        ("app/src/main.rs", "fn main() { mid::run(); }\n"),
+        (
+            "mid/src/lib.rs",
+            "//! The crate. See [`crate::inner::Guide`].\n\
+             /// Calls [`helper`] and [`Config`] in [`inner`].\n\
+             pub fn run() {}\npub fn helper() {}\npub struct Config;\npub fn unlinked() {}\n\
+             pub mod inner { pub struct Guide; }\n\
+             /// A code block is no link: `[not_linked]`.\n\
+             ///\n\
+             /// ```\n/// let value = [linked_in_code];\n/// ```\n\
+             pub fn shown() {}\n",
+        ),
+    ]);
+    let (found, _) = findings(&dir, &[]);
+    assert_eq!(found, set(&["dead-public shown", "dead-public unlinked"]));
+}
+
+/// Each documentation form that rustdoc renders holds its link targets: a
+/// `//!` comment of a module file and of the crate root, an inline module
+/// comment, a `#[doc]` string, a trait method comment, a link over two lines,
+/// a link with a title, a link after an open bracket and a line that only
+/// looks like a reference definition.
+#[test]
+fn each_documentation_form_of_a_public_item_holds_its_link_targets() {
+    let dir = workspace(&[
+        (
+            "app/src/main.rs",
+            "use mid::Shape as _;\nfn main() { mid::run(); mid::attr(); let _ = (mid::net::N, mid::inline::I); }\n",
+        ),
+        (
+            "mid/src/lib.rs",
+            "//! The crate root links [`codec::Root`].\n\
+             pub mod net;\npub mod codec;\n\
+             pub mod inline { //! Links [`crate::codec::Inline`].\n pub struct I; }\n\
+             #[doc = \"Links [`codec::Attr`].\"]\npub fn attr() {}\n\
+             pub trait Shape {\n    /// Links [`crate::codec::Method`].\n    fn area(&self);\n}\n\
+             /// Wraps the text [over\n/// two lines](codec::Wrapped) here.\n\
+             /// A [titled](codec::Titled \"the title\") link and [angled](<codec::Angled>).\n\
+             /// Index [i and [`codec::Opened`] next.\n\
+             /// [`codec::Defined`]: the item, see [`codec::After`]: it is here.\n\
+             pub fn run() { codec::use_all(); }\n",
+        ),
+        (
+            "mid/src/net.rs",
+            "//! Links [`crate::codec::File`].\npub struct N;\n",
+        ),
+        (
+            "mid/src/codec.rs",
+            "pub struct Root;\npub struct Inline;\npub struct Attr;\npub struct Method;\n\
+             pub struct Wrapped;\npub struct Titled;\npub struct Angled;\npub struct Opened;\n\
+             pub struct Defined;\npub struct After;\npub struct File;\npub struct Unlinked;\n\
+             pub fn use_all() { let _ = (Root, Inline, Attr, Method, Wrapped, Titled, Angled, \
+             Opened, Defined, After, File, Unlinked); }\n",
+        ),
+    ]);
+    let (found, _) = findings(&dir, &[]);
+    let codec: BTreeSet<String> = found
+        .into_iter()
+        .filter(|row| row.contains("codec::"))
+        .collect();
+    assert_eq!(
+        codec,
+        set(&[
+            "unnecessary-public codec::Unlinked",
+            "unnecessary-public codec::use_all",
+        ])
+    );
+}
+
+/// A `#[doc = include_str!(..)]` file is documentation of the item that
+/// holds the attribute.
+#[test]
+fn an_included_documentation_file_holds_its_link_targets() {
+    let dir = workspace(&[
+        ("app/src/main.rs", "fn main() { mid::run(); }\n"),
+        (
+            "mid/src/lib.rs",
+            "pub mod codec;\n#[doc = include_str!(\"../GUIDE.md\")]\npub fn run() { codec::use_all(); }\n",
+        ),
+        ("mid/GUIDE.md", "Run it. See [`crate::codec::Guide`].\n"),
+        (
+            "mid/src/codec.rs",
+            "pub struct Guide;\npub fn use_all() { let _ = Guide; }\n",
+        ),
+    ]);
+    let (found, _) = findings(&dir, &[]);
+    assert_eq!(found, set(&["unnecessary-public codec::use_all"]));
+}
+
+/// With uniform field groups, a field that has a finding can stay `pub`
+/// because a field of its group must stay. Its type then stays `pub` too.
+#[test]
+fn a_type_of_a_field_that_a_filter_keeps_public_gets_no_finding() {
+    let dir = workspace(&[
+        (
+            "app/src/main.rs",
+            "fn main() { let s = mid::Shape::new(); let _ = s.wide; }\n",
+        ),
+        (
+            "mid/src/lib.rs",
+            "pub struct Data;\npub struct Shape { pub wide: u8, pub narrow: Data }\n\
+             impl Shape { pub fn new() -> Self { Self { wide: 0, narrow: Data } } }\n\
+             fn local(shape: &Shape) -> &Data { &shape.narrow }\n",
+        ),
+    ]);
+    let (found, _) = findings(&dir, &["--uniform-fields"]);
+    assert_eq!(found, set(&[]));
+}
+
+/// A doc link from an item that gets its own finding holds nothing: both
+/// items change in the same run.
+#[test]
+fn an_intra_doc_link_from_a_reported_item_holds_nothing() {
+    let dir = workspace(&[
+        ("app/src/main.rs", "fn main() { mid::run(); }\n"),
+        (
+            "mid/src/lib.rs",
+            "pub fn run() { let _ = Target; }\n/// Links [`Target`].\npub fn dead_doc() {}\n\
+             pub struct Target;\n",
+        ),
+    ]);
+    let (found, _) = findings(&dir, &[]);
+    assert_eq!(
+        found,
+        set(&["dead-public dead_doc", "unnecessary-public Target"])
+    );
+}

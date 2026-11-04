@@ -186,10 +186,10 @@ pub fn analyze(graph: &Graph, options: &Options) -> Analysis {
     let credits = resolver.credits();
     let surface = Surface::new(graph, &resolver, options);
     let findings = decide(graph, &surface, &credits, options, |_| true);
-    // A doc block credit stays: a type-aware check of the crate cannot see
-    // the doc tests either.
+    // A doc block credit and a doc link credit stay: a type-aware check of
+    // the crate cannot see the doc tests and the doc links either.
     let typed = decide(graph, &surface, &credits, options, |credit| {
-        credit.class != Class::Untyped || credit.origin == Origin::Doc
+        credit.class != Class::Untyped || matches!(credit.origin, Origin::Doc | Origin::DocLink)
     });
     let known: FxHashSet<(ItemId, FindingKind)> = findings
         .iter()
@@ -585,9 +585,64 @@ fn decide(
             });
         }
     }
-    let required = required_items(graph, surface, &credits, &uses);
     let (production, any) = live_items(graph, surface, &credits);
     let live_modules = modules_with_live_items(graph, &any);
+    let facts = Facts {
+        uses: &uses,
+        production: &production,
+        any: &any,
+        live_modules: &live_modules,
+    };
+    // A filter can keep a candidate `pub`. The candidate then holds the types
+    // of its signature, so the findings are computed again with it held.
+    let mut held: FxHashSet<ItemId> = FxHashSet::default();
+    loop {
+        let required = required_items(graph, surface, &credits, &uses, &held);
+        let findings = judge(graph, surface, options, &facts, &required);
+        let public: FxHashSet<ItemId> = findings
+            .iter()
+            .filter(|finding| finding.kind != FindingKind::UnnecessaryRestricted)
+            .map(|finding| finding.item)
+            .collect();
+        let kept: Vec<ItemId> = (0..graph.items.len())
+            .filter(|&item| {
+                graph.items[item].kind != ItemKind::Variant
+                    && !required.contains(&item)
+                    && !public.contains(&item)
+                    && !held.contains(&item)
+                    && surface.public_candidate(graph, item)
+            })
+            .collect();
+        if kept.is_empty() {
+            return findings;
+        }
+        held.extend(kept);
+    }
+}
+
+/// The facts of [`decide`] that do not change when more items are held.
+struct Facts<'a> {
+    uses: &'a [Uses],
+    production: &'a FxHashSet<ItemId>,
+    any: &'a FxHashSet<ItemId>,
+    live_modules: &'a FxHashSet<ModuleId>,
+}
+
+/// The findings for one set of required items, after the filters that keep
+/// each change valid alone.
+fn judge(
+    graph: &Graph,
+    surface: &Surface,
+    options: &Options,
+    facts: &Facts<'_>,
+    required: &FxHashSet<ItemId>,
+) -> Vec<Finding> {
+    let Facts {
+        uses,
+        production,
+        any,
+        live_modules,
+    } = *facts;
     let mut findings = Vec::new();
     for (item, entry) in graph.items.iter().enumerate() {
         let test_only = !production.contains(&item) && any.contains(&item);
@@ -708,49 +763,134 @@ fn modules_with_live_items(graph: &Graph, live: &FxHashSet<ItemId>) -> FxHashSet
 
 /// The items that must stay `pub`: another crate uses them, a required
 /// signature names them, or a required item is inside them.
+///
+/// An item in `held` keeps `pub`, but no other crate needs a path to it, for
+/// example an item that an attribute macro covers. It needs no enclosing item,
+/// only the types of its signature and the targets of its doc links. Each
+/// exported item that is no candidate is held too.
 fn required_items(
     graph: &Graph,
     surface: &Surface,
     credits: &[&Credit],
     uses: &[Uses],
+    held: &FxHashSet<ItemId>,
 ) -> FxHashSet<ItemId> {
+    // rustdoc warns when the documentation of an item that stays `pub` links
+    // to a less visible item, so a doc link holds its target as a signature
+    // does. The inner documentation of a file belongs to its `mod` item. The
+    // documentation of a library root is always public.
     let mut signature: FxHashMap<ItemId, Vec<ItemId>> = FxHashMap::default();
+    let mut work: Vec<Work> = Vec::new();
     for credit in credits {
-        if let (Some(owner), Origin::Signature) = (credit.owner, credit.origin) {
-            signature.entry(owner).or_default().push(credit.item);
-            // A field of a variant is as visible as its enum, so a required
-            // enum needs the types of its variant fields.
-            if let Some(enumeration) = variant_enum(graph, owner) {
-                signature.entry(enumeration).or_default().push(credit.item);
-            }
-        }
-    }
-    let mut required: FxHashSet<ItemId> = FxHashSet::default();
-    let mut queue: Vec<ItemId> = (0..graph.items.len())
-        .filter(|&item| uses[item].cross_crate || surface.glob_exported.contains(&item))
-        .collect();
-    queue.extend(surface.api_surface(graph));
-    while let Some(item) = queue.pop() {
-        if !required.insert(item) {
+        if !matches!(credit.origin, Origin::Signature | Origin::DocLink) {
             continue;
         }
-        queue.extend(signature.get(&item).into_iter().flatten().copied());
-        queue.extend(
+        let owner = credit.owner.or_else(|| {
+            (credit.origin == Origin::DocLink)
+                .then(|| graph.modules[credit.module].item)
+                .flatten()
+        });
+        let Some(owner) = owner else {
+            let root = graph.crates[credit.krate].root_module == credit.module;
+            if credit.origin == Origin::DocLink
+                && root
+                && graph.crates[credit.krate].kind.is_library()
+            {
+                work.push(Work::Require(credit.item));
+            }
+            continue;
+        };
+        signature.entry(owner).or_default().push(credit.item);
+        // A field of a variant is as visible as its enum, so a required
+        // enum needs the types of its variant fields.
+        if let Some(enumeration) = variant_enum(graph, owner) {
+            signature.entry(enumeration).or_default().push(credit.item);
+        }
+    }
+    let members = members_of_types(graph);
+    work.extend(
+        (0..graph.items.len())
+            .filter(|&item| uses[item].cross_crate || surface.glob_exported.contains(&item))
+            .map(Work::Require),
+    );
+    work.extend(surface.api_surface(graph).into_iter().map(Work::Require));
+    work.extend(
+        (0..graph.items.len())
+            .filter(|&item| held.contains(&item) || surface.stays_exported(graph, item))
+            .map(Work::Hold),
+    );
+    let mut required: FxHashSet<ItemId> = FxHashSet::default();
+    let mut holding: FxHashSet<ItemId> = FxHashSet::default();
+    while let Some(next) = work.pop() {
+        let item = match next {
+            Work::Require(item) if required.insert(item) => item,
+            Work::Hold(item) if !required.contains(&item) && holding.insert(item) => item,
+            _ => continue,
+        };
+        work.extend(
+            signature
+                .get(&item)
+                .into_iter()
+                .flatten()
+                .copied()
+                .map(Work::Require),
+        );
+        // rustc checks the members of a type that stays `pub` against the
+        // visibility of the type. A member that is no candidate keeps its
+        // visibility, so it holds the types of its signature.
+        work.extend(
+            members
+                .get(&item)
+                .into_iter()
+                .flatten()
+                .copied()
+                .filter(|&member| keeps_visibility(graph, surface, member))
+                .map(Work::Hold),
+        );
+        if matches!(next, Work::Hold(_)) {
+            continue;
+        }
+        work.extend(
             surface
                 .reexport_targets
                 .get(&item)
                 .into_iter()
                 .flatten()
-                .copied(),
+                .copied()
+                .map(Work::Require),
         );
         let mut module = Some(graph.items[item].module);
         while let Some(id) = module {
-            queue.extend(graph.modules[id].item);
+            work.extend(graph.modules[id].item.map(Work::Require));
             module = graph.modules[id].parent;
         }
-        queue.extend(graph.items[item].parent);
+        work.extend(graph.items[item].parent.map(Work::Require));
     }
     required
+}
+
+/// One step of [`required_items`].
+#[derive(Debug, Clone, Copy)]
+enum Work {
+    /// The item must stay `pub`, with a path from outside.
+    Require(ItemId),
+    /// The item keeps `pub`, but needs no path.
+    Hold(ItemId),
+}
+
+/// True when a member of a type keeps its visibility when the type stays
+/// `pub`: it has no keyword, as the items of a trait or a trait impl and a
+/// variant, or it is `pub` and no candidate of a finding.
+fn keeps_visibility(graph: &Graph, surface: &Surface, member: ItemId) -> bool {
+    let entry = &graph.items[member];
+    let in_variant = entry
+        .parent
+        .is_some_and(|parent| graph.items[parent].kind == ItemKind::Variant);
+    entry.flags.trait_impl
+        || entry.flags.trait_item
+        || in_variant
+        || matches!(entry.kind, ItemKind::Variant | ItemKind::Impl)
+        || (entry.vis == Vis::Public && !surface.public_candidate(graph, member))
 }
 
 /// The enum of a variant field, or `None` for another item.
@@ -766,7 +906,67 @@ fn variant_enum(graph: &Graph, field: ItemId) -> Option<ItemId> {
     graph.items[variant].parent
 }
 
+/// The members of each item: the fields of a struct, the variants of an enum,
+/// the fields of a variant and the items of a trait. A type also has each
+/// `impl` block with the type as self type, and the items of those blocks.
+fn members_of_types(graph: &Graph) -> FxHashMap<ItemId, Vec<ItemId>> {
+    let mut types: FxHashMap<(usize, &str), Vec<ItemId>> = FxHashMap::default();
+    for (id, entry) in graph.items.iter().enumerate() {
+        let is_type = matches!(
+            entry.kind,
+            ItemKind::Struct | ItemKind::Enum | ItemKind::Union
+        );
+        if is_type && entry.parent.is_none() {
+            types
+                .entry((entry.krate, entry.name.as_str()))
+                .or_default()
+                .push(id);
+        }
+    }
+    let types_of = |block: &crate::graph::Item| -> Vec<ItemId> {
+        block
+            .impl_self
+            .as_ref()
+            .and_then(|path| path.last())
+            .and_then(|name| types.get(&(block.krate, name.as_str())))
+            .cloned()
+            .unwrap_or_default()
+    };
+    let mut members: FxHashMap<ItemId, Vec<ItemId>> = FxHashMap::default();
+    for (id, entry) in graph.items.iter().enumerate() {
+        if entry.kind == ItemKind::Impl {
+            for ty in types_of(entry) {
+                members.entry(ty).or_default().push(id);
+            }
+        }
+        let Some(parent) = entry.parent else {
+            continue;
+        };
+        let owner = &graph.items[parent];
+        if owner.kind == ItemKind::Impl {
+            for ty in types_of(owner) {
+                members.entry(ty).or_default().push(id);
+            }
+        } else {
+            members.entry(parent).or_default().push(id);
+        }
+    }
+    members
+}
+
 impl Surface {
+    /// True when the item is exported and keeps `pub`, because it is no
+    /// candidate of a public finding: for example an attribute macro covers
+    /// it. Its signature then needs each type that it names.
+    fn stays_exported(&self, graph: &Graph, item: ItemId) -> bool {
+        let entry = &graph.items[item];
+        entry.vis == Vis::Public
+            && !matches!(entry.kind, ItemKind::Use | ItemKind::Impl)
+            && graph.crates[entry.krate].kind.is_library()
+            && self.exported(item)
+            && !self.public_candidate(graph, item)
+    }
+
     /// The exported items of the API crates. They are an external API.
     fn api_surface(&self, graph: &Graph) -> Vec<ItemId> {
         (0..graph.items.len())
@@ -791,6 +991,8 @@ fn live_items(
             continue;
         }
         match (credit.owner, credit.origin) {
+            // A doc link is no use in code, so it makes nothing live.
+            (_, Origin::DocLink) => {}
             (_, Origin::Doc) => other_roots.push(credit.item),
             (Some(owner), _) => edges
                 .entry(owner)

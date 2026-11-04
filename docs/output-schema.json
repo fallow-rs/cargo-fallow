@@ -5276,6 +5276,7 @@
             "macro-tokens",
             "attribute",
             "doc-code",
+            "doc-link",
             "macro-crate",
             "include"
           ]
@@ -5326,7 +5327,8 @@
             "macro-call",
             "macro-tokens",
             "attribute",
-            "doc-code"
+            "doc-code",
+            "doc-link"
           ]
         },
         "class": {

@@ -5,7 +5,10 @@
 // scripts/publish-github-release.mjs.
 
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { chmodSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 const ROOT = new URL("../../", import.meta.url);
@@ -154,6 +157,55 @@ test("release-assets and release-ready require the tag to stay absent", () => {
     );
     assert.match(text, /if \[ "\$status" -eq 0 \]; then/u, name);
     assert.match(text, /if \[ "\$status" -ne 2 \]; then/u, name);
+  }
+});
+
+/** Returns the `run: |` script of the step `name` in a job, without its indent. */
+const stepScript = (jobText, name) => {
+  const lines = jobText.split("\n");
+  const start = lines.indexOf(`      - name: ${name}`);
+  assert.notEqual(start, -1, `missing step ${name}`);
+  const run = lines.indexOf("        run: |", start);
+  assert.notEqual(run, -1, `step ${name} has no run block`);
+  const body = [];
+  for (const line of lines.slice(run + 1)) {
+    if (line.trim() !== "" && !line.startsWith(" ".repeat(10))) {
+      break;
+    }
+    body.push(line.slice(10));
+  }
+  return body.join("\n");
+};
+
+// GitHub runs a `shell: bash` step as `bash --noprofile --norc -eo pipefail`.
+// The step must survive the exit code 2 of `git ls-remote --exit-code` for an
+// absent tag, and fail for a tag that exists or a lookup error.
+test("the tag check passes only for an absent tag, under the bash flags of GitHub", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "release-tag-check-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  writeFileSync(join(dir, "git"), '#!/bin/sh\nexit "$STUB_GIT_STATUS"\n');
+  chmodSync(join(dir, "git"), 0o755);
+  for (const name of ["release-assets", "release-ready"]) {
+    const script = stepScript(job(name), "Require the release tag to stay absent");
+    for (const [gitStatus, expected] of [
+      ["2", 0],
+      ["0", 1],
+      ["128", 1],
+    ]) {
+      const result = spawnSync("bash", ["--noprofile", "--norc", "-eo", "pipefail", "-c", script], {
+        encoding: "utf8",
+        env: {
+          PATH: `${dir}:${process.env.PATH}`,
+          STUB_GIT_STATUS: gitStatus,
+          TAG_NAME: "v0.2.0",
+          VERSION: "0.2.0",
+          GITHUB_REPOSITORY: "fallow-rs/cargo-fallow",
+          GITHUB_RUN_ID: "1",
+          GITHUB_STEP_SUMMARY: join(dir, "summary.md"),
+        },
+      });
+      assert.equal(result.status, expected, `${name}, git exit ${gitStatus}: ${result.stdout}`);
+    }
   }
 });
 

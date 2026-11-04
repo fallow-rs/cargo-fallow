@@ -60,7 +60,8 @@ const writeAssets = (dir, change = (files) => files) => {
   for (const target of TARGETS) {
     const archive = `cargo-fallow-0.2.0-${target}.${target.includes("windows") ? "zip" : "tar.gz"}`;
     const content = `binary for ${target}`;
-    const line = `${sha256(content)}  ${archive}\n`;
+    // sha256sum on the Windows runner writes `hash *name`.
+    const line = `${sha256(content)} ${target.includes("windows") ? "*" : " "}${archive}\n`;
     files.set(archive, content);
     files.set(`${archive}.sha256`, line);
     files.set(`${archive}.sig`, "signature");
@@ -134,6 +135,22 @@ test("SHA256SUMS must hold the .sha256 lines and nothing else", (t) => {
   ]);
 });
 
+test("each .sha256 file must hold one line that names its own archive", (t) => {
+  const dir = tempDir(t);
+  const linux = "cargo-fallow-0.2.0-x86_64-unknown-linux-musl.tar.gz";
+  const mac = "cargo-fallow-0.2.0-x86_64-apple-darwin.tar.gz";
+  writeAssets(dir, (files) => {
+    const linuxLine = files.get(`${linux}.sha256`);
+    files.set(`${linux}.sha256`, files.get(`${mac}.sha256`));
+    files.set(`${mac}.sha256`, linuxLine);
+    return files;
+  });
+  assert.deepEqual(assetProblems(dir, "0.2.0"), [
+    `${linux}.sha256 must hold one checksum line for ${linux}`,
+    `${mac}.sha256 must hold one checksum line for ${mac}`,
+  ]);
+});
+
 test("the title needs the tag prefix, a summary and no em dash", () => {
   assert.deepEqual(titleProblems("v0.2.0: Faster checks", "v0.2.0"), []);
   assert.deepEqual(titleProblems("cargo-fallow v0.2.0", "v0.2.0"), [
@@ -190,7 +207,13 @@ test("the run must be a finished release run on main with a passed release-ready
  * A fake command runner. It answers the git, gh and node commands of a
  * release, and records each command.
  */
-const fakeRunner = ({ notesDir, mainSha = SHA, tagStatus = 2, assets = writeAssets } = {}) => {
+const fakeRunner = ({
+  notesDir,
+  mainSha = SHA,
+  tagStatus = 2,
+  assets = writeAssets,
+  originUrl = "git@github.com:fallow-rs/cargo-fallow.git",
+} = {}) => {
   const calls = [];
   const runner = (command, args) => {
     const line = [command, ...args].join(" ");
@@ -207,6 +230,9 @@ const fakeRunner = ({ notesDir, mainSha = SHA, tagStatus = 2, assets = writeAsse
     }
     if (line === "git ls-remote --exit-code --tags origin refs/tags/v0.2.0") {
       return { status: tagStatus, stdout: "" };
+    }
+    if (line === "git remote get-url origin") {
+      return { status: 0, stdout: `${originUrl}\n` };
     }
     if (line === `git log -1 --format=%s ${SHA}`) {
       return { status: 0, stdout: "chore: release v0.2.0\n" };
@@ -276,6 +302,10 @@ test("check-only runs every check and creates no tag and no release", (t) => {
 
 test("a problem stops the release before the tag", (t) => {
   const cases = [
+    [
+      { originUrl: "git@github.com:someone/cargo-fallow.git" },
+      /The origin remote is git@github\.com:someone\/cargo-fallow\.git, not fallow-rs\/cargo-fallow/u,
+    ],
     [{ mainSha: "d".repeat(40) }, /origin\/main is d{40}, not the release commit c{40}/u],
     [{ tagStatus: 0 }, /The tag v0\.2\.0 already exists on the remote/u],
     [
@@ -314,6 +344,24 @@ test("a wrong title or notes file stops the release before any download", (t) =>
   assert.equal(code, 1);
   assert.match(lines.join("\n"), /The title must start with "v0\.2\.0: "/u);
   assert.equal(fake.calls.filter((call) => call.startsWith("gh run download")).length, 0);
+});
+
+test("the origin remote can use SSH or HTTPS, with or without .git", (t) => {
+  for (const originUrl of [
+    "git@github.com:fallow-rs/cargo-fallow.git",
+    "git@github.com:fallow-rs/cargo-fallow",
+    "https://github.com/fallow-rs/cargo-fallow.git",
+    "https://github.com/fallow-rs/cargo-fallow",
+    "ssh://git@github.com/fallow-rs/cargo-fallow.git",
+  ]) {
+    const fake = fakeRunner({ notesDir: tempDir(t), originUrl });
+    const code = publishGithubRelease(options(fake.notes, { checkOnly: true }), {
+      run: fake.runner,
+      log: () => {},
+      tempDir: () => tempDir(t),
+    });
+    assert.equal(code, 0, originUrl);
+  }
 });
 
 test("the arguments need a run, a version, a title and a notes file", () => {

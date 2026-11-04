@@ -19,10 +19,9 @@ jobs:
     permissions:
       contents: read
     steps:
-      # The default branch, not the tag. The release commit is on main before
-      # the tag exists, so main has the released CHANGELOG section, and no
-      # value of the event reaches `ref:`. The script checks only that section,
-      # which does not change.
+      # For a `release` event, the checkout gets the commit of the tag. That
+      # is the release commit, so it has the released CHANGELOG section. No
+      # value of the event reaches `ref:`. The script checks only that section.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false

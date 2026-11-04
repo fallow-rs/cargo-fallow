@@ -30,6 +30,8 @@ const SUMS = "SHA256SUMS";
 const READY_JOB = "Release ready for signed tag";
 // `git ls-remote --exit-code` exits with 2 when no ref matches.
 const NO_MATCHING_REF = 2;
+const ORIGIN_URL =
+  /^(?:git@github\.com:|ssh:\/\/git@github\.com\/|https:\/\/github\.com\/)fallow-rs\/cargo-fallow(?:\.git)?$/u;
 const SUM_LINE = /^(?<hash>[0-9a-f]{64}) [ *](?<name>\S+)$/u;
 
 /** The targets of the `build` job in release.yml, with the archive format. */
@@ -75,9 +77,19 @@ const checksumProblems = (dir, version, present) => {
   const problems = archives
     .filter((name) => hashes.get(name) !== sha256Of(join(dir, name)))
     .map((name) => `${name} does not match its line in ${SUMS}`);
-  const listed = archives
-    .filter((name) => present.has(`${name}.sha256`))
-    .flatMap((name) => sumLines(readFileSync(join(dir, `${name}.sha256`), "utf8")));
+  // The Action installer reads the checksum of an archive from its own
+  // `.sha256` file, so each file must name its own archive.
+  const withSums = archives.filter((name) => present.has(`${name}.sha256`));
+  const own = withSums.map((name) => [
+    name,
+    sumLines(readFileSync(join(dir, `${name}.sha256`), "utf8")),
+  ]);
+  for (const [name, fileLines] of own) {
+    if (fileLines.length !== 1 || SUM_LINE.exec(fileLines[0])?.groups.name !== name) {
+      problems.push(`${name}.sha256 must hold one checksum line for ${name}`);
+    }
+  }
+  const listed = own.flatMap(([, fileLines]) => fileLines);
   if (listed.toSorted().join("\n") !== lines.toSorted().join("\n")) {
     problems.push(`${SUMS} is not the list of the .sha256 files of the archives`);
   }
@@ -209,6 +221,15 @@ const releaseSteps = (options, { run, log, tempDir }) => {
   );
   stopOn(runProblems(runJson));
   const sha = runJson.headSha;
+
+  // Each git command below reads or writes `origin`, so it must be the
+  // repository of the release run, not a fork.
+  const origin = mustRun(
+    "git",
+    ["remote", "get-url", "origin"],
+    "Reading the origin remote",
+  ).trim();
+  stopOn(ORIGIN_URL.test(origin) ? [] : [`The origin remote is ${origin}, not ${REPOSITORY}`]);
 
   mustRun("git", ["fetch", "--quiet", "origin", "main"], "Fetching origin/main");
   const main = mustRun(

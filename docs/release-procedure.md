@@ -153,7 +153,8 @@ Add `--check-only` first to run each check and change nothing. The script:
 1. checks the title and the notes file;
 2. checks that the run is a successful `Release` run on `main` with a passed
    `Release ready for signed tag` job;
-3. checks that `origin/main` is the commit of the run, that its subject is
+3. checks that the `origin` remote is `fallow-rs/cargo-fallow`, that
+   `origin/main` is the commit of the run, that its subject is
    `chore: release vX.Y.Z`, and that the tag is absent on the remote and in
    the clone;
 4. downloads `release-assets` from the run. It checks that the set is

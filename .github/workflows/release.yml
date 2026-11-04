@@ -376,9 +376,11 @@ jobs:
         env:
           TAG_NAME: v${{ needs.plan.outputs.version }}
         run: |
-          set -uo pipefail
-          git ls-remote --exit-code --tags "https://github.com/${GITHUB_REPOSITORY}.git" "refs/tags/${TAG_NAME}"
-          status=$?
+          set -euo pipefail
+          # `--exit-code` exits with 2 when the tag is absent. `|| status=$?`
+          # keeps `-e` from stopping the step on that exit code.
+          status=0
+          git ls-remote --exit-code --tags "https://github.com/${GITHUB_REPOSITORY}.git" "refs/tags/${TAG_NAME}" || status=$?
           if [ "$status" -eq 0 ]; then
             echo "::error::The tag ${TAG_NAME} exists. The owner creates it after this run."
             exit 1
@@ -451,9 +453,11 @@ jobs:
           TAG_NAME: v${{ needs.plan.outputs.version }}
           VERSION: ${{ needs.plan.outputs.version }}
         run: |
-          set -uo pipefail
-          git ls-remote --exit-code --tags "https://github.com/${GITHUB_REPOSITORY}.git" "refs/tags/${TAG_NAME}"
-          status=$?
+          set -euo pipefail
+          # `--exit-code` exits with 2 when the tag is absent. `|| status=$?`
+          # keeps `-e` from stopping the step on that exit code.
+          status=0
+          git ls-remote --exit-code --tags "https://github.com/${GITHUB_REPOSITORY}.git" "refs/tags/${TAG_NAME}" || status=$?
           if [ "$status" -eq 0 ]; then
             echo "::error::The tag ${TAG_NAME} appeared before the release workflow completed"
             exit 1

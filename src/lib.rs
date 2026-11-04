@@ -17,6 +17,7 @@ mod diff;
 mod error;
 mod files;
 mod finding;
+mod fix;
 mod gates;
 mod graph;
 mod health;
@@ -51,6 +52,10 @@ pub fn run(args: Vec<OsString>) -> ExitCode {
         Parsed::Run(options) => check::run(&options),
         Parsed::Mutants(options) => run_mutants(&options),
         Parsed::Deps(options) => run_deps(&options),
+        Parsed::Fix(args) => fix::run(&args).unwrap_or_else(|err| {
+            err.emit(args.format());
+            EXIT_INVALID_INPUT
+        }),
         Parsed::Files(args) => run_files(&args),
         Parsed::Visibility(options) => run_visibility(&options),
         Parsed::PreciseWorker(args) => visibility::precise::run_worker_command(&args),

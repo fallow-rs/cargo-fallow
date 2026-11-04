@@ -139,7 +139,12 @@ pub struct Finding {
     /// part of the report.
     #[serde(skip)]
     pub in_dev: bool,
-    /// The next steps. No step can be applied automatically.
+    /// Why `fix` does not change the entry, for an error finding that a
+    /// person must decide. For example, the entry turns on features that
+    /// another dependency can need. It is not part of the report.
+    #[serde(skip)]
+    pub manual: Option<&'static str>,
+    /// The next steps. `cargo fallow fix` applies a step with `auto_fixable`.
     pub actions: Vec<Action>,
 }
 
@@ -149,7 +154,7 @@ pub struct Action {
     /// The kind of the step.
     #[serde(rename = "type")]
     pub kind: &'static str,
-    /// Always false: the tool does not edit `Cargo.toml`.
+    /// True when `cargo fallow fix` applies the step.
     pub auto_fixable: bool,
     /// What to do.
     pub description: String,
@@ -258,6 +263,7 @@ mod tests {
             optional: false,
             used_by: Vec::new(),
             in_dev: false,
+            manual: None,
             actions: Vec::new(),
         }
     }

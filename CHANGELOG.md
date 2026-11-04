@@ -20,6 +20,10 @@ GitHub release. Each release needs a `## [X.Y.Z] - YYYY-MM-DD` section.
 - Each release archive has an Ed25519 signature (`.sig`). The GitHub Action
   installer checks it before the SHA-256 and fails closed. The installer now
   downloads the archive names that the release workflow writes.
+- `cargo fallow fix` removes each unused dependency entry and moves each
+  misplaced entry to `[dev-dependencies]`. `--dry-run` shows the edits. The
+  edit keeps comments, and a failed load after the edit writes back the old
+  bytes. The `deps` actions that `fix` applies now have `auto_fixable: true`.
 - `cargo fallow files` reports each `.rs` file in a target folder that no
   target compiles, with the rule `unused-file` and the gate `unused-files`.
   `check` runs it by default.

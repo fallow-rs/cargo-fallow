@@ -66,6 +66,8 @@ pub enum Parsed {
     PreciseWorker(crate::visibility::precise::WorkerArgs),
     /// Run the unused dependency check.
     Deps(crate::deps::Options),
+    /// Apply the fixable actions.
+    Fix(crate::fix::FixArgs),
     /// Run the unused file check.
     Files(crate::files::FilesArgs),
     /// Run one structure check: boundaries, size, complexity or dupes.
@@ -119,6 +121,14 @@ enum Command {
     /// `Cargo.lock` as it was before the run. Use `--offline`, `--locked` or
     /// `--frozen` to control the resolution.
     Deps(DepsArgs),
+    /// Apply the actions with `auto_fixable: true`: remove each unused
+    /// dependency entry, and move each misplaced entry to `[dev-dependencies]`.
+    ///
+    /// The edit keeps the comments and the format of each Cargo.toml. A warning
+    /// stays. Use `--dry-run` to see the edits first. A process without a
+    /// terminal needs `--yes`. When the workspace does not load after the
+    /// edits, the command writes back each file and exits 2.
+    Fix(crate::fix::FixArgs),
     /// Report `.rs` files in the target folders that no target compiles.
     ///
     /// A file counts as used when a `mod` item, a `#[path]` attribute, a
@@ -548,6 +558,7 @@ pub fn parse(args: &[OsString]) -> Parsed {
             Some(Command::Visibility(args)) => Parsed::Visibility(args.into()),
             Some(Command::PreciseWorker(args)) => Parsed::PreciseWorker(args),
             Some(Command::Deps(args)) => Parsed::Deps(args.into()),
+            Some(Command::Fix(args)) => Parsed::Fix(args),
             Some(Command::Files(args)) => Parsed::Files(args),
             Some(Command::Structure(command)) => Parsed::Structure(Box::new(command)),
             Some(Command::MutationWatchdog {

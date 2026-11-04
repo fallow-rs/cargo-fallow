@@ -604,8 +604,10 @@ needs a dependency that Cargo cannot get fails the run with exit code 2.
 
 Each finding has `package`, `manifest_path`, `line`, `section`, `platform`,
 `dependency` (the key in `Cargo.toml`), `package_name` (for a rename) and an
-`actions` array. The tool does not edit `Cargo.toml`, so `auto_fixable` is
-always `false`. Only `error` findings count for the `error-severity-findings`
+`actions` array. An action with `auto_fixable: true` is one that
+`cargo fallow fix` applies. A warning, and an `error` finding that a person
+must decide (see [Fix](#fix)), has `auto_fixable: false`. Only
+`error` findings count for the `error-severity-findings`
 gate, and only `--fail-on-issues` enforces it.
 
 The check stays silent where the code can use a dependency without a name:
@@ -650,6 +652,50 @@ ignored = ["getrandom"]
 The command also reads `ignored` in `[package.metadata.cargo-shear]` and
 `[workspace.metadata.cargo-shear]`, so a workspace can move from cargo-shear
 without a change. Only the cargo-fallow lists get `redundant-ignore` findings.
+
+### Fix
+
+`cargo fallow fix` applies the actions with `auto_fixable: true`.
+
+```bash
+cargo fallow fix --dry-run                 # show the edits, write nothing
+cargo fallow fix --dry-run --format json   # the edits as a list
+cargo fallow fix --yes                     # apply the edits
+```
+
+- It removes each `unused-dependency`, `unused-dev-dependency`,
+  `unused-build-dependency` and `unused-workspace-dependency` entry, also in a
+  `[target.<platform>.*]` table and in the `[dependencies.<key>]` form.
+- It moves each `misplaced-dependency` entry to the `[dev-dependencies]` table
+  of the same platform. When `[dev-dependencies]` has the entry already, it
+  removes the entry.
+- When no dependency table of the package has the key after the edit, it
+  removes `dep:<key>`, `<key>/<feature>` and `<key>?/<feature>` from each
+  feature.
+- These findings stay for a person, with `auto_fixable: false`:
+  - a warning: `unused-optional-dependency`, `feature-only-dependency` and
+    `redundant-ignore`,
+  - an entry that turns on features (`features = [...]`): Cargo unifies the
+    features of a package, so another dependency can need them,
+  - a misplaced entry that a feature of the package names,
+  - a workspace entry that such a kept member entry inherits.
+- The edit keeps the comments and the format of each `Cargo.toml`. A comment
+  above a removed or moved entry goes with the entry.
+- After the edits, the command loads the workspace with `cargo metadata`
+  again. When the load fails, it writes back the old bytes of each file and
+  exits 2 with the `CARGO_FALLOW_FIX_FAILED` code.
+- A process without a terminal on stdin needs `--yes`. Without it, the
+  command changes nothing and exits 2. In a terminal, the command applies the
+  edits also without `--yes`, the same as the JavaScript CLI.
+- The command writes each file through a new file and a rename, so a stop
+  leaves the old file or the new file, not a part.
+- `Cargo.lock` stays as it was. The next `cargo` build updates it.
+
+The JSON report has `dry_run`, `fixes`, `total_fixed` and `skipped` (the
+findings that `fix` does not change). Each entry of `fixes` has `type`
+(`remove-dependency` or `move-to-dev-dependencies`), `rule`, `package`,
+`manifest_path`, `section`, `platform`, `dependency`, `line` and `applied`.
+`skipped_packages` names the packages that `deps` did not judge.
 
 ## Unused files
 

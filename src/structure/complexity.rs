@@ -528,9 +528,11 @@ pub fn section(
             if !scope.keeps(&file.path) {
                 continue;
             }
-            if file.suppressed(
+            if scope.hides(
+                "complexity",
                 SUPPRESS_KIND,
-                function.attr_line.saturating_sub(1)..=function.line,
+                &file.path,
+                Some(&(function.attr_line.saturating_sub(1)..=function.line)),
             ) {
                 suppressed += 1;
                 continue;

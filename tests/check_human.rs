@@ -5,6 +5,7 @@
     reason = "a test fails loudly when its setup does not work"
 )]
 
+use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
 
@@ -58,9 +59,10 @@ fn workspace(clones: bool) -> tempfile::TempDir {
     );
     let mut lib = String::from("pub fn used() {}\npub fn unused() {}\n");
     if clones {
-        lib.push_str(&format!(
+        let _ = write!(
+            lib,
             "pub fn first() -> i32 {{\n{CLONE}}}\npub fn second() -> i32 {{\n{CLONE}}}\n"
-        ));
+        );
     }
     write(dir.path(), "lib/src/lib.rs", &lib);
     write(dir.path(), "lib/src/orphan.rs", "");

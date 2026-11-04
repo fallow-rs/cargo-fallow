@@ -95,9 +95,10 @@ a warning:
   `pub` too, because rustdoc warns with `private_intra_doc_links`. A link
   makes no item live, so an item that only a link names can still be
   `dead-public`. `Self::` in a link names the self type of the `impl` block
-  or the documented type. A label with a URL definition is no link.
-- A type that a `macro_rules!` body names, when the body has a `pub`
-  keyword. The output of the macro can hold a `pub` item that names the
+  or the documented type.
+- A type that macro tokens name, when the macro can write a `pub` item: the
+  tokens of the `macro_rules!` body or of the call hold `pub` or a `vis`
+  fragment. The output of the macro can hold a `pub` item that names the
   type.
 
 The command ignores `cfg` conditions. It reads the code of each branch.

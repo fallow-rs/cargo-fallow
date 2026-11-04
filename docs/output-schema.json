@@ -4684,6 +4684,38 @@
             },
             "language": {
               "const": "rust"
+            },
+            "suppressed": {
+              "description": "The number of findings that a suppression comment hid.",
+              "type": "integer",
+              "minimum": 0
+            },
+            "stale_suppressions": {
+              "description": "The suppression comments of the check that hid no finding.",
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  },
+                  "line": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "kinds": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [
+                  "path",
+                  "line",
+                  "kinds"
+                ]
+              }
             }
           }
         }
@@ -4718,6 +4750,38 @@
             },
             "language": {
               "const": "rust"
+            },
+            "suppressed": {
+              "description": "The number of findings that a suppression comment hid.",
+              "type": "integer",
+              "minimum": 0
+            },
+            "stale_suppressions": {
+              "description": "The suppression comments of the check that hid no finding.",
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  },
+                  "line": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "kinds": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [
+                  "path",
+                  "line",
+                  "kinds"
+                ]
+              }
             }
           }
         }
@@ -4735,6 +4799,38 @@
             },
             "language": {
               "const": "rust"
+            },
+            "suppressed": {
+              "description": "The number of findings that a suppression comment hid.",
+              "type": "integer",
+              "minimum": 0
+            },
+            "stale_suppressions": {
+              "description": "The suppression comments of the check that hid no finding.",
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  },
+                  "line": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "kinds": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [
+                  "path",
+                  "line",
+                  "kinds"
+                ]
+              }
             }
           }
         }
@@ -4752,6 +4848,38 @@
             },
             "language": {
               "const": "rust"
+            },
+            "suppressed": {
+              "description": "The number of findings that a suppression comment hid.",
+              "type": "integer",
+              "minimum": 0
+            },
+            "stale_suppressions": {
+              "description": "The suppression comments of the check that hid no finding.",
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  },
+                  "line": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "kinds": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [
+                  "path",
+                  "line",
+                  "kinds"
+                ]
+              }
             }
           }
         }
@@ -4772,6 +4900,38 @@
             },
             "language": {
               "const": "rust"
+            },
+            "suppressed": {
+              "description": "The number of findings that a suppression comment hid.",
+              "type": "integer",
+              "minimum": 0
+            },
+            "stale_suppressions": {
+              "description": "The suppression comments of the check that hid no finding.",
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  },
+                  "line": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "kinds": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [
+                  "path",
+                  "line",
+                  "kinds"
+                ]
+              }
             }
           }
         }
@@ -4840,6 +5000,38 @@
             },
             "language": {
               "const": "rust"
+            },
+            "suppressed": {
+              "description": "The number of findings that a suppression comment hid.",
+              "type": "integer",
+              "minimum": 0
+            },
+            "stale_suppressions": {
+              "description": "The suppression comments of the check that hid no finding.",
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  },
+                  "line": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "kinds": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [
+                  "path",
+                  "line",
+                  "kinds"
+                ]
+              }
             }
           }
         }
@@ -4857,6 +5049,38 @@
             },
             "language": {
               "const": "rust"
+            },
+            "suppressed": {
+              "description": "The number of findings that a suppression comment hid.",
+              "type": "integer",
+              "minimum": 0
+            },
+            "stale_suppressions": {
+              "description": "The suppression comments of the check that hid no finding.",
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  },
+                  "line": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "kinds": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [
+                  "path",
+                  "line",
+                  "kinds"
+                ]
+              }
             }
           }
         }

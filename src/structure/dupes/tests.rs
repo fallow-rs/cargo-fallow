@@ -90,11 +90,7 @@ fn a_clone_under_the_line_limit_is_dropped() {
         file("x.rs", &body("a", 2), settings.mode),
         file("y.rs", &body("a", 2), settings.mode),
     ];
-    let refs: Vec<&File> = files.iter().collect();
-    // The comment is on line 1 of `x.rs`, so the copy at line 2 is hidden.
-    let hides = |path: &str, line: u32| path == "x.rs" && line == 2;
-    let found = detect(&refs, &settings, &Limits::default(), &hides).unwrap_or_default();
-    assert!(found.groups.is_empty());
+    assert!(run(&files, &settings).groups.is_empty());
 }
 
 #[test]
@@ -128,7 +124,11 @@ fn a_suppression_comment_removes_the_instance_and_the_group() {
         ),
         file("y.rs", &body("a", 2), settings.mode),
     ];
-    assert!(run(&files, &settings).groups.is_empty());
+    let refs: Vec<&File> = files.iter().collect();
+    // The comment is on line 1 of `x.rs`, so the copy at line 2 is hidden.
+    let hides = |path: &str, line: u32| path == "x.rs" && line == 2;
+    let found = detect(&refs, &settings, &Limits::default(), &hides).unwrap_or_default();
+    assert!(found.groups.is_empty());
 }
 
 #[test]

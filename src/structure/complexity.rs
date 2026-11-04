@@ -532,7 +532,7 @@ pub fn section(
                 "complexity",
                 SUPPRESS_KIND,
                 &file.path,
-                Some(function.attr_line.saturating_sub(1)..=function.line),
+                Some(&(function.attr_line.saturating_sub(1)..=function.line)),
             ) {
                 suppressed += 1;
                 continue;

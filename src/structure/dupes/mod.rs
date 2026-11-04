@@ -273,7 +273,7 @@ pub fn section(
     progress.step("Finding clones");
     let limits = Limits::default();
     let hides =
-        |path: &str, line: u32| scope.hides("dupes", SUPPRESS_KIND, path, Some(line..=line));
+        |path: &str, line: u32| scope.hides("dupes", SUPPRESS_KIND, path, Some(&(line..=line)));
     let found = detect(&files, settings, &limits, &hides).map_err(|TimedOut| {
         CliError::new(
             ErrorCode::TimedOut,

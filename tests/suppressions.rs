@@ -174,15 +174,26 @@ fn file_comment_hides_an_unused_file() {
 #[test]
 fn next_line_comment_hides_a_boundary_violation() {
     let rules = "\n[workspace.metadata.fallow.boundaries]\nsources = [{ rule = \"no-exit\", paths = [\"core/src\"], deny = [\"std::process::exit\"], message = \"no exit\" }]\n";
-    let core = "pub fn used() {\n    // fallow-ignore-next-line no-exit\n    std::process::exit(0);\n}\npub fn other() {\n    std::process::exit(1);\n}\n";
-    let dir = workspace(rules, &[("core/src/lib.rs", core)]);
+    let core = "mod other;\npub fn used() {\n    // fallow-ignore-next-line no-exit\n    std::process::exit(0);\n}\n";
+    let other = "pub fn stop() {\n    std::process::exit(1);\n}\n";
+    let dir = workspace(
+        rules,
+        &[("core/src/lib.rs", core), ("core/src/other.rs", other)],
+    );
     let (report, stderr) = run(&dir, &["boundaries"]);
-    let lines: Vec<u64> = report["findings"]
+    let places: Vec<String> = report["findings"]
         .as_array()
         .expect("findings is an array")
         .iter()
-        .filter_map(|finding| finding["line"].as_u64())
+        .map(|finding| {
+            format!(
+                "{}:{}",
+                finding["path"].as_str().unwrap_or("?"),
+                finding["line"]
+            )
+        })
         .collect();
-    assert_eq!(lines, [6], "{report} {stderr}");
+    assert_eq!(places, ["core/src/other.rs:2"], "{report} {stderr}");
+    assert_eq!(report["suppressed"], 1);
     assert!(!stderr.contains("names no check"), "{stderr}");
 }

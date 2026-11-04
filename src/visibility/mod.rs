@@ -127,7 +127,7 @@ impl Analysis {
                     "visibility",
                     finding.kind.label(),
                     &item.file,
-                    Some(item.line..=item.line),
+                    Some(&(item.line..=item.line)),
                 )
                 && scope.keeps_entry_of(|| report::baseline_entry(graph, finding))
         });

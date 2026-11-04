@@ -119,9 +119,9 @@ impl Scope {
         check: &str,
         rule: &str,
         path: &str,
-        lines: Option<std::ops::RangeInclusive<u32>>,
+        lines: Option<&std::ops::RangeInclusive<u32>>,
     ) -> bool {
-        self.suppressions.hides(check, rule, path, lines.as_ref())
+        self.suppressions.hides(check, rule, path, lines)
     }
 
     /// True when a suppression comment hides a finding in the shared shape.
@@ -130,7 +130,12 @@ impl Scope {
             .location
             .line
             .map(|line| line..=finding.location.end_line.unwrap_or(line).max(line));
-        self.hides(finding.check, &finding.rule, &finding.location.path, lines)
+        self.hides(
+            finding.check,
+            &finding.rule,
+            &finding.location.path,
+            lines.as_ref(),
+        )
     }
 
     /// Adds the suppression results of the check of `section`: the number of

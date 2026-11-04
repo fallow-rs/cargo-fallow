@@ -76,17 +76,33 @@ fn with_constants(name: &str, schema: Value) -> Value {
     if NO_KIND.contains(&name) {
         return schema;
     }
-    json!({
-        "allOf": [
-            schema,
-            {
+    let mut constants = json!({
+        "properties": {
+            "kind": { "const": name },
+            "language": { "const": "rust" },
+        },
+    });
+    if crate::suppress::check_name(name).is_some() {
+        constants["properties"]["suppressed"] = json!({
+            "description": "The number of findings that a suppression comment hid.",
+            "type": "integer",
+            "minimum": 0,
+        });
+        constants["properties"]["stale_suppressions"] = json!({
+            "description": "The suppression comments of the check that hid no finding.",
+            "type": "array",
+            "items": {
+                "type": "object",
                 "properties": {
-                    "kind": { "const": name },
-                    "language": { "const": "rust" },
+                    "path": { "type": "string" },
+                    "line": { "type": "integer", "minimum": 1 },
+                    "kinds": { "type": "array", "items": { "type": "string" } },
                 },
+                "required": ["path", "line", "kinds"],
             },
-        ],
-    })
+        });
+    }
+    json!({ "allOf": [schema, constants] })
 }
 
 /// The description of a type of `fallow-report-protocol`. The text of that

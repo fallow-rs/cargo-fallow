@@ -13,6 +13,9 @@ GitHub release. Each release needs a `## [X.Y.Z] - YYYY-MM-DD` section.
 
 - `cargo fallow check --format badge` writes an SVG badge with the health
   grade, or a `no score` badge for a run with no score.
+- The GitHub Action has the inputs `changed-since`, `auto-changed-since`,
+  `baseline` and `save-baseline`, and `comment` posts or updates one sticky
+  pull request comment with the gates and the findings.
 - `cargo fallow init` prints the configuration tables with the limits at the
   current maximum, and saves the current findings as a baseline. `--write`
   adds them to the root `Cargo.toml`. `--ci github` prints a workflow. The

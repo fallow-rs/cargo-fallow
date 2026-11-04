@@ -36,7 +36,31 @@ inputs:
     required: false
     default: ''
   base:
-    description: 'The git ref to compare with: size gets it as --base, and mutants as --in-diff. `auto` takes the base commit of the pull request. The checkout needs the history of that ref (fetch-depth: 0).'
+    description: 'The git ref to compare with: size gets it as --base, and mutants as --in-diff. `auto` takes the base commit of the pull request, or on a push the commit before the push. The checkout needs the history of that ref (fetch-depth: 0).'
+    required: false
+    default: ''
+  changed-since:
+    description: 'Report only the findings in the files that changed since this git ref (--changed-since). The static commands take it; mutants uses base. The checkout needs the history of that ref (fetch-depth: 0).'
+    required: false
+    default: ''
+  auto-changed-since:
+    description: 'On a pull request, give the base commit of the pull request as --changed-since, when changed-since is empty.'
+    required: false
+    default: 'false'
+  baseline:
+    description: 'A baseline file from --save-baseline, relative to working-directory (--baseline). The run leaves out the findings that it holds.'
+    required: false
+    default: ''
+  save-baseline:
+    description: 'Write the findings of the run to this baseline file, relative to working-directory (--save-baseline). The run then exits 0.'
+    required: false
+    default: ''
+  comment:
+    description: 'Post or update one sticky pull request comment with the gates and the findings. Needs `permissions: pull-requests: write`. A pull request from a fork posts no comment.'
+    required: false
+    default: 'false'
+  comment-key:
+    description: 'The key of the sticky comment: letters, digits, dot, dash and underscore. Give each call its own key when two calls run the same command (also in a matrix), else the second comment replaces the first. When empty, the command.'
     required: false
     default: ''
   install:
@@ -157,6 +181,10 @@ runs:
         INPUT_FAIL_ON_ISSUES: ${{ inputs.fail-on-issues }}
         INPUT_ARGS: ${{ inputs.args }}
         INPUT_BASE: ${{ inputs.base }}
+        INPUT_CHANGED_SINCE: ${{ inputs.changed-since }}
+        INPUT_AUTO_CHANGED_SINCE: ${{ inputs.auto-changed-since }}
+        INPUT_BASELINE: ${{ inputs.baseline }}
+        INPUT_SAVE_BASELINE: ${{ inputs.save-baseline }}
         INPUT_ARTIFACTS_DIR: ${{ inputs.artifacts-dir }}
         INPUT_PACKAGE: ${{ inputs.mutants-package }}
         INPUT_MAX_MUTANTS: ${{ inputs.mutants-max-mutants }}
@@ -178,6 +206,23 @@ runs:
         EXIT_CODE: ${{ steps.analyze.outputs.exit-code }}
         MAX_FINDINGS: ${{ inputs.max-annotations }}
       run: bash "${GITHUB_ACTION_PATH}/action/scripts/summary.sh"
+
+    - name: Comment on the pull request
+      if: always() && inputs.comment == 'true' && steps.analyze.outputs.results != ''
+      shell: bash
+      env:
+        ACTION_JQ_DIR: ${{ github.action_path }}/action/jq
+        RESULTS_FILE: ${{ steps.analyze.outputs.results }}
+        SARIF_FILE: ${{ steps.analyze.outputs.sarif }}
+        FALLOW_COMMAND: ${{ inputs.command }}
+        EXIT_CODE: ${{ steps.analyze.outputs.exit-code }}
+        MAX_FINDINGS: ${{ inputs.max-annotations }}
+        COMMENT_KEY: ${{ inputs.comment-key }}
+        GH_TOKEN: ${{ inputs.github-token }}
+        GH_REPO: ${{ github.repository }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        IS_FORK: ${{ github.event.pull_request.head.repo.fork }}
+      run: bash "${GITHUB_ACTION_PATH}/action/scripts/comment.sh"
 
     - name: Annotate the findings
       if: always() && inputs.annotations == 'true' && steps.analyze.outputs.sarif != ''

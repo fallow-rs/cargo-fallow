@@ -1506,7 +1506,7 @@ fn fix_has_no_compact_or_markdown_output() {
         assert_eq!(explain.status.code(), Some(2), "{format}");
         assert!(
             String::from_utf8_lossy(&explain.stderr)
-                .contains("no SARIF, CodeClimate, compact or markdown"),
+                .contains("no SARIF, CodeClimate, compact, markdown or badge"),
             "{format}: {explain:?}"
         );
     }

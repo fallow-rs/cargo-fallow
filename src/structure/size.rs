@@ -153,7 +153,10 @@ pub fn run(args: &SizeArgs) -> Result<Section, CliError> {
     }
     let progress = Progress::new(args.common.quiet);
     progress.step("Reading cargo metadata");
-    let workspace = workspace::load(args.common.manifest_path.as_deref())?;
+    let workspace = workspace::load(
+        args.common.manifest_path.as_deref(),
+        &args.common.cargo.flags(),
+    )?;
     let settings: config::Size = config::section(&workspace, "size")?;
     // A growth finding depends on the old version of the run, so the run
     // does not judge stale baseline entries.

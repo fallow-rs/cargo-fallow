@@ -36,6 +36,7 @@ cargo fallow visibility --precise
 | `--uniform-fields` | When all fields of a struct have the same written visibility, the command changes them as a group. |
 | `--kind <KIND>` | Report only this kind: `dead-public`, `unnecessary-public` or `unnecessary-restricted-visibility`. The flag can repeat. |
 | `--fail-on-issues` | Exit 1 when the run has a finding. |
+| `--locked`, `--offline`, `--frozen` | Give the flag to `cargo metadata`. |
 | `--changed-since <REF>` | Report only the findings in the files that changed since the fork point of `REF`. See [Changed files](adoption.md#changed-files). |
 | `--save-baseline <PATH>`, `--baseline <PATH>`, `--fail-on-stale-baseline` | Save the findings, or leave out the saved findings. See [Baselines](adoption.md#baselines). |
 | `--package <NAME>`, `-p <NAME>` | Report only the findings of this workspace member. The flag can repeat. See [Packages](adoption.md#packages). |

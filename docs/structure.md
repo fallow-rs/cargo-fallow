@@ -5,7 +5,8 @@ structure of the workspace. They have these flags:
 
 - `--manifest-path`, `--format human|json|sarif|codeclimate|compact|markdown|github-annotations|github-summary` and `--quiet`,
 - [`--changed-since <REF>`](adoption.md#changed-files) and [`--package`](adoption.md#packages),
-- the [baseline](adoption.md#baselines) flags.
+- the [baseline](adoption.md#baselines) flags,
+- `--locked`, `--offline` and `--frozen`, which go to `cargo metadata`.
 
 Each command also has its own gate. The report always shows the gate, but the
 gate fails the run only when you give its flag. `--fail-on-issues` is the

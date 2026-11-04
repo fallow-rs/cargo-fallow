@@ -58,9 +58,8 @@ pub struct InitArgs {
     /// Print a CI workflow file that runs the checks, instead of the tables.
     #[arg(long, value_enum, value_name = "SYSTEM")]
     ci: Option<Ci>,
-    /// Give `--offline` to the `cargo metadata` call of `deps`.
-    #[arg(long)]
-    offline: bool,
+    #[command(flatten)]
+    cargo: crate::cli::CargoArgs,
 }
 
 impl InitArgs {
@@ -104,7 +103,7 @@ pub fn run(args: &InitArgs) -> Result<u8, CliError> {
         render::write_stdout(github_workflow().trim_end()).map_err(|err| CliError::output(&err))?;
         return Ok(EXIT_OK);
     }
-    let workspace = workspace::load(args.manifest_path.as_deref())?;
+    let workspace = workspace::load(args.manifest_path.as_deref(), &args.cargo.flags())?;
     let root = workspace.root.as_std_path();
     let progress = Progress::new(args.quiet);
     progress.step("Running each static check");
@@ -215,11 +214,7 @@ fn run_check(
         fail_on_issues: false,
         fail_on_parse_error: false,
         health: crate::hotspots::HealthArgs::default(),
-        cargo_flags: if args.offline {
-            vec!["--offline".to_owned()]
-        } else {
-            Vec::new()
-        },
+        cargo_flags: args.cargo.flags(),
         scope: crate::scope::ScopeArgs {
             save_baseline: Some(save_to.to_path_buf()),
             ..crate::scope::ScopeArgs::default()

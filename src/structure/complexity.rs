@@ -480,7 +480,10 @@ pub struct Summary {
 pub fn run(args: &ComplexityArgs) -> Result<Section, CliError> {
     let progress = Progress::new(args.common.quiet);
     progress.step("Reading cargo metadata");
-    let workspace = workspace::load(args.common.manifest_path.as_deref())?;
+    let workspace = workspace::load(
+        args.common.manifest_path.as_deref(),
+        &args.common.cargo.flags(),
+    )?;
     let mut settings: config::Complexity = config::section(&workspace, "complexity")?;
     if let Some(value) = args.max_cyclomatic {
         settings.max_cyclomatic = value;

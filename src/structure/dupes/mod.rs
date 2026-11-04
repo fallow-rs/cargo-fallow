@@ -245,7 +245,10 @@ fn load(
 ) -> Result<(workspace::Workspace, Duplication, Loaded, Progress), CliError> {
     let progress = Progress::new(args.common.quiet);
     progress.step("Reading cargo metadata");
-    let workspace = workspace::load(args.common.manifest_path.as_deref())?;
+    let workspace = workspace::load(
+        args.common.manifest_path.as_deref(),
+        &args.common.cargo.flags(),
+    )?;
     let mut settings: Duplication = config::section(&workspace, "dupes")?;
     if let Some(mode) = args.mode {
         settings.mode = mode;

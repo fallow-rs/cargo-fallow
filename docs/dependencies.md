@@ -32,7 +32,9 @@ cargo fallow deps --fail-on-issues --format sarif --quiet
 To resolve the dependencies, the command runs `cargo metadata` with all
 features and without `--no-deps`. The resolve gives the library name and the
 `links` key of each dependency. Cargo can use the network for the resolve. To
-prevent network access, use `--offline` or `--frozen`.
+prevent network access, use `--offline` or `--frozen`. Each command that
+reads the workspace accepts the three flags, but only `deps`, `check`, `fix`
+and `init` resolve the dependencies.
 
 After the run, `Cargo.lock` is the same as before the run. If Cargo created a
 lock file, the command removes it. If Cargo changed the lock file, the command

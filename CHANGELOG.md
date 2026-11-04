@@ -11,6 +11,10 @@ GitHub release. Each release needs a `## [X.Y.Z] - YYYY-MM-DD` section.
 
 ### Added
 
+- Each command that reads the workspace with `cargo metadata` accepts
+  `--locked`, `--offline` and `--frozen`: also `visibility`, `files`,
+  `boundaries`, `size`, `complexity`, `dupes` and `mutants`. `init` accepts
+  `--locked` and `--frozen` too.
 - The `deps` rule `unused-feature` reports a feature of a `publish = false`
   package that turns on nothing, and that no other feature, no member, no
   target and no file of the repository names. It is a warning.

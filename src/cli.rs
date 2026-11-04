@@ -77,6 +77,8 @@ pub struct VisibilityOptions {
     pub scope: crate::scope::ScopeArgs,
     /// The limits of `--precise` mode, or `None` for the fast mode.
     pub precise: Option<crate::visibility::precise::Limits>,
+    /// The flags for each `cargo metadata` call, for example `--offline`.
+    pub cargo_flags: Vec<String>,
     /// The item path of `--trace`, as `crate::path`.
     pub trace: Option<String>,
 }
@@ -332,6 +334,8 @@ struct MutantsArgs {
     /// The flag can repeat. A value that matches no file of the package is an error.
     #[arg(long = "file", short = 'f', value_name = "PATH")]
     files: Vec<String>,
+    #[command(flatten)]
+    cargo: CargoArgs,
 }
 
 impl From<MutantsArgs> for crate::mutation::run::Options {
@@ -339,6 +343,7 @@ impl From<MutantsArgs> for crate::mutation::run::Options {
         let cores = std::thread::available_parallelism().map_or(1, usize::from);
         Self {
             manifest_path: args.manifest_path,
+            cargo_flags: args.cargo.flags(),
             package: args.package,
             work_dir: args.work_dir,
             tier: match args.tier {
@@ -429,6 +434,8 @@ struct VisibilityArgs {
     /// The trace ignores the baseline, `--changed-since` and `--fail-on-issues`.
     #[arg(long, value_name = "CRATE::PATH", conflicts_with = "precise")]
     trace: Option<String>,
+    #[command(flatten)]
+    cargo: CargoArgs,
 }
 
 /// A finding kind of the `visibility` command.
@@ -460,6 +467,7 @@ impl From<VisibilityArgs> for VisibilityOptions {
             quiet: args.quiet,
             production: args.production,
             exclude: args.exclude_crate,
+            cargo_flags: args.cargo.flags(),
             uniform_fields: args.uniform_fields,
             kinds: args
                 .kinds
@@ -502,16 +510,8 @@ struct DepsArgs {
     fail_on_issues: bool,
     #[command(flatten)]
     scope: crate::scope::ScopeArgs,
-    /// Give `--locked` to `cargo metadata`: fail when `Cargo.lock` must change.
-    #[arg(long)]
-    locked: bool,
-    /// Give `--offline` to `cargo metadata`: do not use the network.
-    #[arg(long)]
-    offline: bool,
-    /// Give `--frozen` to `cargo metadata`: the same as `--locked` and
-    /// `--offline`.
-    #[arg(long)]
-    frozen: bool,
+    #[command(flatten)]
+    cargo: CargoArgs,
     /// Show each declaration and each use site of one dependency in each
     /// target, and its findings, instead of the report. Give the key in
     /// Cargo.toml or the package name. The trace ignores the baseline,
@@ -522,7 +522,7 @@ struct DepsArgs {
 
 impl From<DepsArgs> for crate::deps::Options {
     fn from(args: DepsArgs) -> Self {
-        let cargo_flags = cargo_flags(args.locked, args.offline, args.frozen);
+        let cargo_flags = args.cargo.flags();
         Self {
             manifest_path: args.manifest_path,
             format: args.format,
@@ -569,30 +569,40 @@ struct CheckArgs {
     fail_on_parse_error: bool,
     #[command(flatten)]
     scope: crate::scope::ScopeArgs,
-    /// Give `--locked` to the `cargo metadata` call of the deps check.
-    #[arg(long)]
-    locked: bool,
-    /// Give `--offline` to the `cargo metadata` call of the deps check.
-    #[arg(long)]
-    offline: bool,
-    /// Give `--frozen` to the `cargo metadata` call of the deps check.
-    #[arg(long)]
-    frozen: bool,
+    #[command(flatten)]
+    cargo: CargoArgs,
     #[command(flatten)]
     health: crate::hotspots::HealthArgs,
 }
 
-/// The `cargo metadata` flags that are on.
-fn cargo_flags(locked: bool, offline: bool, frozen: bool) -> Vec<String> {
-    [
-        (locked, "--locked"),
-        (offline, "--offline"),
-        (frozen, "--frozen"),
-    ]
-    .into_iter()
-    .filter(|(on, _)| *on)
-    .map(|(_, flag)| flag.to_owned())
-    .collect()
+/// The flags that the command gives to each `cargo metadata` call.
+#[derive(Debug, Clone, Copy, Default, Args)]
+pub struct CargoArgs {
+    /// Give `--locked` to `cargo metadata`: fail when `Cargo.lock` must change.
+    #[arg(long)]
+    pub locked: bool,
+    /// Give `--offline` to `cargo metadata`: do not use the network.
+    #[arg(long)]
+    pub offline: bool,
+    /// Give `--frozen` to `cargo metadata`: the same as `--locked` and
+    /// `--offline`.
+    #[arg(long)]
+    pub frozen: bool,
+}
+
+impl CargoArgs {
+    /// The `cargo metadata` flags that are on.
+    pub fn flags(self) -> Vec<String> {
+        [
+            (self.locked, "--locked"),
+            (self.offline, "--offline"),
+            (self.frozen, "--frozen"),
+        ]
+        .into_iter()
+        .filter(|(on, _)| *on)
+        .map(|(_, flag)| flag.to_owned())
+        .collect()
+    }
 }
 
 impl From<CheckArgs> for crate::check::Options {
@@ -605,7 +615,7 @@ impl From<CheckArgs> for crate::check::Options {
             skip: args.skip,
             fail_on_issues: args.fail_on_issues,
             fail_on_parse_error: args.fail_on_parse_error,
-            cargo_flags: cargo_flags(args.locked, args.offline, args.frozen),
+            cargo_flags: args.cargo.flags(),
             scope: args.scope,
             health: args.health,
         }

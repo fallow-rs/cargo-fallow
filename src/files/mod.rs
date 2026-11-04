@@ -137,7 +137,10 @@ pub struct Summary {
 pub fn run(args: &FilesArgs) -> Result<Section, CliError> {
     let progress = Progress::new(args.common.quiet);
     progress.step("Reading cargo metadata");
-    let workspace = workspace::load(args.common.manifest_path.as_deref())?;
+    let workspace = workspace::load(
+        args.common.manifest_path.as_deref(),
+        &args.common.cargo.flags(),
+    )?;
     let scope = Scope::load(&workspace, &args.common.scope)?;
     scope.annotate(section(&workspace, args.fail_on_issues, &scope, progress)?)
 }

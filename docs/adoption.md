@@ -163,6 +163,9 @@ cargo fallow init --write    # add them to Cargo.toml and write the baseline
 cargo fallow init --ci github > .github/workflows/cargo-fallow.yml
 ```
 
+`init` accepts `--locked`, `--offline` and `--frozen` for its `cargo metadata`
+calls.
+
 - The command runs the static checks and prints the tables of
   `[workspace.metadata.fallow]`. Each limit is set to the current maximum of
   the workspace: `max-cyclomatic` and `max-cognitive` of `complexity`, and

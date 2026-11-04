@@ -37,7 +37,7 @@ separate commands.
 | `--changed-since <REF>` | Report only the findings in the files that changed since the fork point of `REF`. See [Changed files](adoption.md#changed-files). |
 | `--save-baseline <PATH>`, `--baseline <PATH>`, `--fail-on-stale-baseline` | Save the findings to a file, or leave out the findings that a saved file lists. See [Baselines](adoption.md#baselines). |
 | `--package <NAME>`, `-p <NAME>` | Report only the findings of this workspace member. You can repeat the flag. See [Packages](adoption.md#packages). |
-| `--locked`, `--offline`, `--frozen` | Pass the flag to the `cargo metadata` call of `deps`. |
+| `--locked`, `--offline`, `--frozen` | Give the flag to each `cargo metadata` call. Only the call of `deps` resolves the dependencies, so only that call can use the network. |
 | `--file-scores` | Add `file_scores`. See [File scores and hotspots](#file-scores-and-hotspots). |
 | `--hotspots` | Add `hotspots` and `hotspot_summary`. See [File scores and hotspots](#file-scores-and-hotspots). |
 | `--since <DURATION>` | The git history window of `--hotspots`: `6m`, `90d`, `2w`, `1y` or a date such as `2025-06-01`. The default is `6m`. |

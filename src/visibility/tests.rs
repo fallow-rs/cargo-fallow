@@ -37,7 +37,7 @@ fn precise_findings(proto_header: &str) -> Vec<String> {
         "write the re-export",
     );
     let workspace = ok(
-        crate::workspace::load(Some(&root.join("Cargo.toml"))),
+        crate::workspace::load(Some(&root.join("Cargo.toml")), &[]),
         "the workspace",
     );
     let module_graph = graph::build(&workspace, &Production { bins: Vec::new() });

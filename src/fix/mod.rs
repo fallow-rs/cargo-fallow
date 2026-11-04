@@ -52,6 +52,8 @@ pub struct FixArgs {
     /// flag. In a terminal, the command applies the edits also without it.
     #[arg(long, alias = "force")]
     yes: bool,
+    // `fix` keeps its own flags, not `CargoArgs`: after the edits,
+    // `Cargo.lock` can change, so the later calls drop `--locked`.
     /// Give `--locked` to the `cargo metadata` call of the analysis.
     #[arg(long)]
     locked: bool,
@@ -228,6 +230,8 @@ fn plan(
             fail_on_issues: false,
             scope: crate::scope::ScopeArgs::default(),
             precise: None,
+            // The workspace is already loaded, so no call reads this field.
+            cargo_flags: Vec::new(),
             trace: None,
         },
     )?;

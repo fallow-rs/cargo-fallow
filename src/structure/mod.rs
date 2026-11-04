@@ -52,6 +52,8 @@ pub struct CommonArgs {
     pub quiet: bool,
     #[command(flatten)]
     pub scope: crate::scope::ScopeArgs,
+    #[command(flatten)]
+    pub cargo: crate::cli::CargoArgs,
 }
 
 /// The flags of `boundaries`.

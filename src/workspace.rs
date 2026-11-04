@@ -100,24 +100,25 @@ pub struct Target {
 }
 
 /// Reads the workspace. Cargo does not resolve dependencies, does not use the
-/// network and does not write `Cargo.lock`.
-pub fn load(manifest_path: Option<&Path>) -> Result<Workspace, CliError> {
-    metadata(manifest_path, None).map(|metadata| model(&metadata))
+/// network and does not write `Cargo.lock`. `cargo_flags` go to
+/// `cargo metadata`, for example `--offline`.
+pub fn load(manifest_path: Option<&Path>, cargo_flags: &[String]) -> Result<Workspace, CliError> {
+    metadata(manifest_path, false, cargo_flags).map(|metadata| model(&metadata))
 }
 
 /// Reads the workspace and resolves the dependencies with all features on.
-/// Cargo can use the network. `cargo_flags` go to `cargo metadata`, for
-/// example `--offline`. `Cargo.lock` stays as it was before the call: the
-/// function removes a new lock file and writes back the old bytes of a
+/// Cargo can use the network. `cargo_flags` go to both `cargo metadata`
+/// calls, the `--no-deps` call and the resolve, for example `--offline`.
+/// `Cargo.lock` stays as it was before the call: the function removes a new lock file and writes back the old bytes of a
 /// changed one. The raw metadata has the library names and the `links` keys
 /// of the dependencies.
 pub fn load_resolved(
     manifest_path: Option<&Path>,
     cargo_flags: &[String],
 ) -> Result<(Workspace, cargo_metadata::Metadata), CliError> {
-    let root = metadata(manifest_path, None)?.workspace_root;
+    let root = metadata(manifest_path, false, cargo_flags)?.workspace_root;
     let lock = LockGuard::new(root.join(LOCK_FILE).into_std_path_buf())?;
-    let resolved = metadata(manifest_path, Some(cargo_flags));
+    let resolved = metadata(manifest_path, true, cargo_flags);
     lock.restore()?;
     let metadata = resolved?;
     Ok((model(&metadata), metadata))
@@ -175,18 +176,16 @@ fn lock_error(action: &str, path: &Path, err: &io::Error) -> CliError {
 /// features on.
 fn metadata(
     manifest_path: Option<&Path>,
-    resolve: Option<&[String]>,
+    resolve: bool,
+    cargo_flags: &[String],
 ) -> Result<cargo_metadata::Metadata, CliError> {
     let mut command = MetadataCommand::new();
-    match resolve {
-        Some(flags) => {
-            command.features(cargo_metadata::CargoOpt::AllFeatures);
-            command.other_options(flags.to_vec());
-        }
-        None => {
-            command.no_deps();
-        }
+    if resolve {
+        command.features(cargo_metadata::CargoOpt::AllFeatures);
+    } else {
+        command.no_deps();
     }
+    command.other_options(cargo_flags.to_vec());
     if let Some(path) = manifest_path {
         check_manifest(path)?;
         command.manifest_path(path);
@@ -197,7 +196,7 @@ fn metadata(
     )]
     let metadata = command
         .exec()
-        .map_err(|err| metadata_error(&err, resolve.is_some()))?;
+        .map_err(|err| metadata_error(&err, resolve))?;
     Ok(metadata)
 }
 

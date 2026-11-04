@@ -9,6 +9,9 @@ cargo fallow files
 cargo fallow files --format json --fail-on-issues
 ```
 
+The command has the flags of the [structure checks](structure.md), and
+`--fail-on-issues`.
+
 The command starts at each target root and follows these links to other
 files. A file that the command gets to is a used file:
 

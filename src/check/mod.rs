@@ -197,7 +197,10 @@ pub fn execute(options: &Options) -> Result<report::CheckReport, CliError> {
         (workspace, Some(metadata))
     } else {
         progress.step("Reading cargo metadata");
-        (workspace::load(options.manifest_path.as_deref())?, None)
+        (
+            workspace::load(options.manifest_path.as_deref(), &options.cargo_flags)?,
+            None,
+        )
     };
     let scope = Scope::load(&workspace, &options.scope)?;
     // Read each configuration table before the work starts, so an invalid
@@ -400,6 +403,7 @@ fn visibility_flags(options: &Options, enforced: bool) -> VisibilityOptions {
         fail_on_issues: enforced,
         scope: crate::scope::ScopeArgs::default(),
         precise: None,
+        cargo_flags: options.cargo_flags.clone(),
         trace: None,
     }
 }

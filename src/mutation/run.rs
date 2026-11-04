@@ -71,6 +71,8 @@ impl Options {
 pub struct Options {
     /// The manifest of the workspace or the package.
     pub manifest_path: Option<PathBuf>,
+    /// The flags for each `cargo metadata` call, for example `--offline`.
+    pub cargo_flags: Vec<String>,
     /// The package to mutate. A workspace with one package needs no value.
     pub package: Option<String>,
     /// A new folder for the copies and the build output. Without a value the run
@@ -140,7 +142,7 @@ fn failure(action: &str, err: &io::Error) -> CliError {
 /// Runs the command.
 pub fn run(options: &Options) -> Result<Report, CliError> {
     let start = Instant::now();
-    let workspace = workspace::load(options.manifest_path.as_deref())?;
+    let workspace = workspace::load(options.manifest_path.as_deref(), &options.cargo_flags)?;
     let member = find_member(&workspace, options.package.as_deref())?;
     let changed = options
         .in_diff
@@ -344,7 +346,7 @@ pub fn inspect(options: &Options, id: &str) -> Result<InspectReport, CliError> {
         )
         .with_help("The `id` field of a `cargo fallow mutants` report has the value."));
     }
-    let workspace = workspace::load(options.manifest_path.as_deref())?;
+    let workspace = workspace::load(options.manifest_path.as_deref(), &options.cargo_flags)?;
     let (member, files, planned) = locate(&workspace, options.package.as_deref(), id)?;
     let dirs = WorkDirs::create(
         options.work_dir.as_deref(),

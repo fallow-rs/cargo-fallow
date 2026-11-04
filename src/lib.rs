@@ -138,7 +138,7 @@ fn visibility_report(options: &cli::VisibilityOptions) -> Result<u8, CliError> {
     }
     let progress = render::Progress::new(options.quiet);
     progress.step("Reading cargo metadata");
-    let workspace = workspace::load(options.manifest_path.as_deref())?;
+    let workspace = workspace::load(options.manifest_path.as_deref(), &options.cargo_flags)?;
     let options = &visibility::config::resolve(&workspace, options)?;
     // `--kind` narrows the findings, so a baseline entry of another kind is
     // not stale.

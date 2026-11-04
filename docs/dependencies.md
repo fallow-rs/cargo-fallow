@@ -7,8 +7,9 @@ these names:
 - paths, `use` items and `extern crate` items,
 - macro paths and attribute paths.
 
-The command also reads these names in macro tokens, attributes, `cfg_attr`
-and doc tests.
+The command also reads these names in macro tokens, attributes, `cfg_attr`,
+doc tests and intra-doc links. rustdoc needs the dependency of a link such as
+`` [`other_crate::Item`] ``, so the link is a use.
 
 ```bash
 cargo fallow deps

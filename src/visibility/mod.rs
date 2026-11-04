@@ -186,10 +186,10 @@ pub fn analyze(graph: &Graph, options: &Options) -> Analysis {
     let credits = resolver.credits();
     let surface = Surface::new(graph, &resolver, options);
     let findings = decide(graph, &surface, &credits, options, |_| true);
-    // A doc block credit stays: a type-aware check of the crate cannot see
-    // the doc tests either.
+    // A doc block credit and a doc link credit stay: a type-aware check of
+    // the crate cannot see the doc tests and the doc links either.
     let typed = decide(graph, &surface, &credits, options, |credit| {
-        credit.class != Class::Untyped || credit.origin == Origin::Doc
+        credit.class != Class::Untyped || matches!(credit.origin, Origin::Doc | Origin::DocLink)
     });
     let known: FxHashSet<(ItemId, FindingKind)> = findings
         .iter()
@@ -714,9 +714,12 @@ fn required_items(
     credits: &[&Credit],
     uses: &[Uses],
 ) -> FxHashSet<ItemId> {
+    // rustdoc warns when the documentation of an item that stays `pub` links
+    // to a less visible item, so a doc link holds its target as a signature
+    // does.
     let mut signature: FxHashMap<ItemId, Vec<ItemId>> = FxHashMap::default();
     for credit in credits {
-        if let (Some(owner), Origin::Signature) = (credit.owner, credit.origin) {
+        if let (Some(owner), Origin::Signature | Origin::DocLink) = (credit.owner, credit.origin) {
             signature.entry(owner).or_default().push(credit.item);
             // A field of a variant is as visible as its enum, so a required
             // enum needs the types of its variant fields.
@@ -725,9 +728,14 @@ fn required_items(
             }
         }
     }
+    let members = members_of_types(graph);
     let mut required: FxHashSet<ItemId> = FxHashSet::default();
     let mut queue: Vec<ItemId> = (0..graph.items.len())
-        .filter(|&item| uses[item].cross_crate || surface.glob_exported.contains(&item))
+        .filter(|&item| {
+            uses[item].cross_crate
+                || surface.glob_exported.contains(&item)
+                || surface.stays_exported(graph, item)
+        })
         .collect();
     queue.extend(surface.api_surface(graph));
     while let Some(item) = queue.pop() {
@@ -735,6 +743,20 @@ fn required_items(
             continue;
         }
         queue.extend(signature.get(&item).into_iter().flatten().copied());
+        // rustc checks the members of a type that stays `pub` against the
+        // visibility of the type. A member that is no candidate stays as it is.
+        queue.extend(
+            members
+                .get(&item)
+                .into_iter()
+                .flatten()
+                .copied()
+                .filter(|&member| {
+                    graph.items[member].flags.trait_impl
+                        || (graph.items[member].vis == Vis::Public
+                            && !surface.public_candidate(graph, member))
+                }),
+        );
         queue.extend(
             surface
                 .reexport_targets
@@ -766,7 +788,57 @@ fn variant_enum(graph: &Graph, field: ItemId) -> Option<ItemId> {
     graph.items[variant].parent
 }
 
+/// The members of each type of a crate: its fields, and the items of each
+/// `impl` block with the type as self type.
+fn members_of_types(graph: &Graph) -> FxHashMap<ItemId, Vec<ItemId>> {
+    let mut types: FxHashMap<(usize, &str), Vec<ItemId>> = FxHashMap::default();
+    for (id, entry) in graph.items.iter().enumerate() {
+        let is_type = matches!(
+            entry.kind,
+            ItemKind::Struct | ItemKind::Enum | ItemKind::Union
+        );
+        if is_type && entry.parent.is_none() {
+            types
+                .entry((entry.krate, entry.name.as_str()))
+                .or_default()
+                .push(id);
+        }
+    }
+    let mut members: FxHashMap<ItemId, Vec<ItemId>> = FxHashMap::default();
+    for (id, entry) in graph.items.iter().enumerate() {
+        let Some(parent) = entry.parent else {
+            continue;
+        };
+        let owner = &graph.items[parent];
+        if owner.kind == ItemKind::Impl {
+            let name = owner.impl_self.as_ref().and_then(|path| path.last());
+            for &ty in name
+                .and_then(|name| types.get(&(owner.krate, name.as_str())))
+                .into_iter()
+                .flatten()
+            {
+                members.entry(ty).or_default().push(id);
+            }
+        } else if entry.kind == ItemKind::Field {
+            members.entry(parent).or_default().push(id);
+        }
+    }
+    members
+}
+
 impl Surface {
+    /// True when the item is exported and keeps `pub`, because it is no
+    /// candidate of a public finding: for example an attribute macro covers
+    /// it. Its signature then needs each type that it names.
+    fn stays_exported(&self, graph: &Graph, item: ItemId) -> bool {
+        let entry = &graph.items[item];
+        entry.vis == Vis::Public
+            && !matches!(entry.kind, ItemKind::Use | ItemKind::Impl)
+            && graph.crates[entry.krate].kind.is_library()
+            && self.exported(item)
+            && !self.public_candidate(graph, item)
+    }
+
     /// The exported items of the API crates. They are an external API.
     fn api_surface(&self, graph: &Graph) -> Vec<ItemId> {
         (0..graph.items.len())
@@ -791,6 +863,8 @@ fn live_items(
             continue;
         }
         match (credit.owner, credit.origin) {
+            // A doc link is no use in code, so it makes nothing live.
+            (_, Origin::DocLink) => {}
             (_, Origin::Doc) => other_roots.push(credit.item),
             (Some(owner), _) => edges
                 .entry(owner)

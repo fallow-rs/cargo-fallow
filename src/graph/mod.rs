@@ -10,6 +10,7 @@
 //! macros. A name in macro tokens counts as a reference to each item with that
 //! name, so a gap in the graph hides a finding and does not make one.
 
+pub mod doc_links;
 pub mod extract;
 pub mod resolve;
 pub mod tokens;
@@ -22,7 +23,7 @@ use std::thread;
 use crate::gates::parse_edition;
 use crate::graph::extract::{
     Binding, CodeInclude, FileFacts, ItemFlags, ItemKind, Origin, RawRef, RefKind, Vis,
-    doc_refs_of_markdown, extract,
+    doc_link_refs_of_markdown, doc_refs_of_markdown, extract,
 };
 use crate::modules::{SkippedFile, TargetRoot, normalize, walk};
 use crate::parse::Edition;
@@ -574,14 +575,13 @@ fn add_files(graph: &mut Graph, root: &Path, krate: CrateId, files: CrateFiles, 
             edition,
             &mut budget,
         ));
-        if doctest {
-            refs.extend(included_docs(
-                root,
-                &file.path,
-                &file.facts.doc_includes,
-                edition,
-            ));
-        }
+        refs.extend(included_docs(
+            root,
+            &file.path,
+            &file.facts.doc_includes,
+            edition,
+            doctest,
+        ));
         for raw in refs {
             if raw.origin == Origin::Doc && !doctest {
                 continue;
@@ -773,14 +773,29 @@ fn included_code(
     refs
 }
 
-fn included_docs(root: &Path, file: &str, includes: &[String], edition: Edition) -> Vec<RawRef> {
+/// The references of the Markdown files that `#[doc = include_str!(..)]`
+/// reads: the intra-doc links, and the code blocks when rustdoc runs the doc
+/// tests of the crate.
+fn included_docs(
+    root: &Path,
+    file: &str,
+    includes: &[String],
+    edition: Edition,
+    doctest: bool,
+) -> Vec<RawRef> {
     let folder = Path::new(file).parent().unwrap_or_else(|| Path::new(""));
-    includes
+    let mut refs = Vec::new();
+    for markdown in includes
         .iter()
         .filter_map(|include| normalize(&folder.join(include)))
         .filter_map(|path| fs::read_to_string(root.join(path)).ok())
-        .flat_map(|markdown| doc_refs_of_markdown(&markdown, edition))
-        .collect()
+    {
+        if doctest {
+            refs.extend(doc_refs_of_markdown(&markdown, edition));
+        }
+        refs.extend(doc_link_refs_of_markdown(&markdown));
+    }
+    refs
 }
 
 impl Graph {

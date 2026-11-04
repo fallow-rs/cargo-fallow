@@ -247,6 +247,9 @@ pub enum Origin {
     Attr,
     /// In a code block of the documentation.
     Doc,
+    /// In an intra-doc link, for example `` [`path`] ``. rustdoc resolves it
+    /// from the module of the doc comment.
+    DocLink,
 }
 
 /// One reference.
@@ -315,6 +318,23 @@ pub fn extract(source: &str, edition: Edition) -> Result<FileFacts, ParseOutcome
 /// The documentation code blocks of a Markdown file, as references.
 pub fn doc_refs_of_markdown(markdown: &str, edition: Edition) -> Vec<RawRef> {
     doc_refs_at(markdown, edition, 0)
+}
+
+/// The intra-doc links of a Markdown file that the documentation includes,
+/// as references from the module of the include. The place is not known.
+pub fn doc_link_refs_of_markdown(markdown: &str) -> Vec<RawRef> {
+    crate::graph::doc_links::link_paths(markdown)
+        .into_iter()
+        .map(|(_, (segments, global))| RawRef {
+            inline: Vec::new(),
+            owner: None,
+            kind: RefKind::Path { segments, global },
+            origin: Origin::DocLink,
+            test_only: false,
+            under_cfg: false,
+            line: 0,
+        })
+        .collect()
 }
 
 /// The documentation code blocks of a Markdown text that starts on `line`,
@@ -436,6 +456,7 @@ impl<'a> Walker<'a> {
 
     fn enter(&mut self, node: &SyntaxNode) {
         self.cursor = usize::from(node.text_range().start());
+        let first_item = self.facts.items.len();
         if let Some(owner) = ast::AnyHasAttrs::cast(node.clone()) {
             match attributes_of(node) {
                 AttrClass::Test => self.push(node, Frame::Test),
@@ -466,6 +487,70 @@ impl<'a> Walker<'a> {
             SyntaxKind::MACRO_CALL => self.macro_call(node),
             SyntaxKind::MACRO_RULES | SyntaxKind::MACRO_DEF => self.macro_def(node),
             _ => self.plain_item(node),
+        }
+        self.doc_links(node, first_item);
+    }
+
+    /// The intra-doc links of the doc comments that are direct children of
+    /// the node: the outer comments of an item, and the inner comments of a
+    /// file or an inline module. The item of the node owns the outer links.
+    fn doc_links(&mut self, node: &SyntaxNode, first_item: usize) {
+        let mut text = String::new();
+        // The file line of each line of `text`.
+        let mut lines = Vec::new();
+        for comment in node
+            .children()
+            .filter(|child| child.kind() == SyntaxKind::DOC_COMMENT)
+        {
+            let comment_text = comment.text().to_string();
+            let first = self.line_at(usize::from(comment.text_range().start()));
+            lines.extend(
+                (0..)
+                    .map(|offset| first + offset)
+                    .take(comment_text.lines().count().max(1)),
+            );
+            text.push_str(&comment_text);
+            text.push('\n');
+        }
+        if text.is_empty() {
+            return;
+        }
+        let inner = matches!(node.kind(), SyntaxKind::SOURCE_FILE | SyntaxKind::ITEM_LIST);
+        let owner = if inner || self.facts.items.len() == first_item {
+            self.owner()
+        } else {
+            Some(first_item)
+        };
+        // The syntax cannot show if an outer comment of a module resolves
+        // from the module or from its parent, so each scope gets the links.
+        let mut scopes = vec![self.inline()];
+        if let Some(name) = ast::Module::cast(node.clone()).and_then(|module| module.name()) {
+            let mut base = scopes[0].clone();
+            if self.frames.last().is_some_and(|(frame_node, frame)| {
+                frame_node == node && matches!(frame, Frame::Module(_))
+            }) {
+                base.pop();
+            }
+            let mut inside = base.clone();
+            inside.push(plain_name(&name));
+            scopes = vec![base, inside];
+        }
+        for (index, (segments, global)) in crate::graph::doc_links::link_paths(&text) {
+            let line = lines.get(index).copied().unwrap_or(0);
+            for scope in &scopes {
+                self.facts.refs.push(RawRef {
+                    inline: scope.clone(),
+                    owner,
+                    kind: RefKind::Path {
+                        segments: segments.clone(),
+                        global,
+                    },
+                    origin: Origin::DocLink,
+                    test_only: self.test_only(),
+                    under_cfg: self.cfg_off(),
+                    line,
+                });
+            }
         }
     }
 

@@ -39,6 +39,7 @@ The `credit` field tells how the code names the item:
 | `macro-tokens` | A name in the tokens of a macro call. The line is the line where the call starts. |
 | `attribute` | A name in an attribute. The line is the line of the attribute. |
 | `doc-code` | A name in a code block of the documentation. The line is the first code line of the block. |
+| `doc-link` | An intra-doc link path, for example `` [`path`] ``. |
 
 `class` is `exact`, `fallback` (the path did not resolve) or `untyped` (the
 type is not known from the syntax). `--precise` mode checks only the
@@ -54,7 +55,8 @@ name. The JSON document has the `kind` `deps-trace`. `declarations` lists each
 `Cargo.toml` entry of the dependency. `uses` lists each place in the code of a
 declaring package that uses the dependency. An entry has `context` (the names
 of `used_by`) and `via`, which is one of these values:
-`import`, `path`, `macro-tokens`, `attribute`, `doc-code`, `macro-crate` (the
+`import`, `path`, `macro-tokens`, `attribute`, `doc-code`, `doc-link`,
+`macro-crate` (the
 output of a macro crate such as `serde_derive` uses the dependency) or
 `include` (an `include!` call that cargo-fallow cannot read). The `used`
 field of a declaration is `true` when the code of its package uses the

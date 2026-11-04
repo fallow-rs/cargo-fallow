@@ -2,9 +2,9 @@
 //!
 //! The command runs `check` and gives the tables of
 //! `[workspace.metadata.fallow]` with the limits at the current maximum of the
-//! workspace. It also saves the findings of the run as a baseline, so the
-//! first `cargo fallow check --fail-on-issues` passes, and a new finding later
-//! fails it. `--write` adds the tables to the root `Cargo.toml` with
+//! workspace. With `--write`, it saves the findings of a run with the new
+//! limits as a baseline, so the first `cargo fallow check --fail-on-issues`
+//! passes, and a new finding later fails it. `--write` adds the tables to the root `Cargo.toml` with
 //! `toml_edit` and writes the baseline file. A key that the manifest has
 //! already keeps its value, so a second `--write` changes nothing.
 
@@ -81,7 +81,7 @@ pub struct InitReport {
     /// The tables as TOML text.
     pub tables: String,
     /// The baseline file, relative to the workspace root.
-    pub baseline: &'static str,
+    pub baseline: String,
     /// The findings that the baseline holds.
     pub baseline_findings: usize,
     /// True when the command changed the manifest or wrote the baseline.
@@ -112,47 +112,42 @@ pub fn run(args: &InitArgs) -> Result<u8, CliError> {
     }
     let workspace = workspace::load(args.manifest_path.as_deref())?;
     let root = workspace.root.as_std_path();
-    let saved = tempfile::NamedTempFile::new().map_err(|err| {
-        CliError::new(
-            ErrorCode::OutputFailed,
-            format!("cannot make a file: {err}"),
-        )
-    })?;
     let progress = Progress::new(args.quiet);
     progress.step("Running each static check");
-    let report = crate::check::execute(&crate::check::Options {
-        manifest_path: args.manifest_path.clone(),
-        format: Format::Json,
-        quiet: true,
-        only: Vec::new(),
-        skip: Vec::new(),
-        fail_on_issues: false,
-        fail_on_parse_error: false,
-        cargo_flags: if args.offline {
-            vec!["--offline".to_owned()]
-        } else {
-            Vec::new()
-        },
-        scope: crate::scope::ScopeArgs {
-            save_baseline: Some(saved.path().to_path_buf()),
-            ..crate::scope::ScopeArgs::default()
-        },
-    })?;
-    let json = serde_json::to_value(&report)
+    let probe = temp_file()?;
+    let first = run_check(args, probe.path())?;
+    let json = serde_json::to_value(&first)
         .map_err(|err| CliError::output(&std::io::Error::other(err)))?;
     let limits = limits(&json);
     let tables = tables(&limits);
-    let written = if args.write {
-        write(root, &limits, saved.path())?
-    } else {
-        false
-    };
+    let mut findings = first.total_issues;
+    let mut written = false;
+    let mut baseline = BASELINE_FILE.to_owned();
+    if args.write {
+        written = write_tables(root, &limits)?;
+        baseline = configured_baseline(root)?;
+        let path = root.join(&baseline);
+        if fs::symlink_metadata(&path).is_ok() {
+            render::warn(&format!(
+                "kept the baseline `{baseline}` that exists. Run `cargo fallow check \
+                 --save-baseline {baseline}` to save the current findings."
+            ));
+        } else {
+            // The baseline comes from a run with the new limits, so it holds
+            // no entry that the new limits make stale.
+            progress.step("Saving the findings with the new limits");
+            let saved = temp_file()?;
+            findings = run_check(args, saved.path())?.total_issues;
+            write_baseline(&path, saved.path())?;
+            written = true;
+        }
+    }
     let report = InitReport {
         kind: "init",
         version: TOOL_VERSION,
         tables,
-        baseline: BASELINE_FILE,
-        baseline_findings: report.total_issues,
+        baseline,
+        baseline_findings: findings,
         written,
     };
     let text = match args.format {
@@ -210,10 +205,46 @@ fn tables(limits: &Limits) -> String {
     text
 }
 
-/// Adds the tables to the root manifest and writes the baseline file. A key
-/// that exists keeps its value, and a baseline file that exists stays.
-/// Returns true when a file changed.
-fn write(root: &Path, limits: &Limits, saved: &Path) -> Result<bool, CliError> {
+/// A new temporary file.
+fn temp_file() -> Result<tempfile::NamedTempFile, CliError> {
+    tempfile::NamedTempFile::new().map_err(|err| {
+        CliError::new(
+            ErrorCode::OutputFailed,
+            format!("cannot make a file: {err}"),
+        )
+    })
+}
+
+/// Runs `check` with no gate and saves its findings to `save_to`. The
+/// `--save-baseline` flag also keeps the run from reading a configured
+/// baseline.
+fn run_check(
+    args: &InitArgs,
+    save_to: &Path,
+) -> Result<crate::check::report::CheckReport, CliError> {
+    crate::check::execute(&crate::check::Options {
+        manifest_path: args.manifest_path.clone(),
+        format: Format::Json,
+        quiet: true,
+        only: Vec::new(),
+        skip: Vec::new(),
+        fail_on_issues: false,
+        fail_on_parse_error: false,
+        cargo_flags: if args.offline {
+            vec!["--offline".to_owned()]
+        } else {
+            Vec::new()
+        },
+        scope: crate::scope::ScopeArgs {
+            save_baseline: Some(save_to.to_path_buf()),
+            ..crate::scope::ScopeArgs::default()
+        },
+    })
+}
+
+/// Adds the tables to the root manifest. A key that exists keeps its value.
+/// Returns true when the manifest changed.
+fn write_tables(root: &Path, limits: &Limits) -> Result<bool, CliError> {
     let manifest = root.join("Cargo.toml");
     let text = fs::read_to_string(&manifest).map_err(|err| failed(&manifest, &err))?;
     let mut doc: DocumentMut = text.parse().map_err(|err| {
@@ -244,26 +275,45 @@ fn write(root: &Path, limits: &Limits, saved: &Path) -> Result<bool, CliError> {
     let dupes = table(&mut doc, &["workspace", "metadata", "fallow", "dupes"])?;
     keep_or_set(dupes, "threshold", value(limits.threshold));
     let new = doc.to_string();
-    let mut written = if new == text {
-        false
-    } else {
-        fs::write(&manifest, new).map_err(|err| failed(&manifest, &err))?;
-        true
-    };
-    let baseline = root.join(BASELINE_FILE);
-    // `symlink_metadata` sees a link, also a broken one, so an existing path
-    // stays. `create_new` does not follow a link that appears after the check.
-    if fs::symlink_metadata(&baseline).is_err() {
-        let bytes = fs::read(saved).map_err(|err| failed(saved, &err))?;
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&baseline)
-            .map_err(|err| failed(&baseline, &err))?;
-        std::io::Write::write_all(&mut file, &bytes).map_err(|err| failed(&baseline, &err))?;
-        written = true;
+    if new == text {
+        return Ok(false);
     }
-    Ok(written)
+    fs::write(&manifest, new).map_err(|err| failed(&manifest, &err))?;
+    Ok(true)
+}
+
+/// The `baseline` key of the root manifest after the edit.
+fn configured_baseline(root: &Path) -> Result<String, CliError> {
+    let manifest = root.join("Cargo.toml");
+    let text = fs::read_to_string(&manifest).map_err(|err| failed(&manifest, &err))?;
+    let doc: DocumentMut = text.parse().map_err(|err| {
+        CliError::new(
+            ErrorCode::InvalidConfig,
+            format!("the root Cargo.toml does not parse: {err}"),
+        )
+    })?;
+    let path = doc
+        .get("workspace")
+        .and_then(|item| item.get("metadata"))
+        .and_then(|item| item.get("fallow"))
+        .and_then(|item| item.get("baseline"))
+        .and_then(Item::as_str)
+        .unwrap_or(BASELINE_FILE)
+        .to_owned();
+    crate::scope::check_baseline_key(&path)?;
+    Ok(path)
+}
+
+/// Writes the saved findings to a new baseline file. `create_new` does not
+/// follow a link at the path.
+fn write_baseline(path: &Path, saved: &Path) -> Result<(), CliError> {
+    let bytes = fs::read(saved).map_err(|err| failed(saved, &err))?;
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|err| failed(path, &err))?;
+    std::io::Write::write_all(&mut file, &bytes).map_err(|err| failed(path, &err))
 }
 
 /// The table at `path`, made when it is missing. The parent tables stay
@@ -332,6 +382,7 @@ fn human(report: &InitReport, write: bool) -> String {
 /// A GitHub Actions workflow that runs `check` on each pull request and push.
 fn github_workflow() -> String {
     "# .github/workflows/cargo-fallow.yml
+# Pin each action to a commit before you use this file.
 name: cargo-fallow
 on:
   pull_request:
@@ -400,29 +451,30 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temporary directory");
         let manifest = "[workspace]\nmembers = []\n\n[workspace.metadata.fallow.complexity]\nmax-cyclomatic = 50 # kept\n";
         fs::write(dir.path().join("Cargo.toml"), manifest).expect("write the manifest");
-        let saved = dir.path().join("saved.json");
-        fs::write(&saved, "{}").expect("write a baseline");
-        assert!(write(dir.path(), &LIMITS, &saved).expect("the first write works"));
+        assert!(write_tables(dir.path(), &LIMITS).expect("the first write works"));
         let first = fs::read_to_string(dir.path().join("Cargo.toml")).expect("read the manifest");
         assert!(first.contains("max-cyclomatic = 50 # kept"), "{first}");
         assert!(first.contains("max-cognitive = 15"), "{first}");
         assert!(!first.contains("[workspace.metadata]\n"), "{first}");
-        assert!(!write(dir.path(), &LIMITS, &saved).expect("the second write works"));
+        assert!(!write_tables(dir.path(), &LIMITS).expect("the second write works"));
         let second = fs::read_to_string(dir.path().join("Cargo.toml")).expect("read the manifest");
         assert_eq!(first, second);
+        assert_eq!(
+            configured_baseline(dir.path()).expect("a key"),
+            BASELINE_FILE
+        );
     }
 
     #[cfg(unix)]
     #[test]
     fn a_link_at_the_baseline_path_is_not_followed() {
         let dir = tempfile::tempdir().expect("a temporary directory");
-        fs::write(dir.path().join("Cargo.toml"), "[workspace]\nmembers = []\n")
-            .expect("write the manifest");
         let saved = dir.path().join("saved.json");
         fs::write(&saved, "{}").expect("write a baseline");
         let target = dir.path().join("elsewhere.txt");
-        std::os::unix::fs::symlink(&target, dir.path().join(BASELINE_FILE)).expect("make a link");
-        write(dir.path(), &LIMITS, &saved).expect("the write works");
+        let link = dir.path().join(BASELINE_FILE);
+        std::os::unix::fs::symlink(&target, &link).expect("make a link");
+        assert!(write_baseline(&link, &saved).is_err());
         assert!(!target.exists(), "the write followed the link");
     }
 }

@@ -178,8 +178,10 @@ The file has `schema_version` 1, the `kind` of the command that saved it,
 `language: "rust"`, the key scheme in `identity` and the sorted `findings`.
 
 `baseline = "<PATH>"` in `[workspace.metadata.fallow]` is the baseline of each
-run without `--baseline`. The path is relative to the workspace root. A run
-with `--save-baseline` does not read it.
+run without `--baseline`. The path is relative to the workspace root, and it
+cannot leave the root. A missing file exits 2. A run with `--save-baseline`
+does not read it. `--fail-on-stale-baseline` works with the key too. The
+`--baseline` flag takes a path from the current folder.
 
 ### Init
 
@@ -195,14 +197,21 @@ cargo fallow init --ci github > .github/workflows/cargo-fallow.yml
   `[workspace.metadata.fallow]` with the limits at the current maximum of the
   workspace: `max-cyclomatic` and `max-cognitive` of `complexity`,
   `max-file-lines` of `size` and `threshold` of `dupes`. A limit is never
-  under its default.
-- It saves the current findings as a baseline, and the tables set
-  `baseline = "fallow-baseline.json"`. So the first
-  `cargo fallow check --fail-on-issues` passes, and a new finding fails it.
+  under its default, and `threshold = 0.0` means no threshold gate.
+- The limits are a ratchet. A new function under the current maximum passes.
+  Lower the limits over time.
+- With `--write`, the command saves the findings of a run with the new limits
+  as a baseline, and the tables set `baseline = "fallow-baseline.json"`. So
+  the first `cargo fallow check --fail-on-issues` passes, and a new finding
+  fails it. The baseline has no entry that the new limits make stale.
 - `--write` adds the tables to the root `Cargo.toml` with the comments and the
-  format kept, and writes `fallow-baseline.json`. A key that the manifest has
-  keeps its value, and a baseline file that exists stays. A second `--write`
-  changes nothing.
+  format kept. A key that the manifest has keeps its value. A second `--write`
+  changes nothing. A baseline file that exists stays, and the command warns.
+  A root manifest with no `[workspace]` table gets one. A table written in
+  the inline form, for example `metadata = { ... }`, stops the command with
+  exit code 2.
+- The baseline does not hide a file that does not parse: the `parse-error`
+  gate still judges each target root file.
 - `--ci github` prints a GitHub Actions workflow that runs `check` with the
   action. Pin each action to a commit before you use it.
 - `--format json` gives `kind`, `version`, `tables`, `baseline`,

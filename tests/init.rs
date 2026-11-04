@@ -128,3 +128,54 @@ fn print_changes_no_file_and_ci_gives_a_workflow() {
         "{workflow}"
     );
 }
+
+/// A function with a cyclomatic complexity over the default limit of 20.
+fn complex_function() -> String {
+    let branches: String = (0..24)
+        .map(|value| format!("    if x == {value} {{ return {value}; }}\n"))
+        .collect();
+    format!("pub fn complex(x: u32) -> u32 {{\n{branches}    0\n}}\n")
+}
+
+#[test]
+fn the_baseline_has_no_entry_that_the_new_limits_make_stale() {
+    let dir = package();
+    write(
+        dir.path(),
+        "lib/src/lib.rs",
+        &format!("pub fn unused() {{}}\n{}", complex_function()),
+    );
+    let (code, text) = run(dir.path(), &["init", "--write", "--quiet"]);
+    assert_eq!(code, 0, "{text}");
+    let (code, report) = run(
+        dir.path(),
+        &[
+            "check",
+            "--fail-on-issues",
+            "--fail-on-stale-baseline",
+            "--quiet",
+            "--format",
+            "json",
+        ],
+    );
+    assert_eq!(code, 0, "{report}");
+}
+
+#[test]
+fn a_configured_baseline_outside_the_root_or_missing_exits_2() {
+    let dir = package();
+    let manifest = fs::read_to_string(dir.path().join("Cargo.toml")).expect("read the manifest");
+    for (path, text) in [
+        ("../outside.json", "leaves the workspace root"),
+        ("missing.json", "does not exist"),
+    ] {
+        write(
+            dir.path(),
+            "Cargo.toml",
+            &format!("{manifest}\n[workspace.metadata.fallow]\nbaseline = \"{path}\"\n"),
+        );
+        let (code, error) = run(dir.path(), &["files", "--quiet", "--format", "json"]);
+        assert_eq!(code, 2, "{error}");
+        assert!(error.contains(text), "{error}");
+    }
+}

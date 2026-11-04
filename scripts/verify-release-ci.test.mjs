@@ -149,12 +149,18 @@ test("a required run passes only on success, another run also on skipped", () =>
     entry.path.endsWith("ci.yml") ? { ...entry, conclusion: "skipped" } : entry,
   );
   assert.equal(evaluateRuns(skipped).state, "fail");
-  const extra = [...allPassed(), run("corpus.yml", { event: "workflow_dispatch", conclusion: "skipped" })];
+  const extra = [
+    ...allPassed(),
+    run("corpus.yml", { event: "workflow_dispatch", conclusion: "skipped" }),
+  ];
   assert.equal(evaluateRuns(extra).state, "pass");
 });
 
 test("a failed run that is not required fails the gate", () => {
-  const runs = [...allPassed(), run("hawk.yml", { event: "workflow_dispatch", conclusion: "failure" })];
+  const runs = [
+    ...allPassed(),
+    run("hawk.yml", { event: "workflow_dispatch", conclusion: "failure" }),
+  ];
   const evaluation = evaluateRuns(runs);
   assert.equal(evaluation.state, "fail");
   assert.match(errorLines(evaluation, SHA)[0], /ended with 'failure'.*gh run rerun/u);

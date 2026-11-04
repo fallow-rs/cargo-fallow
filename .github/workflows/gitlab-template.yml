@@ -1,0 +1,34 @@
+name: GitLab template
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Deny all permissions by default, grant per-job as needed
+permissions: {}
+
+concurrency:
+  group: gitlab-template-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  scripts:
+    name: GitLab template scripts
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: ShellCheck
+        run: |
+          if ! command -v shellcheck > /dev/null 2>&1; then
+            sudo apt-get update -q && sudo apt-get install -y -q shellcheck
+          fi
+          shellcheck -x ci/scripts/*.sh ci/tests/run.sh
+      - name: Test the scripts
+        run: bash ci/tests/run.sh

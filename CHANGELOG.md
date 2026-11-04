@@ -11,6 +11,9 @@ GitHub release. Each release needs a `## [X.Y.Z] - YYYY-MM-DD` section.
 
 ### Added
 
+- `ci/gitlab-ci.yml` is a GitLab CI template. The job writes the code quality
+  report of the merge request widget, and with `CARGO_FALLOW_COMMENT` posts or
+  updates one merge request note with the markdown report.
 - `--trace` shows why a check keeps or reports one item.
   `visibility --trace <crate>::<path>` lists each use and each credit of an
   item, with the verdict. `deps --trace <dependency>` lists each declaration
@@ -101,6 +104,11 @@ GitHub release. Each release needs a `## [X.Y.Z] - YYYY-MM-DD` section.
   the dupes section no longer says "No clones found" when a baseline hides
   each clone group. `fix`, `init` and `explain` list only `human` and `json`
   in the help of `--format`.
+- `size` skips a file whose first lines hold an `@generated` comment, as the
+  `complexity`, `dupes`, `files` and `visibility` checks do.
+- `init` does not write `max-file-lines`, because a larger limit only turns
+  off the growth rule of `size`. Without `--write`, `init` no longer says
+  that a baseline holds findings, and `baseline_findings` is `null`.
 - The action input `base: auto` now takes the commit before a push on a push
   event. A new branch and a commit that the checkout cannot fetch give no base
   and a notice. The size self-test runs on push again.

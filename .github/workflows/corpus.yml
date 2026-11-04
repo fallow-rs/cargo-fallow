@@ -1,0 +1,56 @@
+name: Corpus
+
+# Run `cargo fallow check` on the corpus workspaces at their pinned commits,
+# and compare the findings with tests/corpus/verdicts.json. A finding without
+# a verdict fails the job, so a false positive cannot come back unseen.
+on:
+  schedule:
+    - cron: "41 4 * * 2"
+  workflow_dispatch:
+
+# Deny all permissions by default, grant per-job as needed
+permissions: {}
+
+concurrency:
+  group: corpus-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  corpus:
+    name: Corpus regression check
+    runs-on: ubuntu-26.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: corpus
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '26'
+      - name: Build cargo-fallow
+        run: cargo build --release --locked
+      # Two workspaces pin `stable` in rust-toolchain.toml. The toolchain of
+      # this repository keeps each week on the same Cargo.
+      - name: Run the check on each workspace
+        run: |
+          RUSTUP_TOOLCHAIN="$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)"
+          export RUSTUP_TOOLCHAIN
+          bash scripts/corpus-run.sh tests/corpus/verdicts.json "$RUNNER_TEMP/corpus" "$PWD/target/release/cargo-fallow"
+      - name: Compare the findings with the verdicts
+        run: node scripts/corpus-check.mjs --verdicts tests/corpus/verdicts.json --results "$RUNNER_TEMP/corpus/results"
+      - name: Upload the results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: corpus-results
+          path: ${{ runner.temp }}/corpus/results
+          if-no-files-found: ignore
+          retention-days: 14

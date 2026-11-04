@@ -83,8 +83,9 @@ group. See [Trace](trace.md).
 The growth rule of `size` is the rule of `scripts/check-file-size.mjs` in
 fallow, applied to `.rs` files. A file over the limit must not grow, and a new
 file must not be over the limit. The rule does not check test files, files in
-test and snapshot folders, or files with a generator header. `--base <REF>`
-compares HEAD with the merge base. `--staged` compares the index with HEAD.
+test and snapshot folders, or files with a generator header or an
+`@generated` comment. `--base <REF>` compares HEAD with the merge base.
+`--staged` compares the index with HEAD.
 
 `complexity` and `dupes` use the same models as fallow for JavaScript. A
 unit is a `fn` with a body, or a closure. To suppress a complexity finding,

@@ -4,4 +4,6 @@
 [files]
 extend-exclude = [
     "tests/fixtures/",
+    # Finding ids and paths of other projects.
+    "tests/corpus/verdicts.json",
 ]

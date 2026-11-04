@@ -183,8 +183,9 @@ action to a full commit SHA.
 To get a starting workflow, run `cargo fallow init --ci github`. The
 [action guide](action/README.md) lists all inputs and outputs. If you do not
 use the action, `--format github-annotations` and `--format github-summary`
-write the same annotations and summary. For GitLab, use `--format codeclimate`
-to get a code quality report.
+write the same annotations and summary. For GitLab, the
+[CI template](docs/gitlab.md) writes the code quality report of the merge
+request widget, and can post one merge request note.
 
 ## Adopt cargo-fallow on an existing workspace
 

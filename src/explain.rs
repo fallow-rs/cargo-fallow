@@ -227,7 +227,7 @@ pub const RULES: &[Explanation] = &[
         severity: "warn",
         meaning: "A new file is over the line limit.",
         example: "A new file src/gen.rs with 2100 lines, with a limit of 2000.",
-        fix: "Split the file. A generated file with a generator header does not count.",
+        fix: "Split the file. A file with a generator header or an `@generated` comment does not count.",
         docs: "https://github.com/fallow-rs/cargo-fallow/blob/main/docs/structure.md",
     },
     Explanation {

@@ -18,6 +18,7 @@ for each command.
 | [Mutation testing](mutation-testing.md) | `mutants`: tiers, status, test selection and safety |
 | [Output formats](output.md) | Each format, the JSON Schema, `explain` and the exit codes |
 | [GitHub Action](../action/README.md) | Inputs, outputs and install methods of the action |
+| [GitLab CI](gitlab.md) | The template: code quality report and merge request note |
 
 ## Reference files
 

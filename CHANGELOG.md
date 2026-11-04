@@ -11,6 +11,9 @@ GitHub release. Each release needs a `## [X.Y.Z] - YYYY-MM-DD` section.
 
 ### Added
 
+- The `deps` rule `unused-feature` reports a feature of a `publish = false`
+  package that turns on nothing, and that no other feature, no member, no
+  target and no file of the repository names. It is a warning.
 - `cargo fallow check --hotspots` ranks the files that are complex and change
   often, by git churn times complexity density. `--file-scores` adds the
   maintainability index of each file. `--save-snapshot` saves the health

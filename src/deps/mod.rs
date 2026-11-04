@@ -22,6 +22,7 @@
 //! warning, not an error.
 
 mod analyze;
+mod features;
 pub mod manifest;
 pub mod report;
 pub mod trace;

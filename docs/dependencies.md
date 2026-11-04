@@ -49,6 +49,7 @@ dependency that Cargo cannot get. In that case the run fails with exit code 2.
 | `unused-optional-dependency` | warn | No code uses the optional dependency. A feature enables it. |
 | `feature-only-dependency` | warn | No code uses the dependency, and a feature sets its features (`dep/feature`). |
 | `redundant-ignore` | warn | An ignore entry hides no finding. |
+| `unused-feature` | warn | A feature with an empty list in a `publish = false` package, that no other feature, no member, no target and no file names. See [Unused features](#unused-features). |
 
 Each finding has the fields `package`, `manifest_path`, `line`, `section`,
 `platform`, `dependency` (the key in `Cargo.toml`), `package_name` (for a
@@ -108,3 +109,44 @@ The command also reads `ignored` in `[package.metadata.cargo-shear]` and
 `[workspace.metadata.cargo-shear]`. Thus a workspace can move from cargo-shear
 with no change to its `ignored` lists. The `redundant-ignore` rule checks only the
 cargo-fallow lists.
+
+## Unused features
+
+The `unused-feature` rule reports a feature in `[features]` with an empty
+list, for example `fast = []`, that nothing names. Turning on such a feature
+changes nothing. The finding has `section: "features"`, the feature name in
+`dependency`, and the line of the key.
+
+The rule judges only the features that no user outside the workspace can
+turn on: the features of a package with `publish = false`. A package that a
+registry can publish gets no finding, because users can turn on its
+features with a dependency entry or with `cargo install --features`. A
+library in `exclude-crates` of `[workspace.metadata.fallow.visibility]` gets
+no finding either. A feature with a value, for example `["dep:serde"]` or
+`["log/std"]`, turns on a dependency or a feature, so the rule does not
+report it.
+
+A feature gets credit when one of these names it:
+
+- `default`, or another feature of the package,
+- a dependency entry of a member, in `features = [...]`, or a feature of a
+  member as `key/feature` or `key?/feature`,
+- `required-features` of a target,
+- the name as a whole word in any file under the repository root (the
+  nearest folder with `.git`), also in a comment or a string. So a `cfg`, a
+  build script that writes code, a CI workflow, a script and a manifest
+  outside the workspace all count. The `[features]` tables of the members and
+  the ignore lists of the manifests do not count,
+- `CARGO_FEATURE_<NAME>` in a file. When a file reads `CARGO_FEATURE` with no
+  name, no package with a build script gets a finding.
+
+The scan runs only when a candidate exists. It reads ignored and untracked
+files too. It skips `.git`, `node_modules`, `Cargo.lock` and each Cargo target
+folder (a folder with `CACHEDIR.TAG`). It does not follow a symlink to a
+folder outside the repository. When the scan cannot read a file or a folder,
+the rule reports nothing.
+
+The rule cannot see a user who builds the package from a git URL or a path,
+for example with `cargo install --git`, or a name in documents outside the
+repository. Add the name to `ignored` in `[package.metadata.fallow.deps]` to
+keep such a feature.

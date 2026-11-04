@@ -132,6 +132,15 @@ pub const RULES: &[Explanation] = &[
         docs: "https://github.com/fallow-rs/cargo-fallow/blob/main/docs/dependencies.md",
     },
     Explanation {
+        rule: "unused-feature",
+        check: "deps",
+        severity: "warn",
+        meaning: "A feature with an empty list in a package with `publish = false`, that no other feature, no member, no target and no file of the repository names. Turning it on changes nothing.",
+        example: "`[features] fast = []`, with no `feature = \"fast\"` in the code.",
+        fix: "Remove the feature, or use it in a `cfg`. Add the name to `ignored` to keep it.",
+        docs: "https://github.com/fallow-rs/cargo-fallow/blob/main/docs/dependencies.md",
+    },
+    Explanation {
         rule: "redundant-ignore",
         check: "deps",
         severity: "warn",
@@ -425,7 +434,8 @@ mod tests {
             | D::MisplacedDependency
             | D::UnusedOptionalDependency
             | D::FeatureOnlyDependency
-            | D::RedundantIgnore => crate::deps::report::Rule::ALL.len(),
+            | D::RedundantIgnore
+            | D::UnusedFeature => crate::deps::report::Rule::ALL.len(),
         };
         let kind = match kind {
             V::DeadPublic | V::UnnecessaryPublic | V::UnnecessaryRestricted => V::ALL.len(),

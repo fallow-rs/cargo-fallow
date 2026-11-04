@@ -51,7 +51,7 @@ compile the workspace first.
 
 | Question | Check | Command |
 |---|---|---|
-| Which dependencies does no code use? | [Unused, misplaced and feature-only dependencies](docs/dependencies.md), with an [auto-fix](docs/fix.md) that keeps the format of `Cargo.toml` | `cargo fallow deps`, `cargo fallow fix` |
+| Which dependencies does no code use? | [Unused, misplaced and feature-only dependencies, and unused features](docs/dependencies.md), with an [auto-fix](docs/fix.md) that keeps the format of `Cargo.toml` | `cargo fallow deps`, `cargo fallow fix` |
 | Which `pub` items are too visible? | [Dead public items and items that only their own crate uses](docs/visibility.md), with an optional rust-analyzer pass for method calls and macro output | `cargo fallow visibility` |
 | Which `.rs` files does no target compile? | [`.rs` files outside the module tree of each target](docs/unused-files.md) | `cargo fallow files` |
 | What is copied? | [Clone groups](docs/structure.md) on normalized token streams, in four modes from `strict` to `semantic` | `cargo fallow dupes` |

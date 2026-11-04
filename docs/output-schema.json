@@ -4367,6 +4367,11 @@
           "type": "string",
           "const": "redundant-ignore",
           "description": "An ignore entry that hides no finding."
+        },
+        {
+          "type": "string",
+          "const": "unused-feature",
+          "description": "A feature that turns on nothing, and that no code and no member names."
         }
       ],
       "description": "The rule of a finding."

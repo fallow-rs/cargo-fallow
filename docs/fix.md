@@ -58,8 +58,8 @@ cargo fallow fix --dry-run -p my-crate     # only the edits in one member
   them, use the version control of the workspace.
 - `fix` does not change these findings, and they have `auto_fixable: false`.
   A person must fix them:
-  - a warning: `unused-optional-dependency`, `feature-only-dependency` and
-    `redundant-ignore`,
+  - a warning: `unused-optional-dependency`, `feature-only-dependency`,
+    `unused-feature` and `redundant-ignore`,
   - an entry that turns on features (`features = [...]`), because Cargo
     unifies the features of a package and another dependency can need them,
   - a misplaced entry that a feature of the package names,

@@ -33,12 +33,14 @@ pub enum Rule {
     FeatureOnlyDependency,
     /// An ignore entry that hides no finding.
     RedundantIgnore,
+    /// A feature that turns on nothing, and that no code and no member names.
+    UnusedFeature,
 }
 
 impl Rule {
     /// Each rule.
     #[cfg(test)]
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::UnusedDependency,
         Self::UnusedDevDependency,
         Self::UnusedBuildDependency,
@@ -47,6 +49,7 @@ impl Rule {
         Self::UnusedOptionalDependency,
         Self::FeatureOnlyDependency,
         Self::RedundantIgnore,
+        Self::UnusedFeature,
     ];
 
     /// The wire name.
@@ -60,6 +63,7 @@ impl Rule {
             Self::UnusedOptionalDependency => "unused-optional-dependency",
             Self::FeatureOnlyDependency => "feature-only-dependency",
             Self::RedundantIgnore => "redundant-ignore",
+            Self::UnusedFeature => "unused-feature",
         }
     }
 
@@ -73,7 +77,8 @@ impl Rule {
             | Self::MisplacedDependency => Severity::Error,
             Self::UnusedOptionalDependency
             | Self::FeatureOnlyDependency
-            | Self::RedundantIgnore => Severity::Warning,
+            | Self::RedundantIgnore
+            | Self::UnusedFeature => Severity::Warning,
         }
     }
 
@@ -100,6 +105,9 @@ impl Rule {
                 "A dependency that no code uses. A feature of the package sets its features."
             }
             Self::RedundantIgnore => "An ignore entry that hides no finding.",
+            Self::UnusedFeature => {
+                "A feature that turns on nothing, and that no code and no member names."
+            }
         }
     }
 }

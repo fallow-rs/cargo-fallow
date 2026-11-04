@@ -103,6 +103,7 @@ pub fn analyze(workspace: &Workspace, metadata: &Metadata, graph: &Graph) -> Ana
     add_codegen_names(metadata, &mut usage);
     let mut analysis = Analysis::default();
     let skipped = skipped_packages(workspace, graph);
+    let features = super::features::FeatureRule::new(workspace, metadata);
     let mut workspace_ignores = IgnoreList::from_metadata(&metadata.workspace_metadata);
     let mut member_keys: BTreeSet<String> = BTreeSet::new();
     let empty = PackageUsage::default();
@@ -138,23 +139,16 @@ pub fn analyze(workspace: &Workspace, metadata: &Metadata, graph: &Graph) -> Ana
         }
         let used = usage.get(package.name.as_str()).unwrap_or(&empty);
         let mut ignores = IgnoreList::from_metadata(&package.metadata);
-        let mut removed: Vec<Finding> = Vec::new();
-        for mut finding in package_findings(metadata, package, used) {
-            let names = [finding.dependency.as_str(), package_name(&finding)];
-            // Each list must see the names, so that each list marks its hits.
-            let hidden_here = ignores.hides(&names);
-            let hidden_above = workspace_ignores.hides(&names);
-            if hidden_here || hidden_above {
-                continue;
-            }
-            finding.manifest_path.clone_from(&manifest_path);
-            finding.line = line_of(&entries, &finding);
-            finding.actions = actions(&finding);
-            if is_removal(finding.rule) {
-                removed.push(finding.clone());
-            }
-            analysis.findings.push(finding);
-        }
+        let found = package_findings(metadata, package, used)
+            .into_iter()
+            .chain(feature_findings(package, &text, &features));
+        let removed = add_findings(
+            &mut analysis,
+            found,
+            [&mut ignores, &mut workspace_ignores],
+            &manifest_path,
+            &entries,
+        );
         member_keys.extend(inherited_keys(&entries, &removed));
         kept_inherited.extend(kept_inherited_keys(&entries, &removed));
         for name in ignores.redundant() {
@@ -203,6 +197,63 @@ pub fn analyze(workspace: &Workspace, metadata: &Metadata, graph: &Graph) -> Ana
         }
     }
     analysis
+}
+
+/// Adds the findings of one package that no ignore list hides, with their
+/// manifest path, line and actions. Returns the findings whose fix removes
+/// the entry.
+fn add_findings(
+    analysis: &mut Analysis,
+    found: impl Iterator<Item = Finding>,
+    ignores: [&mut IgnoreList; 2],
+    manifest_path: &str,
+    entries: &[Entry],
+) -> Vec<Finding> {
+    let [own, above] = ignores;
+    let mut removed = Vec::new();
+    for mut finding in found {
+        let names = [finding.dependency.as_str(), package_name(&finding)];
+        // Each list must see the names, so that each list marks its hits.
+        let hidden_here = own.hides(&names);
+        let hidden_above = above.hides(&names);
+        if hidden_here || hidden_above {
+            continue;
+        }
+        manifest_path.clone_into(&mut finding.manifest_path);
+        // A feature finding has the line of its key already.
+        if finding.rule != Rule::UnusedFeature {
+            finding.line = line_of(entries, &finding);
+        }
+        finding.actions = actions(&finding);
+        if is_removal(finding.rule) {
+            removed.push(finding.clone());
+        }
+        analysis.findings.push(finding);
+    }
+    removed
+}
+
+/// The `unused-feature` findings of one package, with the line of each key.
+fn feature_findings(
+    package: &Package,
+    manifest: &str,
+    features: &super::features::FeatureRule,
+) -> Vec<Finding> {
+    features
+        .unused(package, manifest)
+        .into_iter()
+        .map(|(name, line)| {
+            let mut found = finding(
+                Rule::UnusedFeature,
+                Some(package.name.to_string()),
+                "features".to_owned(),
+                None,
+                name,
+            );
+            found.line = line;
+            found
+        })
+        .collect()
 }
 
 /// The dev-dependencies that compile test files outside the targets.
@@ -589,6 +640,13 @@ fn actions(finding: &Finding) -> Vec<Action> {
                 "Remove `{key}` from {table} and from each feature that names it. If the \
                  feature must set the features of `{key}`, add `{key}` to `ignored` in \
                  [{PACKAGE_IGNORE_TABLE}]."
+            ),
+        ),
+        Rule::UnusedFeature => (
+            "remove-feature",
+            format!(
+                "Remove the feature `{key}` from [features], or use it in a `cfg`. To keep \
+                 it, add `{key}` to `ignored` in [{PACKAGE_IGNORE_TABLE}]."
             ),
         ),
         Rule::RedundantIgnore => (

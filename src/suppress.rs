@@ -52,6 +52,7 @@ const KINDS: &[(&str, &[&str])] = &[
             "unused-optional-dependency",
             "feature-only-dependency",
             "redundant-ignore",
+            "unused-feature",
         ],
     ),
     ("files", &["unused-file"]),

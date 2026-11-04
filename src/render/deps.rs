@@ -25,7 +25,11 @@ const SECTIONS: [(&str, &[Rule]); 4] = [
     ("Move to [dev-dependencies]", &[Rule::MisplacedDependency]),
     (
         "Warnings",
-        &[Rule::UnusedOptionalDependency, Rule::FeatureOnlyDependency],
+        &[
+            Rule::UnusedOptionalDependency,
+            Rule::FeatureOnlyDependency,
+            Rule::UnusedFeature,
+        ],
     ),
     ("Redundant ignore entries", &[Rule::RedundantIgnore]),
 ];
@@ -99,6 +103,7 @@ fn detail(row: &Finding) -> String {
         Rule::FeatureOnlyDependency => {
             text.push_str(", no code uses it, a feature sets its features");
         }
+        Rule::UnusedFeature => text.push_str(", turns on nothing, no code names it"),
         _ => {}
     }
     text

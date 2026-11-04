@@ -55,6 +55,15 @@ impl From<KindName> for FindingKind {
     }
 }
 
+/// The `exclude-crates` list of the table, or `None` when the table is not
+/// valid. The `deps` check reads it for the `unused-feature` rule: an
+/// excluded library has users outside the workspace.
+pub fn exclude_crates(workspace: &Workspace) -> Option<Vec<String>> {
+    crate::structure::config::section::<Config>(workspace, KEY)
+        .ok()
+        .map(|config| config.exclude_crates)
+}
+
 /// The options of the run: the flags, with the table for each option that no
 /// flag sets.
 pub fn resolve(

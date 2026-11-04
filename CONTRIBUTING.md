@@ -82,6 +82,8 @@ hooks.
 | Line coverage | `cargo llvm-cov` | none | `coverage.yml`, floor 95.0% |
 | Fuzz smoke | `cargo +nightly-2026-07-20 fuzz run fuzz_parse -- -max_total_time=30` | none | `fuzz-smoke.yml`, main and weekly |
 | Visibility audit | `scripts/check-hawk.sh` | none | `hawk.yml`, weekly |
+| GitLab template scripts | `shellcheck -x ci/scripts/*.sh ci/tests/run.sh` and `bash ci/tests/run.sh` | none | `gitlab-template.yml` |
+| Corpus regression | `scripts/corpus-run.sh` and `node scripts/corpus-check.mjs`, see `tests/corpus/README.md` | none | `corpus.yml`, weekly |
 
 A file over 2000 lines must not grow. Move new code to a new module.
 

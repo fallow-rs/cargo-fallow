@@ -11,6 +11,9 @@ GitHub release. Each release needs a `## [X.Y.Z] - YYYY-MM-DD` section.
 
 ### Added
 
+- `cargo fallow explain <rule>` gives the meaning, an example and the fix of a
+  rule, also as JSON. `--explain` adds `_meta` with the rules of the findings
+  to the JSON report of `check` and of each static command.
 - One suppression model for each check: `// fallow-ignore-next-line <kind>`
   now also works for `visibility`, `size`, `boundaries` and `files`,
   `// fallow-ignore-file <kind>` hides the findings of a file, and

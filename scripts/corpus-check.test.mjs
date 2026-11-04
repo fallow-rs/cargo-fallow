@@ -11,7 +11,7 @@ const COMMIT = "0123456789abcdef0123456789abcdef01234567";
 const finding = (id, check = "visibility", line = 3) => ({
   id,
   check,
-  rule: "dead_public",
+  rule: "dead-public",
   severity: "warn",
   message: `finding ${id}`,
   location: { path: "src/lib.rs", line },
@@ -47,7 +47,7 @@ const runCase = (verdicts, reported, write = false) => {
 
 const baseline = {
   check: "visibility",
-  rule: "dead_public",
+  rule: "dead-public",
   path: "src/lib.rs",
   line: 3,
   verdict: "baseline",
@@ -62,7 +62,7 @@ test("a new finding without a verdict fails", () => {
   const { code, lines } = runCase(verdictFile({ a: baseline }), [finding("a"), finding("b")]);
   assert.equal(code, 1);
   assert.ok(
-    lines.some((line) => line.includes("new finding b visibility/dead_public at src/lib.rs:3")),
+    lines.some((line) => line.includes("new finding b visibility/dead-public at src/lib.rs:3")),
   );
 });
 

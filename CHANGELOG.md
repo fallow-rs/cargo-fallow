@@ -103,6 +103,11 @@ GitHub release. Each release needs a `## [X.Y.Z] - YYYY-MM-DD` section.
 
 ### Changed
 
+- The `visibility` rule ids are kebab-case in each output format:
+  `dead-public`, `unnecessary-public` and `unnecessary-restricted-visibility`.
+  The rules table, `kinds`, a suppression comment and `cargo fallow explain`
+  still take the snake_case form. The finding ids did not change, so a saved
+  baseline still matches.
 - `visibility`, `check` and `fix` treat the exported items of a library that
   a registry can publish as an external API. They get no `dead_public` or
   `unnecessary_public` finding, and `fix` does not narrow them. A library with

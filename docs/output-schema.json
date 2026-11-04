@@ -1916,9 +1916,9 @@
           "type": "string",
           "description": "The finding kind.",
           "enum": [
-            "dead_public",
-            "unnecessary_public",
-            "unnecessary_restricted_visibility"
+            "dead-public",
+            "unnecessary-public",
+            "unnecessary-restricted-visibility"
           ]
         },
         "package": {

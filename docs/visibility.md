@@ -9,18 +9,23 @@ libraries, with two exceptions:
 - A library in `--exclude-crate` or `exclude-crates`.
 
 The exported items of these libraries are an external API. They are entry
-points: they get no `dead_public` or `unnecessary_public` finding, `fix` does
+points: they get no `dead-public` or `unnecessary-public` finding, `fix` does
 not narrow them, and each item that they use is live. The `pub(crate)`,
 `pub(super)` and `pub(in path)` items of a published library still get the
-`unnecessary_restricted_visibility` rule. An excluded library gets no
+`unnecessary-restricted-visibility` rule. An excluded library gets no
 finding. A binary and a library with `publish = false` keep each rule. When a library is not for a registry, set
 `publish = false` in its manifest, so that the command checks its public API.
 
 | Kind | Meaning | Change |
 | --- | --- | --- |
-| `dead_public` | A `pub` item that is not reachable from a root. | `pub` to `pub(crate)`. Then the compiler shows the dead code. |
-| `unnecessary_public` | A `pub` item that only its own crate uses. | `pub` to `pub(crate)`. |
-| `unnecessary_restricted_visibility` | A `pub(crate)`, `pub(super)` or `pub(in path)` item that only its own module and its child modules use. | Remove the keyword. |
+| `dead-public` | A `pub` item that is not reachable from a root. | `pub` to `pub(crate)`. Then the compiler shows the dead code. |
+| `unnecessary-public` | A `pub` item that only its own crate uses. | `pub` to `pub(crate)`. |
+| `unnecessary-restricted-visibility` | A `pub(crate)`, `pub(super)` or `pub(in path)` item that only its own module and its child modules use. | Remove the keyword. |
+
+The rule ids are kebab-case in each output format. The snake_case form of
+hawk, for example `dead_public`, names the same rule in the rules table, in
+`kinds`, in a suppression comment and in `cargo fallow explain`. The finding
+ids did not change, so a saved baseline still matches.
 
 ```bash
 cargo fallow visibility

@@ -133,7 +133,7 @@ pub struct SkippedRow {
 #[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct FindingRow {
     /// The finding kind.
-    #[schemars(extend("enum" = ["dead_public", "unnecessary_public", "unnecessary_restricted_visibility"]))]
+    #[schemars(extend("enum" = ["dead-public", "unnecessary-public", "unnecessary-restricted-visibility"]))]
     pub kind: &'static str,
     /// The package.
     pub package: String,
@@ -320,8 +320,8 @@ impl VisibilityReport {
         let s = &self.summary;
         let _ = writeln!(
             text,
-            "{} findings: {} dead_public, {} unnecessary_public, {} \
-             unnecessary_restricted_visibility",
+            "{} findings: {} dead-public, {} unnecessary-public, {} \
+             unnecessary-restricted-visibility",
             self.total_issues,
             s.dead_public,
             s.unnecessary_public,
@@ -370,7 +370,7 @@ impl VisibilityReport {
         self.findings
             .iter()
             .map(|finding| {
-                let category = if finding.kind == "dead_public" {
+                let category = if finding.kind == "dead-public" {
                     Category::BugRisk
                 } else {
                     Category::Clarity
@@ -510,12 +510,12 @@ fn message(finding: &FindingRow) -> String {
         format!("`{}`", finding.suggested)
     };
     match finding.kind {
-        "dead_public" => format!(
+        "dead-public" => format!(
             "No code reaches the {} `{}`. Make it {to}, and remove it when the compiler \
              reports it as dead code.",
             finding.item_kind, finding.item
         ),
-        "unnecessary_public" => format!(
+        "unnecessary-public" => format!(
             "Only its own crate uses the {} `{}`. Make it {to}.",
             finding.item_kind, finding.item
         ),
@@ -528,8 +528,8 @@ fn message(finding: &FindingRow) -> String {
 
 fn rule_text(kind: &str) -> &'static str {
     match kind {
-        "dead_public" => "A `pub` item that no code reaches.",
-        "unnecessary_public" => "A `pub` item that only its own crate uses.",
+        "dead-public" => "A `pub` item that no code reaches.",
+        "unnecessary-public" => "A `pub` item that only its own crate uses.",
         _ => "A restricted item that only its own module uses.",
     }
 }

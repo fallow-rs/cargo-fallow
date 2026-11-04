@@ -130,10 +130,10 @@ fn public_items_get_the_finding_that_their_uses_allow() {
     assert_eq!(
         found,
         set(&[
-            "dead_public inner",
-            "dead_public unused",
-            "unnecessary_public local",
-            "unnecessary_restricted_visibility inner::only_here",
+            "dead-public inner",
+            "dead-public unused",
+            "unnecessary-public local",
+            "unnecessary-restricted-visibility inner::only_here",
         ])
     );
 }
@@ -160,10 +160,10 @@ fn a_generated_file_gets_no_findings() {
     assert_eq!(
         found,
         set(&[
-            "dead_public hand",
-            "dead_public hand::unused_hand",
-            "dead_public proto",
-            "dead_public table",
+            "dead-public hand",
+            "dead-public hand::unused_hand",
+            "dead-public proto",
+            "dead-public table",
         ])
     );
     assert!(undecided.is_empty(), "{undecided:?}");
@@ -184,7 +184,7 @@ fn method_call_gives_credit_through_a_transitive_reexport() {
     ]);
     let (found, undecided) = findings(&dir, &[]);
     assert_eq!(found, set(&[]));
-    assert_eq!(undecided, set(&["dead_public Thing::used"]));
+    assert_eq!(undecided, set(&["dead-public Thing::used"]));
 }
 
 #[test]
@@ -199,7 +199,7 @@ fn only_a_local_named_reexport_is_a_candidate() {
         ("base/src/lib.rs", "pub struct Outside;\n"),
     ]);
     let (found, _) = findings(&dir, &[]);
-    assert_eq!(found, set(&["unnecessary_public helper"]));
+    assert_eq!(found, set(&["unnecessary-public helper"]));
 }
 
 #[test]
@@ -257,18 +257,47 @@ fn members_of_a_reexported_type_are_candidates() {
     assert_eq!(
         found,
         set(&[
-            "dead_public hidden::Made::never",
-            "unnecessary_public hidden::Made::grow",
-            "unnecessary_public hidden::Made::size",
+            "dead-public hidden::Made::never",
+            "unnecessary-public hidden::Made::grow",
+            "unnecessary-public hidden::Made::size",
         ])
     );
     assert_eq!(
         undecided,
         set(&[
-            "dead_public hidden::Made::grow",
-            "dead_public hidden::Made::show"
+            "dead-public hidden::Made::grow",
+            "dead-public hidden::Made::show"
         ])
     );
+}
+
+#[test]
+fn each_format_names_the_rule_in_kebab_case_and_the_config_takes_the_snake_case_form() {
+    let dir = workspace(&[
+        ("mid/src/lib.rs", "pub fn unused() {}\n"),
+        (
+            "Cargo.toml",
+            "[workspace]\nmembers = [\"app\", \"mid\", \"base\", \"testing\"]\nresolver = \"3\"\n\n\
+             [workspace.metadata.fallow.visibility]\nkinds = [\"dead_public\"]\n",
+        ),
+    ]);
+    let (found, _) = findings(&dir, &[]);
+    assert_eq!(found, set(&["dead-public unused"]));
+    for (format, needle) in [
+        ("sarif", "\"ruleId\":\"dead-public\""),
+        ("compact", "dead-public"),
+        ("codeclimate", "fallow/dead-public"),
+    ] {
+        let output = Command::cargo_bin("cargo-fallow")
+            .expect("find the binary")
+            .args(["visibility", "--format", format, "--quiet"])
+            .current_dir(dir.path())
+            .output()
+            .expect("run the binary");
+        let text = String::from_utf8_lossy(&output.stdout).replace([' ', '\n'], "");
+        assert!(text.contains(&needle.replace(' ', "")), "{format}: {text}");
+        assert!(!text.contains("dead_public"), "{format}: {text}");
+    }
 }
 
 #[test]
@@ -281,8 +310,8 @@ fn an_excluded_crate_gets_no_findings() {
     assert_eq!(
         found,
         set(&[
-            "dead_public unused",
-            "unnecessary_restricted_visibility inner::here",
+            "dead-public unused",
+            "unnecessary-restricted-visibility inner::here",
         ])
     );
     let (found, _) = findings(&dir, &["--exclude-crate", "mid"]);
@@ -315,8 +344,8 @@ fn the_exported_api_of_a_published_library_is_an_entry_point() {
     assert_eq!(
         found,
         set(&[
-            "dead_public lonely",
-            "unnecessary_restricted_visibility inner::here",
+            "dead-public lonely",
+            "unnecessary-restricted-visibility inner::here",
         ])
     );
 }
@@ -342,13 +371,13 @@ fn the_publish_list_decides_and_a_binary_target_keeps_each_rule() {
     for (publish, expected) in [
         (
             "publish = [\"internal\"]\n",
-            vec!["unnecessary_restricted_visibility tool::helper"],
+            vec!["unnecessary-restricted-visibility tool::helper"],
         ),
         (
             "publish = []\n",
             vec![
-                "dead_public unused",
-                "unnecessary_restricted_visibility tool::helper",
+                "dead-public unused",
+                "unnecessary-restricted-visibility tool::helper",
             ],
         ),
     ] {
@@ -385,7 +414,7 @@ fn a_published_binary_keeps_each_rule() {
         ("mid/src/lib.rs", "pub fn unused() {}\n"),
     ]);
     let (found, _) = findings(&dir, &[]);
-    assert_eq!(found, set(&["dead_public unused"]));
+    assert_eq!(found, set(&["dead-public unused"]));
 }
 
 #[test]
@@ -399,7 +428,7 @@ fn a_restricted_type_in_a_wider_signature_keeps_its_visibility() {
     )]);
     let (found, _) = findings(&dir, &[]);
     assert!(
-        !found.contains("unnecessary_restricted_visibility outer::cache::Span"),
+        !found.contains("unnecessary-restricted-visibility outer::cache::Span"),
         "{found:?}"
     );
 }
@@ -431,7 +460,7 @@ fn a_reexport_of_a_required_item_stays() {
         ),
     ]);
     let (found, _) = findings(&dir, &[]);
-    assert!(!found.contains("dead_public graph::Closure"), "{found:?}");
+    assert!(!found.contains("dead-public graph::Closure"), "{found:?}");
 }
 
 #[test]
@@ -450,7 +479,7 @@ fn a_bare_name_in_tokens_does_not_credit_a_field_or_a_method() {
     let (found, _) = findings(&dir, &[]);
     assert_eq!(
         found,
-        set(&["unnecessary_public Link", "unnecessary_public Link::text"])
+        set(&["unnecessary-public Link", "unnecessary-public Link::text"])
     );
 }
 
@@ -471,7 +500,7 @@ fn a_struct_literal_in_macro_tokens_credits_only_its_own_fields() {
     let (found, _) = findings(&dir, &[]);
     assert_eq!(
         found,
-        set(&["unnecessary_public Link", "unnecessary_public Link::text"])
+        set(&["unnecessary-public Link", "unnecessary-public Link::text"])
     );
 }
 
@@ -491,7 +520,7 @@ fn a_path_from_outside_the_workspace_credits_no_workspace_item() {
     let (found, _) = findings(&dir, &[]);
     assert_eq!(
         found,
-        set(&["unnecessary_public Thing", "unnecessary_public Thing::new"])
+        set(&["unnecessary-public Thing", "unnecessary-public Thing::new"])
     );
 }
 
@@ -510,7 +539,7 @@ fn a_struct_literal_of_an_outside_type_credits_no_workspace_field() {
     ]);
     let (found, _) = findings(&dir, &[]);
     assert!(
-        found.contains("unnecessary_public Frame::start"),
+        found.contains("unnecessary-public Frame::start"),
         "{found:?}"
     );
 }
@@ -530,7 +559,7 @@ fn a_local_variable_does_not_credit_a_field_with_its_name() {
     ]);
     let (found, _) = findings(&dir, &[]);
     assert!(
-        found.contains("unnecessary_public Frame::column"),
+        found.contains("unnecessary-public Frame::column"),
         "{found:?}"
     );
 }
@@ -545,7 +574,7 @@ fn unit_tests_of_a_library_can_use_its_dev_dependencies() {
         ),
     ]);
     let (found, _) = findings(&dir, &[]);
-    assert!(!found.contains("dead_public fixture"), "{found:?}");
+    assert!(!found.contains("dead-public fixture"), "{found:?}");
 }
 
 #[test]
@@ -555,7 +584,7 @@ fn an_item_with_an_attribute_macro_gets_credit() {
         "#[some_macro::export]\npub fn exported() {}\npub fn plain() {}\n",
     )]);
     let (found, _) = findings(&dir, &[]);
-    assert_eq!(found, set(&["dead_public plain"]));
+    assert_eq!(found, set(&["dead-public plain"]));
 }
 
 /// Layers of glob re-exports form a graph with many paths to each module. A name
@@ -608,7 +637,7 @@ fn a_layered_glob_chain_resolves_without_a_walk_of_each_path() {
     );
     let report: Value = serde_json::from_slice(&output.stdout).expect("the output is JSON");
     let text = report["findings"].to_string();
-    assert!(!text.contains("dead_public\",\"item\":\"mid::l"), "{text}");
+    assert!(!text.contains("dead-public\",\"item\":\"mid::l"), "{text}");
     assert!(!text.contains("leaf"), "{text}");
 }
 
@@ -644,7 +673,7 @@ fn a_glob_cycle_ends_and_resolves() {
     let report: Value = serde_json::from_slice(&output.stdout).expect("the output is JSON");
     let text = report["findings"].to_string();
     assert!(
-        !text.contains("dead_public\",\"item\":\"mid::a::in_a"),
+        !text.contains("dead-public\",\"item\":\"mid::a::in_a"),
         "{text}"
     );
 }
@@ -661,10 +690,10 @@ fn the_members_of_an_item_with_an_attribute_macro_get_credit() {
          #[serde(rename_all = \"camelCase\")]\n#[derive(serde::Deserialize)]\npub struct Helped {\n    pub field: u8,\n}\n",
     )]);
     let (found, _) = findings(&dir, &[]);
-    assert!(!found.contains("dead_public Options::root"), "{found:?}");
-    assert!(!found.contains("dead_public Options::method"), "{found:?}");
+    assert!(!found.contains("dead-public Options::root"), "{found:?}");
+    assert!(!found.contains("dead-public Options::method"), "{found:?}");
     assert!(
-        found.contains("unnecessary_public Helped::field"),
+        found.contains("unnecessary-public Helped::field"),
         "{found:?}"
     );
 }
@@ -687,7 +716,7 @@ fn an_inner_dead_code_allow_covers_the_items_of_its_module() {
     ]);
     let (found, _) = findings(&dir, &[]);
     assert!(
-        !found.iter().any(|row| row.starts_with("dead_public")),
+        !found.iter().any(|row| row.starts_with("dead-public")),
         "{found:?}"
     );
 }
@@ -769,7 +798,7 @@ fn sarif_output_has_one_result_for_each_finding() {
     let log: Value = serde_json::from_str(&text).expect("the output is JSON");
     let results = log["runs"][0]["results"].as_array().expect("results");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0]["ruleId"], "dead_public");
+    assert_eq!(results[0]["ruleId"], "dead-public");
     assert_eq!(results[0]["level"], "error");
     assert_eq!(
         results[0]["locations"][0]["physicalLocation"]["artifactLocation"]["uri"],
@@ -806,16 +835,16 @@ fn precise_mode_resolves_a_method_call_to_its_type() {
         ),
     ]);
     let (fast, undecided) = findings(&dir, &[]);
-    assert!(fast.contains("unnecessary_public A::helper"), "{fast:?}");
-    assert!(undecided.contains("dead_public A::helper"), "{undecided:?}");
+    assert!(fast.contains("unnecessary-public A::helper"), "{fast:?}");
+    assert!(undecided.contains("dead-public A::helper"), "{undecided:?}");
     let (precise, left) = findings(&dir, &["--precise"]);
-    assert!(precise.contains("dead_public A::helper"), "{precise:?}");
+    assert!(precise.contains("dead-public A::helper"), "{precise:?}");
     assert!(
-        !precise.contains("unnecessary_public A::helper"),
+        !precise.contains("unnecessary-public A::helper"),
         "{precise:?}"
     );
     assert!(
-        precise.contains("unnecessary_public B::helper"),
+        precise.contains("unnecessary-public B::helper"),
         "{precise:?}"
     );
     assert!(left.is_empty(), "{left:?}");
@@ -837,7 +866,7 @@ fn struct_update_syntax_keeps_each_field_visible() {
     ]);
     let (found, _) = findings(&dir, &[]);
     assert!(
-        !found.contains("unnecessary_public Config::exclude"),
+        !found.contains("unnecessary-public Config::exclude"),
         "{found:?}"
     );
 }
@@ -855,7 +884,7 @@ fn a_path_through_a_type_alias_credits_the_associated_item() {
         ),
     ]);
     let (found, _) = findings(&dir, &[]);
-    assert!(!found.contains("dead_public Match::zero"), "{found:?}");
+    assert!(!found.contains("dead-public Match::zero"), "{found:?}");
 }
 
 /// A `macro_rules!` body expands at each call site, so a path in the body is a
@@ -870,7 +899,7 @@ fn a_restricted_item_that_a_macro_body_names_keeps_its_visibility() {
     )]);
     let (found, _) = findings(&dir, &[]);
     assert!(
-        !found.contains("unnecessary_restricted_visibility messages::errored"),
+        !found.contains("unnecessary-restricted-visibility messages::errored"),
         "{found:?}"
     );
 }
@@ -889,11 +918,11 @@ fn a_restricted_type_in_a_trait_impl_or_a_variant_keeps_its_visibility() {
     )]);
     let (found, _) = findings(&dir, &[]);
     assert!(
-        !found.contains("unnecessary_restricted_visibility outer::Item"),
+        !found.contains("unnecessary-restricted-visibility outer::Item"),
         "{found:?}"
     );
     assert!(
-        !found.contains("unnecessary_restricted_visibility outer::Limited"),
+        !found.contains("unnecessary-restricted-visibility outer::Limited"),
         "{found:?}"
     );
 }
@@ -909,7 +938,7 @@ fn a_tuple_struct_constructor_keeps_its_fields_visible() {
     )]);
     let (found, _) = findings(&dir, &[]);
     assert!(
-        !found.contains("unnecessary_restricted_visibility util::Wrapper::0"),
+        !found.contains("unnecessary-restricted-visibility util::Wrapper::0"),
         "{found:?}"
     );
 }
@@ -931,7 +960,7 @@ fn precise_mode_keeps_a_type_in_a_variant_of_a_public_enum() {
     let (fast, undecided) = findings(&dir, &[]);
     let (precise, _) = findings(&dir, &["--precise"]);
     assert!(
-        !precise.contains("unnecessary_public QueryError"),
+        !precise.contains("unnecessary-public QueryError"),
         "fast {fast:?} undecided {undecided:?} precise {precise:?}"
     );
 }
@@ -977,11 +1006,11 @@ fn a_file_in_two_crates_gets_a_finding_only_when_both_crates_allow_it() {
     ]);
     let (found, _) = findings(&dir, &[]);
     assert!(
-        !found.contains("unnecessary_restricted_visibility data::name"),
+        !found.contains("unnecessary-restricted-visibility data::name"),
         "{found:?}"
     );
     assert!(
-        found.contains("unnecessary_restricted_visibility data::local"),
+        found.contains("unnecessary-restricted-visibility data::local"),
         "{found:?}"
     );
 }
@@ -997,7 +1026,7 @@ fn a_restricted_item_that_an_exported_macro_names_keeps_its_visibility() {
     )]);
     let (found, _) = findings(&dir, &[]);
     assert!(
-        !found.contains("unnecessary_restricted_visibility messages::shown"),
+        !found.contains("unnecessary-restricted-visibility messages::shown"),
         "{found:?}"
     );
 }
@@ -1015,9 +1044,9 @@ fn a_reexported_item_waits_for_its_reexport() {
         ),
     ]);
     let (found, _) = findings(&dir, &[]);
-    assert!(found.contains("unnecessary_public located"), "{found:?}");
+    assert!(found.contains("unnecessary-public located"), "{found:?}");
     assert!(
-        !found.contains("unnecessary_public css::located"),
+        !found.contains("unnecessary-public css::located"),
         "{found:?}"
     );
 }
@@ -1038,8 +1067,8 @@ fn the_variants_of_an_enum_with_a_helper_derive_get_credit() {
         ),
     ]);
     let (found, _) = findings(&dir, &[]);
-    assert!(!found.contains("dead_public Kind::Read"), "{found:?}");
-    assert!(found.contains("dead_public Plain::Unused"), "{found:?}");
+    assert!(!found.contains("dead-public Kind::Read"), "{found:?}");
+    assert!(found.contains("dead-public Plain::Unused"), "{found:?}");
 }
 
 /// A method of a `pub` trait has no keyword, but its signature is as visible as
@@ -1053,7 +1082,7 @@ fn a_restricted_type_in_a_trait_method_keeps_its_visibility() {
     )]);
     let (found, _) = findings(&dir, &[]);
     assert!(
-        !found.contains("unnecessary_restricted_visibility outer::Input"),
+        !found.contains("unnecessary-restricted-visibility outer::Input"),
         "{found:?}"
     );
 }
@@ -1085,11 +1114,11 @@ fn precise_mode_leaves_a_candidate_with_a_use_under_cfg_undecided() {
         ),
     ]);
     let (precise, left) = findings(&dir, &["--precise"]);
-    assert!(!precise.contains("dead_public A::helper"), "{precise:?}");
-    assert!(left.contains("dead_public A::helper"), "{left:?}");
+    assert!(!precise.contains("dead-public A::helper"), "{precise:?}");
+    assert!(left.contains("dead-public A::helper"), "{left:?}");
     // A feature is on in precise mode, so the use under it is in its view.
-    assert!(!left.contains("dead_public B::seen"), "{left:?}");
-    assert!(!left.contains("dead_public C::used"), "{left:?}");
+    assert!(!left.contains("dead-public B::seen"), "{left:?}");
+    assert!(!left.contains("dead-public C::used"), "{left:?}");
 }
 
 /// A precise finding goes through the same filters as a fast finding: the
@@ -1145,7 +1174,7 @@ fn generated_code_files() -> Vec<(&'static str, &'static str)> {
 fn an_item_that_generated_code_can_name_is_undecided() {
     let dir = workspace(&generated_code_files());
     let (found, undecided) = findings(&dir, &[]);
-    assert!(found.contains("dead_public unrelated"), "{found:?}");
+    assert!(found.contains("dead-public unrelated"), "{found:?}");
     assert!(
         !found
             .iter()
@@ -1153,11 +1182,11 @@ fn an_item_that_generated_code_can_name_is_undecided() {
         "{found:?}"
     );
     assert!(
-        undecided.contains("dead_public from_generated"),
+        undecided.contains("dead-public from_generated"),
         "{undecided:?}"
     );
     assert!(
-        undecided.contains("unnecessary_restricted_visibility inner::helper"),
+        undecided.contains("unnecessary-restricted-visibility inner::helper"),
         "{undecided:?}"
     );
 }
@@ -1178,7 +1207,7 @@ fn an_include_without_a_literal_path_opens_each_dependency() {
     ]);
     let (found, undecided) = findings(&dir, &[]);
     assert!(found.is_empty(), "{found:?}");
-    assert_eq!(undecided, set(&["dead_public a", "dead_public b"]));
+    assert_eq!(undecided, set(&["dead-public a", "dead-public b"]));
 }
 
 /// rust-analyzer does not search the files in the target folder, so `--precise`
@@ -1210,7 +1239,7 @@ fn precise_mode_leaves_an_item_that_generated_code_can_name_undecided() {
         "{found:?}"
     );
     assert!(
-        undecided.contains("dead_public from_generated"),
+        undecided.contains("dead-public from_generated"),
         "{undecided:?}"
     );
 }
@@ -1468,7 +1497,7 @@ fn the_visibility_table_sets_the_options() {
         ),
     ]);
     let (found, _) = findings(&dir, &[]);
-    assert_eq!(found, set(&["dead_public in_base"]));
+    assert_eq!(found, set(&["dead-public in_base"]));
     let (found, _) = findings(
         &dir,
         &[
@@ -1480,7 +1509,7 @@ fn the_visibility_table_sets_the_options() {
     );
     assert_eq!(found, set(&[]));
     let (found, _) = findings(&dir, &["--exclude-crate", "testing"]);
-    assert!(found.contains("dead_public in_mid"), "{found:?}");
+    assert!(found.contains("dead-public in_mid"), "{found:?}");
 }
 
 /// An unknown key in the table is a configuration error.

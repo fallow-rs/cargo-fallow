@@ -1734,7 +1734,7 @@ fn a_rule_level_turns_a_rule_off_or_changes_its_gate() {
 
     // `error` gives the error severity in the shared shape and in SARIF.
     let fixture = Fixture::new();
-    fixture.rules("dead_public = \"error\"\nunused-dev-dependency = \"warn\"");
+    fixture.rules("dead-public = \"error\"\nunused-dev-dependency = \"warn\"");
     let (_, report) = fixture.json(&["check", "--only", "visibility,deps"]);
     let severities: BTreeSet<(String, String)> = report["findings"]
         .as_array()
@@ -1748,7 +1748,7 @@ fn a_rule_level_turns_a_rule_off_or_changes_its_gate() {
         })
         .collect();
     assert!(
-        severities.contains(&("dead_public".to_owned(), "error".to_owned())),
+        severities.contains(&("dead-public".to_owned(), "error".to_owned())),
         "{severities:?}"
     );
     assert!(

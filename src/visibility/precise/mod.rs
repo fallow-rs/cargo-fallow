@@ -670,7 +670,7 @@ mod tests {
             (
                 0,
                 Decision::Report {
-                    kind: "dead_public".to_owned(),
+                    kind: "dead-public".to_owned(),
                 },
             ),
             (
@@ -682,13 +682,13 @@ mod tests {
             (
                 2,
                 Decision::Report {
-                    kind: "unnecessary_restricted_visibility".to_owned(),
+                    kind: "unnecessary-restricted-visibility".to_owned(),
                 },
             ),
             (
                 4,
                 Decision::Report {
-                    kind: "unnecessary_public".to_owned(),
+                    kind: "unnecessary-public".to_owned(),
                 },
             ),
         ]
@@ -772,7 +772,7 @@ mod tests {
         let candidates: Vec<Candidate> = (0..3)
             .map(|id| Candidate {
                 id,
-                kind: "dead_public".to_owned(),
+                kind: "dead-public".to_owned(),
                 file: "a.rs".to_owned(),
                 line: 1,
                 column: 1,
@@ -790,7 +790,7 @@ mod tests {
             Event::Decided {
                 id: 0,
                 decision: Decision::Report {
-                    kind: "dead_public".to_owned(),
+                    kind: "dead-public".to_owned(),
                 },
             },
             Event::TimeLimit,

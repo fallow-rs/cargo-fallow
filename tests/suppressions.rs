@@ -99,7 +99,7 @@ fn next_line_comment_hides_a_visibility_finding_and_counts_it() {
     let (report, _) = run(&dir, &["visibility"]);
     assert_eq!(
         findings(&report),
-        ["dead_public core/src/lib.rs"],
+        ["dead-public core/src/lib.rs"],
         "{report}"
     );
     assert_eq!(report["findings"][0]["item"], "other");

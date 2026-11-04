@@ -61,17 +61,19 @@ impl FindingKind {
         Self::UnnecessaryRestricted,
     ];
 
-    /// The name in the report. The names are the same as in hawk.
+    /// The rule id in the report: the hawk name in kebab-case.
     pub const fn label(self) -> &'static str {
         match self {
-            Self::DeadPublic => "dead_public",
-            Self::UnnecessaryPublic => "unnecessary_public",
-            Self::UnnecessaryRestricted => "unnecessary_restricted_visibility",
+            Self::DeadPublic => "dead-public",
+            Self::UnnecessaryPublic => "unnecessary-public",
+            Self::UnnecessaryRestricted => "unnecessary-restricted-visibility",
         }
     }
 
-    /// The kind with this report name.
+    /// The kind with this report name. The snake_case form of hawk, for
+    /// example `dead_public`, names the same kind.
     pub fn from_label(label: &str) -> Option<Self> {
+        let label = label.replace('_', "-");
         [
             Self::DeadPublic,
             Self::UnnecessaryPublic,

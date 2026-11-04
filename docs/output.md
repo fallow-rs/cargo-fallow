@@ -134,7 +134,7 @@ fix. An agent can use it to read about a rule without a documentation site.
 
 ```bash
 cargo fallow explain unused-dependency
-cargo fallow explain dead_public --format json
+cargo fallow explain dead-public --format json
 cargo fallow check --format json --explain
 ```
 

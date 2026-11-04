@@ -180,10 +180,30 @@ pub struct Draft<'a> {
     pub impact: Impact,
 }
 
+/// The rule ids that had a snake_case form before, with that form.
+const SNAKE_CASE_RULES: [(&str, &str); 3] = [
+    ("dead-public", "dead_public"),
+    ("unnecessary-public", "unnecessary_public"),
+    (
+        "unnecessary-restricted-visibility",
+        "unnecessary_restricted_visibility",
+    ),
+];
+
+/// The rule name in the hash of a finding id. A rule that had a snake_case
+/// id keeps that form in the hash, so that the ids in a saved baseline still
+/// match.
+fn id_rule(rule: &str) -> &str {
+    SNAKE_CASE_RULES
+        .iter()
+        .find(|(kebab, _)| *kebab == rule)
+        .map_or(rule, |(_, snake)| snake)
+}
+
 impl Finding {
     /// Builds a finding with its id, no related places and no actions.
     pub fn new(draft: Draft<'_>) -> Self {
-        let mut parts = vec![draft.check, draft.rule];
+        let mut parts = vec![draft.check, id_rule(draft.rule)];
         parts.extend_from_slice(draft.identity);
         Self {
             id: fingerprint(&parts),
@@ -297,6 +317,26 @@ mod tests {
     }
 
     #[test]
+    fn a_kebab_case_visibility_rule_keeps_the_id_of_its_snake_case_form() {
+        let location = Location::at("src/lib.rs".to_owned(), 3, 1);
+        let mut draft = draft(&["my_crate", "helper", "function"], location);
+        draft.check = "visibility";
+        draft.rule = "dead-public";
+        let finding = Finding::new(draft);
+        assert_eq!(finding.rule, "dead-public");
+        assert_eq!(
+            finding.id,
+            fingerprint(&[
+                "visibility",
+                "dead_public",
+                "my_crate",
+                "helper",
+                "function"
+            ])
+        );
+    }
+
+    #[test]
     fn severity_serializes_as_error_and_warn() {
         assert_eq!(json!(Severity::Error), json!("error"));
         assert_eq!(json!(Severity::Warning), json!("warn"));
@@ -368,7 +408,7 @@ mod tests {
                 end_line: None,
             },
         ));
-        finding.rule = "dead_public".to_owned();
+        finding.rule = "dead-public".to_owned();
         let report = codeclimate(&[finding]);
         assert_eq!(report[0]["location"]["lines"], json!({ "begin": 1 }));
         assert_eq!(report[0]["check_name"], "fallow/dead-public");

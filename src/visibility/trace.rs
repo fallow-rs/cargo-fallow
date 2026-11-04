@@ -367,7 +367,7 @@ fn reason(
     holds: &[&'static str],
 ) -> String {
     match findings.first() {
-        Some(&"dead_public") => return "dead_public: no code reaches the item".to_owned(),
+        Some(&"dead-public") => return "dead_public: no code reaches the item".to_owned(),
         Some(kind) => return format!("{kind}: the item can have a smaller visibility"),
         None => {}
     }

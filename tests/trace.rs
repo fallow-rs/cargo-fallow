@@ -160,7 +160,7 @@ fn a_visibility_trace_gives_the_verdict_of_an_unused_item() {
     assert_eq!(code, Some(0), "{trace:#}");
     let item = &trace["items"][0];
     assert_eq!(item["is_used"], false);
-    assert_eq!(item["findings"][0], "dead_public");
+    assert_eq!(item["findings"][0], "dead-public");
     assert_eq!(uses(&trace), Vec::<String>::new());
 }
 

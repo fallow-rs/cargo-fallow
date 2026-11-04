@@ -80,7 +80,7 @@ table has its default severity and gate.
 ```toml
 [workspace.metadata.fallow.rules]
 unused-optional-dependency = "error"
-dead_public = "warn"
+dead-public = "warn"
 code-duplication = "off"
 ```
 
@@ -219,7 +219,7 @@ comments:
 | --- | --- | --- |
 | `deps` | `deps` or a rule, for example `unused-dependency` | Above the entry in `Cargo.toml`, or a file comment in the manifest |
 | `files` | `files` or `unused-file` | A file comment in the unused file |
-| `visibility` | `visibility`, `dead_public`, `unnecessary_public` or `unnecessary_restricted_visibility` | Above the item |
+| `visibility` | `visibility`, `dead-public`, `unnecessary-public` or `unnecessary-restricted-visibility` | Above the item |
 | `boundaries` | `boundaries` or the `rule` name of the configuration | Above the line of the violation |
 | `size` | `size`, `grown-file` or `new-large-file` | A file comment in the file |
 | `complexity` | `complexity` | Above the function |

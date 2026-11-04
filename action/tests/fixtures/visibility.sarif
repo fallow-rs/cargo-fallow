@@ -10,7 +10,7 @@
           "informationUri": "https://github.com/fallow-rs/cargo-fallow",
           "rules": [
             {
-              "id": "unnecessary_public",
+              "id": "unnecessary-public",
               "shortDescription": {
                 "text": "A `pub` item that only its own crate uses."
               }
@@ -36,7 +36,7 @@
       ],
       "results": [
         {
-          "ruleId": "unnecessary_public",
+          "ruleId": "unnecessary-public",
           "level": "warning",
           "message": {
             "text": "Only its own crate uses the function `mutation::coverage::parse_test_map`. Make it `pub(crate)`."

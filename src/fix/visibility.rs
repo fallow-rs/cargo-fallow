@@ -222,7 +222,7 @@ mod tests {
         let width = u32::try_from(from.chars().count()).unwrap_or(0);
         Edit {
             kind: CHANGE_ACTION,
-            rule: "unnecessary_public",
+            rule: "unnecessary-public",
             package: "app".to_owned(),
             item: "app::f".to_owned(),
             path: "src/lib.rs".to_owned(),

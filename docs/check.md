@@ -68,7 +68,7 @@ compute one score over Rust and another language.
 
 | Penalty | Check | Input | Points | Cap |
 | --- | --- | --- | --- | --- |
-| `dead_public` | `visibility` | `dead_public` findings per `pub` item, in percent | percent x 0.2 | 15 |
+| `dead_public` | `visibility` | `dead-public` findings per `pub` item, in percent | percent x 0.2 | 15 |
 | `complexity` | `complexity` | functions with cyclomatic complexity of 50 or more, in percent | percent x 4 | 20 |
 | `unit_size` | `size` | functions over 60 lines, per 1000 functions | per mille x 0.2 | 10 |
 | `unused_deps` | `deps` | `error` findings, per dependency entry of the members, in percent | percent x 0.5 | 25 |
@@ -118,7 +118,7 @@ measures, the least maintainable first. Each entry has `path`,
 `maintainability_index`, `complexity_density` (the cyclomatic complexity of
 all functions per line), `total_cyclomatic`, `total_cognitive`,
 `function_count` and `lines`. A run with the visibility check adds
-`dead_code_ratio`: the `dead_public` findings per `pub` item of the file.
+`dead_code_ratio`: the `dead-public` findings per `pub` item of the file.
 
 ```text
 maintainability_index = 100 - density x 30 x min(lines / 50, 1) - dead_code_ratio x 20

@@ -58,7 +58,7 @@ fn unknown_rule_exits_2_and_lists_the_rules() {
     assert_eq!(error["code"], "CARGO_FALLOW_INVALID_ARGUMENT");
     let help = error["help"].as_str().unwrap_or_default();
     assert!(
-        help.contains("unused-file") && help.contains("dead_public"),
+        help.contains("unused-file") && help.contains("dead-public"),
         "{help}"
     );
 }

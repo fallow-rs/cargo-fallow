@@ -113,9 +113,9 @@ No issues found
 
 == visibility ==
 cargo fallow visibility (fast mode)
-  src/deps/report.rs:41:15 unnecessary_public associated_const `deps::report::Rule::ALL`: pub -> pub(crate) (only tests use it)
-  src/mutation/coverage.rs:479:8 unnecessary_public function `mutation::coverage::parse_test_map`: pub -> pub(crate) (only tests use it)
-5 findings: 0 dead_public, 5 unnecessary_public, 0 unnecessary_restricted_visibility
+  src/deps/report.rs:41:15 unnecessary-public associated_const `deps::report::Rule::ALL`: pub -> pub(crate) (only tests use it)
+  src/mutation/coverage.rs:479:8 unnecessary-public function `mutation::coverage::parse_test_map`: pub -> pub(crate) (only tests use it)
+5 findings: 0 dead-public, 5 unnecessary-public, 0 unnecessary-restricted-visibility
 
 == complexity ==
 cargo fallow complexity: 108 files, 3811 functions, limits cyclomatic 20 and cognitive 15

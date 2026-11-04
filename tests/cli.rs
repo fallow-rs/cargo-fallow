@@ -127,7 +127,7 @@ fn assert_ok_report(report: &Value) {
     assert_eq!(report["total_issues"], 1);
     let finding = &report["findings"][0];
     assert_eq!(finding["check"], "visibility");
-    assert_eq!(finding["rule"], "dead_public");
+    assert_eq!(finding["rule"], "dead-public");
     assert_eq!(finding["location"]["path"], "crates/alpha-lib/src/lib.rs");
     assert_eq!(finding["id"].as_str().map(str::len), Some(16));
     assert_eq!(report["health"]["language"], "rust");
@@ -310,7 +310,7 @@ fn sarif_log_for_a_clean_workspace() {
     let run = &log["runs"][0];
     assert_eq!(run["tool"]["driver"]["name"], "cargo-fallow");
     assert_eq!(run["tool"]["driver"]["version"], env!("CARGO_PKG_VERSION"));
-    assert_eq!(run["tool"]["driver"]["rules"][0]["id"], "dead_public");
+    assert_eq!(run["tool"]["driver"]["rules"][0]["id"], "dead-public");
     assert_eq!(run["results"].as_array().map(Vec::len), Some(1));
     assert_eq!(run["results"][0]["level"], "warning");
     assert_eq!(run["invocations"][0]["executionSuccessful"], true);

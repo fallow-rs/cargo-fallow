@@ -239,7 +239,7 @@ fn decide<'db>(
         return Decision::Unresolved;
     };
     let home_module = definition.module(db);
-    let restricted = candidate.kind == "unnecessary_restricted_visibility";
+    let restricted = candidate.kind == "unnecessary-restricted-visibility";
     let mut same_crate = false;
     for (file, references) in definition.usages(sema).in_scope(&files.scope).all() {
         if references.is_empty() {
@@ -286,9 +286,9 @@ fn decide<'db>(
     let kind = if restricted {
         candidate.kind.clone()
     } else if same_crate {
-        "unnecessary_public".to_owned()
+        "unnecessary-public".to_owned()
     } else {
-        "dead_public".to_owned()
+        "dead-public".to_owned()
     };
     Decision::Report { kind }
 }

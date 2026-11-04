@@ -159,7 +159,7 @@ pub const RULES: &[Explanation] = &[
         docs: "https://github.com/fallow-rs/cargo-fallow/blob/main/docs/unused-files.md",
     },
     Explanation {
-        rule: "dead_public",
+        rule: "dead-public",
         check: "visibility",
         severity: "warn",
         meaning: "A `pub` item that no code of the workspace reaches.",
@@ -168,7 +168,7 @@ pub const RULES: &[Explanation] = &[
         docs: "https://github.com/fallow-rs/cargo-fallow/blob/main/docs/visibility.md",
     },
     Explanation {
-        rule: "unnecessary_public",
+        rule: "unnecessary-public",
         check: "visibility",
         severity: "warn",
         meaning: "A `pub` item that only its own crate uses.",
@@ -177,7 +177,7 @@ pub const RULES: &[Explanation] = &[
         docs: "https://github.com/fallow-rs/cargo-fallow/blob/main/docs/visibility.md",
     },
     Explanation {
-        rule: "unnecessary_restricted_visibility",
+        rule: "unnecessary-restricted-visibility",
         check: "visibility",
         severity: "warn",
         meaning: "A `pub(crate)`, `pub(super)` or `pub(in path)` item that only its own module uses.",
@@ -453,7 +453,7 @@ mod tests {
     fn lookup_takes_both_separators() {
         assert_eq!(
             find("dead-public").map(|rule| rule.rule),
-            Some("dead_public")
+            Some("dead-public")
         );
         assert_eq!(
             find("unused_dependency").map(|rule| rule.check),

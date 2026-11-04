@@ -29,7 +29,7 @@
   "precise": null,
   "findings": [
     {
-      "kind": "unnecessary_public",
+      "kind": "unnecessary-public",
       "package": "cargo-fallow",
       "crate": "cargo_fallow",
       "item": "mutation::coverage::parse_test_map",

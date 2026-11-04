@@ -40,8 +40,11 @@ struct Config {
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 enum KindName {
+    #[serde(alias = "dead_public")]
     DeadPublic,
+    #[serde(alias = "unnecessary_public")]
     UnnecessaryPublic,
+    #[serde(alias = "unnecessary_restricted_visibility")]
     UnnecessaryRestrictedVisibility,
 }
 

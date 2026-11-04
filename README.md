@@ -76,8 +76,8 @@ compare with in a `check` run, so its `file-growth` gate is `skipped`. Use
 ### Changed files
 
 `--changed-since <REF>` scopes a run to the files that a branch changed. The
-flag is on `check`, `deps`, `visibility`, `boundaries`, `size`, `complexity`
-and `dupes`. Use it for a pull request gate that judges only the changed code.
+flag is on `check`, `deps`, `files`, `visibility`, `boundaries`, `size`,
+`complexity` and `dupes`. Use it for a pull request gate that judges only the changed code.
 
 ```bash
 cargo fallow check --changed-since origin/main --fail-on-issues

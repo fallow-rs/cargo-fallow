@@ -761,6 +761,47 @@ fn deep_tree_from_an_operator_chain_is_too_deep_and_does_not_abort() {
     }
 }
 
+/// The parse stack grows with the nesting depth, not with the file size. A
+/// stack of 4 KiB for each source byte asks for 32 GiB here. That is over the
+/// stack cap, and Linux can refuse it, so the file then counts as too deep.
+/// CI runs this test on Linux.
+#[test]
+fn large_flat_generated_root_file_parses() {
+    use std::fmt::Write as _;
+    const SIZE: usize = 8 << 20;
+    let mut source = String::from("// @generated\npub static TABLE: &[u32] = &[");
+    for value in 0..100_000 {
+        let _ = write!(source, "{value}, ");
+    }
+    source.push_str("];\n");
+    let mut index = 0;
+    while source.len() < SIZE {
+        let _ = write!(
+            source,
+            "pub const C{index}: [u32; 2] = [{index}, 1];\n\
+             pub fn f{index}(a: u32) -> u32 {{ if a > {index} {{ a }} else {{ a + 1 }} }}\n\
+             pub struct S{index} {{ pub a: Vec<u32>, b: Option<u8> }}\n"
+        );
+        index += 1;
+    }
+    let fixture = Fixture::package(&[("src/lib.rs", source.as_bytes())]);
+    let result = check(
+        &fixture,
+        &[
+            "--only",
+            "parse",
+            "--format",
+            "json",
+            "--quiet",
+            "--fail-on-parse-error",
+        ],
+    );
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    let gate = &result.json()["gate_outcomes"]["parse-error"];
+    assert_eq!(gate["status"], "pass", "{gate}");
+    assert_eq!(gate["observed"], 0.0, "{gate}");
+}
+
 #[test]
 fn parser_recovers_and_counts_each_error() {
     let fixture = Fixture::package(&[("src/lib.rs", b"fn a( {}\nfn b( {}\nfn c() {}\n")]);

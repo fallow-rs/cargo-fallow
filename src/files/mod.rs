@@ -211,12 +211,7 @@ pub fn section(
     Ok(Section {
         human: human(&report),
         json: to_value(&report)?,
-        sarif: sarif::log(
-            &rules,
-            &findings,
-            sarif::level(enforced),
-            &report.gate_outcomes,
-        ),
+        sarif: sarif::log(&rules, &findings, &report.gate_outcomes),
         findings,
         gates: report.gate_outcomes,
     })

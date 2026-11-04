@@ -1847,10 +1847,11 @@ fn a_boundary_kind_level_sets_the_severity_the_sarif_level_and_the_baseline() {
             )
         })
         .collect();
+    // The crate rule keeps its default error severity, so its level is `error`.
     assert_eq!(
         levels,
         [
-            ("process-stays-a-leaf", "warning"),
+            ("process-stays-a-leaf", "error"),
             ("process-tree-in-process", "error")
         ]
     );
@@ -1869,6 +1870,34 @@ fn a_boundary_kind_level_sets_the_severity_the_sarif_level_and_the_baseline() {
     fixture.rules("boundaries = \"off\"");
     let (_, report) = fixture.json(&["boundaries"]);
     assert_eq!(report["total_issues"], 0, "{report:#}");
+}
+
+#[test]
+fn a_warn_rule_is_a_sarif_warning_also_with_an_enforced_gate() {
+    let fixture = Fixture::new();
+    fixture.rules("crate-dependency = \"warn\"\nmodule-path = \"off\"");
+    let run = fixture.run(&["boundaries", "--format", "sarif", "--fail-on-violations"]);
+    assert_eq!(run.code, 1, "{}", run.stdout);
+    let log: Value = serde_json::from_str(&run.stdout).expect("SARIF");
+    let mut levels: Vec<(&str, &str)> = log["runs"][0]["results"]
+        .as_array()
+        .expect("results")
+        .iter()
+        .map(|result| {
+            (
+                result["ruleId"].as_str().unwrap_or_default(),
+                result["level"].as_str().unwrap_or_default(),
+            )
+        })
+        .collect();
+    levels.sort_unstable();
+    assert_eq!(
+        levels,
+        [
+            ("process-stays-a-leaf", "warning"),
+            ("process-tree-in-process", "error")
+        ]
+    );
 }
 
 #[test]

@@ -203,7 +203,7 @@ pub fn section(
     report
         .gate_outcomes
         .insert(Gate::BoundaryViolations, count_gate(counted, enforced));
-    let mut sarif = sarif_log(&report, &findings, enforced);
+    let mut sarif = sarif_log(&report, &findings);
     // The structure log has one result for each finding, in the same order.
     if let Some(results) = sarif["runs"][0]["results"].as_array_mut() {
         for (finding, result) in report.findings.iter().zip(results) {
@@ -974,11 +974,7 @@ fn human(report: &Report<Summary, Finding>) -> String {
     text
 }
 
-fn sarif_log(
-    report: &Report<Summary, Finding>,
-    findings: &[shared::Finding],
-    enforced: bool,
-) -> serde_json::Value {
+fn sarif_log(report: &Report<Summary, Finding>, findings: &[shared::Finding]) -> serde_json::Value {
     let rules: BTreeMap<String, String> = report
         .findings
         .iter()
@@ -991,12 +987,7 @@ fn sarif_log(
             (finding.rule.clone(), text.to_owned())
         })
         .collect();
-    sarif::log(
-        &rules,
-        findings,
-        sarif::level(enforced),
-        &report.gate_outcomes,
-    )
+    sarif::log(&rules, findings, &report.gate_outcomes)
 }
 
 #[cfg(test)]

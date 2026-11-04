@@ -220,6 +220,9 @@ OUT="$(jq -c '.mutants[0].reason = "test t failed alone" | .gate_outcomes["survi
 assert_contains "$OUT" '"text":"Each test passed one at a time when `{ a == 2 }` became `{ true }` (return-value): test t failed alone."' "a survivor with a reason"
 assert_contains "$OUT" '"level":"error"' "an enforced failure is an error"
 assert_contains "$OUT" '"text":"The `surviving-mutants` gate failed (enforced)."' "the enforced notification"
+OUT="$(jq -c '.gate_outcomes["surviving-mutants"].enforced = false' "$FIXTURES/mutants.json" \
+  | jq -f "$JQ_DIR/mutants-sarif.jq" | jq -c '.runs[0].results | map(.level) | unique')"
+assert_equals "$OUT" '["error"]' "a survivor is an error also when the gate is not enforced"
 OUT="$(jq -c '.mutants |= map(select(.status != "survived")) | .gate_outcomes["surviving-mutants"] = {status: "warn", enforced: false}' "$FIXTURES/mutants.json" \
   | jq -c -f "$JQ_DIR/mutants-sarif.jq")"
 assert_contains "$OUT" '"rules":[]' "no survivor gives no rule"

@@ -4,7 +4,8 @@
 # once, with `--format json`. This filter writes the SARIF log that
 # `--format sarif` writes for the same report. src/render/mutants.rs holds the
 # original. action/tests/run.sh compares the two forms of one real run, so a
-# change of the renderer fails the test.
+# change of the renderer fails the test. A survivor has the error severity, so
+# its level is always `error`. Only a gate notification follows the gate.
 
 def level_of($outcome):
   if $outcome.status == "fail" and $outcome.enforced then "error"
@@ -33,10 +34,9 @@ def survivor_message:
     | level_of(.value) as $level
     | select($level != null)
     | { name: .key, outcome: .value, level: $level }] as $flagged
-| ([$flagged[] | select(.name == $rule) | .level][0] // "warning") as $result_level
 | [$report.mutants[]? | select(.status == "survived") | {
     ruleId: $rule,
-    level: $result_level,
+    level: "error",
     message: { text: survivor_message },
     locations: [{ physicalLocation: { artifactLocation: { uri: .file }, region: { startLine: .line } } }],
     partialFingerprints: { mutantId: .id }

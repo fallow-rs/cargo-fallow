@@ -850,6 +850,22 @@ fn each_finding_has_the_keyword_change_as_its_action() {
 }
 
 #[test]
+fn a_warn_rule_gives_a_sarif_warning() {
+    let mut manifest = MANIFESTS[0].1.to_owned();
+    manifest.push_str("\n[workspace.metadata.fallow.rules]\ndead-public = \"warn\"\n");
+    let dir = workspace(&[
+        ("Cargo.toml", &manifest),
+        ("mid/src/lib.rs", "pub fn unused() {}\n"),
+    ]);
+    let (_, text) = run(&dir, &["--format", "sarif", "--fail-on-issues"]);
+    let log: Value = serde_json::from_str(&text).expect("the output is JSON");
+    let results = log["runs"][0]["results"].as_array().expect("results");
+    assert_eq!(results.len(), 1, "{log:#}");
+    assert_eq!(results[0]["ruleId"], "dead-public");
+    assert_eq!(results[0]["level"], "warning");
+}
+
+#[test]
 fn sarif_output_has_one_result_for_each_finding() {
     let dir = workspace(&[("mid/src/lib.rs", "pub fn unused() {}\n")]);
     let (code, text) = run(&dir, &["--format", "sarif", "--fail-on-issues"]);

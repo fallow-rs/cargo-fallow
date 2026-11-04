@@ -390,7 +390,7 @@ pub fn section(
     Ok(Section {
         human: human(&report),
         json: to_value(&report)?,
-        sarif: sarif_log(&findings, &report, enforced.clones),
+        sarif: sarif_log(&findings, &report),
         findings,
         gates: report.gate_outcomes,
     })
@@ -1074,18 +1074,12 @@ fn human(report: &Report<Summary, CloneGroup>) -> String {
 fn sarif_log(
     findings: &[shared::Finding],
     report: &Report<Summary, CloneGroup>,
-    enforced: bool,
 ) -> serde_json::Value {
     let rules = BTreeMap::from([(
         "code-duplication".to_owned(),
         "A block of code has a copy in the workspace.".to_owned(),
     )]);
-    sarif::log(
-        &rules,
-        findings,
-        sarif::level(enforced),
-        &report.gate_outcomes,
-    )
+    sarif::log(&rules, findings, &report.gate_outcomes)
 }
 
 #[cfg(test)]

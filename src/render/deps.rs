@@ -116,15 +116,7 @@ pub fn sarif(report: &DepsReport) -> Value {
         .iter()
         .filter_map(|(name, outcome)| level(outcome).map(|level| (*name, outcome, level)))
         .collect();
-    let error_level = flagged
-        .iter()
-        .find(|(name, _, _)| *name == RustGateName::ErrorSeverityFindings)
-        .map_or("warning", |(_, _, level)| level);
-    let results: Vec<Value> = report
-        .findings
-        .iter()
-        .map(|finding| result(finding, error_level))
-        .collect();
+    let results: Vec<Value> = report.findings.iter().map(result).collect();
     let rules: Vec<Value> = report
         .findings
         .iter()
@@ -194,10 +186,10 @@ fn message(finding: &Finding) -> String {
         .map_or_else(|| detail(finding), |action| action.description.clone())
 }
 
-fn result(finding: &Finding, error_level: &str) -> Value {
+fn result(finding: &Finding) -> Value {
     let level = match finding.severity {
-        Severity::Error => error_level,
-        Severity::Warning => "note",
+        Severity::Error => "error",
+        Severity::Warning => "warning",
     };
     let message = message(finding);
     let mut location = json!({ "artifactLocation": { "uri": finding.manifest_path } });

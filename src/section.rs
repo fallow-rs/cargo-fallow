@@ -145,7 +145,7 @@ impl Section {
             if let Some(results) = self.sarif["runs"][0]["results"].as_array_mut() {
                 results.push(json!({
                     "ruleId": STALE_RULE,
-                    "level": "warning",
+                    "level": finding.severity.sarif_level(),
                     "message": { "text": finding.message },
                     "locations": [{
                         "physicalLocation": {

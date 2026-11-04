@@ -17,6 +17,10 @@ use crate::mutation::status::{Status, Tier};
 /// The rule of each mutant that survived.
 pub const SURVIVING_RULE: &str = "surviving-mutant";
 
+/// The severity of a survivor. A survivor counts for the gate, so it is an
+/// error. The shared finding and the SARIF level both come from it.
+const SURVIVOR_SEVERITY: crate::finding::Severity = crate::finding::Severity::Error;
+
 /// The most source lines that the human form of inspect shows for each side. The
 /// JSON form has all lines.
 const MAX_CHANGE_LINES: usize = 20;
@@ -205,10 +209,6 @@ pub fn sarif(report: &Report) -> Value {
         .filter_map(|(name, outcome)| level(outcome).map(|level| (*name, outcome, level)))
         .collect();
     let name = RustGateName::SurvivingMutants;
-    let result_level = flagged
-        .iter()
-        .find(|(gate, _, _)| *gate == name)
-        .map_or("warning", |(_, _, level)| level);
     let results: Vec<Value> = report
         .mutants
         .iter()
@@ -216,7 +216,7 @@ pub fn sarif(report: &Report) -> Value {
         .map(|row| {
             json!({
                 "ruleId": name.as_str(),
-                "level": result_level,
+                "level": SURVIVOR_SEVERITY.sarif_level(),
                 "message": { "text": survivor_message(row) },
                 "locations": [{
                     "physicalLocation": {
@@ -242,7 +242,7 @@ pub fn sarif(report: &Report) -> Value {
 /// The survivors in the shared finding shape. The id is the hash of the mutant
 /// id, which stays the same while the source of the mutant stays the same.
 pub fn findings(report: &Report) -> Vec<crate::finding::Finding> {
-    use crate::finding::{Category, Draft, Finding, Impact, Location, Severity};
+    use crate::finding::{Category, Draft, Finding, Impact, Location};
     report
         .mutants
         .iter()
@@ -251,7 +251,7 @@ pub fn findings(report: &Report) -> Vec<crate::finding::Finding> {
             Finding::new(Draft {
                 check: "mutants",
                 rule: SURVIVING_RULE,
-                severity: Severity::Error,
+                severity: SURVIVOR_SEVERITY,
                 message: survivor_message(row),
                 location: Location {
                     path: row.file.clone(),

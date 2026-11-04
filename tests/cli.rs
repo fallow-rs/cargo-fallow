@@ -285,7 +285,7 @@ fn human_summary_and_progress() {
 }
 
 #[test]
-fn a_gate_finding_is_an_error_in_json_and_sarif_follows_the_gate() {
+fn a_gate_finding_is_an_error_in_json_and_in_sarif() {
     let fixture = Fixture::new("ws-ok");
     let json = check(&fixture, &["--format", "json", "--quiet"]).json();
     let findings = json["findings"].as_array().expect("an array");
@@ -295,9 +295,55 @@ fn a_gate_finding_is_an_error_in_json_and_sarif_follows_the_gate() {
             .iter()
             .all(|finding| finding["severity"] == "error")
     );
-    // No gate is enforced, so the SARIF result is a warning.
+    // The SARIF level follows the severity, also when no gate is enforced.
     let sarif = check(&fixture, &["--format", "sarif", "--quiet"]).json();
-    assert_eq!(sarif["runs"][0]["results"][0]["level"], "warning");
+    assert_eq!(sarif["runs"][0]["results"][0]["level"], "error");
+}
+
+/// The `(rule, level)` pairs of the SARIF results, sorted.
+fn sarif_levels(log: &Value) -> Vec<(String, String)> {
+    let mut pairs: Vec<(String, String)> = log["runs"][0]["results"]
+        .as_array()
+        .expect("the results")
+        .iter()
+        .map(|result| {
+            let text = |key: &str| result[key].as_str().unwrap_or_default().to_owned();
+            (text("ruleId"), text("level"))
+        })
+        .collect();
+    pairs.sort();
+    pairs
+}
+
+#[test]
+fn each_sarif_level_follows_the_severity_of_its_finding() {
+    let fixture = Fixture::new("ws-structure");
+    let json = check(&fixture, &["--format", "json", "--quiet"]).json();
+    let mut wanted: Vec<(String, String)> = json["findings"]
+        .as_array()
+        .expect("the findings")
+        .iter()
+        .map(|finding| {
+            let level = match finding["severity"].as_str() {
+                Some("error") => "error",
+                _ => "warning",
+            };
+            let rule = finding["rule"].as_str().unwrap_or_default();
+            (rule.to_owned(), level.to_owned())
+        })
+        .collect();
+    wanted.sort();
+    assert!(wanted.iter().any(|(_, level)| level == "error"), "{json:#}");
+    // No gate flag: each gate is not enforced.
+    let sarif = check(&fixture, &["--format", "sarif", "--quiet"]).json();
+    assert_eq!(sarif_levels(&sarif), wanted, "{sarif:#}");
+    // An enforced gate does not change the level of a finding.
+    let enforced = check(
+        &fixture,
+        &["--format", "sarif", "--quiet", "--fail-on-issues"],
+    )
+    .json();
+    assert_eq!(sarif_levels(&enforced), wanted, "{enforced:#}");
 }
 
 #[test]
@@ -317,7 +363,7 @@ fn sarif_log_for_a_clean_workspace() {
     assert_eq!(run["tool"]["driver"]["version"], env!("CARGO_PKG_VERSION"));
     assert_eq!(run["tool"]["driver"]["rules"][0]["id"], "dead-public");
     assert_eq!(run["results"].as_array().map(Vec::len), Some(1));
-    assert_eq!(run["results"][0]["level"], "warning");
+    assert_eq!(run["results"][0]["level"], "error");
     assert_eq!(run["invocations"][0]["executionSuccessful"], true);
     let notes = &run["invocations"][0]["toolExecutionNotifications"];
     assert_eq!(notes[0]["descriptor"]["id"], "visibility-findings");

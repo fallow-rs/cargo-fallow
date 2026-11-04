@@ -15,6 +15,10 @@ use crate::visibility::{Analysis, Finding, FindingKind};
 /// The version of the report shape. A change that removes a member or changes
 /// its type increments it.
 pub const SCHEMA_VERSION: u32 = 1;
+
+/// The severity of each finding. The JSON severity and the SARIF level both
+/// come from it. The rules table can change both later.
+const SEVERITY: crate::finding::Severity = crate::finding::Severity::Error;
 /// The `kind` of the report.
 pub const KIND: &str = "visibility";
 /// The type of the action of a finding on an item with a visibility keyword.
@@ -364,9 +368,7 @@ impl VisibilityReport {
     /// The findings in the shared shape. The id uses the crate, the item path
     /// and the item kind, not the line.
     pub fn shared_findings(&self) -> Vec<crate::finding::Finding> {
-        use crate::finding::{
-            Action as Step, Category, Draft, Finding, Impact, Location, Severity,
-        };
+        use crate::finding::{Action as Step, Category, Draft, Finding, Impact, Location};
         self.findings
             .iter()
             .map(|finding| {
@@ -378,7 +380,7 @@ impl VisibilityReport {
                 Finding::new(Draft {
                     check: KIND,
                     rule: finding.kind,
-                    severity: Severity::Error,
+                    severity: SEVERITY,
                     message: message(finding),
                     location: Location {
                         path: finding.file.clone(),
@@ -414,12 +416,11 @@ impl VisibilityReport {
         })
     }
 
-    /// The report as a SARIF log. Each finding is a result. The level is
-    /// `error` when the gate is enforced, else `warning`.
+    /// The report as a SARIF log. Each finding is a result at the level of
+    /// its severity.
     pub fn sarif(&self) -> serde_json::Value {
         use serde_json::json;
-        let outcome = &self.gate_outcomes[&RustGateName::VisibilityFindings];
-        let level = if outcome.enforced { "error" } else { "warning" };
+        let level = SEVERITY.sarif_level();
         let results: Vec<serde_json::Value> = self
             .findings
             .iter()

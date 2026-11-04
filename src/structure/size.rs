@@ -292,7 +292,7 @@ pub fn section(inputs: &Inputs<'_>) -> Result<Section, CliError> {
     Ok(Section {
         human: human(&report),
         json: to_value(&report)?,
-        sarif: sarif_log(&report, &findings, enforced),
+        sarif: sarif_log(&report, &findings),
         findings,
         gates: report.gate_outcomes,
     })
@@ -478,11 +478,7 @@ fn hotspots(text: &mut String, title: &str, lines: impl ExactSizeIterator<Item =
     }
 }
 
-fn sarif_log(
-    report: &Report<Summary, Finding>,
-    findings: &[shared::Finding],
-    enforced: bool,
-) -> serde_json::Value {
+fn sarif_log(report: &Report<Summary, Finding>, findings: &[shared::Finding]) -> serde_json::Value {
     let rules = BTreeMap::from([
         (
             "grown-file".to_owned(),
@@ -493,12 +489,7 @@ fn sarif_log(
             "A new file is over the line limit.".to_owned(),
         ),
     ]);
-    sarif::log(
-        &rules,
-        findings,
-        sarif::level(enforced),
-        &report.gate_outcomes,
-    )
+    sarif::log(&rules, findings, &report.gate_outcomes)
 }
 
 #[cfg(test)]

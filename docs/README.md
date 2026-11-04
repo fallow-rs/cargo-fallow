@@ -14,6 +14,7 @@ for each command.
 | [Unused files](unused-files.md) | How `files` finds the files that no target compiles |
 | [Visibility](visibility.md) | Kinds of `visibility`, and precise mode |
 | [Structure checks](structure.md) | `boundaries`, `size`, `complexity` and `dupes` |
+| [Trace](trace.md) | `--trace` of `visibility`, `deps` and `dupes`, to see why a check reports one item or does not |
 | [Mutation testing](mutation-testing.md) | `mutants`: tiers, status, test selection and safety |
 | [Output formats](output.md) | Each format, the JSON Schema, `explain` and the exit codes |
 | [GitHub Action](../action/README.md) | Inputs, outputs and install methods of the action |

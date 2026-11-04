@@ -309,6 +309,7 @@ line for each finding. [Output formats](docs/output.md) describes all formats.
 | [Visibility](docs/visibility.md) | Kinds of `visibility`, and precise mode |
 | [Structure checks](docs/structure.md) | `boundaries`, `size`, `complexity` and `dupes` |
 | [Mutation testing](docs/mutation-testing.md) | `mutants`: tiers, status, test selection and safety |
+| [Trace](docs/trace.md) | `--trace` of `visibility`, `deps` and `dupes`, to see why a check reports one item or does not |
 | [Output formats](docs/output.md) | Each format, the JSON Schema, `explain` and the exit codes |
 | [GitHub Action](action/README.md) | Inputs, outputs and install methods of the action |
 

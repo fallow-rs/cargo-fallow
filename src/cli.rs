@@ -64,6 +64,8 @@ pub struct VisibilityOptions {
     pub scope: crate::scope::ScopeArgs,
     /// The limits of `--precise` mode, or `None` for the fast mode.
     pub precise: Option<crate::visibility::precise::Limits>,
+    /// The item path of `--trace`, as `crate::path`.
+    pub trace: Option<String>,
 }
 
 /// The result of argument parsing.
@@ -408,6 +410,12 @@ struct VisibilityArgs {
     /// resolution. A candidate whose name is in a larger file keeps its visibility.
     #[arg(long, value_name = "KIB", default_value_t = crate::visibility::precise::DEFAULT_FILE_LIMIT_KIB, value_parser = clap::value_parser!(u64).range(1..), requires = "precise")]
     precise_file_limit: u64,
+    /// Show each use and each credit that keeps one item, and the verdict,
+    /// instead of the report. Give the crate name and the item path, as the
+    /// `crate` and `item` fields of a finding: `my_crate::module::Type::method`.
+    /// The trace ignores the baseline, `--changed-since` and `--fail-on-issues`.
+    #[arg(long, value_name = "CRATE::PATH", conflicts_with = "precise")]
+    trace: Option<String>,
 }
 
 /// A finding kind of the `visibility` command.
@@ -460,6 +468,7 @@ impl From<VisibilityArgs> for VisibilityOptions {
                 memory_mib: args.precise_memory_limit,
                 file_limit_kib: args.precise_file_limit,
             }),
+            trace: args.trace,
         }
     }
 }
@@ -490,6 +499,12 @@ struct DepsArgs {
     /// `--offline`.
     #[arg(long)]
     frozen: bool,
+    /// Show each declaration and each use site of one dependency in each
+    /// target, and its findings, instead of the report. Give the key in
+    /// Cargo.toml or the package name. The trace ignores the baseline,
+    /// `--changed-since` and `--fail-on-issues`.
+    #[arg(long, value_name = "DEPENDENCY")]
+    trace: Option<String>,
 }
 
 impl From<DepsArgs> for crate::deps::Options {
@@ -502,6 +517,7 @@ impl From<DepsArgs> for crate::deps::Options {
             fail_on_issues: args.fail_on_issues,
             cargo_flags,
             scope: args.scope,
+            trace: args.trace,
         }
     }
 }

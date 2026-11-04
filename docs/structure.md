@@ -77,6 +77,9 @@ When the table sets `threshold`, the report shows the
 run only when you give a flag. The flag is `--threshold` for `dupes`, or
 `--fail-on-issues` for `check`.
 
+`cargo fallow dupes --trace <FINGERPRINT>` shows the instances of one clone
+group. See [Trace](trace.md).
+
 The growth rule of `size` is the rule of `scripts/check-file-size.mjs` in
 fallow, applied to `.rs` files. A file over the limit must not grow, and a new
 file must not be over the limit. The rule does not check test files, files in

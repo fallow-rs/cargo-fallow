@@ -678,7 +678,7 @@ fn variant_row(graph: &Graph, finding: &Finding) -> FindingRow {
 
 /// The written visibility as text. An enum variant has the visibility of its
 /// enum, with no keyword of its own.
-fn written(vis: &Vis, kind: ItemKind) -> String {
+pub fn written(vis: &Vis, kind: ItemKind) -> String {
     match vis {
         Vis::Public if kind == ItemKind::Variant => String::new(),
         Vis::Private => String::new(),

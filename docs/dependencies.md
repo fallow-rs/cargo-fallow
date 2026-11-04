@@ -27,6 +27,7 @@ cargo fallow deps --fail-on-issues --format sarif --quiet
 | `--locked` | Give `--locked` to `cargo metadata`. |
 | `--offline` | Give `--offline` to `cargo metadata`. |
 | `--frozen` | Give `--frozen` to `cargo metadata`. |
+| `--trace <DEPENDENCY>` | Show each declaration and each use site of one dependency, instead of the report. See [Trace](trace.md). |
 
 To resolve the dependencies, the command runs `cargo metadata` with all
 features and without `--no-deps`. The resolve gives the library name and the

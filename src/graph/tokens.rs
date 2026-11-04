@@ -214,26 +214,27 @@ fn path_in_string(literal: &str) -> Option<TokenPath> {
 /// A line that starts with `# ` is hidden in the documentation, but rustdoc
 /// compiles it, so the `#` goes. A block with `ignore`, `text` or another
 /// language is not Rust code. A `compile_fail` block does not compile, so it
-/// gives no use.
-pub fn rust_code_blocks(markdown: &str) -> Vec<String> {
+/// gives no use. Each block has the zero-based index of its first code line.
+pub fn rust_code_blocks_at(markdown: &str) -> Vec<(u32, String)> {
     let mut blocks = Vec::new();
-    let mut current: Option<(String, String)> = None;
-    for line in markdown.lines() {
+    let mut current: Option<(String, u32, String)> = None;
+    for (index, line) in markdown.lines().enumerate() {
         let trimmed = line.trim_start();
         let fence = trimmed.starts_with("```") || trimmed.starts_with("~~~");
         match (&mut current, fence) {
             (None, true) => {
                 let info = trimmed.trim_start_matches(['`', '~']).trim().to_owned();
-                current = Some((info, String::new()));
+                let first = u32::try_from(index + 1).unwrap_or(u32::MAX);
+                current = Some((info, first, String::new()));
             }
             (Some(_), true) => {
-                if let Some((info, code)) = current.take()
+                if let Some((info, first, code)) = current.take()
                     && is_rust_block(&info)
                 {
-                    blocks.push(code);
+                    blocks.push((first, code));
                 }
             }
-            (Some((_, code)), false) => {
+            (Some((_, _, code)), false) => {
                 let visible = trimmed
                     .strip_prefix("# ")
                     .or_else(|| (trimmed == "#").then_some(""))
@@ -354,8 +355,11 @@ mod tests {
         let markdown = "text\n```\nuse a::B;\n# fn hidden() {}\n```\n```ignore\nskip\n```\n\
                         ```rust,no_run\nrun\n```\n```toml\n[x]\n```\n```compile_fail\nbad\n```\n";
         assert_eq!(
-            rust_code_blocks(markdown),
-            ["use a::B;\nfn hidden() {}\n", "run\n"]
+            rust_code_blocks_at(markdown),
+            [
+                (2, "use a::B;\nfn hidden() {}\n".to_owned()),
+                (9, "run\n".to_owned())
+            ]
         );
     }
 }

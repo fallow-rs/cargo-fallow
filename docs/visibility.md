@@ -29,6 +29,7 @@ cargo fallow visibility --precise
 | `--save-baseline <PATH>`, `--baseline <PATH>`, `--fail-on-stale-baseline` | Save the findings, or leave out the saved findings. See [Baselines](adoption.md#baselines). |
 | `--package <NAME>`, `-p <NAME>` | Report only the findings of this workspace member. The flag can repeat. See [Packages](adoption.md#packages). |
 | `--precise` | Decide the undecided candidates with rust-analyzer. See below. |
+| `--trace <CRATE::PATH>` | Show each use and each credit that keeps one item, instead of the report. See [Trace](trace.md). |
 
 You can set the same options in the `[workspace.metadata.fallow.visibility]`
 table of the root `Cargo.toml`. A flag has priority over the table. A list

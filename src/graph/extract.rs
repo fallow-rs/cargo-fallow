@@ -9,7 +9,7 @@ use ra_ap_syntax::ast::{self, HasAttrs, HasName, HasVisibility, VisibilityKind};
 use ra_ap_syntax::{AstNode, AstToken, SyntaxKind, SyntaxNode, WalkEvent};
 
 use crate::attrs::{AttrClass, attr_body, attributes_of, path_attribute, plain_name};
-use crate::graph::tokens::{TokenPath, paths_in_code, paths_in_tree, rust_code_blocks};
+use crate::graph::tokens::{TokenPath, paths_in_code, paths_in_tree, rust_code_blocks_at};
 use crate::modules::ModuleDecl;
 use crate::parse::{Edition, ParseOutcome, with_parsed};
 
@@ -201,6 +201,8 @@ pub struct RawUse {
     pub binding: Binding,
     /// The index of the item of a named `pub` re-export.
     pub item: Option<usize>,
+    /// The one-based line of the `use` item.
+    pub line: u32,
 }
 
 /// The way that code names something.
@@ -263,6 +265,10 @@ pub struct RawRef {
     /// True when a `cfg` that can be off in a build with all features and
     /// tests is on an enclosing node.
     pub under_cfg: bool,
+    /// The one-based line where the syntax node of the reference starts: the
+    /// path, the method call, the macro call or the attribute owner. Zero when
+    /// the place is not known, for a code block of an included Markdown file.
+    pub line: u32,
 }
 
 /// The facts of one file.
@@ -308,14 +314,29 @@ pub fn extract(source: &str, edition: Edition) -> Result<FileFacts, ParseOutcome
 
 /// The documentation code blocks of a Markdown file, as references.
 pub fn doc_refs_of_markdown(markdown: &str, edition: Edition) -> Vec<RawRef> {
-    rust_code_blocks(markdown)
+    doc_refs_at(markdown, edition, 0)
+}
+
+/// The documentation code blocks of a Markdown text that starts on `line`,
+/// as references on the first code line of each block. A `line` of zero
+/// means that the place is not known, and each reference gets zero.
+fn doc_refs_at(markdown: &str, edition: Edition, line: u32) -> Vec<RawRef> {
+    rust_code_blocks_at(markdown)
         .iter()
-        .flat_map(|code| paths_in_code(code, edition))
-        .flat_map(doc_ref)
+        .flat_map(|(first, code)| {
+            let at = if line == 0 {
+                0
+            } else {
+                line.saturating_add(*first)
+            };
+            paths_in_code(code, edition)
+                .into_iter()
+                .flat_map(move |path| doc_ref(path, at))
+        })
         .collect()
 }
 
-fn doc_ref(path: TokenPath) -> Vec<RawRef> {
+fn doc_ref(path: TokenPath, line: u32) -> Vec<RawRef> {
     token_ref_kinds(path)
         .into_iter()
         .map(|kind| RawRef {
@@ -325,6 +346,7 @@ fn doc_ref(path: TokenPath) -> Vec<RawRef> {
             origin: Origin::Doc,
             test_only: true,
             under_cfg: false,
+            line,
         })
         .collect()
 }
@@ -377,6 +399,8 @@ struct Walker<'a> {
     text: &'a str,
     edition: Edition,
     frames: Vec<(SyntaxNode, Frame)>,
+    /// The start offset of the node that the walk is in.
+    cursor: usize,
 }
 
 impl<'a> Walker<'a> {
@@ -389,6 +413,7 @@ impl<'a> Walker<'a> {
             text,
             edition,
             frames: Vec::new(),
+            cursor: 0,
         }
     }
 
@@ -410,6 +435,7 @@ impl<'a> Walker<'a> {
     }
 
     fn enter(&mut self, node: &SyntaxNode) {
+        self.cursor = usize::from(node.text_range().start());
         if let Some(owner) = ast::AnyHasAttrs::cast(node.clone()) {
             match attributes_of(node) {
                 AttrClass::Test => self.push(node, Frame::Test),
@@ -520,6 +546,12 @@ impl<'a> Walker<'a> {
                 Frame::Impl(self_ty) => Some(self_ty.clone()),
                 _ => None,
             })?
+    }
+
+    /// The one-based line of a byte offset.
+    fn line_at(&self, offset: usize) -> u32 {
+        let line = self.lines.partition_point(|&start| start <= offset);
+        u32::try_from(line).unwrap_or(u32::MAX)
     }
 
     fn line_col(&self, offset: usize) -> (u32, u32) {
@@ -796,6 +828,7 @@ impl<'a> Walker<'a> {
                 global,
                 binding,
                 item: item_index,
+                line: self.line_at(self.cursor),
             });
         }
     }
@@ -830,6 +863,7 @@ impl<'a> Walker<'a> {
             global,
             binding,
             item: None,
+            line: self.line_at(self.cursor),
         });
     }
 
@@ -845,6 +879,7 @@ impl<'a> Walker<'a> {
             origin,
             test_only: self.test_only(),
             under_cfg: self.cfg_off(),
+            line: self.line_at(self.cursor),
         });
     }
 
@@ -902,6 +937,8 @@ impl<'a> Walker<'a> {
     fn method_call(&mut self, node: &SyntaxNode) {
         if let Some(name) = ast::MethodCallExpr::cast(node.clone()).and_then(|call| call.name_ref())
         {
+            // A method chain spans lines: the place is the name, not the receiver.
+            self.cursor = usize::from(name.syntax().text_range().start());
             self.add_ref(RefKind::Method(name.text().to_string()), Origin::Body);
         }
     }
@@ -909,6 +946,7 @@ impl<'a> Walker<'a> {
     fn field_access(&mut self, node: &SyntaxNode) {
         if let Some(name) = ast::FieldExpr::cast(node.clone()).and_then(|access| access.name_ref())
         {
+            self.cursor = usize::from(name.syntax().text_range().start());
             self.add_ref(RefKind::Field(name.text().to_string()), Origin::Body);
         }
     }
@@ -1037,11 +1075,14 @@ impl<'a> Walker<'a> {
     }
 
     fn attr_refs(&mut self, owner: &ast::AnyHasAttrs) {
+        let start = self.cursor;
         for attr in owner.attrs() {
+            self.cursor = usize::from(attr.syntax().text_range().start());
             if let Some(meta) = attr.meta() {
                 self.meta_refs(meta);
             }
         }
+        self.cursor = start;
     }
 
     /// The references of one attribute. The attributes inside `cfg_attr(..)`
@@ -1093,7 +1134,7 @@ impl<'a> Walker<'a> {
     /// The code blocks of the doc comments of the file. Each run of doc
     /// comments with only whitespace between them is one Markdown text.
     fn docs(&mut self, root: &SyntaxNode) {
-        let mut blocks: Vec<String> = Vec::new();
+        let mut blocks: Vec<(String, u32)> = Vec::new();
         let mut last_end: Option<usize> = None;
         for token in root
             .descendants_with_tokens()
@@ -1112,16 +1153,16 @@ impl<'a> Walker<'a> {
                     .is_some_and(|gap| gap.trim().is_empty())
             });
             if !joined || blocks.is_empty() {
-                blocks.push(String::new());
+                blocks.push((String::new(), self.line_at(start)));
             }
-            if let Some(block) = blocks.last_mut() {
+            if let Some((block, _)) = blocks.last_mut() {
                 block.push_str(comment.text());
                 block.push('\n');
             }
             last_end = Some(usize::from(token.text_range().end()));
         }
-        for block in &blocks {
-            let refs = doc_refs_of_markdown(block, self.edition);
+        for (block, line) in &blocks {
+            let refs = doc_refs_at(block, self.edition, *line);
             self.facts.refs.extend(refs);
         }
     }

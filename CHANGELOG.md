@@ -24,6 +24,10 @@ GitHub release. Each release needs a `## [X.Y.Z] - YYYY-MM-DD` section.
   misplaced entry to `[dev-dependencies]`. `--dry-run` shows the edits. The
   edit keeps comments, and a failed load after the edit writes back the old
   bytes. The `deps` actions that `fix` applies now have `auto_fixable: true`.
+- `cargo fallow fix` also narrows the visibility keyword of each `visibility`
+  finding. It runs `cargo check --workspace --all-targets` before and after
+  the edits, and writes back each file when the check after the edits fails.
+  The `change-visibility` actions now have `auto_fixable: true`.
 - `cargo fallow files` reports each `.rs` file in a target folder that no
   target compiles, with the rule `unused-file` and the gate `unused-files`.
   `check` runs it by default.

@@ -122,12 +122,15 @@ enum Command {
     /// `--frozen` to control the resolution.
     Deps(DepsArgs),
     /// Apply the actions with `auto_fixable: true`: remove each unused
-    /// dependency entry, and move each misplaced entry to `[dev-dependencies]`.
+    /// dependency entry, move each misplaced entry to `[dev-dependencies]`, and
+    /// narrow the visibility keyword of each `visibility` finding.
     ///
     /// The edit keeps the comments and the format of each Cargo.toml. A warning
     /// stays. Use `--dry-run` to see the edits first. A process without a
-    /// terminal needs `--yes`. When the workspace does not load after the
-    /// edits, the command writes back each file and exits 2.
+    /// terminal needs `--yes`. With a visibility edit, the command runs `cargo
+    /// check --workspace --all-targets` before and after the edits. When the
+    /// workspace does not load or build after the edits, the command writes
+    /// back each file and exits 2.
     Fix(crate::fix::FixArgs),
     /// Report `.rs` files in the target folders that no target compiles.
     ///

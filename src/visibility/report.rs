@@ -165,8 +165,9 @@ pub struct Action {
     /// `change-visibility`, or `remove-item` for an enum variant.
     #[serde(rename = "type")]
     pub kind: &'static str,
-    /// Always false: a change can need a matching change in other code, for
-    /// example in a `pub use` or in a field group.
+    /// True for a `change-visibility` step of a finding with a keyword range:
+    /// `cargo fallow fix` applies it. An undecided candidate and a
+    /// `remove-item` step stay false.
     pub auto_fixable: bool,
     /// What the step does.
     pub description: &'static str,
@@ -181,7 +182,7 @@ pub struct Action {
 
 /// A range of text with one-based lines and columns in characters. The end is
 /// the position after the last character.
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct Range {
     /// The line of the first character.
     pub line: u32,
@@ -223,7 +224,10 @@ impl VisibilityReport {
             });
             rows
         };
-        let findings = rows(&analysis.findings);
+        let mut findings = rows(&analysis.findings);
+        for action in findings.iter_mut().flat_map(|row| &mut row.actions) {
+            action.auto_fixable = action.kind == CHANGE_ACTION && action.range.is_some();
+        }
         let undecided = rows(&analysis.undecided);
         let mut summary = Summary {
             undecided: undecided.len(),

@@ -11,6 +11,12 @@ GitHub release. Each release needs a `## [X.Y.Z] - YYYY-MM-DD` section.
 
 ### Added
 
+- One suppression model for each check: `// fallow-ignore-next-line <kind>`
+  now also works for `visibility`, `size`, `boundaries` and `files`,
+  `// fallow-ignore-file <kind>` hides the findings of a file, and
+  `# fallow-ignore-next-line <rule>` in `Cargo.toml` hides a `deps` finding.
+  A comment that hides no finding gives a `stale-suppression` warning, and
+  each report has a `suppressed` count.
 - `cargo fallow check` reads the workspace and reports the parse gates.
 - `cargo fallow mutants` runs mutation tests with schemata and coverage
   selection.

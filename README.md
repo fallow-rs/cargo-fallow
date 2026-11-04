@@ -177,6 +177,41 @@ cargo fallow check --baseline fallow-baseline.json --fail-on-issues
 The file has `schema_version` 1, the `kind` of the command that saved it,
 `language: "rust"`, the key scheme in `identity` and the sorted `findings`.
 
+### Suppressions
+
+A comment hides the findings that a person accepts. Each check reads the same
+comments:
+
+- `// fallow-ignore-next-line <kind>` hides the findings of the next code
+  line. Attribute lines, doc comments and blank lines between the comment and
+  the code do not count, so the comment can stand above `#[derive(...)]`.
+- `// fallow-ignore-file <kind>` in the first ten lines hides the findings of
+  the file.
+- In a `Cargo.toml`, the comment starts with `#`:
+  `# fallow-ignore-next-line unused-dependency` above an entry.
+- A block comment works too: `/* fallow-ignore-next-line size */`.
+- A list takes commas or spaces. Text after ` -- ` is a reason:
+  `// fallow-ignore-next-line visibility -- kept for a plugin`.
+- A comment with no kind hides each finding.
+
+| Check | Kinds | Place of the comment |
+| --- | --- | --- |
+| `deps` | `deps` or a rule, for example `unused-dependency` | Above the entry in `Cargo.toml`, or a file comment in the manifest |
+| `files` | `files` or `unused-file` | A file comment in the unused file |
+| `visibility` | `visibility`, `dead_public`, `unnecessary_public` or `unnecessary_restricted_visibility` | Above the item |
+| `boundaries` | `boundaries` or the `rule` name of the configuration | Above the line of the violation |
+| `size` | `size`, `grown-file` or `new-large-file` | A file comment in the file |
+| `complexity` | `complexity` | Above the function |
+| `dupes` | `dupes` or `code-duplication` | Above the copy |
+
+A rule name can use `-` or `_`. Each command and each section of `check` has
+`suppressed`: the number of hidden findings. A comment with a kind of a check
+that ran, and that hides no finding, is stale: the check reports a
+`stale-suppression` warning with a `remove-suppression` action, and the JSON
+report lists it in `stale_suppressions`. The gates do not count it. A
+`--changed-since` run judges only the comments in the changed files. A kind
+that names no check or rule gives a warning on stderr.
+
 ### Health score
 
 The report has a health score for the Rust code. The model is the health score
@@ -1094,7 +1129,7 @@ are not checked. `--base <REF>` compares HEAD with the merge base, and
 The complexity and clone models are the models of fallow for JavaScript. A unit
 is a `fn` with a body or a closure. Put `// fallow-ignore-next-line complexity`
 above a function, or `// fallow-ignore-next-line code-duplication` above a
-clone, to suppress it.
+clone, to suppress it. See [Suppressions](#suppressions).
 
 The complexity counts have these known differences from other tools:
 

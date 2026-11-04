@@ -8,13 +8,16 @@ use std::io;
 
 use fallow_report_protocol::GateOutcome;
 use fallow_report_protocol::exit_code::{EXIT_GATE_FAILED, EXIT_OK};
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::cli::Format;
 use crate::error::CliError;
-use crate::finding::{Finding, codeclimate};
+use std::fmt::Write as _;
+
+use crate::finding::{Category, Draft, Finding, Impact, Location, Severity, codeclimate};
 use crate::gates::RustGateName;
 use crate::render;
+use crate::suppress::{STALE_RULE, Stale};
 
 /// The output of one check.
 #[derive(Debug, Clone)]
@@ -56,6 +59,84 @@ impl Section {
         } else {
             EXIT_OK
         })
+    }
+}
+
+impl Section {
+    /// Adds a `stale-suppression` warning for each comment in `stale`: to the
+    /// shared findings, the JSON report (`stale_suppressions`), the human
+    /// text and the SARIF log. The gates do not count them.
+    pub fn add_stale_suppressions(&mut self, check: &'static str, stale: &[Stale]) {
+        if stale.is_empty() {
+            return;
+        }
+        let mut lines = String::new();
+        let mut rows = Vec::new();
+        for entry in stale {
+            let kinds = entry.kinds.join(", ");
+            let line = entry.line.to_string();
+            let finding = Finding::new(Draft {
+                check,
+                rule: STALE_RULE,
+                severity: Severity::Warning,
+                message: format!("The suppression of `{kinds}` hides no finding."),
+                location: Location::at(entry.path.clone(), entry.line, 1),
+                identity: &[&entry.path, &kinds, &line],
+                category: Category::Clarity,
+                impact: Impact::Minor,
+            })
+            .with_actions(vec![crate::finding::Action::new(
+                "remove-suppression",
+                false,
+                "Remove the suppression comment",
+            )]);
+            let _ = writeln!(
+                lines,
+                "  {STALE_RULE}: {}:{} ({kinds})",
+                entry.path, entry.line
+            );
+            rows.push(json!({ "path": entry.path, "line": entry.line, "kinds": entry.kinds }));
+            if let Some(results) = self.sarif["runs"][0]["results"].as_array_mut() {
+                results.push(json!({
+                    "ruleId": STALE_RULE,
+                    "level": "warning",
+                    "message": { "text": finding.message },
+                    "locations": [{
+                        "physicalLocation": {
+                            "artifactLocation": { "uri": entry.path },
+                            "region": { "startLine": entry.line, "startColumn": 1 },
+                        }
+                    }],
+                }));
+            }
+            self.findings.push(finding);
+        }
+        if let Value::Object(map) = &mut self.json {
+            map.insert("stale_suppressions".to_owned(), Value::Array(rows));
+        }
+        if let Some(rules) = self.sarif["runs"][0]["tool"]["driver"]["rules"].as_array_mut()
+            && !rules.iter().any(|rule| rule["id"] == STALE_RULE)
+        {
+            rules.push(json!({
+                "id": STALE_RULE,
+                "shortDescription": { "text": "A suppression comment hides no finding." },
+            }));
+        }
+        // The lines go above the gate block of the text.
+        let at = if self.human.starts_with("Gates:") {
+            Some(0)
+        } else {
+            self.human.find("\nGates:").map(|at| at + 1)
+        };
+        match at {
+            Some(at) => self.human.insert_str(at, &lines),
+            None => {
+                if !self.human.is_empty() && !self.human.ends_with('\n') {
+                    self.human.push('\n');
+                }
+                self.human.push_str(&lines);
+            }
+        }
     }
 }
 

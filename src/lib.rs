@@ -28,6 +28,7 @@ mod mutation;
 mod parse;
 mod render;
 mod report;
+mod rules;
 mod schema;
 mod scope;
 mod section;
@@ -183,12 +184,13 @@ fn visibility_report(options: &cli::VisibilityOptions) -> Result<u8, CliError> {
     let precise = Some(summary);
     analysis.retain_kinds(&options.kinds);
     analysis.retain_scope(&module_graph, &scope);
-    let report = visibility::report::VisibilityReport::new(visibility::report::Inputs {
+    let mut report = visibility::report::VisibilityReport::new(visibility::report::Inputs {
         graph: &module_graph,
         analysis: &analysis,
         precise,
         enforced: options.fail_on_issues,
     });
+    report.regate(scope.rules());
     scope.annotate(report.section()?)?.write(options.format)
 }
 

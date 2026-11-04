@@ -535,6 +535,30 @@ fn rule_text(kind: &str) -> &'static str {
 }
 
 /// The outcome of the `visibility-findings` gate.
+impl VisibilityReport {
+    /// The gate with the configured rule levels: a finding of a `warn` rule
+    /// does not count.
+    pub fn regate(&mut self, rules: &crate::rules::Rules) {
+        if rules.is_empty() {
+            return;
+        }
+        let enforced = self
+            .gate_outcomes
+            .get(&RustGateName::VisibilityFindings)
+            .is_some_and(|outcome| outcome.enforced);
+        let counted: Vec<FindingRow> = self
+            .findings
+            .iter()
+            .filter(|finding| rules.counts(&[finding.kind], true))
+            .cloned()
+            .collect();
+        self.gate_outcomes.insert(
+            RustGateName::VisibilityFindings,
+            findings_gate(&counted, enforced),
+        );
+    }
+}
+
 fn findings_gate(findings: &[FindingRow], enforced: bool) -> GateOutcome {
     let mut per_file: BTreeMap<&str, u32> = BTreeMap::new();
     for finding in findings {

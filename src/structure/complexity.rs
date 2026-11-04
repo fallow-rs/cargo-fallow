@@ -565,7 +565,14 @@ pub fn section(
     report.retain_baseline(scope, &mut findings);
     report.gate_outcomes.insert(
         Gate::HealthFindings,
-        count_gate(report.findings.len(), enforced),
+        count_gate(
+            if scope.rules().counts(&[RULE], true) {
+                report.findings.len()
+            } else {
+                0
+            },
+            enforced,
+        ),
     );
     Ok(Section {
         human: human(&report),

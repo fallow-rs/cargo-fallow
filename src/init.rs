@@ -31,7 +31,6 @@ pub const BASELINE_FILE: &str = "fallow-baseline.json";
 /// The default limits of the checks, from the configuration modules.
 const DEFAULT_CYCLOMATIC: u32 = 20;
 const DEFAULT_COGNITIVE: u32 = 15;
-const DEFAULT_FILE_LINES: u32 = 2000;
 
 /// A CI system for `--ci`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -82,18 +81,20 @@ pub struct InitReport {
     pub tables: String,
     /// The baseline file, relative to the workspace root.
     pub baseline: String,
-    /// The findings that the baseline holds.
-    pub baseline_findings: usize,
+    /// The findings that this run saved to the baseline, or `null` when the
+    /// run wrote no baseline.
+    pub baseline_findings: Option<usize>,
     /// True when the command changed the manifest or wrote the baseline.
     pub written: bool,
 }
 
-/// The limits at the current maximum of the workspace.
+/// The limits at the current maximum of the workspace. The table has no
+/// `max-file-lines`: a larger file limit only turns off the growth rule of
+/// `size`, and the default limit gives no finding without `--base`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Limits {
     max_cyclomatic: u32,
     max_cognitive: u32,
-    max_file_lines: u32,
     threshold: f64,
 }
 
@@ -120,7 +121,7 @@ pub fn run(args: &InitArgs) -> Result<u8, CliError> {
         .map_err(|err| CliError::output(&std::io::Error::other(err)))?;
     let limits = limits(&json);
     let tables = tables(&limits);
-    let mut findings = first.total_issues;
+    let mut findings = None;
     let mut written = false;
     let mut baseline = BASELINE_FILE.to_owned();
     if args.write {
@@ -137,7 +138,7 @@ pub fn run(args: &InitArgs) -> Result<u8, CliError> {
             // no entry that the new limits make stale.
             progress.step("Saving the findings with the new limits");
             let saved = temp_file()?;
-            findings = run_check(args, saved.path())?.total_issues;
+            findings = Some(run_check(args, saved.path())?.total_issues);
             write_baseline(&path, saved.path())?;
             written = true;
         }
@@ -171,20 +172,12 @@ fn limits(report: &Value) -> Limits {
             .max()
             .and_then(|max| u32::try_from(max).ok())
     };
-    let largest = sections["size"]["summary"]["large_files"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|file| file["lines"].as_u64())
-        .max()
-        .and_then(|max| u32::try_from(max).ok());
     let percentage = sections["dupes"]["summary"]["stats"]["duplication_percentage"]
         .as_f64()
         .unwrap_or(0.0);
     Limits {
         max_cyclomatic: max_of("cyclomatic").unwrap_or(0).max(DEFAULT_CYCLOMATIC),
         max_cognitive: max_of("cognitive").unwrap_or(0).max(DEFAULT_COGNITIVE),
-        max_file_lines: largest.unwrap_or(0).max(DEFAULT_FILE_LINES),
         // One decimal up, so the current percentage passes.
         threshold: (percentage * 10.0).ceil() / 10.0,
     }
@@ -198,8 +191,6 @@ fn tables(limits: &Limits) -> String {
     let _ = writeln!(text, "\n[workspace.metadata.fallow.complexity]");
     let _ = writeln!(text, "max-cyclomatic = {}", limits.max_cyclomatic);
     let _ = writeln!(text, "max-cognitive = {}", limits.max_cognitive);
-    let _ = writeln!(text, "\n[workspace.metadata.fallow.size]");
-    let _ = writeln!(text, "max-file-lines = {}", limits.max_file_lines);
     let _ = writeln!(text, "\n[workspace.metadata.fallow.dupes]");
     let _ = writeln!(text, "threshold = {:.1}", limits.threshold);
     text
@@ -265,12 +256,6 @@ fn write_tables(root: &Path, limits: &Limits) -> Result<bool, CliError> {
         complexity,
         "max-cognitive",
         value(i64::from(limits.max_cognitive)),
-    );
-    let size = table(&mut doc, &["workspace", "metadata", "fallow", "size"])?;
-    keep_or_set(
-        size,
-        "max-file-lines",
-        value(i64::from(limits.max_file_lines)),
     );
     let dupes = table(&mut doc, &["workspace", "metadata", "fallow", "dupes"])?;
     keep_or_set(dupes, "threshold", value(limits.threshold));
@@ -370,12 +355,23 @@ fn human(report: &InitReport, write: bool) -> String {
         );
     }
     text.push_str(&report.tables);
-    let _ = writeln!(
-        text,
-        "\n# The baseline `{}` holds the {} current findings, so the first\n\
-         # `cargo fallow check --fail-on-issues` passes. A new finding fails it.",
-        report.baseline, report.baseline_findings
-    );
+    let baseline = &report.baseline;
+    let _ = match (write, report.baseline_findings) {
+        (_, Some(findings)) => writeln!(
+            text,
+            "\n# The baseline `{baseline}` holds the {findings} current findings, so the first\n\
+             # `cargo fallow check --fail-on-issues` passes. A new finding fails it."
+        ),
+        (true, None) => writeln!(
+            text,
+            "\n# The baseline `{baseline}` exists, so the command kept it as it was."
+        ),
+        (false, None) => writeln!(
+            text,
+            "\n# `cargo fallow init --write` also saves the current findings to `{baseline}`,\n\
+             # so the first `cargo fallow check --fail-on-issues` passes. A new finding fails it."
+        ),
+    };
     text
 }
 
@@ -414,7 +410,6 @@ mod tests {
     const LIMITS: Limits = Limits {
         max_cyclomatic: 31,
         max_cognitive: 15,
-        max_file_lines: 2400,
         threshold: 3.5,
     };
 
@@ -427,7 +422,7 @@ mod tests {
             fallow["complexity"]["max-cyclomatic"].as_integer(),
             Some(31)
         );
-        assert_eq!(fallow["size"]["max-file-lines"].as_integer(), Some(2400));
+        assert!(fallow.get("size").is_none());
         assert_eq!(fallow["dupes"]["threshold"].as_float(), Some(3.5));
     }
 

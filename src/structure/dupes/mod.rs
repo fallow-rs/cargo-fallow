@@ -35,6 +35,7 @@
 
 mod suffix;
 pub mod tokens;
+pub mod trace;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -211,6 +212,37 @@ pub struct Summary {
 }
 
 pub fn run(args: &DupesArgs) -> Result<Section, CliError> {
+    let (workspace, settings, loaded, progress) = load(args)?;
+    // `--threshold` is the flag of the threshold gate. A threshold from the
+    // config only reports the gate, the same as each other gate without its flag.
+    let gates = Enforce {
+        clones: args.fail_on_clones,
+        threshold: args.threshold.is_some(),
+    };
+    // A flag that changes the clone search narrows the findings.
+    let scope = Scope::load(&workspace, &args.common.scope)?
+        .narrowed(args.mode.is_some() || args.min_tokens.is_some() || args.min_lines.is_some());
+    scope.annotate(section(&loaded, &settings, gates, &scope, progress)?)
+}
+
+/// Runs `dupes --trace` for the fingerprint and writes the trace. The trace
+/// ignores the baseline and `--changed-since`.
+pub fn run_trace(args: &DupesArgs, fingerprint: &str) -> Result<u8, CliError> {
+    crate::trace::check_format(args.common.format, "dupes")?;
+    let (_, settings, loaded, progress) = load(args)?;
+    let gates = Enforce {
+        clones: false,
+        threshold: false,
+    };
+    let all = section(&loaded, &settings, gates, &Scope::default(), progress)?;
+    let traced = trace::trace(&all.json, fingerprint)?;
+    crate::trace::write(args.common.format, &traced.human(), &traced)
+}
+
+/// Reads the workspace, the settings and the token streams.
+fn load(
+    args: &DupesArgs,
+) -> Result<(workspace::Workspace, Duplication, Loaded, Progress), CliError> {
     let progress = Progress::new(args.common.quiet);
     progress.step("Reading cargo metadata");
     let workspace = workspace::load(args.common.manifest_path.as_deref())?;
@@ -235,16 +267,7 @@ pub fn run(args: &DupesArgs) -> Result<Section, CliError> {
             tokens: Some((settings.mode, settings.ignore_imports)),
         },
     );
-    // `--threshold` is the flag of the threshold gate. A threshold from the
-    // config only reports the gate, the same as each other gate without its flag.
-    let gates = Enforce {
-        clones: args.fail_on_clones,
-        threshold: args.threshold.is_some(),
-    };
-    // A flag that changes the clone search narrows the findings.
-    let scope = Scope::load(&workspace, &args.common.scope)?
-        .narrowed(args.mode.is_some() || args.min_tokens.is_some() || args.min_lines.is_some());
-    scope.annotate(section(&loaded, &settings, gates, &scope, progress)?)
+    Ok((workspace, settings, loaded, progress))
 }
 
 /// The gates of the check that fail the run.

@@ -174,6 +174,11 @@ fn each_report_of_the_structure_fixture_validates() {
         ("deps", vec!["deps"]),
         ("fix", vec!["fix", "--dry-run"]),
         ("visibility", vec!["visibility"]),
+        (
+            "visibility-trace",
+            vec!["visibility", "--trace", "core::branchy"],
+        ),
+        ("deps-trace", vec!["deps", "--trace", "core"]),
         ("files", vec!["files"]),
         ("boundaries", vec!["boundaries", "--fail-on-issues"]),
         ("size", vec!["size", "--base", "main"]),
@@ -194,6 +199,16 @@ fn each_report_of_the_structure_fixture_validates() {
         }
         assert_valid(&schema, kind, &document);
     }
+    let dupes = json_run(root, &["dupes", "--min-tokens", "30"]);
+    let fingerprint = dupes["findings"][0]["fingerprint"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the fixture has a clone group: {dupes:#}"));
+    let traced = json_run(
+        root,
+        &["dupes", "--min-tokens", "30", "--trace", fingerprint],
+    );
+    assert_eq!(traced["kind"], "dupes-trace", "{traced:#}");
+    assert_valid(&schema, "dupes-trace", &traced);
     let saved: Value =
         serde_json::from_str(&fs::read_to_string(baseline).expect("read")).expect("JSON");
     assert_valid(&schema, "baseline", &saved);

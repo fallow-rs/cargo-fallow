@@ -40,6 +40,16 @@ pub enum Class {
     Untyped,
 }
 
+/// The code that gives a credit: an index into [`Graph::imports`] or into
+/// [`Graph::refs`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Source {
+    /// An import.
+    Import(usize),
+    /// A reference.
+    Ref(usize),
+}
+
 /// One credit: a place in code that can use an item.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Credit {
@@ -62,6 +72,8 @@ pub struct Credit {
     pub test_only: bool,
     /// True when a `cfg` other than a test condition is on the code.
     pub under_cfg: bool,
+    /// The code that gives the credit.
+    pub source: Source,
 }
 
 /// The resolver. Build it once for a graph.
@@ -157,6 +169,7 @@ impl<'g> Resolver<'g> {
                 import: true,
                 test_only: false,
                 under_cfg: false,
+                source: Source::Import(index),
             };
             if import.binding == Binding::Glob {
                 let (targets, class, modules) = self.resolve_path(
@@ -179,7 +192,7 @@ impl<'g> Resolver<'g> {
             );
             push_targets(&mut credits, base, class, &targets, &modules, self.graph);
         }
-        for reference in &self.graph.refs {
+        for (index, reference) in self.graph.refs.iter().enumerate() {
             let base = Credit {
                 item: 0,
                 krate: reference.krate,
@@ -190,6 +203,7 @@ impl<'g> Resolver<'g> {
                 import: false,
                 test_only: reference.test_only,
                 under_cfg: reference.under_cfg,
+                source: Source::Ref(index),
             };
             self.credit_ref(&mut credits, base, &reference.kind);
         }

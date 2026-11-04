@@ -17,11 +17,14 @@ const SCHEMA_ID: &str =
 
 /// The JSON documents, keyed by the name of their definition: the `kind` of a
 /// report, or a name for a document with no `kind`.
-const DOCUMENTS: [&str; 15] = [
+const DOCUMENTS: [&str; 18] = [
     "check",
     "deps",
     "fix",
     "visibility",
+    "visibility-trace",
+    "deps-trace",
+    "dupes-trace",
     "files",
     "boundaries",
     "size",
@@ -63,7 +66,7 @@ pub fn document() -> Value {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$id": SCHEMA_ID,
         "title": "cargo-fallow JSON output",
-        "description": "Each JSON document that cargo-fallow writes: the report of each command (also `fix`), the inspect report of `mutants --inspect`, the baseline file of `--save-baseline`, the rule of `explain`, the report of `init` and the error document of exit code 2. The `document-<name>` definitions name each document.",
+        "description": "Each JSON document that cargo-fallow writes: the report of each command (also `fix`), the inspect report of `mutants --inspect`, the trace of `visibility --trace`, `deps --trace` and `dupes --trace`, the baseline file of `--save-baseline`, the rule of `explain`, the report of `init` and the error document of exit code 2. The `document-<name>` definitions name each document.",
         "anyOf": any_of,
         "$defs": defs,
     })
@@ -165,6 +168,11 @@ fn subschema(generator: &mut SchemaGenerator, name: &str) -> Schema {
         "deps" => generator.subschema_for::<crate::deps::report::DepsReport>(),
         "fix" => generator.subschema_for::<crate::fix::FixReport>(),
         "visibility" => generator.subschema_for::<crate::visibility::report::VisibilityReport>(),
+        "visibility-trace" => {
+            generator.subschema_for::<crate::visibility::trace::VisibilityTrace>()
+        }
+        "deps-trace" => generator.subschema_for::<crate::deps::trace::DepsTrace>(),
+        "dupes-trace" => generator.subschema_for::<dupes::trace::DupesTrace>(),
         "files" => structure::<crate::files::Summary, crate::files::Finding>(generator),
         "boundaries" => structure::<boundaries::Summary, boundaries::Finding>(generator),
         "size" => structure::<size::Summary, size::Finding>(generator),

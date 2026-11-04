@@ -11,6 +11,15 @@ GitHub release. Each release needs a `## [X.Y.Z] - YYYY-MM-DD` section.
 
 ### Added
 
+- `ci/gitlab-ci.yml` is a GitLab CI template. The job writes the code quality
+  report of the merge request widget, and with `CARGO_FALLOW_COMMENT` posts or
+  updates one merge request note with the markdown report.
+- `--trace` shows why a check keeps or reports one item.
+  `visibility --trace <crate>::<path>` lists each use and each credit of an
+  item, with the verdict. `deps --trace <dependency>` lists each declaration
+  and each use site. `dupes --trace <fingerprint>` lists the instances of one
+  clone group. The JSON documents have the kinds `visibility-trace`,
+  `deps-trace` and `dupes-trace`.
 - `cargo fallow check --format badge` writes an SVG badge with the health
   grade, or a `no score` badge for a run with no score.
 - The GitHub Action has the inputs `changed-since`, `auto-changed-since`,
@@ -92,6 +101,11 @@ GitHub release. Each release needs a `## [X.Y.Z] - YYYY-MM-DD` section.
 - `fix` honors the rules table: a rule at `off` gets no edit. `fix` takes
   `--package` (`-p`) to keep only the edits of the named members. When the
   workspace does not build before the edits, the help names the next step.
+- `size` skips a file whose first lines hold an `@generated` comment, as the
+  `complexity`, `dupes`, `files` and `visibility` checks do.
+- `init` does not write `max-file-lines`, because a larger limit only turns
+  off the growth rule of `size`. Without `--write`, `init` no longer says
+  that a baseline holds findings, and `baseline_findings` is `null`.
 - The action input `base: auto` now takes the commit before a push on a push
   event. A new branch and a commit that the checkout cannot fetch give no base
   and a notice. The size self-test runs on push again.

@@ -137,6 +137,11 @@ pub struct DupesArgs {
         overrides_with = "fail_on_clones"
     )]
     fail_on_clones: bool,
+    /// Show the instances of one clone group instead of the report. Give the
+    /// fingerprint of the group, for example `dup:1a2b3c4d`. The trace ignores
+    /// the baseline, `--changed-since` and `--fail-on-issues`.
+    #[arg(long, value_name = "FINGERPRINT")]
+    trace: Option<String>,
 }
 
 impl Command {
@@ -158,6 +163,14 @@ impl Command {
 /// Runs one structure subcommand and returns the process exit code.
 pub fn run(command: &Command) -> u8 {
     let common = command.common();
+    if let Command::Dupes(args) = command
+        && let Some(fingerprint) = &args.trace
+    {
+        return dupes::run_trace(args, fingerprint).unwrap_or_else(|err| {
+            err.emit(common.format);
+            EXIT_INVALID_INPUT
+        });
+    }
     let result = match command {
         Command::Boundaries(args) => boundaries::run(args),
         Command::Size(args) => size::run(args),

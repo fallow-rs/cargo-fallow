@@ -21,7 +21,6 @@ fn file(path: &str, source: &str, mode: Mode) -> File {
     File {
         path: path.to_owned(),
         lines: count_lines(source),
-        generated: false,
         skip_metrics: false,
         functions: Vec::new(),
         tokens,

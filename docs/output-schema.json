@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/fallow-rs/cargo-fallow/blob/main/docs/output-schema.json",
   "title": "cargo-fallow JSON output",
-  "description": "Each JSON document that cargo-fallow writes: the report of each command (also `fix`), the inspect report of `mutants --inspect`, the baseline file of `--save-baseline`, the rule of `explain`, the report of `init` and the error document of exit code 2. The `document-<name>` definitions name each document.",
+  "description": "Each JSON document that cargo-fallow writes: the report of each command (also `fix`), the inspect report of `mutants --inspect`, the trace of `visibility --trace`, `deps --trace` and `dupes --trace`, the baseline file of `--save-baseline`, the rule of `explain`, the report of `init` and the error document of exit code 2. The `document-<name>` definitions name each document.",
   "anyOf": [
     {
       "$ref": "#/$defs/document-check"
@@ -15,6 +15,15 @@
     },
     {
       "$ref": "#/$defs/document-visibility"
+    },
+    {
+      "$ref": "#/$defs/document-visibility-trace"
+    },
+    {
+      "$ref": "#/$defs/document-deps-trace"
+    },
+    {
+      "$ref": "#/$defs/document-dupes-trace"
     },
     {
       "$ref": "#/$defs/document-files"
@@ -1203,6 +1212,145 @@
       ],
       "description": "A package that the run did not judge."
     },
+    "DepsTrace": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The version of the trace shape."
+        },
+        "version": {
+          "type": "string",
+          "description": "The version of cargo-fallow."
+        },
+        "kind": {
+          "type": "string",
+          "description": "Always `deps-trace`."
+        },
+        "language": {
+          "type": "string",
+          "description": "Always `rust`."
+        },
+        "package_name": {
+          "type": "string",
+          "description": "The value of `--trace`."
+        },
+        "is_used": {
+          "type": "boolean",
+          "description": "True when code of a package that declares the dependency uses it.\n`used` of each declaration tells which entry the code uses."
+        },
+        "declarations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DepsTraceDeclaration"
+          },
+          "description": "The entries in Cargo.toml that declare the dependency, sorted by\nmanifest and line."
+        },
+        "uses": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TracedSite"
+          },
+          "description": "Each place in code that uses the dependency, sorted by package, file\nand line."
+        },
+        "findings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DepsFinding"
+          },
+          "description": "The findings of the `deps` check for the dependency."
+        },
+        "skipped": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DepsSkippedPackage"
+          },
+          "description": "The declaring packages that the `deps` check does not judge, with the\nreason, for example a file that did not parse."
+        }
+      },
+      "required": [
+        "schema_version",
+        "version",
+        "kind",
+        "language",
+        "package_name",
+        "is_used",
+        "declarations",
+        "uses",
+        "findings",
+        "skipped"
+      ],
+      "description": "The trace of one dependency. The field order is the wire order."
+    },
+    "DepsTraceDeclaration": {
+      "type": "object",
+      "properties": {
+        "manifest_path": {
+          "type": "string",
+          "description": "The `Cargo.toml` path, relative to the workspace root."
+        },
+        "line": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The one-based line of the entry, when the scan found it."
+        },
+        "package": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The package. A `[workspace.dependencies]` entry has none."
+        },
+        "section": {
+          "type": "string",
+          "description": "The table: `dependencies`, `dev-dependencies`, `build-dependencies` or\n`workspace.dependencies`."
+        },
+        "platform": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The platform of a `[target.<platform>.*]` table."
+        },
+        "key": {
+          "type": "string",
+          "description": "The key in Cargo.toml: the dependency name or its rename."
+        },
+        "code_name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The crate name in code, when the resolve gives it."
+        },
+        "optional": {
+          "type": "boolean",
+          "description": "True for an optional dependency."
+        },
+        "used": {
+          "type": "boolean",
+          "description": "True when code of the package of the entry uses the dependency: the\nbuild script for a build entry, another part for another entry. A\n`[workspace.dependencies]` entry is used when a member inherits it."
+        }
+      },
+      "required": [
+        "manifest_path",
+        "line",
+        "package",
+        "section",
+        "platform",
+        "key",
+        "code_name",
+        "optional",
+        "used"
+      ],
+      "description": "One entry in Cargo.toml."
+    },
     "DiffInfo": {
       "type": "object",
       "properties": {
@@ -1295,6 +1443,49 @@
         "skipped_files"
       ],
       "description": "The summary of a duplication run."
+    },
+    "DupesTrace": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The version of the trace shape."
+        },
+        "version": {
+          "type": "string",
+          "description": "The version of cargo-fallow."
+        },
+        "kind": {
+          "type": "string",
+          "description": "Always `dupes-trace`."
+        },
+        "language": {
+          "type": "string",
+          "description": "Always `rust`."
+        },
+        "fingerprint": {
+          "type": "string",
+          "description": "The value of `--trace`."
+        },
+        "clone_groups": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CloneGroup"
+          },
+          "description": "The clone group with the fingerprint, as in the `findings` of a\n`dupes` report."
+        }
+      },
+      "required": [
+        "schema_version",
+        "version",
+        "kind",
+        "language",
+        "fingerprint",
+        "clone_groups"
+      ],
+      "description": "The trace of one fingerprint. The field order is the wire order."
     },
     "ErrorOutput": {
       "type": "object",
@@ -2268,10 +2459,13 @@
           "description": "The baseline file, relative to the workspace root."
         },
         "baseline_findings": {
-          "type": "integer",
+          "type": [
+            "integer",
+            "null"
+          ],
           "format": "uint",
           "minimum": 0,
-          "description": "The findings that the baseline holds."
+          "description": "The findings that this run saved to the baseline, or `null` when the\nrun wrote no baseline."
         },
         "written": {
           "type": "boolean",
@@ -4583,6 +4777,238 @@
       ],
       "description": "The time limit of each suite, in milliseconds."
     },
+    "TracedItem": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "The item path from the crate root."
+        },
+        "crate": {
+          "type": "string",
+          "description": "The crate name."
+        },
+        "package": {
+          "type": "string",
+          "description": "The package."
+        },
+        "crate_kind": {
+          "type": "string",
+          "description": "The target kind of the crate."
+        },
+        "item_kind": {
+          "type": "string",
+          "description": "The item kind."
+        },
+        "visibility": {
+          "type": "string",
+          "description": "The written visibility. An empty text means private."
+        },
+        "file": {
+          "type": "string",
+          "description": "The file, relative to the workspace root."
+        },
+        "line": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The one-based line of the name."
+        },
+        "exported": {
+          "type": "boolean",
+          "description": "True when another crate can name the item."
+        },
+        "is_used": {
+          "type": "boolean",
+          "description": "True when a use or a hold keeps the item."
+        },
+        "findings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The finding kinds of the item in the fast mode."
+        },
+        "undecided": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The finding kinds that only an untyped credit stops. `--precise` mode\ndecides them."
+        },
+        "holds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The facts other than a use that keep the item or its visibility, for\nexample `glob-reexport` or `trait-impl`."
+        },
+        "uses": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TracedUse"
+          },
+          "description": "Each place in code that gives the item a credit, sorted by file and\nline. A use inside the item itself and the `use` item of a re-export\nare not in the list."
+        },
+        "reason": {
+          "type": "string",
+          "description": "A one-line summary of the verdict."
+        }
+      },
+      "required": [
+        "path",
+        "crate",
+        "package",
+        "crate_kind",
+        "item_kind",
+        "visibility",
+        "file",
+        "line",
+        "exported",
+        "is_used",
+        "findings",
+        "undecided",
+        "holds",
+        "uses",
+        "reason"
+      ],
+      "description": "One traced item."
+    },
+    "TracedSite": {
+      "type": "object",
+      "properties": {
+        "package": {
+          "type": "string",
+          "description": "The package of the code."
+        },
+        "file": {
+          "type": "string",
+          "description": "The file, relative to the workspace root."
+        },
+        "line": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The one-based line, or `None` when the place is not known. For macro\ntokens, the line where the macro call starts. For an attribute, the\nline of the attribute. For a documentation code block, the first code\nline of the block."
+        },
+        "context": {
+          "type": "string",
+          "description": "The part of the package, as in the `used_by` list of a finding.",
+          "enum": [
+            "lib",
+            "proc-macro",
+            "bin",
+            "unit-test",
+            "doctest",
+            "test",
+            "bench",
+            "example",
+            "build-script"
+          ]
+        },
+        "via": {
+          "type": "string",
+          "description": "How the code uses the dependency.",
+          "enum": [
+            "import",
+            "path",
+            "macro-tokens",
+            "attribute",
+            "doc-code",
+            "macro-crate",
+            "include"
+          ]
+        },
+        "name": {
+          "type": "string",
+          "description": "The crate name in the code. For `macro-crate`, the name of the macro\ncrate whose output uses the dependency."
+        }
+      },
+      "required": [
+        "package",
+        "file",
+        "line",
+        "context",
+        "via",
+        "name"
+      ],
+      "description": "One place in code."
+    },
+    "TracedUse": {
+      "type": "object",
+      "properties": {
+        "file": {
+          "type": "string",
+          "description": "The file, relative to the workspace root."
+        },
+        "line": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The one-based line, or `None` when the place is not known, for a code\nblock of an included Markdown file. For macro tokens, the line where\nthe macro call starts. For an attribute, the line of the attribute.\nFor a documentation code block, the first code line of the block."
+        },
+        "credit": {
+          "type": "string",
+          "description": "How the code names the item.",
+          "enum": [
+            "import",
+            "glob-import",
+            "path",
+            "name-match",
+            "method-name",
+            "field-name",
+            "member-name",
+            "record-field",
+            "macro-call",
+            "macro-tokens",
+            "attribute",
+            "doc-code"
+          ]
+        },
+        "class": {
+          "type": "string",
+          "description": "How sure the credit is: `exact`, `fallback` (the path did not resolve,\nso each item with the name gets credit) or `untyped` (the syntax cannot\ndecide the type).",
+          "enum": [
+            "exact",
+            "fallback",
+            "untyped"
+          ]
+        },
+        "crate": {
+          "type": "string",
+          "description": "The crate name of the code."
+        },
+        "crate_kind": {
+          "type": "string",
+          "description": "The target kind of the crate of the code."
+        },
+        "test_only": {
+          "type": "boolean",
+          "description": "True in test code."
+        },
+        "under_cfg": {
+          "type": "boolean",
+          "description": "True when a `cfg` that can be off is on the code."
+        }
+      },
+      "required": [
+        "file",
+        "line",
+        "credit",
+        "class",
+        "crate",
+        "crate_kind",
+        "test_only",
+        "under_cfg"
+      ],
+      "description": "One place in code that gives a credit."
+    },
     "Via": {
       "oneOf": [
         {
@@ -4798,6 +5224,49 @@
         "undecided"
       ],
       "description": "The count of each finding kind."
+    },
+    "VisibilityTrace": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The version of the trace shape."
+        },
+        "version": {
+          "type": "string",
+          "description": "The version of cargo-fallow."
+        },
+        "kind": {
+          "type": "string",
+          "description": "Always `visibility-trace`."
+        },
+        "language": {
+          "type": "string",
+          "description": "Always `rust`."
+        },
+        "trace": {
+          "type": "string",
+          "description": "The value of `--trace`."
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TracedItem"
+          },
+          "description": "The items with this path. A path can name more than one item, for\nexample a library and a binary with the same crate name, or two items\nunder different `cfg` conditions."
+        }
+      },
+      "required": [
+        "schema_version",
+        "version",
+        "kind",
+        "language",
+        "trace",
+        "items"
+      ],
+      "description": "The trace of one item path. The field order is the wire order."
     },
     "WorkspaceSummary": {
       "type": "object",
@@ -5067,6 +5536,35 @@
         }
       ]
     },
+    "document-deps-trace": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/DepsTrace"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "deps-trace"
+            },
+            "language": {
+              "const": "rust"
+            },
+            "_meta": {
+              "description": "With `--explain`: the meaning, an example and the fix of each rule with a finding, keyed by rule, and the documentation address.",
+              "type": "object",
+              "properties": {
+                "rules": {
+                  "type": "object"
+                },
+                "docs": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
     "document-dupes": {
       "allOf": [
         {
@@ -5122,6 +5620,35 @@
                   "line",
                   "kinds"
                 ]
+              }
+            }
+          }
+        }
+      ]
+    },
+    "document-dupes-trace": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/DupesTrace"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "dupes-trace"
+            },
+            "language": {
+              "const": "rust"
+            },
+            "_meta": {
+              "description": "With `--explain`: the meaning, an example and the fix of each rule with a finding, keyed by rule, and the documentation address.",
+              "type": "object",
+              "properties": {
+                "rules": {
+                  "type": "object"
+                },
+                "docs": {
+                  "type": "string"
+                }
               }
             }
           }
@@ -5401,6 +5928,35 @@
                   "line",
                   "kinds"
                 ]
+              }
+            }
+          }
+        }
+      ]
+    },
+    "document-visibility-trace": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/VisibilityTrace"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "visibility-trace"
+            },
+            "language": {
+              "const": "rust"
+            },
+            "_meta": {
+              "description": "With `--explain`: the meaning, an example and the fix of each rule with a finding, keyed by rule, and the documentation address.",
+              "type": "object",
+              "properties": {
+                "rules": {
+                  "type": "object"
+                },
+                "docs": {
+                  "type": "string"
+                }
               }
             }
           }

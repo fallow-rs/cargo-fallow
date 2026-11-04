@@ -2,14 +2,15 @@
 
 This page records how the Rust health score got its `unit_size` weight, and
 why a partial run has no score. `check.md` describes the score for users.
-`src/health.rs` holds the formula.
+The formula is in `src/health.rs`.
 
 ## The problem
 
 Formula version 1 used the weight of fallow for JavaScript for `unit_size`:
 0.5 points for each function over 60 lines per 1000 functions, with a cap of
-10 points. The cap is then at 20 per 1000. Six of seven corpus workspaces
-reached the cap, so the penalty did not separate good and bad code.
+10 points. With this weight, a workspace gets the full cap at 20 per 1000. Six
+of the seven corpus workspaces got the full cap. Thus the penalty did not
+separate good code from bad code.
 
 ## Method
 
@@ -39,22 +40,24 @@ gitui `d7214ecc`. The run used a debug build of `main` at `c9745d4`.
 | git-cliff | 674 | 28 | 23 | 16 | 14 | 41.5 | 38.6 |
 
 "Without tests" leaves out the functions in a `tests/` or `benches/` folder
-and the functions in a `tests` module. The score counts test code. The order
-of the workspaces is almost the same without tests, so the formula keeps it.
+and the functions in a `tests` module. The score counts test code. Without
+tests, the order of the workspaces is almost the same, so the formula keeps
+the test code.
 
 ## Decision
 
-- The edge stays at 60 lines. It is the edge of fallow for JavaScript and the
-  default of the `size` check, so the penalty and the size findings agree.
-- The input stays the rate per 1000 functions.
-- The weight changes from 0.5 to 0.2. The cap stays at 10 points, so the cap
-  is now at 50 per 1000.
+- The limit stays at 60 lines. fallow for JavaScript uses the same limit,
+  and so does the default of the `size` check. Thus the penalty and the size
+  findings agree.
+- The input is still the rate per 1000 functions.
+- The weight changes from 0.5 to 0.2. The cap stays at 10 points, so a
+  workspace now gets the full cap at 50 per 1000.
 - `formula_version` changes from 1 to 2.
 
-Rust functions are longer than JavaScript functions: a `match` with many
-arms, a builder or a parser loop is one function. The corpus median is about
-28 per 1000. The weight 0.2 gives the median about half of the cap, and the
-worst corpus workspace stays under the cap.
+Rust functions are longer than JavaScript functions. In Rust, a `match` with
+many arms, a builder or a parser loop is one function. The corpus median is
+about 28 per 1000. With the weight 0.2, the median gets about half of the
+cap, and the worst corpus workspace stays under the cap.
 
 | Workspace | `unit_size`, version 1 | `unit_size`, version 2 | Score, version 1 | Score, version 2 |
 | --- | ---: | ---: | ---: | ---: |
@@ -67,14 +70,15 @@ worst corpus workspace stays under the cap.
 | git-cliff | 10.0 | 8.3 | 77.2 (B) | 78.9 (B) |
 
 The unit test `unit_size_separates_the_corpus_workspaces` in `src/health.rs`
-holds the counts of this table.
+has the counts of this table.
 
 ## Partial runs
 
 Each penalty comes from one check. A run with `--only` or `--skip` can leave
 out a check, and version 1 then gave no penalty for it. A run of
 `check --only deps,visibility` on the `ws-ok` fixture got 85.0 (A) from two
-of the six inputs. When those two checks find nothing, such a run gets 100.0.
+of the six inputs. With version 1, such a run gets 100.0 when those two
+checks find nothing.
 
 From version 2, the score and the grade need all six checks:
 
@@ -85,8 +89,8 @@ From version 2, the score and the grade need all six checks:
   <checks>.`
 - A run without a check that has a penalty, for example `--only parse`, has no
   `health` object.
-- A check that ran with zero inputs, for example a workspace without
-  dependencies, gives a penalty of 0 and keeps the score.
+- A check that ran with zero inputs gives a penalty of 0, and the run still
+  gets a score. An example is `deps` on a workspace without dependencies.
 
 ## Repeat the measurement
 

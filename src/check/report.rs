@@ -217,6 +217,24 @@ impl CheckReport {
             Format::Codeclimate => pretty(&codeclimate(&self.findings))?,
             Format::Compact => render::compact::lines(&self.findings),
             Format::Markdown => self.markdown(),
+            Format::GithubAnnotations => {
+                render::github::annotations(&self.sarif(), render::github::path_prefix())
+            }
+            Format::GithubSummary => render::github::summary(
+                &render::github::Summary {
+                    kind: "check",
+                    total_issues: self.total_issues,
+                    exit_code: if self.fails_run() {
+                        EXIT_GATE_FAILED
+                    } else {
+                        EXIT_OK
+                    },
+                    mutants_line: None,
+                    gates: &self.gate_outcomes,
+                    sarif: &self.sarif(),
+                },
+                render::github::path_prefix(),
+            ),
         };
         render::write_report(text.trim_end()).map_err(|err| CliError::output(&err))?;
         Ok(if self.fails_run() {

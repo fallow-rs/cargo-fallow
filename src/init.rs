@@ -99,10 +99,10 @@ struct Limits {
 
 /// Runs `init` and returns the process exit code.
 pub fn run(args: &InitArgs) -> Result<u8, CliError> {
-    if matches!(args.format, Format::Sarif | Format::Codeclimate) {
+    if !matches!(args.format, Format::Human | Format::Json) {
         return Err(CliError::new(
             ErrorCode::InvalidArgument,
-            "`init` has no SARIF or CodeClimate output",
+            "`init` has only human and JSON output",
         )
         .with_help("Use `--format human` or `--format json`."));
     }

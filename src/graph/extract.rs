@@ -291,6 +291,19 @@ pub struct FileFacts {
     pub allow_dead: bool,
     /// The `include!("path")` calls with one string literal.
     pub code_includes: Vec<CodeInclude>,
+    /// The files that `#[doc = include_str!(..)]` reads, for their intra-doc
+    /// links.
+    pub doc_link_includes: Vec<DocInclude>,
+}
+
+/// A documentation file that an item includes. Its intra-doc links resolve
+/// from the module of the item.
+#[derive(Debug, Clone)]
+pub struct DocInclude {
+    /// The path in the string literal, relative to the file of the item.
+    pub path: String,
+    /// The reference of each link, without its path.
+    pub site: RawRef,
 }
 
 /// An `include!` call with one string literal: the compiler reads the file
@@ -318,23 +331,6 @@ pub fn extract(source: &str, edition: Edition) -> Result<FileFacts, ParseOutcome
 /// The documentation code blocks of a Markdown file, as references.
 pub fn doc_refs_of_markdown(markdown: &str, edition: Edition) -> Vec<RawRef> {
     doc_refs_at(markdown, edition, 0)
-}
-
-/// The intra-doc links of a Markdown file that the documentation includes,
-/// as references from the module of the include. The place is not known.
-pub fn doc_link_refs_of_markdown(markdown: &str) -> Vec<RawRef> {
-    crate::graph::doc_links::link_paths(markdown)
-        .into_iter()
-        .map(|(_, (segments, global))| RawRef {
-            inline: Vec::new(),
-            owner: None,
-            kind: RefKind::Path { segments, global },
-            origin: Origin::DocLink,
-            test_only: false,
-            under_cfg: false,
-            line: 0,
-        })
-        .collect()
 }
 
 /// The documentation code blocks of a Markdown text that starts on `line`,
@@ -491,37 +487,26 @@ impl<'a> Walker<'a> {
         self.doc_links(node, first_item);
     }
 
-    /// The intra-doc links of the doc comments that are direct children of
-    /// the node: the outer comments of an item, and the inner comments of a
-    /// file or an inline module. The item of the node owns the outer links.
+    /// The intra-doc links of the documentation of the node: its doc comments
+    /// and `#[doc]` attributes. For a module, the inner documentation of an
+    /// inline module counts too. The item of the node owns the links. The
+    /// inner documentation of a file has no owner: the graph gives it to the
+    /// `mod` item of the file.
     fn doc_links(&mut self, node: &SyntaxNode, first_item: usize) {
-        let mut text = String::new();
-        // The file line of each line of `text`.
-        let mut lines = Vec::new();
-        for comment in node
-            .children()
-            .filter(|child| child.kind() == SyntaxKind::DOC_COMMENT)
-        {
-            let comment_text = comment.text().to_string();
-            let first = self.line_at(usize::from(comment.text_range().start()));
-            lines.extend(
-                (0..)
-                    .map(|offset| first + offset)
-                    .take(comment_text.lines().count().max(1)),
-            );
-            text.push_str(&comment_text);
-            text.push('\n');
-        }
-        if text.is_empty() {
+        let file = node.kind() == SyntaxKind::SOURCE_FILE;
+        if !file && self.facts.items.len() == first_item {
             return;
         }
-        let inner = matches!(node.kind(), SyntaxKind::SOURCE_FILE | SyntaxKind::ITEM_LIST);
-        let owner = if inner || self.facts.items.len() == first_item {
-            self.owner()
-        } else {
-            Some(first_item)
-        };
-        // The syntax cannot show if an outer comment of a module resolves
+        let owner = (!file).then_some(first_item);
+        let mut docs = DocText::default();
+        self.read_docs(node, &mut docs);
+        if let Some(list) = ast::Module::cast(node.clone()).and_then(|module| module.item_list()) {
+            self.read_docs(list.syntax(), &mut docs);
+        }
+        if docs.text.is_empty() && docs.includes.is_empty() {
+            return;
+        }
+        // The syntax cannot show if the documentation of a module resolves
         // from the module or from its parent, so each scope gets the links.
         let mut scopes = vec![self.inline()];
         if let Some(name) = ast::Module::cast(node.clone()).and_then(|module| module.name()) {
@@ -535,21 +520,56 @@ impl<'a> Walker<'a> {
             inside.push(plain_name(&name));
             scopes = vec![base, inside];
         }
-        for (index, (segments, global)) in crate::graph::doc_links::link_paths(&text) {
-            let line = lines.get(index).copied().unwrap_or(0);
+        let site = |inline: &[String], line: u32, kind: RefKind| RawRef {
+            inline: inline.to_vec(),
+            owner,
+            kind,
+            origin: Origin::DocLink,
+            test_only: self.test_only(),
+            under_cfg: self.cfg_off(),
+            line,
+        };
+        let mut refs = Vec::new();
+        for (index, (segments, global)) in crate::graph::doc_links::link_paths(&docs.text) {
+            let line = docs.lines.get(index).copied().unwrap_or(0);
             for scope in &scopes {
-                self.facts.refs.push(RawRef {
-                    inline: scope.clone(),
-                    owner,
-                    kind: RefKind::Path {
-                        segments: segments.clone(),
-                        global,
-                    },
-                    origin: Origin::DocLink,
-                    test_only: self.test_only(),
-                    under_cfg: self.cfg_off(),
-                    line,
+                let kind = RefKind::Path {
+                    segments: segments.clone(),
+                    global,
+                };
+                refs.push(site(scope, line, kind));
+            }
+        }
+        let mut includes = Vec::new();
+        for (path, line) in docs.includes {
+            for scope in &scopes {
+                let kind = RefKind::Path {
+                    segments: Vec::new(),
+                    global: false,
+                };
+                includes.push(DocInclude {
+                    path: path.clone(),
+                    site: site(scope, line, kind),
                 });
+            }
+        }
+        self.facts.refs.extend(refs);
+        self.facts.doc_link_includes.extend(includes);
+    }
+
+    /// Adds the doc comments and the `#[doc]` attributes that are direct
+    /// children of the node.
+    fn read_docs(&self, node: &SyntaxNode, docs: &mut DocText) {
+        for child in node.children() {
+            let line = self.line_at(usize::from(child.text_range().start()));
+            match child.kind() {
+                SyntaxKind::DOC_COMMENT => docs.push(&child.text().to_string(), line),
+                SyntaxKind::ATTR => {
+                    if let Some(meta) = ast::Attr::cast(child).and_then(|attr| attr.meta()) {
+                        doc_meta(meta, line, docs);
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -1389,6 +1409,69 @@ fn string_literals(node: &SyntaxNode) -> Vec<String> {
             Some(text.strip_prefix('"')?.strip_suffix('"')?.to_owned())
         })
         .collect()
+}
+
+/// The documentation text of one item, with the file line of each text line,
+/// and the files that `#[doc = include_str!(..)]` reads.
+#[derive(Default)]
+struct DocText {
+    text: String,
+    lines: Vec<u32>,
+    includes: Vec<(String, u32)>,
+}
+
+impl DocText {
+    fn push(&mut self, text: &str, first: u32) {
+        let count = u32::try_from(text.lines().count().max(1)).unwrap_or(u32::MAX);
+        self.lines
+            .extend((0..count).map(|offset| first.saturating_add(offset)));
+        self.text.push_str(text);
+        self.text.push('\n');
+    }
+}
+
+/// Adds the text of a `doc = ".."` attribute, also inside `cfg_attr(..)`, and
+/// the file of a `doc = include_str!(..)` attribute.
+fn doc_meta(meta: ast::Meta, line: u32, docs: &mut DocText) {
+    match meta {
+        ast::Meta::KeyValueMeta(meta) => {
+            let is_doc = meta
+                .path()
+                .is_some_and(|path| path.syntax().text() == "doc");
+            let Some(expr) = meta.expr().filter(|_| is_doc) else {
+                return;
+            };
+            match &expr {
+                ast::Expr::MacroExpr(call) => {
+                    let include = call.macro_call().and_then(|call| {
+                        let name = call.path()?.segment()?.name_ref()?;
+                        (name.text() == "include_str").then_some(call.token_tree()?)
+                    });
+                    if let Some(tree) = include {
+                        docs.includes.extend(
+                            string_literals(tree.syntax())
+                                .into_iter()
+                                .map(|path| (path, line)),
+                        );
+                    }
+                }
+                _ => {
+                    for text in string_literals(expr.syntax()) {
+                        docs.push(&text.replace("\\n", "\n"), line);
+                    }
+                }
+            }
+        }
+        ast::Meta::CfgAttrMeta(meta) => {
+            for inner in meta.metas() {
+                doc_meta(inner, line, docs);
+            }
+        }
+        ast::Meta::UnsafeMeta(_)
+        | ast::Meta::TokenTreeMeta(_)
+        | ast::Meta::CfgMeta(_)
+        | ast::Meta::PathMeta(_) => {}
+    }
 }
 
 fn vis_of(node: &SyntaxNode) -> Vis {

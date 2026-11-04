@@ -17,6 +17,7 @@
 pub mod config;
 pub mod precise;
 pub mod report;
+pub mod trace;
 
 use std::path::PathBuf;
 

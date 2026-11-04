@@ -214,7 +214,7 @@ const CODEGEN_SUFFIXES: [&str; 4] = ["-build", "_build", "-codegen", "_codegen"]
 
 /// Adds the runtime crate of each code generator in `[build-dependencies]` to
 /// the names that the build script can write.
-fn add_codegen_names(metadata: &Metadata, usage: &mut BTreeMap<String, PackageUsage>) {
+pub(super) fn add_codegen_names(metadata: &Metadata, usage: &mut BTreeMap<String, PackageUsage>) {
     for package in metadata.workspace_packages() {
         let Some(names) = usage
             .get_mut(package.name.as_str())
@@ -454,7 +454,7 @@ fn rule_of(
 
 /// The resolved packages of a declared dependency, or `None` when the
 /// resolve does not have it, for example a package with no library.
-fn resolved_packages<'a>(
+pub(super) fn resolved_packages<'a>(
     metadata: &'a Metadata,
     package: &Package,
     name: &str,
@@ -475,7 +475,7 @@ fn resolved_packages<'a>(
 }
 
 /// The crate name of the library of a resolved package.
-fn lib_name(resolved: &[&Package]) -> Option<String> {
+pub(super) fn lib_name(resolved: &[&Package]) -> Option<String> {
     resolved.iter().find_map(|package| {
         package
             .targets

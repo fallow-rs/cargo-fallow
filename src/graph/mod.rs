@@ -35,6 +35,8 @@ pub type CrateId = usize;
 pub type ModuleId = usize;
 /// An index into [`Graph::items`].
 pub type ItemId = usize;
+/// An index into [`Graph::paths`].
+pub type FileId = u32;
 
 /// The kind of a crate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -212,6 +214,10 @@ pub struct Import {
     pub binding: Binding,
     /// The item of a named `pub` re-export.
     pub item: Option<ItemId>,
+    /// The file of the `use` item.
+    pub file: FileId,
+    /// The one-based line of the `use` item.
+    pub line: u32,
 }
 
 /// One reference.
@@ -232,6 +238,11 @@ pub struct Ref {
     /// True when a `cfg` that can be off in a build with all features and
     /// tests is on the code or on a module declaration of its file.
     pub under_cfg: bool,
+    /// The file of the code. For the code of an `include!` file, the file of
+    /// the call.
+    pub file: FileId,
+    /// The one-based line of the code, or zero when the place is not known.
+    pub line: u32,
 }
 
 /// The workspace module graph.
@@ -247,6 +258,10 @@ pub struct Graph {
     pub imports: Vec<Import>,
     /// The references.
     pub refs: Vec<Ref>,
+    /// The files of the imports and the references, relative to the
+    /// workspace root. A file in more than one crate has one entry for each
+    /// crate.
+    pub paths: Vec<String>,
     /// The number of parsed files, counted once for each crate.
     pub files: u32,
     /// The files that a declaration reached but that did not parse.
@@ -495,6 +510,8 @@ fn add_files(graph: &mut Graph, root: &Path, krate: CrateId, files: CrateFiles, 
     by_path.insert(Vec::new(), root_module);
     for file in files.files {
         graph.files += 1;
+        let file_id = FileId::try_from(graph.paths.len()).unwrap_or(FileId::MAX);
+        graph.paths.push(file.path.clone());
         let base = file.module_path.clone();
         if file.facts.allow_dead {
             let module = module_id(graph, &mut by_path, &base);
@@ -541,15 +558,9 @@ fn add_files(graph: &mut Graph, root: &Path, krate: CrateId, files: CrateFiles, 
             let mut path = base.clone();
             path.extend(raw.inline.iter().cloned());
             let module = module_id(graph, &mut by_path, &path);
-            graph.imports.push(Import {
-                krate,
-                module,
-                vis: raw.vis,
-                path: raw.path.into_iter().map(unraw).collect(),
-                global: raw.global,
-                binding: raw.binding,
-                item: raw.item.map(|index| ids[index]),
-            });
+            graph
+                .imports
+                .push(import_of(raw, krate, module, &ids, file_id));
         }
         let mut refs = file.facts.refs;
         let mut budget = MAX_INCLUDED_FILES;
@@ -583,8 +594,30 @@ fn add_files(graph: &mut Graph, root: &Path, krate: CrateId, files: CrateFiles, 
                 origin: raw.origin,
                 test_only: raw.test_only,
                 under_cfg: raw.under_cfg || file.cfg_off,
+                file: file_id,
+                line: raw.line,
             });
         }
+    }
+}
+
+fn import_of(
+    raw: crate::graph::extract::RawUse,
+    krate: CrateId,
+    module: ModuleId,
+    ids: &[ItemId],
+    file: FileId,
+) -> Import {
+    Import {
+        krate,
+        module,
+        vis: raw.vis,
+        path: raw.path.into_iter().map(unraw).collect(),
+        global: raw.global,
+        binding: raw.binding,
+        item: raw.item.map(|index| ids[index]),
+        file,
+        line: raw.line,
     }
 }
 
@@ -704,6 +737,7 @@ fn included_code(
                 origin,
                 test_only: test_only || site.test_only,
                 under_cfg: site.under_cfg,
+                line: site.line,
             }
         };
         for import in facts.uses {

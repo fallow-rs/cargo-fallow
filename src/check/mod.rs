@@ -359,6 +359,7 @@ fn visibility_flags(options: &Options, enforced: bool) -> VisibilityOptions {
         fail_on_issues: enforced,
         scope: crate::scope::ScopeArgs::default(),
         precise: None,
+        trace: None,
     }
 }
 

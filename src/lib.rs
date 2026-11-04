@@ -33,6 +33,7 @@ mod scope;
 mod section;
 mod structure;
 mod suppress;
+mod trace;
 mod visibility;
 mod workspace;
 
@@ -130,6 +131,9 @@ fn run_visibility(options: &cli::VisibilityOptions) -> u8 {
 }
 
 fn visibility_report(options: &cli::VisibilityOptions) -> Result<u8, CliError> {
+    if options.trace.is_some() {
+        crate::trace::check_format(options.format, "visibility")?;
+    }
     let progress = render::Progress::new(options.quiet);
     progress.step("Reading cargo metadata");
     let workspace = workspace::load(options.manifest_path.as_deref())?;
@@ -142,6 +146,14 @@ fn visibility_report(options: &cli::VisibilityOptions) -> Result<u8, CliError> {
         bins: options.production.clone(),
     };
     let module_graph = graph::build(&workspace, &production);
+    if let Some(target) = &options.trace {
+        progress.step("Tracing the item");
+        let check_options =
+            visibility::check_options(options, workspace.root.as_std_path().to_path_buf());
+        let traced =
+            visibility::trace::trace(&module_graph, &check_options, &options.kinds, target)?;
+        return crate::trace::write(options.format, &traced.human(), &traced);
+    }
     progress.step("Checking the visibility");
     let Some(limits) = options.precise else {
         return scope
@@ -211,6 +223,9 @@ fn run_deps(options: &deps::Options) -> u8 {
 }
 
 fn deps_report(options: &deps::Options) -> Result<u8, CliError> {
+    if let Some(target) = &options.trace {
+        return deps::trace::run(options, target);
+    }
     deps::run(options)?.write(options.format)
 }
 

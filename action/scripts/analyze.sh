@@ -16,12 +16,15 @@ set -euo pipefail
 # Optional env: INPUT_WORKING_DIRECTORY, INPUT_MANIFEST_PATH, INPUT_FORMAT,
 #   INPUT_FAIL_ON_ISSUES, INPUT_ARGS, INPUT_BASE, INPUT_ARTIFACTS_DIR,
 #   INPUT_PACKAGE, INPUT_MAX_MUTANTS, INPUT_TIME_BUDGET, INPUT_JOBS,
-#   INPUT_TIMEOUT, PR_BASE_SHA, PUSH_BEFORE_SHA,
+#   INPUT_TIMEOUT, INPUT_CHANGED_SINCE, INPUT_AUTO_CHANGED_SINCE, INPUT_BASELINE,
+#   INPUT_SAVE_BASELINE, PR_BASE_SHA, PUSH_BEFORE_SHA,
 #   GITHUB_WORKSPACE, GITHUB_OUTPUT, RUNNER_TEMP,
 #   CARGO_FALLOW_BIN
 
 : "${INPUT_WORKING_DIRECTORY:=.}" "${INPUT_MANIFEST_PATH:=}" "${INPUT_FORMAT:=human}"
 : "${INPUT_FAIL_ON_ISSUES:=true}" "${INPUT_ARGS:=}" "${INPUT_BASE:=}"
+: "${INPUT_CHANGED_SINCE:=}" "${INPUT_AUTO_CHANGED_SINCE:=false}" "${INPUT_BASELINE:=}"
+: "${INPUT_SAVE_BASELINE:=}"
 : "${INPUT_ARTIFACTS_DIR:=}" "${INPUT_PACKAGE:=}" "${INPUT_MAX_MUTANTS:=}"
 : "${INPUT_TIME_BUDGET:=}" "${INPUT_JOBS:=}" "${INPUT_TIMEOUT:=}" "${PR_BASE_SHA:=}" "${PUSH_BEFORE_SHA:=}"
 : "${GITHUB_WORKSPACE:=$PWD}" "${GITHUB_OUTPUT:=/dev/stdout}"
@@ -187,6 +190,30 @@ BASE="$INPUT_BASE"
 if [ "$BASE" = "auto" ]; then
   BASE="$(auto_base)"
 fi
+# The scope inputs of the static commands. `mutants` takes the base input.
+CHANGED_SINCE="$INPUT_CHANGED_SINCE"
+check_boolean auto-changed-since "$INPUT_AUTO_CHANGED_SINCE"
+if [ -z "$CHANGED_SINCE" ] && [ "$INPUT_AUTO_CHANGED_SINCE" = "true" ]; then
+  if [ -n "$PR_BASE_SHA" ]; then
+    if usable_commit "$PR_BASE_SHA"; then
+      CHANGED_SINCE="$PR_BASE_SHA"
+    fi
+  else
+    echo "::notice::auto-changed-since applies to pull requests. The run reports each finding."
+  fi
+fi
+SCOPE_ARGS=()
+[ -z "$CHANGED_SINCE" ] || SCOPE_ARGS+=(--changed-since "$CHANGED_SINCE")
+[ -z "$INPUT_BASELINE" ] || SCOPE_ARGS+=(--baseline "$INPUT_BASELINE")
+[ -z "$INPUT_SAVE_BASELINE" ] || SCOPE_ARGS+=(--save-baseline "$INPUT_SAVE_BASELINE")
+if [ "${#SCOPE_ARGS[@]}" -gt 0 ]; then
+  if [ "$COMMAND" = "mutants" ]; then
+    echo "::warning::The changed-since and baseline inputs apply to the static commands. The mutants run ignores them; use base."
+  else
+    ARGS+=("${SCOPE_ARGS[@]}")
+  fi
+fi
+
 if [ -n "$BASE" ]; then
   case "$COMMAND" in
     size) ARGS+=(--base "$BASE") ;;

@@ -648,6 +648,76 @@ for script in "$SCRIPTS"/*.sh; do
 done
 
 echo
+# --- comment.sh ---------------------------------------------------------------
+
+echo "comment.sh"
+GH_DIR="$WORK/gh-stub"
+mkdir -p "$GH_DIR"
+# The gh stub logs each call and answers the list call with $GH_COMMENTS.
+cat > "$GH_DIR/gh" << 'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$GH_LOG"
+case "$*" in
+  *"--paginate"*) cat "$GH_COMMENTS" ;;
+  *"body=@"*)
+    for arg in "$@"; do
+      case "$arg" in body=@*) cp "${arg#body=@}" "$GH_BODY" ;; esac
+    done
+    echo '{}'
+    ;;
+esac
+STUB
+chmod +x "$GH_DIR/gh"
+run_comment() {
+  GH_LOG="$WORK/gh-log-$RANDOM$RANDOM"
+  GH_BODY="$WORK/gh-body-$RANDOM$RANDOM"
+  : > "$GH_LOG"
+  OUT="$(env -i PATH="$GH_DIR:$BASE_PATH" GH_LOG="$GH_LOG" GH_BODY="$GH_BODY" \
+    GH_COMMENTS="${GH_COMMENTS:-/dev/null}" RUNNER_TEMP="$WORK" \
+    ACTION_JQ_DIR="$JQ_DIR" RESULTS_FILE="$FIXTURES/complexity.json" SARIF_FILE="" \
+    FALLOW_COMMAND=complexity EXIT_CODE=0 MAX_FINDINGS=50 GH_REPO=o/r "$@" \
+    bash "$SCRIPTS/comment.sh" 2>&1)"
+  CODE=$?
+}
+printf '[]' > "$WORK/comments-none.json"
+GH_COMMENTS="$WORK/comments-none.json" run_comment PR_NUMBER=7
+assert_equals "$CODE" "0" "comment: a first run exits 0"
+assert_contains "$(cat "$GH_LOG")" "-X POST repos/o/r/issues/7/comments" "comment: a first run posts a comment"
+assert_contains "$(head -n 1 "$GH_BODY")" "<!-- cargo-fallow-comment:complexity -->" "comment: the body starts with the marker"
+assert_contains "$(cat "$GH_BODY")" "complexity" "comment: the body holds the summary"
+printf '[{"id": 11, "body": "other"}, {"id": 42, "body": "<!-- cargo-fallow-comment:complexity -->\\nold"}]' > "$WORK/comments-one.json"
+GH_COMMENTS="$WORK/comments-one.json" run_comment PR_NUMBER=7
+assert_contains "$(cat "$GH_LOG")" "-X PATCH repos/o/r/issues/comments/42" "comment: a second run updates the comment"
+assert_equals "$(grep -c -- '-X POST' "$GH_LOG")" "0" "comment: a second run posts no new comment"
+GH_COMMENTS="$WORK/comments-one.json" run_comment PR_NUMBER=7 COMMENT_KEY=other-key
+assert_contains "$(cat "$GH_LOG")" "-X POST" "comment: another key posts its own comment"
+run_comment PR_NUMBER=7 IS_FORK=true
+assert_equals "$CODE" "0" "comment: a fork pull request passes"
+assert_contains "$OUT" "pull request from a fork" "comment: a fork pull request explains the skip"
+assert_equals "$(cat "$GH_LOG")" "" "comment: a fork pull request calls no API"
+run_comment PR_NUMBER=""
+assert_contains "$OUT" "has no pull request" "comment: a push posts no comment"
+run_comment PR_NUMBER="7; id"
+assert_equals "$CODE" "1" "comment: a bad number fails"
+
+# --- the scope inputs of analyze.sh -------------------------------------------
+
+echo "analyze.sh scope inputs"
+run_analyze INPUT_COMMAND=check INPUT_FORMAT=json INPUT_CHANGED_SINCE=origin/main INPUT_BASELINE=b.json
+assert_equals "$(call_args 1)" "check --fail-on-issues --changed-since origin/main --baseline b.json --format json " "scope: changed-since and baseline become flags"
+run_analyze INPUT_COMMAND=deps INPUT_FORMAT=json INPUT_SAVE_BASELINE=b.json
+assert_equals "$(call_args 1)" "deps --fail-on-issues --save-baseline b.json --format json " "scope: save-baseline becomes a flag"
+run_analyze INPUT_COMMAND=check INPUT_FORMAT=json INPUT_AUTO_CHANGED_SINCE=true PR_BASE_SHA=0123abc00123abc00123abc00123abc00123abc0
+assert_equals "$(call_args 1)" "check --fail-on-issues --changed-since 0123abc00123abc00123abc00123abc00123abc0 --format json " "scope: auto-changed-since takes the pull request base"
+run_analyze INPUT_COMMAND=check INPUT_FORMAT=json INPUT_AUTO_CHANGED_SINCE=true
+assert_equals "$(call_args 1)" "check --fail-on-issues --format json " "scope: auto-changed-since without a pull request gives no flag"
+assert_contains "$OUT" "auto-changed-since applies to pull requests" "scope: auto-changed-since without a pull request explains it"
+run_analyze INPUT_COMMAND=check INPUT_FORMAT=json INPUT_AUTO_CHANGED_SINCE=yes
+assert_contains "$OUT" "Invalid 'auto-changed-since' input" "scope: a bad boolean stops the step"
+run_analyze INPUT_COMMAND=mutants STUB_JSON="$FIXTURES/mutants.json" INPUT_CHANGED_SINCE=origin/main
+assert_equals "$(call_args 1)" "mutants --fail-on-issues --format json " "scope: mutants ignores changed-since"
+assert_contains "$OUT" "The mutants run ignores them" "scope: mutants explains the ignored input"
+
 echo "${PASSED} passed, ${FAILED} failed"
 if [ "$FAILED" -gt 0 ]; then
   printf '  %s\n' "${FAILURES[@]}"

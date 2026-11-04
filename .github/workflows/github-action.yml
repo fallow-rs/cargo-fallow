@@ -58,6 +58,8 @@ jobs:
       contents: read
       # The sarif: true step checks code scanning and uploads when it can.
       security-events: write
+      # The comment step posts one sticky comment on the pull request.
+      pull-requests: write
     strategy:
       fail-fast: false
       matrix:
@@ -116,6 +118,30 @@ jobs:
         with:
           command: visibility
           fail-on-issues: 'false'
+
+      - name: files (changed files, sticky comment)
+        id: comment
+        if: github.event_name == 'pull_request'
+        uses: ./
+        with:
+          command: files
+          auto-changed-since: 'true'
+          comment: 'true'
+          comment-key: self-test
+
+      - name: Check the sticky comment
+        if: github.event_name == 'pull_request' && !github.event.pull_request.head.repo.fork
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          count="$(gh api --paginate "repos/${GH_REPO}/issues/${PR_NUMBER}/comments" \
+            | jq '[.[] | select(.body | startswith("<!-- cargo-fallow-comment:self-test -->"))] | length' \
+            | jq -s 'add')"
+          echo "Sticky comments: ${count}"
+          [ "$count" = "1" ] || { echo "::error::expected one sticky comment, got ${count}"; exit 1; }
 
       - name: complexity (report only, with SARIF)
         id: complexity

@@ -11,6 +11,9 @@ GitHub release. Each release needs a `## [X.Y.Z] - YYYY-MM-DD` section.
 
 ### Added
 
+- The GitHub Action has the inputs `changed-since`, `auto-changed-since`,
+  `baseline` and `save-baseline`, and `comment` posts or updates one sticky
+  pull request comment with the gates and the findings.
 - `cargo fallow explain <rule>` gives the meaning, an example and the fix of a
   rule, also as JSON. `--explain` adds `_meta` with the rules of the findings
   to the JSON report of `check` and of each static command.

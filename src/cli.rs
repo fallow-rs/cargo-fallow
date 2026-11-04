@@ -44,6 +44,7 @@ pub enum Format {
 /// The value parser of `--format` for a command with only human and JSON
 /// output, so the help lists only these two values.
 pub fn human_or_json() -> impl clap::builder::TypedValueParser<Value = Format> {
+    use clap::builder::TypedValueParser as _;
     clap::builder::PossibleValuesParser::new(["human", "json"]).map(|value| {
         if value == "json" {
             Format::Json

@@ -532,10 +532,22 @@ impl Surface {
         {
             return false;
         }
-        if entry.test_only && entry.vis == Vis::Public && !matches!(entry.kind, ItemKind::Use) {
-            return true;
-        }
         self.exported(item)
+    }
+
+    /// True for a `pub` item of a library that other crates cannot name, so
+    /// its effective visibility is the crate. `pub(crate)` adds nothing there,
+    /// and `clippy::redundant_pub_crate` rejects it. The item can only become
+    /// private, as a restricted item.
+    fn crate_public(&self, graph: &Graph, item: ItemId) -> bool {
+        let entry = &graph.items[item];
+        entry.vis == Vis::Public
+            && graph.crates[entry.krate].kind == CrateKind::Lib
+            && !self.exported(item)
+            && entry
+                .parent
+                .is_none_or(|parent| graph.items[parent].kind == ItemKind::Impl)
+            && restricted_kind(entry)
     }
 }
 
@@ -618,8 +630,11 @@ fn decide(
             }
         }
         let excluded = surface.excluded.contains(&entry.krate);
+        // A test helper is the only `pub` item that the check judges outside
+        // the exported surface.
+        let crate_public = entry.test_only && surface.crate_public(graph, item);
         if !excluded
-            && restricted_candidate(entry)
+            && (restricted_candidate(entry) || crate_public)
             && !surface.macro_covered[item]
             && !uses[item].exposed
             && !uses[item].cross_crate
@@ -667,12 +682,15 @@ fn signature_visible(graph: &Graph, owner: ItemId) -> bool {
 }
 
 fn restricted_candidate(entry: &crate::graph::Item) -> bool {
-    entry.vis.is_restricted()
-        && !matches!(
-            entry.kind,
-            ItemKind::Use | ItemKind::Impl | ItemKind::Variant | ItemKind::Macro
-        )
-        && !entry.flags.trait_impl
+    entry.vis.is_restricted() && restricted_kind(entry)
+}
+
+/// True for an item kind with a visibility keyword that a change can remove.
+fn restricted_kind(entry: &crate::graph::Item) -> bool {
+    !matches!(
+        entry.kind,
+        ItemKind::Use | ItemKind::Impl | ItemKind::Variant | ItemKind::Macro
+    ) && !entry.flags.trait_impl
 }
 
 /// True when each use of the item is in the module of the item or below it.

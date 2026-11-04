@@ -1665,3 +1665,34 @@ fn precise_mode_with_a_proc_macro_crate_that_does_not_build_is_an_error() {
     let error: Value = serde_json::from_str(&text).expect("the output is JSON");
     assert_eq!(error["code"], "CARGO_FALLOW_PRECISE_FAILED", "{error}");
 }
+
+/// In a private module, `pub` already gives crate visibility, and
+/// `clippy::redundant_pub_crate` rejects `pub(crate)` there. A test helper
+/// in such a module gets no `pub(crate)` change. When only its own module
+/// uses it, it can be private.
+#[test]
+fn a_test_helper_in_a_private_module_gets_no_pub_crate_change() {
+    let dir = workspace(&[
+        ("app/src/main.rs", "fn main() { mid::run(); }\n"),
+        (
+            "mid/src/lib.rs",
+            "mod protocol;\npub mod open;\npub fn run() { protocol::send(); }\n\
+             #[cfg(test)]\nmod tests { #[test] fn t() { crate::protocol::shared(); crate::open::exposed(); } }\n",
+        ),
+        (
+            "mid/src/protocol.rs",
+            "pub fn send() {}\n#[cfg(test)]\npub fn shared() {}\n#[cfg(test)]\npub fn local() {}\n\
+             #[cfg(test)]\nmod tests { #[test] fn t() { super::local(); } }\n",
+        ),
+        ("mid/src/open.rs", "#[cfg(test)]\npub fn exposed() {}\n"),
+    ]);
+    let (found, _) = findings(&dir, &[]);
+    assert_eq!(
+        found,
+        set(&[
+            "unnecessary-public open",
+            "unnecessary-public open::exposed",
+            "unnecessary-restricted-visibility protocol::local",
+        ])
+    );
+}

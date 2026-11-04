@@ -11,6 +11,12 @@ GitHub release. Each release needs a `## [X.Y.Z] - YYYY-MM-DD` section.
 
 ### Added
 
+- `--trace` shows why a check keeps or reports one item.
+  `visibility --trace <crate>::<path>` lists each use and each credit of an
+  item, with the verdict. `deps --trace <dependency>` lists each declaration
+  and each use site. `dupes --trace <fingerprint>` lists the instances of one
+  clone group. The JSON documents have the kinds `visibility-trace`,
+  `deps-trace` and `dupes-trace`.
 - `cargo fallow check --format badge` writes an SVG badge with the health
   grade, or a `no score` badge for a run with no score.
 - The GitHub Action has the inputs `changed-since`, `auto-changed-since`,

@@ -149,11 +149,11 @@ struct Plan {
 pub fn run(args: &FixArgs) -> Result<u8, CliError> {
     if matches!(
         args.format,
-        Format::Sarif | Format::Codeclimate | Format::Badge
+        Format::Sarif | Format::Codeclimate | Format::Compact | Format::Markdown | Format::Badge
     ) {
         return Err(CliError::new(
             ErrorCode::InvalidArgument,
-            "`fix` has no SARIF, CodeClimate or badge output",
+            "`fix` has no SARIF, CodeClimate, compact, markdown or badge output",
         )
         .with_help("Use `--format human` or `--format json`."));
     }

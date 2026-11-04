@@ -47,6 +47,19 @@ impl Section {
             Format::Json => pretty(&self.json),
             Format::Sarif => pretty(&self.sarif),
             Format::Codeclimate => pretty(&codeclimate(&self.findings)),
+            Format::Compact => Ok(render::compact::lines(&self.findings)),
+            Format::Markdown => {
+                let command = self.json["kind"].as_str().unwrap_or("check");
+                Ok(render::markdown::render(&render::markdown::Document {
+                    command,
+                    notes: Vec::new(),
+                    gates: &self.gates,
+                    groups: vec![render::markdown::Group {
+                        check: command,
+                        findings: &self.findings,
+                    }],
+                }))
+            }
             Format::Badge => Err(CliError::new(
                 ErrorCode::InvalidArgument,
                 "`--format badge` needs the health score of `cargo fallow check`",
@@ -58,7 +71,7 @@ impl Section {
     /// Writes the section to stdout and returns the exit code.
     pub fn write(&self, format: Format) -> Result<u8, CliError> {
         let text = self.render(format)?;
-        render::write_stdout(text.trim_end()).map_err(|err| CliError::output(&err))?;
+        render::write_report(text.trim_end()).map_err(|err| CliError::output(&err))?;
         Ok(if self.fails() {
             EXIT_GATE_FAILED
         } else {

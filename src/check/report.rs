@@ -215,15 +215,85 @@ impl CheckReport {
             Format::Json => pretty(self)?,
             Format::Sarif => pretty(&self.sarif())?,
             Format::Codeclimate => pretty(&codeclimate(&self.findings))?,
+            Format::Compact => render::compact::lines(&self.findings),
+            Format::Markdown => self.markdown(),
             Format::Badge => render::badge::health(self.health.as_ref()),
         };
-        render::write_stdout(text.trim_end()).map_err(|err| CliError::output(&err))?;
+        render::write_report(text.trim_end()).map_err(|err| CliError::output(&err))?;
         // A badge job uploads the badge, so a failed gate does not stop it.
         Ok(if self.fails_run() && format != Format::Badge {
             EXIT_GATE_FAILED
         } else {
             EXIT_OK
         })
+    }
+
+    /// The report as markdown: the health score, the gate table and one table
+    /// for each check that ran. The parse gate has a table only when a file
+    /// does not parse.
+    pub fn markdown(&self) -> String {
+        let mut notes = Vec::new();
+        if let Some(changed) = &self.changed_since {
+            notes.push(crate::scope::changed_line(changed).trim_end().to_owned());
+        }
+        if let Some(names) = &self.packages {
+            notes.push(format!(
+                "Scope: {} {}",
+                if names.len() == 1 {
+                    "package"
+                } else {
+                    "packages"
+                },
+                names.join(", ")
+            ));
+        }
+        if let Some(summary) = &self.baseline {
+            notes.push(crate::scope::baseline_line(summary).trim_end().to_owned());
+        }
+        if let Some(line) = self.health_line() {
+            notes.push(line);
+        }
+        let groups = self
+            .parts
+            .iter()
+            .filter(|(name, section)| *name != CheckName::Parse || !section.findings.is_empty())
+            .map(|(name, section)| render::markdown::Group {
+                check: name.as_str(),
+                findings: &section.findings,
+            })
+            .collect();
+        render::markdown::render(&render::markdown::Document {
+            command: "check",
+            notes,
+            gates: &self.gate_outcomes,
+            groups,
+        })
+    }
+
+    /// The line about the health score, or `None` for a run without health.
+    fn health_line(&self) -> Option<String> {
+        match self.health.as_ref()? {
+            Health::Scoped(scoped) => {
+                let flag = match scoped.scope {
+                    "baseline" => "--baseline",
+                    "package" => "--package",
+                    _ => "--changed-since",
+                };
+                Some(format!(
+                    "Health (rust): no score. A run with `{flag}` sees only part of the findings."
+                ))
+            }
+            Health::Score(health) => Some(match (health.score, health.grade) {
+                (Some(score), Some(grade)) => format!(
+                    "Health (rust): {score:.1} ({grade}), formula version {}",
+                    health.formula_version
+                ),
+                _ => format!(
+                    "Health (rust): no score. The run did not include {}.",
+                    health.missing_checks.join(", ")
+                ),
+            }),
+        }
     }
 
     /// The number of targets in all members.
@@ -265,35 +335,9 @@ impl CheckReport {
         if let Some(summary) = &self.baseline {
             text.push_str(&crate::scope::baseline_line(summary));
         }
-        match &self.health {
-            Some(Health::Scoped(scoped)) => {
-                let flag = match scoped.scope {
-                    "baseline" => "--baseline",
-                    "package" => "--package",
-                    _ => "--changed-since",
-                };
-                let _ = writeln!(
-                    text,
-                    "Health (rust): no score. A run with `{flag}` sees only part of the findings."
-                );
-            }
-            Some(Health::Score(health)) => match (health.score, health.grade) {
-                (Some(score), Some(grade)) => {
-                    let _ = writeln!(
-                        text,
-                        "Health (rust): {score:.1} ({grade}), formula version {}",
-                        health.formula_version
-                    );
-                }
-                _ => {
-                    let _ = writeln!(
-                        text,
-                        "Health (rust): no score. The run did not include {}.",
-                        health.missing_checks.join(", ")
-                    );
-                }
-            },
-            None => {}
+        if let Some(line) = self.health_line() {
+            text.push_str(&line);
+            text.push('\n');
         }
         if self.total_issues == 0 {
             text.push_str("No issues found\n");

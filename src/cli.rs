@@ -66,6 +66,8 @@ pub enum Parsed {
     PreciseWorker(crate::visibility::precise::WorkerArgs),
     /// Run the unused dependency check.
     Deps(crate::deps::Options),
+    /// Write a starting configuration.
+    Init(crate::init::InitArgs),
     /// Apply the fixable actions.
     Fix(crate::fix::FixArgs),
     /// Run the unused file check.
@@ -123,6 +125,15 @@ enum Command {
     /// `Cargo.lock` as it was before the run. Use `--offline`, `--locked` or
     /// `--frozen` to control the resolution.
     Deps(DepsArgs),
+    /// Give a starting configuration for the workspace.
+    ///
+    /// The command runs the static checks and prints the tables of
+    /// `[workspace.metadata.fallow]` with the limits at the current maximum. It
+    /// saves the current findings as a baseline, so the first `cargo fallow
+    /// check --fail-on-issues` passes. `--write` adds the tables to the root
+    /// Cargo.toml and writes `fallow-baseline.json`. `--ci github` prints a
+    /// workflow file.
+    Init(crate::init::InitArgs),
     /// Apply the actions with `auto_fixable: true`: remove each unused
     /// dependency entry, move each misplaced entry to `[dev-dependencies]`, and
     /// narrow the visibility keyword of each `visibility` finding.
@@ -566,6 +577,7 @@ pub fn parse(args: &[OsString]) -> Parsed {
             Some(Command::Visibility(args)) => Parsed::Visibility(args.into()),
             Some(Command::PreciseWorker(args)) => Parsed::PreciseWorker(args),
             Some(Command::Deps(args)) => Parsed::Deps(args.into()),
+            Some(Command::Init(args)) => Parsed::Init(args),
             Some(Command::Fix(args)) => Parsed::Fix(args),
             Some(Command::Files(args)) => Parsed::Files(args),
             Some(Command::Structure(command)) => Parsed::Structure(Box::new(command)),

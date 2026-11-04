@@ -123,6 +123,33 @@ pub fn packages_line(packages: &Packages) -> String {
     )
 }
 
+/// The key of the baseline file in `[workspace.metadata.fallow]`.
+const BASELINE_KEY: &str = "baseline";
+
+/// The baseline file of the run: `--baseline`, else the `baseline` key of
+/// `[workspace.metadata.fallow]`, relative to the workspace root. A run with
+/// `--save-baseline` reads no baseline from the configuration.
+fn baseline_path(workspace: &Workspace, args: &ScopeArgs) -> Result<Option<PathBuf>, CliError> {
+    if args.baseline.is_some() || args.save_baseline.is_some() {
+        return Ok(args.baseline.clone());
+    }
+    let Some(value) = workspace
+        .metadata
+        .get("fallow")
+        .and_then(|root| root.get(BASELINE_KEY))
+    else {
+        return Ok(None);
+    };
+    let Some(path) = value.as_str() else {
+        return Err(CliError::new(
+            crate::error::ErrorCode::InvalidConfig,
+            "`baseline` in `[workspace.metadata.fallow]` is not a path",
+        )
+        .with_help("Set `baseline = \"fallow-baseline.json\"`, a path from the workspace root."));
+    };
+    Ok(Some(workspace.root.as_std_path().join(path)))
+}
+
 /// The line of the human output that names the changed files.
 pub fn changed_line(changed: &ChangedFiles) -> String {
     let count = changed.files.len();
@@ -182,7 +209,10 @@ impl Scope {
             } else {
                 Some(Packages::new(workspace, &args.packages)?)
             },
-            baseline: args.baseline.as_deref().map(Loaded::read).transpose()?,
+            baseline: baseline_path(workspace, args)?
+                .as_deref()
+                .map(Loaded::read)
+                .transpose()?,
             recorder: args.save_baseline.clone().map(Recorder::new),
             fail_on_stale: args.fail_on_stale_baseline,
             narrowed: false,

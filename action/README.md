@@ -88,7 +88,7 @@ Complexity findings in code scanning, without a failed job:
 | `format` | `human` | The report in the log and in the `report` output: `human`, `json` or `sarif`. |
 | `fail-on-issues` | `true` | Give the gate flag of the command, so a failed gate fails the job. See [Gate flags](#gate-flags). |
 | `args` | empty | More arguments, separated by spaces. The action does no shell expansion on them. `--format` and `--quiet` are not permitted. For example, `--changed-since origin/main` keeps only the findings in the changed files. |
-| `base` | empty | The ref to compare with: `--base` for `size`, `--in-diff` for `mutants`. `auto` takes the base commit of the pull request. |
+| `base` | empty | The ref to compare with: `--base` for `size`, `--in-diff` for `mutants`. `auto` takes the base commit of the pull request, or on a push the commit before the push. See [Base](#base). |
 | `install` | `auto` | See [Install](#install). |
 | `version` | empty | The version for `install: release` and `install: cargo`. When empty, the version of the action ref. |
 | `sarif` | `false` | Upload the SARIF log to code scanning. A pull request from a fork does not upload, because its token is read-only. |
@@ -106,6 +106,20 @@ Complexity findings in code scanning, without a failed job:
 
 The `mutants-*` inputs apply only to `command: mutants`. For other flags, use
 `args`.
+
+### Base
+
+`base: auto` picks the commit to compare with:
+
+- On a pull request, the base commit of the pull request.
+- On a push, the commit before the push (`github.event.before`).
+- On the push of a new branch, no commit: the run compares with no base and
+  writes a notice. `size` then gives no growth gate, and `mutants` runs each
+  mutant.
+
+A shallow checkout can miss the commit before a push. The action then fetches
+it. When the fetch fails, the run compares with no base and the notice names
+`fetch-depth: 0`.
 
 ### Gate flags
 

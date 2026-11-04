@@ -52,6 +52,9 @@ GitHub release. Each release needs a `## [X.Y.Z] - YYYY-MM-DD` section.
 
 ### Fixed
 
+- The action input `base: auto` now takes the commit before a push on a push
+  event. A new branch and a commit that the checkout cannot fetch give no base
+  and a notice. The size self-test runs on push again.
 - The `fingerprint` of a `dupes` clone group now depends only on the tokens of
   the group. Before, a new token in another file changed it.
 - A `#[path]` attribute in an inline module now resolves from the module

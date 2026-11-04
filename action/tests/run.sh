@@ -305,8 +305,21 @@ assert_equals "$(output_of mutation-score)" "66.7" "mutants: mutation-score outp
 assert_contains "$OUT" "The mutants run has no second human run" "mutants: format human explains the log"
 
 run_analyze INPUT_COMMAND=mutants INPUT_BASE=auto STUB_JSON="$FIXTURES/mutants.json"
-assert_equals "$(call_args 1)" "mutants --fail-on-issues --format json " "base auto with no pull request gives no flag"
-assert_contains "$OUT" "base: auto needs a pull request event" "base auto with no pull request explains it"
+assert_equals "$(call_args 1)" "mutants --fail-on-issues --format json " "base auto with no pull request and no push gives no flag"
+assert_contains "$OUT" "base: auto found no pull request base" "base auto with no base explains it"
+run_analyze INPUT_COMMAND=size INPUT_BASE=auto INPUT_FORMAT=json PUSH_BEFORE_SHA=4567def
+assert_equals "$(call_args 1)" "size --fail-on-issues --base 4567def --format json " "base auto on a push takes the commit before the push"
+run_analyze INPUT_COMMAND=size INPUT_BASE=auto INPUT_FORMAT=json PR_BASE_SHA=0123abc PUSH_BEFORE_SHA=4567def
+assert_equals "$(call_args 1)" "size --fail-on-issues --base 0123abc --format json " "base auto prefers the pull request base"
+run_analyze INPUT_COMMAND=size INPUT_BASE=auto INPUT_FORMAT=json PUSH_BEFORE_SHA=0000000000000000000000000000000000000000
+assert_equals "$(call_args 1)" "size --fail-on-issues --format json " "base auto on the push of a new branch gives no base"
+assert_contains "$OUT" "a new branch" "base auto on a new branch explains it"
+SHALLOW="$WORK/shallow-repo"
+git init -q "$SHALLOW"
+run_analyze INPUT_COMMAND=size INPUT_BASE=auto INPUT_FORMAT=json INPUT_WORKING_DIRECTORY="$SHALLOW" \
+  PUSH_BEFORE_SHA=89abcdef0123456789abcdef0123456789abcdef
+assert_equals "$(call_args 1)" "size --fail-on-issues --format json " "base auto with a commit that the checkout does not have gives no base"
+assert_contains "$OUT" "fetch-depth: 0" "base auto with a missing commit names the checkout fix"
 run_analyze INPUT_COMMAND=size INPUT_BASE=origin/main INPUT_FORMAT=json
 assert_equals "$(call_args 1)" "size --fail-on-issues --base origin/main --format json " "size: base becomes --base"
 run_analyze INPUT_COMMAND=complexity INPUT_BASE=origin/main INPUT_PACKAGE=x INPUT_FORMAT=json

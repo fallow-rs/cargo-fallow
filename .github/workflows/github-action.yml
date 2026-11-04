@@ -102,9 +102,8 @@ jobs:
 
       - name: size
         id: size
-        # `base: auto` takes the base commit of a pull request. A push has no
-        # pull request, so this step runs only on pull requests.
-        if: github.event_name == 'pull_request'
+        # `base: auto` takes the base commit of a pull request, or the commit
+        # before a push.
         uses: ./
         with:
           command: size
@@ -197,10 +196,7 @@ jobs:
           expect "deps: format json reports the JSON file" "$DEPS_REPORT" "$DEPS_RESULTS"
           expect "deps: kind" "$(jq -r .kind "$DEPS_RESULTS")" "deps"
           expect "boundaries: exit code" "$BOUNDARIES_EXIT" "0"
-          # The size step runs only on pull requests.
-          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
-            expect "size: exit code" "$SIZE_EXIT" "0"
-          fi
+          expect "size: exit code" "$SIZE_EXIT" "0"
           expect "visibility: exit code" "$VISIBILITY_EXIT" "0"
           expect "complexity: report is the SARIF log" "$COMPLEXITY_REPORT" "$COMPLEXITY_SARIF"
           expect "complexity: SARIF version" "$(jq -r .version "$COMPLEXITY_SARIF")" "2.1.0"

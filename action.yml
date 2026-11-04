@@ -164,6 +164,7 @@ runs:
         INPUT_JOBS: ${{ inputs.mutants-jobs }}
         INPUT_TIMEOUT: ${{ inputs.mutants-timeout }}
         PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        PUSH_BEFORE_SHA: ${{ github.event.before }}
       run: bash "${GITHUB_ACTION_PATH}/action/scripts/analyze.sh"
 
     - name: Write the job summary

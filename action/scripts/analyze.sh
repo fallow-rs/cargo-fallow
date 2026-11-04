@@ -16,13 +16,13 @@ set -euo pipefail
 # Optional env: INPUT_WORKING_DIRECTORY, INPUT_MANIFEST_PATH, INPUT_FORMAT,
 #   INPUT_FAIL_ON_ISSUES, INPUT_ARGS, INPUT_BASE, INPUT_ARTIFACTS_DIR,
 #   INPUT_PACKAGE, INPUT_MAX_MUTANTS, INPUT_TIME_BUDGET, INPUT_JOBS,
-#   INPUT_TIMEOUT, PR_BASE_SHA, GITHUB_WORKSPACE, GITHUB_OUTPUT, RUNNER_TEMP,
+#   INPUT_TIMEOUT, PR_BASE_SHA, PUSH_BEFORE_SHA, GITHUB_WORKSPACE, GITHUB_OUTPUT, RUNNER_TEMP,
 #   CARGO_FALLOW_BIN
 
 : "${INPUT_WORKING_DIRECTORY:=.}" "${INPUT_MANIFEST_PATH:=}" "${INPUT_FORMAT:=human}"
 : "${INPUT_FAIL_ON_ISSUES:=true}" "${INPUT_ARGS:=}" "${INPUT_BASE:=}"
 : "${INPUT_ARTIFACTS_DIR:=}" "${INPUT_PACKAGE:=}" "${INPUT_MAX_MUTANTS:=}"
-: "${INPUT_TIME_BUDGET:=}" "${INPUT_JOBS:=}" "${INPUT_TIMEOUT:=}" "${PR_BASE_SHA:=}"
+: "${INPUT_TIME_BUDGET:=}" "${INPUT_JOBS:=}" "${INPUT_TIMEOUT:=}" "${PR_BASE_SHA:=}" "${PUSH_BEFORE_SHA:=}"
 : "${GITHUB_WORKSPACE:=$PWD}" "${GITHUB_OUTPUT:=/dev/stdout}"
 : "${RUNNER_TEMP:=${TMPDIR:-/tmp}}" "${CARGO_FALLOW_BIN:=cargo-fallow}"
 
@@ -137,12 +137,34 @@ if [ "$INPUT_FAIL_ON_ISSUES" = "true" ]; then
   [ "$has_flag" = "true" ] || ARGS+=(--fail-on-issues)
 fi
 
+# The commit that `base: auto` compares with: the base commit of a pull
+# request, else the commit before a push. A push of a new branch has the zero
+# commit, and a shallow checkout can miss the commit; then the run has no base.
+ZERO_SHA="0000000000000000000000000000000000000000"
+auto_base() {
+  if [ -n "$PR_BASE_SHA" ]; then
+    printf '%s' "$PR_BASE_SHA"
+    return 0
+  fi
+  if [ -z "$PUSH_BEFORE_SHA" ] || [ "$PUSH_BEFORE_SHA" = "$ZERO_SHA" ]; then
+    echo "::notice::base: auto found no pull request base and no earlier commit of the push (a new branch). The run compares with no base." >&2
+    return 0
+  fi
+  local repo="$INPUT_WORKING_DIRECTORY"
+  if git -C "$repo" rev-parse --git-dir > /dev/null 2>&1 \
+    && ! git -C "$repo" cat-file -e "${PUSH_BEFORE_SHA}^{commit}" 2> /dev/null; then
+    git -C "$repo" fetch --no-tags --quiet --depth=1 origin "$PUSH_BEFORE_SHA" > /dev/null 2>&1 || true
+    if ! git -C "$repo" cat-file -e "${PUSH_BEFORE_SHA}^{commit}" 2> /dev/null; then
+      echo "::notice::base: auto cannot read the commit ${PUSH_BEFORE_SHA} before the push. Use fetch-depth: 0 in actions/checkout. The run compares with no base." >&2
+      return 0
+    fi
+  fi
+  printf '%s' "$PUSH_BEFORE_SHA"
+}
+
 BASE="$INPUT_BASE"
 if [ "$BASE" = "auto" ]; then
-  BASE="$PR_BASE_SHA"
-  if [ -z "$BASE" ]; then
-    echo "::notice::base: auto needs a pull request event. The run compares with no base."
-  fi
+  BASE="$(auto_base)"
 fi
 if [ -n "$BASE" ]; then
   case "$COMMAND" in

@@ -4,6 +4,7 @@
     reason = "a test fails loudly when its setup does not work"
 )]
 
+use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
 
@@ -131,9 +132,10 @@ fn print_changes_no_file_and_ci_gives_a_workflow() {
 
 /// A function with a cyclomatic complexity over the default limit of 20.
 fn complex_function() -> String {
-    let branches: String = (0..24)
-        .map(|value| format!("    if x == {value} {{ return {value}; }}\n"))
-        .collect();
+    let branches = (0..24).fold(String::new(), |mut text, value| {
+        let _ = writeln!(text, "    if x == {value} {{ return {value}; }}");
+        text
+    });
     format!("pub fn complex(x: u32) -> u32 {{\n{branches}    0\n}}\n")
 }
 

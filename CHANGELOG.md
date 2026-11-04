@@ -95,6 +95,11 @@ GitHub release. Each release needs a `## [X.Y.Z] - YYYY-MM-DD` section.
 
 ### Fixed
 
+- `size` skips a file whose first lines hold an `@generated` comment, as the
+  `complexity`, `dupes`, `files` and `visibility` checks do.
+- `init` does not write `max-file-lines`, because a larger limit only turns
+  off the growth rule of `size`. Without `--write`, `init` no longer says
+  that a baseline holds findings, and `baseline_findings` is `null`.
 - The action input `base: auto` now takes the commit before a push on a push
   event. A new branch and a commit that the checkout cannot fetch give no base
   and a notice. The size self-test runs on push again.

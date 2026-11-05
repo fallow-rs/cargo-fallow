@@ -171,6 +171,9 @@ pub struct RawItem {
     /// True when a `cfg` attribute other than a test condition is on the item
     /// or on an enclosing node.
     pub under_cfg: bool,
+    /// The `cfg` conditions on the item and on each enclosing node of the
+    /// file. See [`cfg_conditions`].
+    pub cfg: Vec<String>,
     /// The root facts.
     pub flags: ItemFlags,
 }
@@ -203,6 +206,9 @@ pub struct RawUse {
     pub item: Option<usize>,
     /// The one-based line of the `use` item.
     pub line: u32,
+    /// The `cfg` conditions on the `use` item and on each enclosing node of
+    /// the file.
+    pub cfg: Vec<String>,
 }
 
 /// The way that code names something.
@@ -275,6 +281,8 @@ pub struct RawRef {
     /// path, the method call, the macro call or the attribute owner. Zero when
     /// the place is not known, for a code block of an included Markdown file.
     pub line: u32,
+    /// The `cfg` conditions on each enclosing node of the file.
+    pub cfg: Vec<String>,
 }
 
 /// The facts of one file.
@@ -380,6 +388,7 @@ fn doc_ref(path: TokenPath, line: u32) -> Vec<RawRef> {
             test_only: true,
             under_cfg: false,
             line,
+            cfg: Vec::new(),
         })
         .collect()
 }
@@ -423,6 +432,8 @@ enum Frame {
     Cfg,
     /// A `cfg` that can be off in a build with all features and tests.
     CfgUnsure,
+    /// The `cfg` conditions of a node.
+    Conditions(Vec<String>),
     LocalItems,
 }
 
@@ -478,6 +489,10 @@ impl<'a> Walker<'a> {
             }
             if cfg_can_be_off(&owner) {
                 self.push(node, Frame::CfgUnsure);
+            }
+            let conditions = cfg_conditions(&owner);
+            if !conditions.is_empty() {
+                self.push(node, Frame::Conditions(conditions));
             }
             self.attr_refs(&owner);
         }
@@ -545,6 +560,7 @@ impl<'a> Walker<'a> {
             test_only: self.test_only(),
             under_cfg: self.cfg_off(),
             line,
+            cfg: self.conditions(),
         };
         // `Self` is the self type of the `impl` block, or the documented type.
         // For a field or a variant, the type is the enclosing item.
@@ -650,6 +666,18 @@ impl<'a> Walker<'a> {
         self.frames
             .iter()
             .any(|(_, frame)| matches!(frame, Frame::CfgUnsure))
+    }
+
+    /// The `cfg` conditions of each enclosing node, outermost first.
+    fn conditions(&self) -> Vec<String> {
+        self.frames
+            .iter()
+            .filter_map(|(_, frame)| match frame {
+                Frame::Conditions(list) => Some(list.iter().cloned()),
+                _ => None,
+            })
+            .flatten()
+            .collect()
     }
 
     fn under_cfg(&self) -> bool {
@@ -764,6 +792,7 @@ impl<'a> Walker<'a> {
             vis_span,
             test_only: self.test_only(),
             under_cfg: self.under_cfg(),
+            cfg: self.conditions(),
             flags,
         });
         index
@@ -975,6 +1004,7 @@ impl<'a> Walker<'a> {
                 binding,
                 item: item_index,
                 line: self.line_at(self.cursor),
+                cfg: self.conditions(),
             });
         }
     }
@@ -1010,6 +1040,7 @@ impl<'a> Walker<'a> {
             binding,
             item: None,
             line: self.line_at(self.cursor),
+            cfg: self.conditions(),
         });
     }
 
@@ -1026,6 +1057,7 @@ impl<'a> Walker<'a> {
             test_only: self.test_only(),
             under_cfg: self.cfg_off(),
             line: self.line_at(self.cursor),
+            cfg: self.conditions(),
         });
     }
 
@@ -1322,6 +1354,43 @@ impl<'a> Walker<'a> {
             self.facts.refs.extend(refs);
         }
     }
+}
+
+/// The condition of an unknown `cfg`, for example a `cfg` in a `cfg_attr`.
+pub const UNKNOWN_CFG: &str = "?";
+
+/// The conditions of the `cfg` attributes of a node, outer and inner, with no
+/// whitespace: `test` for `#[cfg(test)]`. `#[test]` and `#[bench]`, also with
+/// a path such as `#[tokio::test]`, give `test`, because only a test build
+/// compiles them. Another test attribute, for example `#[test_case(1)]`, and
+/// a `cfg_attr` that can add a `cfg` or a test attribute give
+/// [`UNKNOWN_CFG`].
+pub fn cfg_conditions(owner: &ast::AnyHasAttrs) -> Vec<String> {
+    owner
+        .attrs()
+        .filter_map(|attr| {
+            let body = attr_body(&attr);
+            if let Some(condition) = body.strip_prefix("cfg(") {
+                return Some(condition.strip_suffix(')').unwrap_or(condition).to_owned());
+            }
+            let name = body.split('(').next().unwrap_or(&body);
+            if matches!(name.rsplit("::").next(), Some("test" | "bench")) {
+                return Some("test".to_owned());
+            }
+            if crate::attrs::is_test_attribute(&body) {
+                return Some(UNKNOWN_CFG.to_owned());
+            }
+            body.strip_prefix("cfg_attr(")
+                .filter(|rest| {
+                    rest.contains("cfg(")
+                        || crate::attrs::split_list(rest.strip_suffix(')').unwrap_or(rest))
+                            .iter()
+                            .skip(1)
+                            .any(|attr| crate::attrs::is_test_attribute(attr))
+                })
+                .map(|_| UNKNOWN_CFG.to_owned())
+        })
+        .collect()
 }
 
 /// True when a `cfg` attribute of the node can be off in a build with all

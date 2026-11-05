@@ -77,6 +77,24 @@ pub struct Boundaries {
     pub items: Vec<ItemRule>,
     /// The rules on `pub use <path>::*` re-exports.
     pub reexports: Vec<ReexportRule>,
+    /// The rules on paths between the code and the items of each `cfg` build.
+    pub cfg: Vec<CfgRule>,
+}
+
+/// A rule that checks each path of the code in a set of `cfg` builds.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct CfgRule {
+    /// The rule name in the findings.
+    pub rule: String,
+    /// The builds. A build is the list of the `cfg` options that are on, for
+    /// example `["test", "miri"]` or `["feature = \"x\""]`. An option that
+    /// a build of the rule names, but that this build does not name, is off.
+    /// Each other option is unknown.
+    pub builds: Vec<Vec<String>>,
+    /// The message, with `{path}`, `{item}` and `{build}` as placeholders.
+    #[serde(default)]
+    pub message: Option<String>,
 }
 
 /// A rule on the workspace items that the code of some packages must not use.

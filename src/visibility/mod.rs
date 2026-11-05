@@ -749,6 +749,15 @@ struct GroupUse {
 /// sites and the items, not with their product. A site inside an item of its
 /// own group does not count for that item, the same as a direct credit.
 fn add_site_uses(graph: &Graph, credits: &Credits, sites: &[&Site], uses: &mut [Uses]) {
+    for (group, facts) in group_uses(graph, credits, sites) {
+        for &item in &credits.groups[group] {
+            apply_group_use(graph, &facts, item, &mut uses[item]);
+        }
+    }
+}
+
+/// The facts of the sites of each group.
+fn group_uses(graph: &Graph, credits: &Credits, sites: &[&Site]) -> FxHashMap<usize, GroupUse> {
     let mut groups: FxHashMap<usize, GroupUse> = FxHashMap::default();
     for site in sites {
         let credit = &site.credit;
@@ -777,29 +786,29 @@ fn add_site_uses(graph: &Graph, credits: &Credits, sites: &[&Site], uses: &mut [
             own.places.extend(place);
         }
     }
-    for (group, facts) in groups {
-        for &item in &credits.groups[group] {
-            let krate = graph.items[item].krate;
-            let own = facts.own.get(&item);
-            let entry = &mut uses[item];
-            entry.exposed |= facts.exposed > own.map_or(0, |own| own.exposed);
-            entry.cross_crate |= facts.outside;
-            for (&(site_crate, module), &count) in &facts.places {
-                if site_crate != krate {
-                    entry.cross_crate = true;
-                    continue;
-                }
-                let inside = own.map_or(0, |own| {
-                    own.places
-                        .iter()
-                        .filter(|&&place| place == (site_crate, module))
-                        .count()
-                });
-                if count > inside {
-                    entry.from_modules.push(module);
-                }
-            }
+    groups
+}
+
+/// Adds the facts of one group to one of its items, without the sites
+/// inside the item.
+fn apply_group_use(graph: &Graph, facts: &GroupUse, item: ItemId, entry: &mut Uses) {
+    let krate = graph.items[item].krate;
+    let own = facts.own.get(&item);
+    entry.exposed |= facts.exposed > own.map_or(0, |own| own.exposed);
+    entry.cross_crate |= facts.outside;
+    for (&place, &count) in &facts.places {
+        if place.0 != krate {
+            entry.cross_crate = true;
+        } else if count > own.map_or(0, |own| own.count(place)) {
+            entry.from_modules.push(place.1);
         }
+    }
+}
+
+impl SiteFacts {
+    /// The number of sites at one place.
+    fn count(&self, place: (usize, ModuleId)) -> usize {
+        self.places.iter().filter(|&&other| other == place).count()
     }
 }
 

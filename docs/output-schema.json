@@ -517,6 +517,11 @@
           "type": "string",
           "const": "glob-reexport",
           "description": "A `pub use <path>::*` re-exports a denied crate or module."
+        },
+        {
+          "type": "string",
+          "const": "cfg-path",
+          "description": "Code that a `cfg` build compiles uses an item that the build does not\ncompile."
         }
       ],
       "description": "The kind of a boundary finding."
@@ -569,6 +574,12 @@
           "minimum": 0,
           "description": "The glob re-export rules."
         },
+        "cfg_rules": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The `cfg` rules."
+        },
         "unresolved": {
           "type": "integer",
           "format": "uint",
@@ -594,6 +605,7 @@
         "module_rules",
         "item_rules",
         "reexport_rules",
+        "cfg_rules",
         "unresolved",
         "workspace_edges",
         "source_files"

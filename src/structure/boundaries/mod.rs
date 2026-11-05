@@ -17,6 +17,7 @@
 //! - An item rule and a glob re-export rule work on the module graph. See
 //!   [`items`].
 
+mod cfg;
 mod items;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -77,17 +78,21 @@ pub enum Kind {
     ItemPath,
     /// A `pub use <path>::*` re-exports a denied crate or module.
     GlobReexport,
+    /// Code that a `cfg` build compiles uses an item that the build does not
+    /// compile.
+    CfgPath,
 }
 
 impl Kind {
     /// Each kind.
     #[cfg(test)]
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::CrateDependency,
         Self::SourcePattern,
         Self::ModulePath,
         Self::ItemPath,
         Self::GlobReexport,
+        Self::CfgPath,
     ];
 
     /// The kind in the report.
@@ -98,6 +103,7 @@ impl Kind {
             Self::ModulePath => "module-path",
             Self::ItemPath => "item-path",
             Self::GlobReexport => "glob-reexport",
+            Self::CfgPath => "cfg-path",
         }
     }
 }
@@ -160,6 +166,8 @@ pub struct Summary {
     pub item_rules: usize,
     /// The glob re-export rules.
     pub reexport_rules: usize,
+    /// The `cfg` rules.
+    pub cfg_rules: usize,
     /// The uses that the item rules cannot resolve and that name a denied
     /// item: a path that does not resolve to its end, a method call or a
     /// field access. They give no finding.
@@ -214,6 +222,7 @@ pub fn section(
     }
     let resolved = items::check(workspace, &settings.items, &settings.reexports, &resolver)?;
     findings.extend(resolved.findings);
+    findings.extend(cfg::findings(workspace, &settings.cfg)?);
     findings.retain(|finding| scope.keeps(&finding.path));
     findings.sort_by(|a, b| {
         (&a.rule, &a.path, a.line, a.col, &a.to, &a.pattern)
@@ -225,6 +234,7 @@ pub fn section(
         module_rules: settings.modules.len(),
         item_rules: settings.items.len(),
         reexport_rules: settings.reexports.len(),
+        cfg_rules: settings.cfg.len(),
         unresolved: resolved.unresolved,
         workspace_edges: edges.len(),
         source_files,
@@ -1012,7 +1022,8 @@ fn human(report: &Report<Summary, Finding>) -> String {
         + summary.source_rules
         + summary.module_rules
         + summary.item_rules
-        + summary.reexport_rules;
+        + summary.reexport_rules
+        + summary.cfg_rules;
     let mut text = format!(
         "cargo fallow boundaries: {rules} {}, {} workspace {}, {} source {}\n",
         plural(rules, "rule", "rules"),
@@ -1057,6 +1068,9 @@ fn sarif_log(report: &Report<Summary, Finding>, findings: &[shared::Finding]) ->
                 Kind::ItemPath => "Code uses a workspace item that a rule denies.",
                 Kind::GlobReexport => {
                     "A glob re-export reads a crate or a module that a rule denies."
+                }
+                Kind::CfgPath => {
+                    "Code that a cfg build compiles uses an item that the build does not compile."
                 }
             };
             (finding.rule.clone(), text.to_owned())

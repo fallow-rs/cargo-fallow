@@ -75,6 +75,8 @@ pub struct Credit {
     pub under_cfg: bool,
     /// The code that gives the credit.
     pub source: Source,
+    /// True when the path can also resolve to a name outside the workspace.
+    pub outside: bool,
 }
 
 /// The result of one path for a rule that names items: what the path names,
@@ -187,6 +189,7 @@ impl<'g> Resolver<'g> {
                 test_only: false,
                 under_cfg: false,
                 source: Source::Import(index),
+                outside: false,
             };
             if import.binding == Binding::Glob {
                 let (targets, class, modules) = self.resolve_path(
@@ -235,6 +238,7 @@ impl<'g> Resolver<'g> {
                 test_only: reference.test_only,
                 under_cfg: reference.under_cfg,
                 source: Source::Ref(index),
+                outside: false,
             };
             self.credit_ref(&mut credits, base, &reference.kind);
         }
@@ -332,52 +336,9 @@ impl<'g> Resolver<'g> {
     }
 
     fn credit_ref(&self, credits: &mut Credits, base: Credit, kind: &RefKind) {
-        let untyped_origin = matches!(
-            base.origin,
-            Origin::Macro | Origin::PublicMacro | Origin::Attr | Origin::Doc
-        );
-        let doc = base.origin == Origin::Doc;
         match kind {
             RefKind::Path { segments, global } => {
-                if untyped_origin && segments.len() == 1 {
-                    // A bare name cannot name a field or a method. A `Member`
-                    // reference covers the names that can.
-                    self.credit_names(
-                        credits,
-                        base,
-                        &segments[0],
-                        Class::Untyped,
-                        NameFilter::NotMember,
-                    );
-                    return;
-                }
-                let (targets, class, modules) =
-                    self.resolve_path(base.krate, base.module, segments, *global, doc);
-                let class = if untyped_origin && class == Class::Fallback {
-                    Class::Untyped
-                } else {
-                    class
-                };
-                push_targets(
-                    &mut credits.direct,
-                    base,
-                    class,
-                    &targets,
-                    &modules,
-                    self.graph,
-                );
-                if base.origin != Origin::Signature {
-                    self.credit_tuple_fields(&mut credits.direct, base, class, &targets);
-                }
-                // A path that did not resolve to its end, for example through a
-                // type alias, can name any item with its last name.
-                if class != Class::Exact
-                    && let Some(last) = segments.last()
-                {
-                    // A path names no field. A one-name path names no method.
-                    let single = segments.len() == 1;
-                    self.credit_names(credits, base, last, class, NameFilter::PathEnd { single });
-                }
+                self.credit_path(credits, base, segments, *global);
             }
             RefKind::Method(name) => {
                 self.credit_names(credits, base, name, Class::Untyped, NameFilter::Method);
@@ -389,39 +350,98 @@ impl<'g> Resolver<'g> {
                 segments,
                 global,
                 field,
-            } => {
-                let (targets, class, _) =
-                    self.resolve_path(base.krate, base.module, segments, *global, doc);
-                let fields: Vec<ItemId> = targets
-                    .iter()
-                    .filter_map(|target| match target {
-                        Target::Item(item) => Some(*item),
-                        _ => None,
-                    })
-                    .flat_map(|item| self.fields_of(item, field))
-                    .collect();
-                let outside =
-                    !targets.is_empty() && targets.iter().all(|target| *target == Target::Outside);
-                if !fields.is_empty() {
-                    for item in fields {
-                        credits.direct.push(Credit {
-                            item,
-                            class,
-                            ..base
-                        });
-                    }
-                } else if !outside {
-                    // The struct is unknown, so any field with the name can be
-                    // the one.
-                    self.credit_names(credits, base, field, Class::Untyped, NameFilter::Field);
-                }
-            }
+            } => self.credit_record_field(credits, base, segments, *global, field),
             RefKind::Member(name) => {
                 self.credit_names(credits, base, name, Class::Untyped, NameFilter::Member);
             }
             RefKind::Macro(name) => {
                 self.credit_names(credits, base, name, Class::Exact, NameFilter::Macro);
             }
+        }
+    }
+
+    /// The credits of a path in code.
+    fn credit_path(&self, credits: &mut Credits, base: Credit, segments: &[String], global: bool) {
+        let untyped_origin = matches!(
+            base.origin,
+            Origin::Macro | Origin::PublicMacro | Origin::Attr | Origin::Doc
+        );
+        let doc = base.origin == Origin::Doc;
+        if untyped_origin && segments.len() == 1 {
+            // A bare name cannot name a field or a method. A `Member`
+            // reference covers the names that can.
+            self.credit_names(
+                credits,
+                base,
+                &segments[0],
+                Class::Untyped,
+                NameFilter::NotMember,
+            );
+            return;
+        }
+        let (targets, class, modules) =
+            self.resolve_path(base.krate, base.module, segments, global, doc);
+        let class = if untyped_origin && class == Class::Fallback {
+            Class::Untyped
+        } else {
+            class
+        };
+        push_targets(
+            &mut credits.direct,
+            base,
+            class,
+            &targets,
+            &modules,
+            self.graph,
+        );
+        if base.origin != Origin::Signature {
+            self.credit_tuple_fields(&mut credits.direct, base, class, &targets);
+        }
+        // A path that did not resolve to its end, for example through a
+        // type alias, can name any item with its last name.
+        if class != Class::Exact
+            && let Some(last) = segments.last()
+        {
+            // A path names no field. A one-name path names no method.
+            let single = segments.len() == 1;
+            self.credit_names(credits, base, last, class, NameFilter::PathEnd { single });
+        }
+    }
+
+    /// The credits of a field in a struct expression or a struct pattern.
+    fn credit_record_field(
+        &self,
+        credits: &mut Credits,
+        base: Credit,
+        segments: &[String],
+        global: bool,
+        field: &str,
+    ) {
+        let doc = base.origin == Origin::Doc;
+
+        let (targets, class, _) = self.resolve_path(base.krate, base.module, segments, global, doc);
+        let fields: Vec<ItemId> = targets
+            .iter()
+            .filter_map(|target| match target {
+                Target::Item(item) => Some(*item),
+                _ => None,
+            })
+            .flat_map(|item| self.fields_of(item, field))
+            .collect();
+        let outside =
+            !targets.is_empty() && targets.iter().all(|target| *target == Target::Outside);
+        if !fields.is_empty() {
+            for item in fields {
+                credits.direct.push(Credit {
+                    item,
+                    class,
+                    ..base
+                });
+            }
+        } else if !outside {
+            // The struct is unknown, so any field with the name can be
+            // the one.
+            self.credit_names(credits, base, field, Class::Untyped, NameFilter::Field);
         }
     }
 
@@ -866,6 +886,10 @@ fn push_targets(
     through: &[ItemId],
     graph: &Graph,
 ) {
+    let base = Credit {
+        outside: targets.contains(&Target::Outside),
+        ..base
+    };
     for target in targets {
         let item = match target {
             Target::Item(item) => Some(*item),

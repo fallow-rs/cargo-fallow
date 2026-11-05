@@ -88,6 +88,12 @@ rule = "no-glob-reexport-of-types"
 from = ["app-api"]
 deny = ["app_types"]
 
+# Each path in code that a build compiles must reach an item that the same
+# build compiles. A build lists the cfg options that are on.
+[[workspace.metadata.fallow.boundaries.cfg]]
+rule = "miri-build-compiles"
+builds = [["test"], ["test", "miri"]]
+
 [workspace.metadata.fallow.size]
 max-file-lines = 2000     # a file over this must not grow
 max-function-lines = 60
@@ -137,6 +143,43 @@ test macros `test`, `bench`, `rstest`, `test_case` and `quickcheck`, also
 with a path, for example `#[tokio::test]`. Code in a macro call, for example
 a test in `proptest! { ... }`, stays production code, because the parser keeps
 a macro call as tokens.
+
+A `cfg` rule reads each `use` item and each path in a function body or a
+signature, when the path starts with `crate`, `self`, `super` or `::`. For
+each build of the rule, it reports a path from code that the build compiles
+to an item that the build does not compile. The kind is `cfg-path`. A build is
+the list of the `cfg` options that are on, for example `["test", "miri"]` or
+`["feature = \"x\""]`. An option that a build of the rule names is off in each
+build that does not name it. Each other option is unknown, for example a
+feature or a target that no build names. A condition with an unknown option
+can be unknown, and then the rule gives credit. The rule counts the `cfg` of
+the item, of each node around the code, and of each module declaration on the
+way to the file. `#[test]` and `#[bench]` count as `cfg(test)`. Another test
+attribute and a `cfg_attr` that can add a `cfg` or a test attribute are
+unknown.
+
+The rule reports a path only when the syntax can decide. It gives credit in
+these cases:
+
+- the path does not resolve, or it can also resolve outside the workspace,
+- an item is in another crate, because `cfg(test)` and the features are
+  options of one crate and one package,
+- an item is a member of a type or a trait, for example a method,
+- a module of an item, or a module around it, has a macro call or an
+  `include!` call at the level of the items, because the graph does not see
+  the items that such a call makes,
+- a bare name, because a local item or a binding can shadow it,
+- a glob import of the workspace in a module of the lookup can give the same
+  name, because an item hides a name of a glob only in the builds that
+  compile the item,
+- two `mod` declarations share one module, for example under two exclusive
+  `cfg`s.
+
+The rule takes a glob import of a crate outside the workspace, for example
+`use rayon::prelude::*`, as a glob that gives no name of the workspace. The
+syntax cannot read that crate. The rule finds the error of
+`scripts/check-miri-cfg.mjs` in fallow when the rule has the builds `["test"]`
+and `["test", "miri"]`.
 
 When the table sets `threshold`, the report shows the
 `duplication-threshold` gate. As with the other gates, this gate fails the

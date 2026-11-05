@@ -16,7 +16,7 @@ use crate::workspace::Workspace;
 
 /// The variables that move git to another repository, index or object store.
 /// A hook or a parent process can set them, so each command removes them.
-const SCRUBBED_VARIABLES: [&str; 9] = [
+pub const SCRUBBED_VARIABLES: [&str; 9] = [
     "GIT_DIR",
     "GIT_WORK_TREE",
     "GIT_INDEX_FILE",

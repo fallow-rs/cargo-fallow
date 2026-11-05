@@ -20,6 +20,7 @@ test("fixtures, fuzz, corpus, experimental and tooling files are not allowed", (
     ".github/workflows/release.yml",
     "scripts/check-package.mjs",
     "src/data.json",
+    "src/hooks/other.sh",
     "src/../Cargo.toml",
   ]) {
     assert.equal(isAllowed(path), false, path);

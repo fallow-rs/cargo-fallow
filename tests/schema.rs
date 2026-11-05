@@ -229,3 +229,33 @@ fn a_document_of_another_kind_does_not_validate() {
     let schema = schema();
     assert!(!validator(&schema, "deps").is_valid(&json!({ "schema_version": 1, "kind": "deps" })));
 }
+
+#[test]
+fn the_hooks_reports_validate() {
+    let schema = schema();
+    let dir = tempfile::tempdir().expect("temporary directory");
+    copy_dir(&Path::new(FIXTURES).join("action-mutants"), dir.path());
+    git(dir.path(), &["init", "--quiet"]);
+    for (args, kind) in [
+        (&["hooks", "install", "--target", "agent"][..], "hooks"),
+        (
+            &["hooks", "install", "--target", "git", "--dry-run"],
+            "hooks",
+        ),
+        (&["hooks", "status"], "hooks-status"),
+        (&["hooks", "uninstall", "--target", "agent"], "hooks"),
+    ] {
+        let output = binary()
+            .current_dir(dir.path())
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .args(args)
+            .args(["--format", "json"])
+            .output()
+            .expect("run cargo-fallow");
+        let document: Value = serde_json::from_slice(&output.stdout)
+            .unwrap_or_else(|err| panic!("{args:?}: not JSON: {err}: {output:?}"));
+        assert_eq!(document["kind"], kind, "{document:#}");
+        assert_valid(&schema, kind, &document);
+    }
+}

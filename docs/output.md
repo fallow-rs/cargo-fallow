@@ -120,7 +120,9 @@ In the other formats, it writes the error to stderr.
   the report of each command (`check`, `deps`, `fix`, `visibility`, `files`,
   `boundaries`, `size`, `complexity`, `dupes` and `mutants`). The others are
   the inspect report of `mutants --inspect` (`mutants-inspect`), the baseline
-  file (`baseline`) and the error document (`error`).
+  file (`baseline`), the reports of `hooks install` and `hooks uninstall`
+  (`hooks`) and `hooks status` (`hooks-status`), and the error document
+  (`error`).
 - Each report has `schema_version` 1. When a change removes a field or changes
   the type of a field, the maintainers increment the version of that report.
 - A test generates the schema and compares it with the file. When a report

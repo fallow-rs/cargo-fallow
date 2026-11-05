@@ -18,6 +18,7 @@ for each command.
 | [Trace](trace.md) | `--trace` of `visibility`, `deps` and `dupes`, to see why a check reports one item or does not |
 | [Mutation testing](mutation-testing.md) | `mutants`: tiers, status, test selection and safety |
 | [Output formats](output.md) | Each format, the JSON Schema, `explain` and the exit codes |
+| [Hooks](hooks.md) | The agent gate of Claude Code and Codex, and the git pre-commit hook |
 | [GitHub Action](../action/README.md) | Inputs, outputs and install methods of the action |
 | [GitLab CI](gitlab.md) | The template: code quality report and merge request note |
 

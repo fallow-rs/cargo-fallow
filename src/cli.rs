@@ -121,6 +121,8 @@ pub enum Parsed {
     },
     /// Print the JSON Schema of the output.
     Schema,
+    /// Run one `hooks` subcommand.
+    Hooks(crate::hooks::Command),
     /// Stop with this exit code. The parser already wrote its output.
     Exit(u8),
 }
@@ -204,6 +206,14 @@ enum Command {
     /// Print the JSON Schema of each JSON document that the tool writes: the
     /// report of each command, the baseline file and the error document.
     Schema,
+    /// Install, remove or show the agent gate and the git pre-commit hook.
+    ///
+    /// The agent gate runs before each `git commit` and `git push` of Claude
+    /// Code or Codex. It blocks when `cargo fallow check` finds a new finding
+    /// in the changed files. A finding that the base commit already has does
+    /// not block, and an error of the tool does not block.
+    #[command(subcommand)]
+    Hooks(crate::hooks::Command),
     /// Kill the test processes when the parent process dies. The memory guard
     /// starts this command.
     #[command(hide = true, name = "mutation-watchdog")]
@@ -669,6 +679,7 @@ pub fn parse(args: &[OsString]) -> Parsed {
             Some(Command::Files(args)) => Parsed::Files(args),
             Some(Command::Structure(command)) => Parsed::Structure(Box::new(command)),
             Some(Command::Schema) => Parsed::Schema,
+            Some(Command::Hooks(command)) => Parsed::Hooks(command),
             Some(Command::MutationWatchdog {
                 roots,
                 sweep,

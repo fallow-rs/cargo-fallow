@@ -4,8 +4,9 @@
 //! holds every module, so the `missing_docs` lint checks the public API.
 //! The public API is [`run`] only. The modules are internal.
 
-// Only the workspace loader, the mutation runner and the git reader of the
-// structure checks spawn a process. See `.clippy.toml`.
+// Only the workspace loader, the mutation runner, the git reader of the
+// structure checks and the base export of the hook gate spawn a process. See
+// `.clippy.toml`.
 #![cfg_attr(not(test), deny(clippy::disallowed_methods))]
 
 mod api;
@@ -23,6 +24,7 @@ mod fix;
 mod gates;
 mod graph;
 mod health;
+mod hooks;
 mod hotspots;
 mod init;
 mod modules;
@@ -88,6 +90,7 @@ pub fn run(args: Vec<OsString>) -> ExitCode {
             mutation::guard::run_watchdog(&roots, sweep.as_deref(), remove);
             EXIT_OK
         }
+        Parsed::Hooks(command) => hooks::run(&command),
         Parsed::Schema => match render::write_stdout(schema::text().trim_end()) {
             Ok(()) => EXIT_OK,
             Err(err) => {

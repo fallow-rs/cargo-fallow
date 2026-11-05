@@ -302,6 +302,18 @@ writes one JSON document to stdout:
 For grep, use `--format compact`. It writes one `path:line:col: rule: message`
 line for each finding. [Output formats](docs/output.md) describes all formats.
 
+To stop a coding agent before it commits a new finding, install the gate:
+
+```bash
+cargo fallow hooks install --target agent
+```
+
+The gate runs before each `git commit` and `git push` of Claude Code or
+Codex. It blocks when `cargo fallow check` finds a new finding in the changed
+files, and it lists each finding. A finding that the base commit already has
+does not block. `--target git` installs the same check as a git pre-commit
+hook. [Hooks](docs/hooks.md) has the details.
+
 ## Documentation
 
 | Page | Contents |
@@ -317,6 +329,7 @@ line for each finding. [Output formats](docs/output.md) describes all formats.
 | [Mutation testing](docs/mutation-testing.md) | `mutants`: tiers, status, test selection and safety |
 | [Trace](docs/trace.md) | `--trace` of `visibility`, `deps` and `dupes`, to see why a check reports one item or does not |
 | [Output formats](docs/output.md) | Each format, the JSON Schema, `explain` and the exit codes |
+| [Hooks](docs/hooks.md) | The agent gate of Claude Code and Codex, and the git pre-commit hook |
 | [GitHub Action](action/README.md) | Inputs, outputs and install methods of the action |
 
 ## Contributing

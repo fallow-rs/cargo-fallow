@@ -5,8 +5,8 @@
 //
 //   cargo package --list --locked | node scripts/check-package.mjs
 //
-// The package may hold only the source, the manifest, the lock file, the
-// license, the README and the CHANGELOG. Test fixtures, corpus data, the fuzz
+// The package may hold only the source, the files that the source embeds, the
+// manifest, the lock file, the license, the README and the CHANGELOG. Test fixtures, corpus data, the fuzz
 // crate and repository tooling stay out. Each file must be smaller than
 // MAX_FILE_BYTES. See docs/release-procedure.md.
 
@@ -22,13 +22,20 @@ const GENERATED = new Set([".cargo_vcs_info.json", "Cargo.toml.orig"]);
 
 const TOP_LEVEL = new Set(["Cargo.toml", "Cargo.lock", "LICENSE", "README.md", "CHANGELOG.md"]);
 
+/**
+ * Files that the source embeds with `include_str!`. The build of the package
+ * needs them. Each one is listed by name, so no other asset can slip in.
+ */
+export const EMBEDDED = new Set(["src/hooks/gate.sh"]);
+
 /** The files that each package must hold. */
-export const REQUIRED = [...TOP_LEVEL, "src/main.rs", "src/lib.rs"];
+export const REQUIRED = [...TOP_LEVEL, ...EMBEDDED, "src/main.rs", "src/lib.rs"];
 
 const SOURCE = /^src\/(?:[a-z0-9_]+\/)*[a-z0-9_]+\.rs$/u;
 
 /** Returns true when the package may hold `path`. */
-export const isAllowed = (path) => GENERATED.has(path) || TOP_LEVEL.has(path) || SOURCE.test(path);
+export const isAllowed = (path) =>
+  GENERATED.has(path) || TOP_LEVEL.has(path) || EMBEDDED.has(path) || SOURCE.test(path);
 
 /**
  * Returns one problem line for each file that the package must not hold, each

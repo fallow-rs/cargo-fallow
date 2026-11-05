@@ -17,7 +17,7 @@ const SCHEMA_ID: &str =
 
 /// The JSON documents, keyed by the name of their definition: the `kind` of a
 /// report, or a name for a document with no `kind`.
-const DOCUMENTS: [&str; 20] = [
+const DOCUMENTS: [&str; 22] = [
     "check",
     "deps",
     "fix",
@@ -37,6 +37,8 @@ const DOCUMENTS: [&str; 20] = [
     "health-snapshot",
     "explain",
     "init",
+    "hooks",
+    "hooks-status",
     "error",
 ];
 
@@ -68,14 +70,22 @@ pub fn document() -> Value {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$id": SCHEMA_ID,
         "title": "cargo-fallow JSON output",
-        "description": "Each JSON document that cargo-fallow writes: the report of each command (also `fix`), the inspect report of `mutants --inspect`, the trace of `visibility --trace`, `deps --trace` and `dupes --trace`, the baseline file of `--save-baseline`, the snapshot of `check --save-snapshot`, the rule of `explain`, the report of `init` and the error document of exit code 2. The `document-<name>` definitions name each document.",
+        "description": "Each JSON document that cargo-fallow writes: the report of each command (also `fix`), the inspect report of `mutants --inspect`, the trace of `visibility --trace`, `deps --trace` and `dupes --trace`, the baseline file of `--save-baseline`, the snapshot of `check --save-snapshot`, the rule of `explain`, the report of `init`, the reports of `hooks install`, `hooks uninstall` and `hooks status`, and the error document of exit code 2. The `document-<name>` definitions name each document.",
         "anyOf": any_of,
         "$defs": defs,
     })
 }
 
-/// The documents with no `kind` and no `language` member.
-const NO_KIND: [&str; 4] = ["baseline", "explain", "error", "init"];
+/// The documents with no `kind` and no `language` member, or with a `kind`
+/// that the type gives and no `language`.
+const NO_KIND: [&str; 6] = [
+    "baseline",
+    "explain",
+    "error",
+    "init",
+    "hooks",
+    "hooks-status",
+];
 
 /// The document schema with the fixed `kind` and `language` of the document.
 /// The structure reports share one type, so the type cannot give the value.
@@ -185,8 +195,18 @@ fn subschema(generator: &mut SchemaGenerator, name: &str) -> Schema {
         "mutants-inspect" => generator.subschema_for::<crate::mutation::report::InspectReport>(),
         "baseline" => generator.subschema_for::<crate::baseline::File>(),
         "health-snapshot" => generator.subschema_for::<crate::hotspots::snapshot::Snapshot>(),
+        _ => setup_subschema(generator, name),
+    }
+}
+
+/// The schema of a document of a setup command (`explain`, `init`, `hooks`),
+/// or of the error document.
+fn setup_subschema(generator: &mut SchemaGenerator, name: &str) -> Schema {
+    match name {
         "explain" => generator.subschema_for::<crate::explain::Explanation>(),
         "init" => generator.subschema_for::<crate::init::InitReport>(),
+        "hooks" => generator.subschema_for::<crate::hooks::install::HooksReport>(),
+        "hooks-status" => generator.subschema_for::<crate::hooks::install::HooksStatus>(),
         _ => generator.subschema_for::<fallow_report_protocol::ErrorOutput>(),
     }
 }

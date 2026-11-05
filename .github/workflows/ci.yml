@@ -281,7 +281,7 @@ jobs:
         run: npm run lint:js
       - name: oxfmt --check
         run: npm run fmt:js:check
-      - name: Narrator comment guard
+      - name: Comment quality guard
         run: node scripts/check-comment-quality.mjs --all
       - name: Script tests
         run: node --test scripts/*.test.mjs .github/scripts/*.test.mjs

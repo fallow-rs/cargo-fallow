@@ -523,7 +523,11 @@ fn the_flags_and_exclude_crates_select_the_libraries() {
     };
     assert_eq!(crates(&[]), 4);
     assert_eq!(crates(&["--all-published"]), 3);
-    assert_eq!(crates(&["--public-crate", "fresh"]), 2, "fresh and the excluded internal");
+    assert_eq!(
+        crates(&["--public-crate", "fresh"]),
+        2,
+        "fresh and the excluded internal"
+    );
     let (code, _) = repo.json(&[
         "api",
         "--base",

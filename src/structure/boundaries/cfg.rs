@@ -233,8 +233,14 @@ fn sites(graph: &Graph) -> Vec<Site> {
 type Groups = BTreeMap<(u8, usize), (bool, CrateId, Vec<ItemId>)>;
 
 fn credit_groups(resolver: &Resolver<'_>) -> Groups {
+    let credits = resolver.credits();
     let mut groups = Groups::new();
-    for credit in resolver.credits() {
+    let named = credits.sites.iter().map(|site| (&site.credit, None));
+    let direct = credits
+        .direct
+        .iter()
+        .map(|credit| (credit, Some(credit.item)));
+    for (credit, item) in direct.chain(named) {
         let key = match credit.source {
             Source::Import(index) => (0, index),
             Source::Ref(index) => (1, index),
@@ -242,10 +248,12 @@ fn credit_groups(resolver: &Resolver<'_>) -> Groups {
         let entry = groups
             .entry(key)
             .or_insert((true, credit.krate, Vec::new()));
-        entry.0 &= credit.class == Class::Exact
+        // A name credit is never exact, so its source gives credit.
+        entry.0 &= item.is_some()
+            && credit.class == Class::Exact
             && !credit.outside
             && matches!(credit.origin, Origin::Body | Origin::Signature);
-        entry.2.push(credit.item);
+        entry.2.extend(item);
     }
     groups
 }

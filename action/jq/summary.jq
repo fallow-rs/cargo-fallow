@@ -19,6 +19,20 @@ def mutants_line:
   .summary as $s
   | "Mutation score \($s.score | percent): \($s.killed) killed, \($s.survived) survived, \($s.no_coverage) no coverage, \($s.timeout) timeout, \($s.pending) pending.";
 
+def api_rows:
+  [.findings[]? | select(.change != "added" and .change != "crate-added")] as $rows
+  | ($rows[0:20]) as $shown
+  | if ($rows | length) == 0 then empty
+    else
+      "",
+      "#### API changes\(if ($rows | length) > ($shown | length) then " (\($shown | length) of \($rows | length))" else "" end)",
+      "",
+      "| Crate | Change | Path | Before -> after |",
+      "| --- | --- | --- | --- |",
+      ($shown[]
+        | "| \(.crate | cell) | \(.change) | `\(.path | cell)` | \(if .before then "`\(.before | cell)`" else "" end) ->\(if .after then " `\(.after | cell)`" else "" end) |")
+    end;
+
 def findings($results):
   ($results | length) as $total
   | ($results[0:($max | tonumber)]) as $shown
@@ -46,9 +60,10 @@ else
   "",
   "\(plural(.total_issues // 0; "issue")), exit code \($exit_code).",
   (if .kind == "mutants" and .summary.score != null then "", mutants_line else empty end),
+  (if .kind == "api" then "", "\(.summary.added) added, \(.summary.removed) removed, \(.summary.changed) changed against \(.summary.base | cell)." else empty end),
   "",
   "| Gate | Status | Enforced | Observed |",
   "| --- | --- | --- | --- |",
   gate_rows,
-  findings([$sarif[0].runs[]?.results[]?])
+  if .kind == "api" then api_rows else findings([$sarif[0].runs[]?.results[]?]) end
 end

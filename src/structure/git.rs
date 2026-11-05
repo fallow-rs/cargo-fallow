@@ -43,8 +43,9 @@ const DIFF_ARGS: [&str; 6] = [
     "--no-ext-diff",
 ];
 
-/// The files that HEAD changes since the merge base of HEAD and `base`.
-pub fn since_base(root: &Path, base: &str) -> Result<Changes, CliError> {
+/// The merge base of HEAD and `base`, as a full commit id. A shallow clone
+/// gets a help text that names the fetch depth.
+pub fn merge_base(root: &Path, base: &str) -> Result<String, CliError> {
     let commit = verify_base(root, base)?;
     let merge_base = git(root, &["merge-base", "HEAD", commit.as_str()])
         .map_err(|detail| {
@@ -58,14 +59,19 @@ pub fn since_base(root: &Path, base: &str) -> Result<Changes, CliError> {
             let error = cannot_read(&format!("the merge base with `{base}`"), detail);
             if is_shallow(root) {
                 error.with_help(
-                    "The clone is shallow, so the merge base can be missing. Fetch more history (for example `git fetch --unshallow`).",
+                    "The clone is shallow, so the merge base can be missing. Fetch more history (for example `git fetch --unshallow`). In GitHub Actions, set `fetch-depth: 0` in actions/checkout.",
                 )
             } else {
                 error
             }
         })
         .and_then(|output| text(output, "the merge base"))?;
-    let merge_base = merge_base.trim().to_owned();
+    Ok(merge_base.trim().to_owned())
+}
+
+/// The files that HEAD changes since the merge base of HEAD and `base`.
+pub fn since_base(root: &Path, base: &str) -> Result<Changes, CliError> {
+    let merge_base = merge_base(root, base)?;
     let mut args = DIFF_ARGS.to_vec();
     args.extend(["--relative", merge_base.as_str(), "HEAD"]);
     let listed = git(root, &args)

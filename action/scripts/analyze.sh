@@ -40,7 +40,7 @@ fail() {
 # the older name of the same gate.
 gate_flags() {
   case "$1" in
-    check | deps | files | visibility) echo "--fail-on-issues" ;;
+    check | deps | files | visibility | api) echo "--fail-on-issues" ;;
     boundaries) echo "--fail-on-issues --fail-on-violations" ;;
     size) echo "--fail-on-issues --fail-on-growth" ;;
     complexity) echo "--fail-on-issues --fail-on-complexity" ;;
@@ -100,7 +100,7 @@ path_prefix() {
 
 COMMAND="$INPUT_COMMAND"
 GATE_FLAGS="$(gate_flags "$COMMAND")" \
-  || fail "Invalid 'command' input: ${COMMAND}. Use check, deps, files, visibility, boundaries, size, complexity, dupes or mutants."
+  || fail "Invalid 'command' input: ${COMMAND}. Use check, deps, files, visibility, boundaries, size, complexity, dupes, mutants or api."
 case "$INPUT_FORMAT" in
   human | json | sarif) ;;
   *) fail "Invalid 'format' input: ${INPUT_FORMAT}. Use human, json or sarif." ;;
@@ -216,10 +216,12 @@ fi
 
 if [ -n "$BASE" ]; then
   case "$COMMAND" in
-    size) ARGS+=(--base "$BASE") ;;
+    size | api) ARGS+=(--base "$BASE") ;;
     mutants) ARGS+=(--in-diff "$BASE") ;;
-    *) echo "::warning::The 'base' input applies only to size and mutants. The ${COMMAND} run ignores it." ;;
+    *) echo "::warning::The 'base' input applies only to size, api and mutants. The ${COMMAND} run ignores it." ;;
   esac
+elif [ "$COMMAND" = "api" ]; then
+  fail "command: api needs the base input, for example base: auto or base: origin/main. Use fetch-depth: 0 in actions/checkout."
 fi
 
 MUTANTS_INPUTS="${INPUT_PACKAGE}${INPUT_MAX_MUTANTS}${INPUT_TIME_BUDGET}${INPUT_JOBS}${INPUT_TIMEOUT}"

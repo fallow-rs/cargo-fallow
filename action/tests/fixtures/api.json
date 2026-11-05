@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "version": "0.1.0",
+  "kind": "api",
+  "language": "rust",
+  "summary": {"base": "main", "merge_base": "0123456789abcdef0123456789abcdef01234567", "crates": 2, "added": 1, "removed": 1, "changed": 1},
+  "total_issues": 3,
+  "findings": [
+    {"crate": "demo", "path": "demo::fresh", "item_kind": "function", "change": "added", "before": null, "after": "pub fn fresh ( )", "file": "demo/src/lib.rs", "line": 4, "version_base": "0.3.1", "version_head": "0.3.2", "breaking": false, "actions": []},
+    {"crate": "demo", "path": "demo::gone", "item_kind": "function", "change": "removed", "before": "pub fn gone ( )", "after": null, "file": "demo/src/lib.rs", "line": 1, "version_base": "0.3.1", "version_head": "0.3.2", "breaking": true, "actions": []},
+    {"crate": "demo", "path": "demo::reshaped", "item_kind": "function", "change": "changed", "before": "pub fn reshaped ( a : u8 )", "after": "pub fn reshaped ( a : u16 )", "file": "demo/src/lib.rs", "line": 9, "version_base": "0.3.1", "version_head": "0.3.2", "breaking": false, "actions": []}
+  ],
+  "gate_outcomes": {"api-removals": {"status": "fail", "enforced": true, "observed": 1.0, "threshold": 0.0}}
+}

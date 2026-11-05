@@ -8,6 +8,7 @@
 // structure checks spawn a process. See `.clippy.toml`.
 #![cfg_attr(not(test), deny(clippy::disallowed_methods))]
 
+mod api;
 mod attrs;
 mod baseline;
 mod check;

@@ -76,6 +76,22 @@ pub struct Credit {
     pub source: Source,
 }
 
+/// The result of one path for a rule that names items: what the path names,
+/// and the items that it goes through.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PathResolution {
+    /// The items that the path names.
+    pub items: Vec<ItemId>,
+    /// The modules that the path names.
+    pub modules: Vec<ModuleId>,
+    /// The modules, re-exports and types that the path goes through.
+    pub through: Vec<ItemId>,
+    /// True when the path resolved to its end.
+    pub exact: bool,
+    /// True when the first name is not in scope, so the resolver guessed it.
+    pub guessed: bool,
+}
+
 /// The resolver. Build it once for a graph.
 pub struct Resolver<'g> {
     graph: &'g Graph,
@@ -249,6 +265,55 @@ impl<'g> Resolver<'g> {
             }
         }
         (modules, items)
+    }
+
+    /// Resolves a path from `module`, for the item rules of `boundaries`.
+    pub fn resolve(
+        &self,
+        krate: CrateId,
+        module: ModuleId,
+        segments: &[String],
+        global: bool,
+    ) -> PathResolution {
+        let guessed = segments
+            .first()
+            .is_some_and(|first| self.start(krate, module, first, global, false).is_empty());
+        let (targets, class, through) = self.resolve_path(krate, module, segments, global, false);
+        let mut found = PathResolution {
+            through,
+            exact: class == Class::Exact,
+            guessed,
+            ..PathResolution::default()
+        };
+        for target in targets {
+            match target {
+                Target::Item(item) => found.items.push(item),
+                Target::Module(module) => found.modules.push(module),
+                Target::Outside => {}
+            }
+        }
+        found
+    }
+
+    /// Resolves the path of the import at `index`, with the path rule of its
+    /// edition.
+    pub fn resolve_import(&self, index: usize) -> PathResolution {
+        let import = &self.graph.imports[index];
+        let path = self.edition_path(import.krate, import.global, &import.path);
+        self.resolve(import.krate, import.module, &path, import.global)
+    }
+
+    /// The type that an `impl` block is for, when its self path resolves to
+    /// one item. The resolver keys a member by the last name of the type, so
+    /// this check tells two types with one name apart.
+    pub fn impl_self(&self, item: ItemId) -> Option<ItemId> {
+        let entry = &self.graph.items[item];
+        let path = entry.impl_self.as_ref()?;
+        let found = self.resolve(entry.krate, entry.module, path, false);
+        match (found.exact, found.items.as_slice()) {
+            (true, [one]) => Some(*one),
+            _ => None,
+        }
     }
 
     fn credit_ref(&self, credits: &mut Vec<Credit>, base: Credit, kind: &RefKind) {

@@ -16,8 +16,11 @@ The action is defined in `action.yml` at the root of this repository.
 - Install a Rust toolchain before the action step, because each command runs
   `cargo metadata`.
 - `mutants` also needs `cargo-nextest` and the `llvm-tools` component.
-- When you use `base` with `size` or `mutants`, the checkout needs the history of
-  the base ref. Set `fetch-depth: 0` on the checkout step.
+- When you use `base` with `size`, `api` or `mutants`, the checkout needs the
+  history of the base ref. Set `fetch-depth: 0` on the checkout step.
+- `api` needs `base`. The comment shows the `api-removals` gate, one count line
+  and at most 20 rows of `crate | change | path | before -> after`. An added
+  item has no row.
 - `sarif: true` needs `permissions: security-events: write`. A private or an
   internal repository also needs GitHub Advanced Security.
 
@@ -85,13 +88,13 @@ does not fail on them:
 
 | Input | Default | Meaning |
 | --- | --- | --- |
-| `command` | `check` | `check`, `deps`, `files`, `visibility`, `boundaries`, `size`, `complexity`, `dupes` or `mutants`. |
+| `command` | `check` | `check`, `deps`, `files`, `visibility`, `boundaries`, `size`, `complexity`, `dupes`, `mutants` or `api`. |
 | `working-directory` | `.` | The folder in which the command runs. |
 | `manifest-path` | empty | The `Cargo.toml` of the workspace, relative to `working-directory`. |
 | `format` | `human` | The format of the report in the log and in the `report` output: `human`, `json` or `sarif`. |
 | `fail-on-issues` | `true` | Pass the gate flag to the command, so a failed gate fails the job. See [Gate flags](#gate-flags). |
 | `args` | empty | More arguments, separated by spaces. The action does not expand them in a shell. The action rejects `--format` and `--quiet`, because it sets them itself. For example, `--changed-since origin/main` reports only the findings in the changed files. |
-| `base` | empty | The ref to compare with. The action passes it as `--base` to `size` and as `--in-diff` to `mutants`. `auto` uses the base commit of the pull request, or on a push, the commit before the push. See [Base](#base). |
+| `base` | empty | The ref to compare with. The action passes it as `--base` to `size` and `api`, and as `--in-diff` to `mutants`. `auto` uses the base commit of the pull request, or on a push, the commit before the push. See [Base](#base). |
 | `install` | `auto` | See [Install](#install). |
 | `version` | empty | The version for `install: release` and `install: cargo`. When empty, the action uses the version of its own ref. |
 | `sarif` | `false` | Upload the SARIF log to code scanning. The action does not upload for a pull request from a fork, because the token of that run is read-only. |

@@ -179,6 +179,12 @@ OUT="$(summary "$FIXTURES/visibility.json" "$FIXTURES/visibility.sarif" 0 50)"
 assert_contains "$OUT" "1 issue, exit code 0." "one issue is singular"
 OUT="$(summary "$FIXTURES/mutants.json" "$FIXTURES/mutants.sarif" 0 50)"
 assert_contains "$OUT" "Mutation score 66.7%: 2 killed, 1 survived, 3 no coverage, 0 timeout, 0 pending." "the mutation score line"
+OUT="$(summary "$FIXTURES/api.json" "" 1 50)"
+assert_contains "$OUT" "| \`api-removals\` | fail | yes | 1 |" "api: the gate row"
+assert_contains "$OUT" "1 added, 1 removed, 1 changed against main." "api: one count line"
+assert_contains "$OUT" "| demo | removed | \`demo::gone\` | \`pub fn gone ( )\` -> |" "api: a removed row"
+assert_contains "$OUT" "| demo | changed | \`demo::reshaped\` | \`pub fn reshaped ( a : u8 )\` -> \`pub fn reshaped ( a : u16 )\` |" "api: a changed row"
+assert_not_contains "$OUT" "demo::fresh" "api: an added item has no row"
 OUT="$(summary "$FIXTURES/error.json" "" 2 50)"
 assert_contains "$OUT" "The run failed with exit code 2: the manifest" "an error document gives the message"
 assert_contains "$OUT" "- Code: \`CARGO_FALLOW_MANIFEST_NOT_FOUND\`" "an error document gives the code"
@@ -255,6 +261,12 @@ for command in check deps files visibility boundaries size complexity dupes muta
   run_analyze INPUT_COMMAND="$command" INPUT_FORMAT=json
   assert_equals "$(call_args 1)" "$command --fail-on-issues --format json " "$command: the gate flag is --fail-on-issues"
 done
+
+run_analyze INPUT_COMMAND=api INPUT_BASE=main INPUT_FORMAT=json
+assert_equals "$(call_args 1)" "api --fail-on-issues --base main --format json " "api: the gate flag and the base"
+run_analyze INPUT_COMMAND=api INPUT_FORMAT=json
+assert_equals "$CODE" "1" "api: no base stops the step"
+assert_contains "$OUT" "command: api needs the base input" "api: the error names the base input"
 
 run_analyze INPUT_COMMAND=complexity INPUT_FAIL_ON_ISSUES=false INPUT_FORMAT=sarif
 assert_equals "$(call_args 1)" "complexity --format json " "fail-on-issues false: no gate flag"
@@ -351,7 +363,7 @@ run_analyze INPUT_COMMAND=size INPUT_BASE=origin/main INPUT_FORMAT=json
 assert_equals "$(call_args 1)" "size --fail-on-issues --base origin/main --format json " "size: base becomes --base"
 run_analyze INPUT_COMMAND=complexity INPUT_BASE=origin/main INPUT_PACKAGE=x INPUT_FORMAT=json
 assert_equals "$(call_args 1)" "complexity --fail-on-issues --format json " "complexity: base and mutants inputs give no flags"
-assert_contains "$OUT" "The 'base' input applies only to size and mutants" "complexity: base gives a warning"
+assert_contains "$OUT" "The 'base' input applies only to size, api and mutants" "complexity: base gives a warning"
 assert_contains "$OUT" "The mutants-* inputs apply only to command: mutants" "complexity: mutants inputs give a warning"
 
 run_analyze INPUT_COMMAND=check INPUT_MANIFEST_PATH="crates/a b/Cargo.toml" INPUT_FORMAT=json

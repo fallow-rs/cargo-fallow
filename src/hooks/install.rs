@@ -141,12 +141,18 @@ fn display(root: &Path, path: &Path) -> String {
         .map_or_else(|_| path.display().to_string(), slashed)
 }
 
+/// A shell word in single quotes. The path comes from the folder names of
+/// the workspace, which can hold `$`, a backquote or a quote.
+fn shell_quote(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "'\\''"))
+}
+
 /// The agent gate script for a root.
 fn gate_script(manifest: &str) -> String {
     files::with_checksum(
         &GATE_TEMPLATE
             .replace(VERSION_PLACEHOLDER, TOOL_VERSION)
-            .replace(MANIFEST_PLACEHOLDER, manifest),
+            .replace(MANIFEST_PLACEHOLDER, &shell_quote(manifest)),
         MARKER,
     )
 }
@@ -156,7 +162,10 @@ fn git_hook_script(manifest: &str) -> String {
     let manifest_line = if manifest.is_empty() {
         String::new()
     } else {
-        format!("CARGO_FALLOW_GATE_MANIFEST=\"{manifest}\"\nexport CARGO_FALLOW_GATE_MANIFEST\n")
+        format!(
+            "CARGO_FALLOW_GATE_MANIFEST={}\nexport CARGO_FALLOW_GATE_MANIFEST\n",
+            shell_quote(manifest)
+        )
     };
     let script = format!(
         r#"#!/bin/sh
@@ -215,7 +224,8 @@ pub fn install(args: &InstallArgs) -> Result<u8, CliError> {
         Target::Agent => {
             let script = gate_script(&root.manifest);
             for harness in harnesses(&root.root, args.agent, false) {
-                let script_path = root.root.join(harness.script_path());
+                let script_path =
+                    settings::safe_path(&root.root, &harness.script_path()).map_err(file_error)?;
                 let outcome =
                     files::install_script(&script_path, &script, MARKER, args.force, args.dry_run)
                         .map_err(file_error)?;
@@ -255,7 +265,8 @@ pub fn uninstall(args: &InstallArgs) -> Result<u8, CliError> {
                 let outcome =
                     settings::uninstall(&root.root, harness, args.dry_run).map_err(file_error)?;
                 report.push(&root.root, &settings_path, outcome);
-                let script_path = root.root.join(harness.script_path());
+                let script_path =
+                    settings::safe_path(&root.root, &harness.script_path()).map_err(file_error)?;
                 let outcome = files::remove_script(&script_path, MARKER, args.force, args.dry_run)
                     .map_err(file_error)?;
                 report.push(&root.root, &script_path, outcome);
@@ -506,6 +517,15 @@ fn surface(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_manifest_path_cannot_inject_shell_code() {
+        assert_eq!(shell_quote("a'b"), "'a'\\''b'");
+        let hostile = "p$(touch x)`id`\"'/Cargo.toml";
+        for script in [gate_script(hostile), git_hook_script(hostile)] {
+            assert!(script.contains(&shell_quote(hostile)), "{script}");
+        }
+    }
 
     #[test]
     fn generated_scripts_have_a_valid_checksum_and_no_placeholder() {

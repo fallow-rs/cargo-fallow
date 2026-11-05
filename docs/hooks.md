@@ -42,7 +42,10 @@ For each shell command of the agent, the gate does these steps:
 1. It skips each command that is not a `git commit` or a `git push`. A
    command without the words `git` and `commit` or `push` starts no process.
 2. It finds the workspace of the session folder, and of each folder that the
-   command names (`cd`, `git -C`, `--work-tree`, `--git-dir`).
+   command names (`cd`, `git -C`, `--work-tree`, `--git-dir`). A named folder
+   counts only when it is in the same repository: in the work tree of the
+   session, or in a linked worktree. The check runs `cargo metadata` in the
+   folder, so a folder of another repository is not checked.
 3. It runs `cargo fallow check --fail-on-issues --offline` on the files that
    changed since the base:
    - A commit compares with `HEAD`. Staged, unstaged and untracked changes
@@ -51,18 +54,19 @@ For each shell command of the agent, the gate does these steps:
      `origin/HEAD`, `origin/main`, `origin/master`, `main` or `master`. A push
      also runs the `file-growth` gate of `size` (`--base`).
 4. It runs the same check on the base commit, and leaves out each finding
-   that the base commit has. The result of the base commit stays in
-   `.fallow/` as a cache, so a retry after a block runs one check.
+   that the base commit has. The result of the base commit stays as a cache
+   in the git folder (`.git/cargo-fallow-gate/`), so a retry after a block
+   runs one check. A commit cannot add a file there.
 5. When an enforced gate fails, it blocks the command (exit code 2), and
    prints one line for each new finding, the failed gates and the path of the
    report.
 
 ```text
-cargo-fallow-gate: blocked by cargo-fallow 0.3.0 in /work/app
+cargo-fallow-gate: blocked by cargo-fallow 0.2.0 in /work/ripgrep
 cargo-fallow-gate: failed gates: error-severity-findings
 cargo-fallow-gate: 1 finding(s) in the changed files caused the block:
-  deps/unused-dependency app/Cargo.toml:7 `helper` is in [dependencies], but no code of `app` uses it
-cargo-fallow-gate: full report: /work/app/.fallow/cargo-gate-report.json
+  deps/unused-dependency crates/printer/Cargo.toml:22 Remove `globset` from [dependencies].
+cargo-fallow-gate: full report: /work/ripgrep/.fallow/cargo-gate-report.json
 cargo-fallow-gate: fix the findings and try again. `cargo fallow explain <rule>` explains a rule, and `cargo fallow fix --dry-run --format json` lists the fixable actions.
 ```
 
@@ -76,6 +80,11 @@ The gate keeps the commit open, with one line on stderr, in these cases:
 - The runtime crashes or stops on a signal.
 
 The gate needs bash. On Windows, use Git Bash or WSL.
+
+On a workspace of about 1800 `.rs` files, a release build took 34 seconds for
+the first check of a commit (the base commit and the work tree), and 17
+seconds for a retry with the cache. The Claude Code handler has a timeout of
+300 seconds. A timeout keeps the commit open.
 
 ### Settings
 

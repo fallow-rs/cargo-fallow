@@ -170,7 +170,8 @@ fn decide_write(session: &Path, write: &GitWrite) -> Outcome {
     let mut blocks = Vec::new();
     let mut roots: Vec<PathBuf> = Vec::new();
     for dir in audit_dirs(session, write) {
-        let Some(manifest) = nearest_manifest(&dir).or_else(recorded_manifest) else {
+        let recorded = || recorded_manifest().filter(|manifest| same_work_tree(&dir, manifest));
+        let Some(manifest) = nearest_manifest(&dir).or_else(recorded) else {
             continue;
         };
         match audit(&manifest, write, &mut roots) {
@@ -217,27 +218,56 @@ fn session_dir(cwd: Option<&str>) -> PathBuf {
 }
 
 /// The folders to check: the session folder, then each target of the write
-/// that is a folder. Each folder is a canonical path, without repeats.
+/// that is a folder of the same repository: inside the git work tree of the
+/// session, or a linked worktree with the same git folder. The check of a
+/// folder runs `cargo metadata` there, which reads its `.cargo/config.toml`,
+/// so a folder of another repository is not checked. Each folder is a
+/// canonical path, without repeats.
 fn audit_dirs(session: &Path, write: &GitWrite) -> Vec<PathBuf> {
-    let mut dirs: Vec<PathBuf> = Vec::new();
-    let candidates =
-        std::iter::once(session.to_path_buf()).chain(write.targets.iter().map(|target| {
-            let target = Path::new(target);
-            if target.is_absolute() {
-                target.to_path_buf()
-            } else {
-                session.join(target)
-            }
-        }));
-    for candidate in candidates {
+    let Ok(session) = session.canonicalize() else {
+        return Vec::new();
+    };
+    let session_top = git_path(&session, "--show-toplevel");
+    let session_common = git_path(&session, "--git-common-dir");
+    let same_repository = |dir: &Path| match &session_top {
+        Some(top) => {
+            dir.starts_with(top)
+                || session_common.as_ref().is_some_and(|common| {
+                    git_path(dir, "--git-common-dir").as_ref() == Some(common)
+                })
+        }
+        None => dir.starts_with(&session),
+    };
+    let mut dirs = vec![session.clone()];
+    for target in &write.targets {
+        let target = Path::new(target);
+        let candidate = if target.is_absolute() {
+            target.to_path_buf()
+        } else {
+            session.join(target)
+        };
         if let Ok(dir) = candidate.canonicalize()
             && dir.is_dir()
             && !dirs.contains(&dir)
+            && same_repository(&dir)
         {
             dirs.push(dir);
         }
     }
     dirs
+}
+
+/// A path that `git rev-parse <flag>` gives for `dir`, as a canonical path.
+fn git_path(dir: &Path, flag: &str) -> Option<PathBuf> {
+    let out = git(dir, &["rev-parse", flag]).ok()?;
+    let text = String::from_utf8_lossy(&out).trim().to_owned();
+    let path = PathBuf::from(text);
+    let path = if path.is_absolute() {
+        path
+    } else {
+        dir.join(path)
+    };
+    path.canonicalize().ok()
 }
 
 /// The result of the check of one folder.
@@ -250,6 +280,18 @@ enum Audit {
     Skipped(String),
     /// The check failed. The text is the block message.
     Block(String),
+}
+
+/// True when `dir` and the folder of `manifest` are in one git work tree. The
+/// recorded manifest then belongs to the repository of the folder.
+fn same_work_tree(dir: &Path, manifest: &Path) -> bool {
+    let Some(top) = git_path(dir, "--show-toplevel") else {
+        return false;
+    };
+    manifest
+        .parent()
+        .and_then(|folder| git_path(folder, "--show-toplevel"))
+        .is_some_and(|other| other == top)
 }
 
 /// The manifest that install recorded, when it is a file.

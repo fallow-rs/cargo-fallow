@@ -98,7 +98,7 @@ fn write_no_follow(root: &Path, relative: &Path, text: &str) -> io::Result<PathB
 
 /// Fails when an existing part of `relative` under `root` is a link, or when
 /// the path leaves the root.
-fn refuse_links(root: &Path, relative: &Path) -> io::Result<()> {
+pub fn refuse_links(root: &Path, relative: &Path) -> io::Result<()> {
     let mut prefix = root.to_path_buf();
     for component in relative.components() {
         match component {

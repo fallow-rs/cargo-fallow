@@ -31,32 +31,37 @@ MIN_VERSION="${CARGO_FALLOW_GATE_MIN_VERSION-@@INSTALLER_VERSION@@}"
 
 INPUT="$(cat)"
 
+gate_skip() {
+  if [ -n "${CARGO_FALLOW_GATE_DEBUG:-}" ]; then
+    echo "cargo-fallow-gate: not a git commit or push, skipping the check." >&2
+  fi
+  exit 0
+}
+
 # The hook runs on each shell command. A command that holds no `git` word with
 # a later `commit`, `push` or expansion cannot be a git write, so the gate
-# stops here and starts no process. Quote and escape characters go first, so
-# `g''it commit` still goes on. A JSON `\u` escape can hide a word, so such a
-# payload always goes on.
+# stops here. A command without `g`, `i` and `t` starts no process. Else `tr`
+# drops the quote and escape characters, so `g''it commit` still goes on. A
+# pattern substitution of bash 3.2 takes minutes on a large payload, so the
+# gate does not use one. A JSON `\u` escape can hide a word, so such a payload
+# always goes on.
 case "$INPUT" in
   *'\u'*) ;;
-  *)
-    case "${INPUT//[\'\"\\]/}" in
+  *g*i*t*)
+    case "$(printf '%s' "$INPUT" | tr -d "'\"\\\\")" in
       *git*commit* | *git*push* | *git*'$'*) ;;
-      *)
-        if [ -n "${CARGO_FALLOW_GATE_DEBUG:-}" ]; then
-          echo "cargo-fallow-gate: not a git commit or push, skipping the check." >&2
-        fi
-        exit 0
-        ;;
+      *) gate_skip ;;
     esac
     ;;
+  *) gate_skip ;;
 esac
 
 BIN="${CARGO_FALLOW_GATE_BIN:-}"
 if [ -z "$BIN" ]; then
   if command -v cargo-fallow >/dev/null 2>&1; then
     BIN="$(command -v cargo-fallow)"
-  elif [ -x "${CARGO_HOME:-$HOME/.cargo}/bin/cargo-fallow" ]; then
-    BIN="${CARGO_HOME:-$HOME/.cargo}/bin/cargo-fallow"
+  elif [ -x "${CARGO_HOME:-${HOME:-}/.cargo}/bin/cargo-fallow" ]; then
+    BIN="${CARGO_HOME:-${HOME:-}/.cargo}/bin/cargo-fallow"
   fi
 fi
 if [ -z "$BIN" ] || [ ! -x "$BIN" ]; then
@@ -74,6 +79,14 @@ if [ "$VERSION" = "$PROBE" ]; then
     exit 0
   fi
   VERSION_LINE="$("$BIN" --version 2>/dev/null || true)"
+  case "$VERSION_LINE" in
+    "cargo-fallow "*) ;;
+    *)
+      # Not a cargo-fallow binary that runs: keep the gate open.
+      echo "cargo-fallow-gate: $BIN does not run as cargo-fallow, skipping the check." >&2
+      exit 0
+      ;;
+  esac
   VERSION="${VERSION_LINE#cargo-fallow }"
   VERSION="${VERSION%% *}"
   BELOW=1
@@ -92,15 +105,17 @@ if [ "$BELOW" -eq 1 ]; then
   exit 2
 fi
 
+OUT_FILE=""
+ERR_FILE=""
+trap 'rm -f "$OUT_FILE" "$ERR_FILE"' EXIT
 if ! OUT_FILE="$(mktemp)" || ! ERR_FILE="$(mktemp)"; then
   echo "cargo-fallow-gate: cannot make a temporary file, skipping the check." >&2
   exit 0
 fi
-trap 'rm -f "$OUT_FILE" "$ERR_FILE"' EXIT
 
 # The manifest that install recorded, relative to the install root. The
 # runtime uses it when no Cargo.toml is above the session folder.
-MANIFEST="@@MANIFEST@@"
+MANIFEST=@@MANIFEST@@
 if [ -n "$MANIFEST" ]; then
   INSTALL_ROOT="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." 2>/dev/null && pwd -P)" || INSTALL_ROOT=""
   if [ -n "$INSTALL_ROOT" ]; then

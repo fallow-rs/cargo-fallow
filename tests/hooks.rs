@@ -227,17 +227,13 @@ fn a_finding_that_head_already_has_does_not_block() {
     // A retry uses the cached result of the base commit.
     let (code, _) = gate(dir.path(), "git commit -am 'bump'");
     assert_eq!(code, 0);
-    let caches: Vec<_> = fs::read_dir(dir.path().join(".fallow"))
+    // The cache is in the git folder, where a commit cannot add a file.
+    let caches: Vec<_> = fs::read_dir(dir.path().join(".git/cargo-fallow-gate"))
         .expect("the cache folder")
         .flatten()
-        .filter(|entry| {
-            entry
-                .file_name()
-                .to_string_lossy()
-                .starts_with("cargo-gate-base-")
-        })
         .collect();
     assert_eq!(caches.len(), 1);
+    assert!(!dir.path().join(".fallow").exists());
 }
 
 #[test]
@@ -505,4 +501,200 @@ fn a_hook_manager_gets_a_step_and_no_file() {
     let report: Value = serde_json::from_slice(&output.stdout).expect("JSON");
     assert_eq!(report["manager_step"]["manager"], "hk");
     assert!(!dir.path().join(".git/hooks/pre-commit").exists());
+}
+
+/// A git repository whose workspace is in a subfolder. The folder name holds
+/// shell code, which the generated scripts must not run.
+fn nested_repo() -> (tempfile::TempDir, PathBuf) {
+    let dir = tempfile::tempdir().expect("create a temporary directory");
+    let top = dir.path().join("repo");
+    let workspace = top.join("rust$(touch${IFS}PWNED)`touch${IFS}PWNED2`");
+    fs::create_dir_all(&workspace).expect("a folder");
+    let base = repo();
+    for path in [
+        "Cargo.toml",
+        "app/Cargo.toml",
+        "app/src/main.rs",
+        "helper/Cargo.toml",
+        "helper/src/lib.rs",
+    ] {
+        write(
+            &workspace,
+            path,
+            &fs::read_to_string(base.path().join(path)).expect("read"),
+        );
+    }
+    git(&top, &["init", "-q"]);
+    git(&top, &["add", "-A"]);
+    git(&top, &["commit", "-q", "-m", "init"]);
+    (dir, workspace)
+}
+
+#[test]
+fn a_workspace_below_the_git_top_level_is_checked_and_its_name_runs_nothing() {
+    let (dir, workspace) = nested_repo();
+    let top = dir.path().join("repo");
+    let manifest = workspace.join("Cargo.toml");
+    let output = cargo_fallow(
+        &top,
+        &[
+            "hooks",
+            "install",
+            "--target",
+            "agent",
+            "--manifest-path",
+            manifest.to_str().expect("UTF-8"),
+        ],
+    );
+    assert!(output.status.success(), "{output:?}");
+    assert!(top.join(SCRIPT).is_file());
+    add_unused_dependency(&workspace);
+    // The session is at the git top level, with no Cargo.toml above it.
+    let (code, stderr) = gate(&top, "git commit -am x");
+    assert_eq!(code, 2, "{stderr}");
+    assert!(stderr.contains("deps/unused-dependency"), "{stderr}");
+    for name in ["PWNED", "PWNED2"] {
+        assert!(!top.join(name).exists(), "the folder name ran as code");
+        assert!(
+            !dir.path().join(name).exists(),
+            "the folder name ran as code"
+        );
+    }
+}
+
+#[test]
+fn a_path_to_git_is_a_git_write() {
+    let dir = repo();
+    install(dir.path());
+    add_unused_dependency(dir.path());
+    for command in ["/usr/bin/git commit -am x", "x=git; $x commit -am x"] {
+        let (code, stderr) = gate(dir.path(), command);
+        assert_eq!(code, 2, "{command}: {stderr}");
+    }
+}
+
+#[test]
+fn a_folder_of_another_repository_is_not_checked() {
+    let dir = repo();
+    install(dir.path());
+    let other = repo();
+    add_unused_dependency(other.path());
+    let command = format!("git -C {} commit -am x", other.path().display());
+    let (code, stderr) = gate(dir.path(), &command);
+    assert_eq!(code, 0, "{stderr}");
+}
+
+#[test]
+fn a_linked_worktree_of_the_same_repository_is_checked() {
+    let dir = repo();
+    install(dir.path());
+    let linked = dir.path().join("wt");
+    git(
+        dir.path(),
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "other",
+            linked.to_str().expect("UTF-8"),
+        ],
+    );
+    add_unused_dependency(&linked);
+    let command = format!("git -C {} commit -am x", linked.display());
+    let (code, stderr) = gate(dir.path(), &command);
+    assert_eq!(code, 2, "{stderr}");
+}
+
+#[test]
+fn install_refuses_a_link_in_the_harness_folder() {
+    let dir = repo();
+    let outside = tempfile::tempdir().expect("a folder");
+    std::os::unix::fs::symlink(outside.path(), dir.path().join(".claude")).expect("a link");
+    let output = cargo_fallow(dir.path(), &["hooks", "install", "--target", "agent"]);
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert_eq!(fs::read_dir(outside.path()).expect("read").count(), 0);
+}
+
+#[test]
+fn the_recorded_manifest_does_not_apply_to_another_repository() {
+    let (dir, workspace) = nested_repo();
+    let top = dir.path().join("repo");
+    let manifest = workspace.join("Cargo.toml");
+    let output = cargo_fallow(
+        &top,
+        &[
+            "hooks",
+            "install",
+            "--target",
+            "agent",
+            "--manifest-path",
+            manifest.to_str().expect("UTF-8"),
+        ],
+    );
+    assert!(output.status.success(), "{output:?}");
+    add_unused_dependency(&workspace);
+    // A session in another repository with no Cargo.toml.
+    let other = tempfile::tempdir().expect("a folder");
+    git(other.path(), &["init", "-q"]);
+    let (code, stderr) = gate_with(&top, &payload(other.path(), "git commit -m x"), BIN, &[]);
+    assert_eq!(code, 0, "{stderr}");
+}
+
+#[test]
+fn a_probe_that_fails_keeps_the_gate_open() {
+    let dir = repo();
+    install(dir.path());
+    let bins = tempfile::tempdir().expect("a folder");
+    let broken = bins.path().join("broken");
+    fs::write(&broken, "#!/bin/sh\nexit 1\n").expect("write");
+    fs::set_permissions(&broken, fs::Permissions::from_mode(0o755)).expect("chmod");
+    let (code, stderr) = gate_with(
+        dir.path(),
+        &payload(dir.path(), "git commit -m x"),
+        broken.to_str().expect("UTF-8"),
+        &[],
+    );
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(stderr.lines().count(), 1, "{stderr}");
+}
+
+#[test]
+fn a_large_payload_is_fast_and_home_can_be_unset() {
+    let dir = repo();
+    install(dir.path());
+    let body = "it's a line with git and \"quotes\"\n".repeat(400);
+    let started = std::time::Instant::now();
+    let (code, stderr) = gate_with(
+        dir.path(),
+        &payload(dir.path(), &format!("cat <<EOF\n{body}EOF")),
+        BIN,
+        &[],
+    );
+    assert_eq!(code, 0, "{stderr}");
+    assert!(started.elapsed().as_secs() < 10, "{:?}", started.elapsed());
+    let mut command = Command::new("bash");
+    let output = command
+        .arg(dir.path().join(SCRIPT))
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            child
+                .stdin
+                .take()
+                .expect("stdin")
+                .write_all(payload(dir.path(), "git commit -m x").as_bytes())?;
+            child.wait_with_output()
+        })
+        .expect("run bash");
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr).lines().count(),
+        1,
+        "{output:?}"
+    );
 }

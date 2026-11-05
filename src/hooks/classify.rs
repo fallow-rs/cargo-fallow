@@ -61,9 +61,7 @@ pub fn git_write(command: &str) -> Option<GitWrite> {
     for segment in joined.split(OPERATORS) {
         scan.segment(segment);
     }
-    if scan.kinds.is_empty() {
-        scan.kinds.extend(loose_kinds(&joined));
-    }
+    scan.kinds.extend(loose_kinds(&joined));
     if scan.kinds.is_empty() {
         return None;
     }
@@ -96,7 +94,7 @@ impl Scan {
         while index < words.len() {
             let word = words[index];
             index += 1;
-            if word != "git" {
+            if !is_git(word) {
                 self.location_prefix(word);
                 continue;
             }
@@ -167,6 +165,11 @@ impl Scan {
     }
 }
 
+/// True for the word `git` and for a path to git, such as `/usr/bin/git`.
+fn is_git(word: &str) -> bool {
+    word == "git" || word.ends_with("/git")
+}
+
 /// The parent of a git folder that ends in `.git`, or `None` for another
 /// value.
 fn git_dir_parent(value: &str) -> Option<String> {
@@ -204,7 +207,7 @@ fn join(base: &str, dir: &str) -> String {
 
 /// The loose pass: the kinds of write in a command with quotes, escapes or
 /// expansions. An expansion after `git` counts as both kinds, because it can
-/// be either.
+/// be either. An expansion as the command name counts as `git`.
 fn loose_kinds(command: &str) -> Vec<WriteKind> {
     if !command.contains(['\'', '"', '\\', '$', '`']) {
         return Vec::new();
@@ -217,8 +220,9 @@ fn loose_kinds(command: &str) -> Vec<WriteKind> {
     let mut kinds = Vec::new();
     for segment in text.split([';', '|', '&', '\n']) {
         let mut seen_git = false;
-        for word in segment.split_whitespace() {
-            if word == "git" {
+        for (index, word) in segment.split_whitespace().enumerate() {
+            // An expansion in the place of the command name can be git.
+            if is_git(word) || (index == 0 && word.starts_with('$')) {
                 seen_git = true;
             } else if seen_git && word.starts_with('$') {
                 kinds.extend([WriteKind::Commit, WriteKind::Push]);
@@ -294,9 +298,20 @@ mod tests {
             "g''it commit",
             "git $SUB",
             "git -C \"$(pwd)\" commit",
+            "/usr/bin/git commit -m x",
+            "/opt/homebrew/bin/git push",
+            "x=git; $x commit",
         ] {
             assert!(!kinds(command).is_empty(), "{command}");
         }
+    }
+
+    #[test]
+    fn a_quoted_write_after_a_plain_write_counts_too() {
+        assert_eq!(
+            kinds("git commit -m x && sh -c 'git push'"),
+            [WriteKind::Commit, WriteKind::Push]
+        );
     }
 
     #[test]

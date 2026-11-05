@@ -11,6 +11,73 @@ it.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-05
+
+### Added
+
+- `cargo fallow hooks install --target agent` installs a gate for Claude Code
+  and Codex. The gate blocks a `git commit` or a `git push` of the agent when
+  `cargo fallow check` finds a new finding in the changed files, and it lists
+  each finding. A finding that the base commit already has does not block. An
+  error of the tool does not block.
+- `cargo fallow hooks install --target git` installs the same check as a git
+  pre-commit hook. `hooks uninstall` removes the files, and `hooks status`
+  shows them. `--format json` gives the `hooks` and `hooks-status` documents.
+- The `cargo-fallow` skill in `skills/cargo-fallow/SKILL.md` tells a coding
+  agent how to run each command, read the JSON output and fix the findings
+  after a block of the gate.
+- `cargo fallow agent install` sets up a repository for coding agents in one
+  step: a guide block in `AGENTS.md`, the `cargo-fallow` skill for Claude Code
+  and Codex, and the commit gate. `agent status` shows the parts, and `agent
+  uninstall` removes them. `cargo fallow init --agents` runs `agent install`.
+- The `cargo-fallow` skill has a Codex interface file,
+  `skills/cargo-fallow/agents/openai.yaml`, with its display name and a
+  default prompt.
+- `cargo fallow api --public-crate <CRATE>` replaces `public-crates` for one
+  run. `--all-published` reads each published library and ignores the table.
+- `consumers` of `[workspace.metadata.fallow.visibility]` lists the manifests
+  of separate workspaces whose code uses the items of the workspace, for
+  example `fuzz/Cargo.toml`. A use in their code counts, so `visibility` does
+  not report an item that a fuzz target calls, and `fix` does not narrow it.
+  Without the key, `fuzz/Cargo.toml` is a consumer when it exists. The `fix`
+  guard also checks each consumer workspace.
+- A `boundaries.sources` rule reports an `allow` entry whose file has fewer
+  matches than `max`, with the actual count. The finding has the kind
+  `allow-entry`, so the list stays exact.
+- An `allow` entry takes `require = ["pattern"]`. The entry then passes only
+  when the file contains each required pattern.
+
+### Changed
+
+- `cargo fallow init --ci github` writes `fallow-rs/cargo-fallow@v0` in the
+  workflow. Before, it wrote `@main`, which runs the action of the newest
+  commit and not of a release. `v0` is the newest 0.x release.
+- A `dead-public` finding and a finding with `test_only: true` are no longer
+  `auto_fixable`. A smaller keyword on such an item makes the compiler report
+  dead code. A `dead-public` finding has a second action, `remove-item`.
+
+### Fixed
+
+- `cargo fallow fix` no longer stops the whole run for one edit that adds a
+  compiler warning or error. It leaves out that edit, applies the others and
+  exits 0. Each left-out edit has a `skip_reason` (`compiler_error` or
+  `compiler_warning`) and the compiler message in `diagnostic`. A message that
+  names no item leaves out the edit at a line of its spans, or else the edits
+  of its file.
+- The `fix` guard now counts a new `dead_code` warning, so an edit that makes
+  the compiler report dead code is left out.
+- `cargo fallow api --base <REF>` now reads the same libraries that
+  `visibility` treats as an external API. When `public-crates` of
+  `[workspace.metadata.fallow.visibility]` is set, the command reads only the
+  libraries that `public-crates` and `exclude-crates` name. A narrowed item of
+  an internal crate is then no `removed` finding.
+- The GitHub Action and the GitLab CI template now work with a jq that ends
+  each line with CRLF, as jq on Windows does. The gate outputs, the
+  annotation count, the job summary and the GitLab note pages no longer keep
+  a CR. With bash 3.2, the GitLab comment step could loop without end. A
+  comment compare now ignores each CR. The script tests run a second time
+  with such a jq.
+
 ## [0.2.0] - 2026-11-05
 
 ### Added

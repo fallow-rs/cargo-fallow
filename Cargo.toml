@@ -1,6 +1,6 @@
 [package]
 name = "cargo-fallow"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 # The floor of fallow-report-protocol.
 rust-version = "1.98"

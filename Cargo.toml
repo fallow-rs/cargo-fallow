@@ -13,7 +13,7 @@ keywords = ["cargo", "cargo-subcommand", "static-analysis", "mutation-testing"]
 categories = ["development-tools::cargo-plugins"]
 # The package holds the source, the manifest, the lock file, the license, the
 # README and the CHANGELOG only. scripts/check-package.mjs checks the list.
-include = ["/src/**/*.rs", "/src/hooks/gate.sh", "/LICENSE", "/README.md", "/CHANGELOG.md"]
+include = ["/src/**/*.rs", "/src/hooks/gate.sh", "/skills/cargo-fallow/SKILL.md", "/LICENSE", "/README.md", "/CHANGELOG.md"]
 
 # The fixtures and the fuzz crate have their own `[workspace]` tables. This
 # table keeps their manifests out of the root workspace.

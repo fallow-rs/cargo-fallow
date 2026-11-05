@@ -123,6 +123,8 @@ pub enum Parsed {
     Schema,
     /// Run one `hooks` subcommand.
     Hooks(crate::hooks::Command),
+    /// Run one `agent` subcommand.
+    Agent(crate::agent::Command),
     /// Stop with this exit code. The parser already wrote its output.
     Exit(u8),
 }
@@ -214,6 +216,14 @@ enum Command {
     /// not block, and an error of the tool does not block.
     #[command(subcommand)]
     Hooks(crate::hooks::Command),
+    /// Set up a repository for coding agents: the guide in `AGENTS.md`, the
+    /// `cargo-fallow` skill and the gate, in one step.
+    ///
+    /// `install` writes the parts for Claude Code and Codex, `status` shows
+    /// them, and `uninstall` removes them. A file that someone edited stays,
+    /// unless you give `--force`.
+    #[command(subcommand)]
+    Agent(crate::agent::Command),
     /// Kill the test processes when the parent process dies. The memory guard
     /// starts this command.
     #[command(hide = true, name = "mutation-watchdog")]
@@ -680,6 +690,7 @@ pub fn parse(args: &[OsString]) -> Parsed {
             Some(Command::Structure(command)) => Parsed::Structure(Box::new(command)),
             Some(Command::Schema) => Parsed::Schema,
             Some(Command::Hooks(command)) => Parsed::Hooks(command),
+            Some(Command::Agent(command)) => Parsed::Agent(command),
             Some(Command::MutationWatchdog {
                 roots,
                 sweep,

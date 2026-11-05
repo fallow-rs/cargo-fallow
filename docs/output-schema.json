@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/fallow-rs/cargo-fallow/blob/main/docs/output-schema.json",
   "title": "cargo-fallow JSON output",
-  "description": "Each JSON document that cargo-fallow writes: the report of each command (also `fix`), the inspect report of `mutants --inspect`, the trace of `visibility --trace`, `deps --trace` and `dupes --trace`, the baseline file of `--save-baseline`, the snapshot of `check --save-snapshot`, the rule of `explain`, the report of `init`, the reports of `hooks install`, `hooks uninstall` and `hooks status`, and the error document of exit code 2. The `document-<name>` definitions name each document.",
+  "description": "Each JSON document that cargo-fallow writes: the report of each command (also `fix`), the inspect report of `mutants --inspect`, the trace of `visibility --trace`, `deps --trace` and `dupes --trace`, the baseline file of `--save-baseline`, the snapshot of `check --save-snapshot`, the rule of `explain`, the report of `init`, the reports of `hooks install`, `hooks uninstall`, `hooks status`, `agent install`, `agent uninstall` and `agent status`, and the error document of exit code 2. The `document-<name>` definitions name each document.",
   "anyOf": [
     {
       "$ref": "#/$defs/document-check"
@@ -68,6 +68,12 @@
       "$ref": "#/$defs/document-hooks-status"
     },
     {
+      "$ref": "#/$defs/document-agent"
+    },
+    {
+      "$ref": "#/$defs/document-agent-status"
+    },
+    {
       "$ref": "#/$defs/document-error"
     }
   ],
@@ -94,6 +100,92 @@
         "description"
       ],
       "description": "A next step for a finding."
+    },
+    "AgentReport": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The version of the document shape."
+        },
+        "kind": {
+          "type": "string",
+          "description": "Always `agent`."
+        },
+        "version": {
+          "type": "string",
+          "description": "The version of cargo-fallow."
+        },
+        "action": {
+          "type": "string",
+          "description": "`install` or `uninstall`."
+        },
+        "dry_run": {
+          "type": "boolean",
+          "description": "True when the command wrote nothing."
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FileOutcome"
+          },
+          "description": "Each file, in the order of the work."
+        }
+      },
+      "required": [
+        "schema_version",
+        "kind",
+        "version",
+        "action",
+        "dry_run",
+        "files"
+      ],
+      "description": "The report of `agent install` and `agent uninstall`."
+    },
+    "AgentStatus": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The version of the document shape."
+        },
+        "kind": {
+          "type": "string",
+          "description": "Always `agent-status`."
+        },
+        "version": {
+          "type": "string",
+          "description": "The version of cargo-fallow."
+        },
+        "guide": {
+          "type": "boolean",
+          "description": "True when `AGENTS.md` holds the current guide block."
+        },
+        "skills": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SkillStatus"
+          },
+          "description": "The state of the skill of each harness."
+        },
+        "gate": {
+          "$ref": "#/$defs/HooksStatus",
+          "description": "The state of each hook surface, the same as `hooks status`."
+        }
+      },
+      "required": [
+        "schema_version",
+        "kind",
+        "version",
+        "guide",
+        "skills",
+        "gate"
+      ],
+      "description": "The report of `agent status`."
     },
     "ApiChange": {
       "oneOf": [
@@ -5366,6 +5458,29 @@
       ],
       "description": "The summary of a size run."
     },
+    "SkillStatus": {
+      "type": "object",
+      "properties": {
+        "harness": {
+          "type": "string",
+          "description": "`claude` or `codex`."
+        },
+        "path": {
+          "type": "string",
+          "description": "The path, relative to the install root."
+        },
+        "state": {
+          "type": "string",
+          "description": "`current`, `outdated`, `edited` or `absent`."
+        }
+      },
+      "required": [
+        "harness",
+        "path",
+        "state"
+      ],
+      "description": "The state of the skill of one harness."
+    },
     "Skipped": {
       "type": "object",
       "properties": {
@@ -6420,6 +6535,12 @@
         "failures"
       ],
       "description": "The run of the survivors against the tests of each workspace member."
+    },
+    "document-agent": {
+      "$ref": "#/$defs/AgentReport"
+    },
+    "document-agent-status": {
+      "$ref": "#/$defs/AgentStatus"
     },
     "document-api": {
       "allOf": [

@@ -26,7 +26,7 @@ const TOP_LEVEL = new Set(["Cargo.toml", "Cargo.lock", "LICENSE", "README.md", "
  * Files that the source embeds with `include_str!`. The build of the package
  * needs them. Each one is listed by name, so no other asset can slip in.
  */
-export const EMBEDDED = new Set(["src/hooks/gate.sh"]);
+export const EMBEDDED = new Set(["src/hooks/gate.sh", "skills/cargo-fallow/SKILL.md"]);
 
 /** The files that each package must hold. */
 export const REQUIRED = [...TOP_LEVEL, ...EMBEDDED, "src/main.rs", "src/lib.rs"];

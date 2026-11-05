@@ -121,7 +121,8 @@ In the other formats, it writes the error to stderr.
   `boundaries`, `size`, `complexity`, `dupes` and `mutants`). The others are
   the inspect report of `mutants --inspect` (`mutants-inspect`), the baseline
   file (`baseline`), the reports of `hooks install` and `hooks uninstall`
-  (`hooks`) and `hooks status` (`hooks-status`), and the error document
+  (`hooks`), `hooks status` (`hooks-status`), `agent install` and
+  `agent uninstall` (`agent`), `agent status` (`agent-status`), and the error document
   (`error`).
 - Each report has `schema_version` 1. When a change removes a field or changes
   the type of a field, the maintainers increment the version of that report.

@@ -302,11 +302,17 @@ writes one JSON document to stdout:
 For grep, use `--format compact`. It writes one `path:line:col: rule: message`
 line for each finding. [Output formats](docs/output.md) describes all formats.
 
-To stop a coding agent before it commits a new finding, install the gate:
+To set up a repository for coding agents in one step, run:
 
 ```bash
-cargo fallow hooks install --target agent
+cargo fallow agent install --dry-run   # show the files first
+cargo fallow agent install             # the same as `cargo fallow init --agents`
+cargo fallow agent status
 ```
+
+`agent install` writes a short guide in `AGENTS.md`, the `cargo-fallow` skill
+for Claude Code and Codex, and the commit gate. To install only the gate, run
+`cargo fallow hooks install --target agent`.
 
 The gate runs before each `git commit` and `git push` of Claude Code or
 Codex. It blocks when `cargo fallow check` finds a new finding in the changed

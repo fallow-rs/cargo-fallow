@@ -58,6 +58,10 @@ pub struct InitArgs {
     /// Print a CI workflow file that runs the checks, instead of the tables.
     #[arg(long, value_enum, value_name = "SYSTEM")]
     ci: Option<Ci>,
+    /// Set up the repository for coding agents instead: the same as `cargo
+    /// fallow agent install`.
+    #[arg(long, conflicts_with_all = ["write", "ci"])]
+    agents: bool,
     #[command(flatten)]
     cargo: crate::cli::CargoArgs,
 }
@@ -99,6 +103,12 @@ struct Limits {
 
 /// Runs `init` and returns the process exit code.
 pub fn run(args: &InitArgs) -> Result<u8, CliError> {
+    if args.agents {
+        return crate::agent::install(&crate::agent::InstallArgs::defaults(
+            args.manifest_path.clone(),
+            args.format,
+        ));
+    }
     if args.ci == Some(Ci::Github) {
         render::write_stdout(github_workflow().trim_end()).map_err(|err| CliError::output(&err))?;
         return Ok(EXIT_OK);

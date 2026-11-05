@@ -130,3 +130,25 @@ findings, and an error of the tool does not block. Skip it for one commit with
 | `edited` | The script is not the generated one. |
 | `managed` | A hook manager runs the git hooks. |
 | `absent` | Nothing is installed. |
+
+## Agent setup in one step
+
+`cargo fallow agent install` writes three parts for each harness:
+
+| Part | Files |
+| --- | --- |
+| `guide` | A block in `AGENTS.md` between `<!-- cargo-fallow:agents:start -->` and `<!-- cargo-fallow:agents:end -->`, with a short task table. The block of fallow for JavaScript stays. |
+| `skill` | `.claude/skills/cargo-fallow/SKILL.md` (Claude Code) and `.agents/skills/cargo-fallow/SKILL.md` (Codex), from [`skills/cargo-fallow/SKILL.md`](../skills/cargo-fallow/SKILL.md). |
+| `gate` | The files of `hooks install --target agent`. |
+
+| Flag | Meaning |
+| --- | --- |
+| `--harness claude\|codex` | Only this harness. The default is each harness whose folder exists, else Claude Code. |
+| `--without guide,skill,gate` | Leave out these parts. |
+| `--manifest-path <PATH>`, `--dry-run`, `--force`, `--format human\|json` | The same as for `hooks install`. |
+
+`cargo fallow init --agents` runs `agent install` with the defaults.
+`cargo fallow agent status` shows the guide, the state of each skill
+(`current`, `outdated`, `edited` or `absent`) and the gate. `cargo fallow agent
+uninstall` removes the parts, and keeps a skill that someone edited unless you
+give `--force`. The JSON documents are `agent` and `agent-status`.

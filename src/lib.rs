@@ -9,6 +9,7 @@
 // `.clippy.toml`.
 #![cfg_attr(not(test), deny(clippy::disallowed_methods))]
 
+mod agent;
 mod api;
 mod attrs;
 mod baseline;
@@ -91,6 +92,7 @@ pub fn run(args: Vec<OsString>) -> ExitCode {
             EXIT_OK
         }
         Parsed::Hooks(command) => hooks::run(&command),
+        Parsed::Agent(command) => agent::run(&command),
         Parsed::Schema => match render::write_stdout(schema::text().trim_end()) {
             Ok(()) => EXIT_OK,
             Err(err) => {

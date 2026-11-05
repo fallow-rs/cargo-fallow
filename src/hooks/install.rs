@@ -83,6 +83,16 @@ pub struct FileOutcome {
     pub outcome: Outcome,
 }
 
+impl FileOutcome {
+    /// The outcome for `path` below `root`.
+    pub fn new(root: &Path, path: &Path, outcome: Outcome) -> Self {
+        Self {
+            path: display(root, path),
+            outcome,
+        }
+    }
+}
+
 /// A hook manager that owns the git hooks.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub struct ManagerStep {
@@ -93,15 +103,16 @@ pub struct ManagerStep {
 }
 
 /// The install root and the manifest to record in the scripts.
-struct Root {
-    root: PathBuf,
+pub struct Root {
+    /// The install root.
+    pub root: PathBuf,
     /// The manifest of the workspace, relative to the root, when the
     /// workspace root is not the install root.
-    manifest: String,
+    pub manifest: String,
 }
 
 /// Finds the install root from the workspace of `manifest_path`.
-fn install_root(manifest_path: Option<&Path>) -> Result<Root, CliError> {
+pub fn install_root(manifest_path: Option<&Path>) -> Result<Root, CliError> {
     let workspace = crate::workspace::load(manifest_path, &["--offline".to_owned()])?;
     let workspace_root = workspace.root.as_std_path().to_path_buf();
     let top = git(&workspace_root, &["rev-parse", "--show-toplevel"])
@@ -136,7 +147,7 @@ fn slashed(path: &Path) -> String {
 }
 
 /// The display path of a file below the root.
-fn display(root: &Path, path: &Path) -> String {
+pub fn display(root: &Path, path: &Path) -> String {
     path.strip_prefix(root)
         .map_or_else(|_| path.display().to_string(), slashed)
 }
@@ -196,7 +207,7 @@ exit 0
 /// The harnesses of the agent target: the one of `--agent`, else each one
 /// whose folder exists, else Claude Code. `installed` is true for uninstall,
 /// which looks only at the harnesses with files.
-fn harnesses(root: &Path, agent: Option<Harness>, installed: bool) -> Vec<Harness> {
+pub fn harnesses(root: &Path, agent: Option<Harness>, installed: bool) -> Vec<Harness> {
     if let Some(agent) = agent {
         return vec![agent];
     }
@@ -211,7 +222,8 @@ fn harnesses(root: &Path, agent: Option<Harness>, installed: bool) -> Vec<Harnes
     }
 }
 
-fn file_error(message: String) -> CliError {
+/// The error of a file that the command cannot write or must not change.
+pub fn file_error(message: String) -> CliError {
     CliError::new(ErrorCode::InvalidArgument, message)
 }
 
@@ -222,19 +234,8 @@ pub fn install(args: &InstallArgs) -> Result<u8, CliError> {
     let mut report = HooksReport::new("install", args);
     match args.target {
         Target::Agent => {
-            let script = gate_script(&root.manifest);
-            for harness in harnesses(&root.root, args.agent, false) {
-                let script_path =
-                    settings::safe_path(&root.root, &harness.script_path()).map_err(file_error)?;
-                let outcome =
-                    files::install_script(&script_path, &script, MARKER, args.force, args.dry_run)
-                        .map_err(file_error)?;
-                report.push(&root.root, &script_path, outcome);
-                let settings_path = root.root.join(harness.settings_path());
-                let outcome =
-                    settings::install(&root.root, harness, args.dry_run).map_err(file_error)?;
-                report.push(&root.root, &settings_path, outcome);
-            }
+            let harnesses = harnesses(&root.root, args.agent, false);
+            report.files = install_gate(&root, &harnesses, args.force, args.dry_run)?;
         }
         Target::Git => {
             if let Some(path) = report.git_hook(&root.root)? {
@@ -260,21 +261,8 @@ pub fn uninstall(args: &InstallArgs) -> Result<u8, CliError> {
     let mut report = HooksReport::new("uninstall", args);
     match args.target {
         Target::Agent => {
-            for harness in harnesses(&root.root, args.agent, true) {
-                let settings_path = root.root.join(harness.settings_path());
-                let outcome =
-                    settings::uninstall(&root.root, harness, args.dry_run).map_err(file_error)?;
-                report.push(&root.root, &settings_path, outcome);
-                let script_path =
-                    settings::safe_path(&root.root, &harness.script_path()).map_err(file_error)?;
-                let outcome = files::remove_script(&script_path, MARKER, args.force, args.dry_run)
-                    .map_err(file_error)?;
-                report.push(&root.root, &script_path, outcome);
-                if outcome == Outcome::Removed && !args.dry_run {
-                    // The folder stays when it holds another file.
-                    let _ = std::fs::remove_dir(root.root.join(harness.dir()).join("hooks"));
-                }
-            }
+            let harnesses = harnesses(&root.root, args.agent, true);
+            report.files = remove_gate(&root.root, &harnesses, args.force, args.dry_run)?;
         }
         Target::Git => {
             if let Some(path) = report.git_hook(&root.root)? {
@@ -285,6 +273,53 @@ pub fn uninstall(args: &InstallArgs) -> Result<u8, CliError> {
         }
     }
     report.write(args.format)
+}
+
+/// Installs the gate script and the handler of each harness.
+pub fn install_gate(
+    root: &Root,
+    harnesses: &[Harness],
+    force: bool,
+    dry_run: bool,
+) -> Result<Vec<FileOutcome>, CliError> {
+    let script = gate_script(&root.manifest);
+    let mut outcomes = Vec::new();
+    for &harness in harnesses {
+        let script_path =
+            settings::safe_path(&root.root, &harness.script_path()).map_err(file_error)?;
+        let outcome = files::install_script(&script_path, &script, MARKER, force, dry_run)
+            .map_err(file_error)?;
+        outcomes.push(FileOutcome::new(&root.root, &script_path, outcome));
+        let settings_path = root.root.join(harness.settings_path());
+        let outcome = settings::install(&root.root, harness, dry_run).map_err(file_error)?;
+        outcomes.push(FileOutcome::new(&root.root, &settings_path, outcome));
+    }
+    Ok(outcomes)
+}
+
+/// Removes the handler and the gate script of each harness. A script that
+/// someone edited stays, unless `force` is true.
+pub fn remove_gate(
+    root: &Path,
+    harnesses: &[Harness],
+    force: bool,
+    dry_run: bool,
+) -> Result<Vec<FileOutcome>, CliError> {
+    let mut outcomes = Vec::new();
+    for &harness in harnesses {
+        let settings_path = root.join(harness.settings_path());
+        let outcome = settings::uninstall(root, harness, dry_run).map_err(file_error)?;
+        outcomes.push(FileOutcome::new(root, &settings_path, outcome));
+        let script_path = settings::safe_path(root, &harness.script_path()).map_err(file_error)?;
+        let outcome =
+            files::remove_script(&script_path, MARKER, force, dry_run).map_err(file_error)?;
+        outcomes.push(FileOutcome::new(root, &script_path, outcome));
+        if outcome == Outcome::Removed && !dry_run {
+            // The folder stays when it holds another file.
+            let _ = std::fs::remove_dir(root.join(harness.dir()).join("hooks"));
+        }
+    }
+    Ok(outcomes)
 }
 
 /// `--agent` applies only to the agent target.
@@ -364,10 +399,7 @@ impl HooksReport {
     }
 
     fn push(&mut self, root: &Path, path: &Path, outcome: Outcome) {
-        self.files.push(FileOutcome {
-            path: display(root, path),
-            outcome,
-        });
+        self.files.push(FileOutcome::new(root, path, outcome));
     }
 
     fn write(&self, format: Format) -> Result<u8, CliError> {

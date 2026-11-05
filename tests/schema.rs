@@ -259,3 +259,29 @@ fn the_hooks_reports_validate() {
         assert_valid(&schema, kind, &document);
     }
 }
+
+#[test]
+fn the_agent_reports_validate() {
+    let schema = schema();
+    let dir = tempfile::tempdir().expect("temporary directory");
+    copy_dir(&Path::new(FIXTURES).join("action-mutants"), dir.path());
+    git(dir.path(), &["init", "--quiet"]);
+    for (args, kind) in [
+        (&["agent", "install"][..], "agent"),
+        (&["agent", "status"], "agent-status"),
+        (&["agent", "uninstall", "--dry-run"], "agent"),
+    ] {
+        let output = binary()
+            .current_dir(dir.path())
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .args(args)
+            .args(["--format", "json"])
+            .output()
+            .expect("run cargo-fallow");
+        let document: Value = serde_json::from_slice(&output.stdout)
+            .unwrap_or_else(|err| panic!("{args:?}: not JSON: {err}: {output:?}"));
+        assert_eq!(document["kind"], kind, "{document:#}");
+        assert_valid(&schema, kind, &document);
+    }
+}

@@ -34,6 +34,8 @@ separate commands.
 | `--skip <CHECK>,...` | Do not run these checks. |
 | `--fail-on-issues` | Enforce the gate of each check that ran. |
 | `--fail-on-parse-error` | Enforce only the `parse-error` gate. |
+| `--base <REF>` | Run the `file-growth` gate of `size`: compare each `.rs` file that HEAD changes with its version at the merge base of HEAD and `REF`. A ref that git cannot read exits 2. |
+| `--staged` | Run the `file-growth` gate of `size` on the staged `.rs` files, compared with HEAD. |
 | `--changed-since <REF>` | Report only the findings in the files that changed since the fork point of `REF`. See [Changed files](adoption.md#changed-files). |
 | `--save-baseline <PATH>`, `--baseline <PATH>`, `--fail-on-stale-baseline` | Save the findings to a file, or leave out the findings that a saved file lists. See [Baselines](adoption.md#baselines). |
 | `--package <NAME>`, `-p <NAME>` | Report only the findings of this workspace member. You can repeat the flag. See [Packages](adoption.md#packages). |
@@ -52,9 +54,13 @@ dependencies, use `--skip deps`.
 
 Each check uses the same configuration as its command, in
 `[workspace.metadata.fallow.<check>]`. `check` has no flag that changes a
-limit. To change a limit, edit the table. In a `check` run, the `size` check
-has no old version to compare with, so its `file-growth` gate is `skipped`.
-For the growth rule, run `cargo fallow size --base <REF>`.
+limit. To change a limit, edit the table. Without `--base` or `--staged`, the
+`size` check has no old version to compare with, so its `file-growth` gate is
+`skipped`. With one of them, the gate runs, and `--fail-on-issues` enforces
+it. One `check` run then covers each gate. The flags need the size check: a
+run that leaves out `size` exits 2. A growth finding depends on the old
+version, so a run with one of the flags does not judge stale baseline
+entries, the same as `size`.
 
 ## Health score
 

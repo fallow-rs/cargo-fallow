@@ -10,7 +10,7 @@ pub mod boundaries;
 pub mod complexity;
 pub mod config;
 pub mod dupes;
-mod git;
+pub mod git;
 pub mod report;
 pub mod sarif;
 pub mod size;

@@ -105,6 +105,10 @@ pub struct Options {
     pub fail_on_issues: bool,
     /// True when the `parse-error` gate is enforced.
     pub fail_on_parse_error: bool,
+    /// The ref of `--base` for the file-growth gate of `size`.
+    pub base: Option<String>,
+    /// True with `--staged`: the file-growth gate compares the index with HEAD.
+    pub staged: bool,
     /// The flags for the `cargo metadata` call of `deps`.
     pub cargo_flags: Vec<String>,
     /// The scope flags: `--changed-since` and the baseline flags.
@@ -114,6 +118,13 @@ pub struct Options {
 }
 
 impl Options {
+    /// True with `--base` or `--staged`. A growth finding depends on the old
+    /// version of the run, so such a run does not judge stale baseline
+    /// entries, the same as `size`.
+    const fn growth_run(&self) -> bool {
+        self.base.is_some() || self.staged
+    }
+
     /// The checks that run, in report order.
     pub fn selected(&self) -> Vec<CheckName> {
         CheckName::ALL
@@ -139,6 +150,9 @@ struct SourceSettings {
     /// True when a health flag needs the file scores.
     scores: bool,
     size: Option<config::Size>,
+    /// The changes for the file-growth gate of `size`, with `--base` or
+    /// `--staged`.
+    changes: Option<crate::structure::git::Changes>,
     complexity: Option<config::Complexity>,
     dupes: Option<config::Duplication>,
 }
@@ -148,6 +162,7 @@ impl SourceSettings {
     fn read(workspace: &Workspace, runs: &impl Fn(CheckName) -> bool) -> Result<Self, CliError> {
         Ok(Self {
             scores: false,
+            changes: None,
             size: runs(CheckName::Size)
                 .then(|| config::section(workspace, "size"))
                 .transpose()?,
@@ -159,6 +174,30 @@ impl SourceSettings {
                 .transpose()?,
         })
     }
+}
+
+/// The changes for the file-growth gate of `size`, with `--base` or
+/// `--staged`. A base that git cannot read stops the run, as in
+/// `size --base`.
+fn growth_changes(
+    options: &Options,
+    workspace: &Workspace,
+    size_runs: bool,
+) -> Result<Option<crate::structure::git::Changes>, CliError> {
+    let root = workspace.root.as_std_path();
+    if !size_runs && (options.base.is_some() || options.staged) {
+        return Err(CliError::new(
+            ErrorCode::InvalidArgument,
+            "`--base` and `--staged` need the size check, and this run leaves it out",
+        )
+        .with_help("Add `size` to `--only`, or remove it from `--skip`."));
+    }
+    Ok(match (&options.base, options.staged) {
+        _ if !size_runs => None,
+        (Some(base), _) => Some(crate::structure::git::since_base(root, base)?),
+        (None, true) => Some(crate::structure::git::staged(root)?),
+        (None, false) => None,
+    })
 }
 
 /// What the graph thread gives back.
@@ -206,7 +245,7 @@ pub fn execute(options: &Options) -> Result<report::CheckReport, CliError> {
             None,
         )
     };
-    let scope = Scope::load(&workspace, &options.scope)?;
+    let scope = Scope::load(&workspace, &options.scope)?.narrowed(options.growth_run());
     // Read each configuration table before the work starts, so an invalid
     // table stops the run at once.
     let visibility_options = if runs(CheckName::Visibility) {
@@ -219,6 +258,7 @@ pub fn execute(options: &Options) -> Result<report::CheckReport, CliError> {
     };
     let settings = SourceSettings {
         scores: options.health.needs_functions(),
+        changes: growth_changes(options, &workspace, runs(CheckName::Size))?,
         ..SourceSettings::read(&workspace, &runs)?
     };
 
@@ -587,7 +627,7 @@ fn source_checks(
             workspace,
             loaded: &loaded,
             settings: size,
-            changes: None,
+            changes: settings.changes.as_ref(),
             enforced,
             scope,
         })?);

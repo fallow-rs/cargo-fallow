@@ -567,6 +567,15 @@ struct CheckArgs {
     /// Exit 1 when a target root file does not parse.
     #[arg(long)]
     fail_on_parse_error: bool,
+    /// Run the file-growth gate of the size check: compare each `.rs` file
+    /// that HEAD changes with its version at the merge base of HEAD and this
+    /// ref.
+    #[arg(long, value_name = "REF", conflicts_with = "staged")]
+    base: Option<String>,
+    /// Run the file-growth gate of the size check on the staged `.rs` files,
+    /// compared with HEAD.
+    #[arg(long)]
+    staged: bool,
     #[command(flatten)]
     scope: crate::scope::ScopeArgs,
     #[command(flatten)]
@@ -615,6 +624,8 @@ impl From<CheckArgs> for crate::check::Options {
             skip: args.skip,
             fail_on_issues: args.fail_on_issues,
             fail_on_parse_error: args.fail_on_parse_error,
+            base: args.base,
+            staged: args.staged,
             cargo_flags: args.cargo.flags(),
             scope: args.scope,
             health: args.health,

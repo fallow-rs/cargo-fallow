@@ -152,12 +152,13 @@ jobs:
             [ "$count" = "1" ] || { echo "::error::expected one sticky comment, got ${count}"; exit 1; }
           fi
 
-      - name: complexity (report only, with SARIF)
+      # The gate is on. A new function over the limits of Cargo.toml fails
+      # the job, and the SARIF upload still runs.
+      - name: complexity (gate, with SARIF)
         id: complexity
         uses: ./
         with:
           command: complexity
-          fail-on-issues: 'false'
           format: sarif
           sarif: 'true'
           max-annotations: '5'
@@ -237,7 +238,8 @@ jobs:
           expect "complexity: report is the SARIF log" "$COMPLEXITY_REPORT" "$COMPLEXITY_SARIF"
           expect "complexity: SARIF version" "$(jq -r .version "$COMPLEXITY_SARIF")" "2.1.0"
           expect "complexity: SARIF results match issues" "$(jq '.runs[0].results | length' "$COMPLEXITY_SARIF")" "$COMPLEXITY_ISSUES"
-          expect "complexity: failed gate" "$COMPLEXITY_FAILED" "health-findings"
+          expect "complexity: issues" "$COMPLEXITY_ISSUES" "0"
+          expect "complexity: failed gate" "$COMPLEXITY_FAILED" ""
           expect "dupes: the gate fails the step" "$DUPES_OUTCOME" "failure"
           expect "dupes: exit code" "$DUPES_EXIT" "1"
           expect "broken: the step fails" "$BROKEN_OUTCOME" "failure"

@@ -55,8 +55,9 @@ compile the workspace first.
 | Which `.rs` files does no target compile? | [`.rs` files outside the module tree of each target](docs/unused-files.md) | `cargo fallow files` |
 | What is copied? | [Clone groups](docs/structure.md) on normalized token streams, in four modes from `strict` to `semantic` | `cargo fallow dupes` |
 | Where is the code hard to change? | [Functions over the cyclomatic or the cognitive limit](docs/structure.md), a [CRAP score from LCOV coverage](docs/structure.md#crap-score), and a [0 to 100 health score](docs/check.md#health-score) | `cargo fallow complexity` |
-| Do crates and modules follow your dependency rules? | [Crate, module and source rules](docs/structure.md) in `Cargo.toml` | `cargo fallow boundaries` |
+| Do crates and modules follow your dependency rules? | [Crate, module, source, item and glob re-export rules](docs/structure.md#item-rules-and-glob-re-export-rules) in `Cargo.toml` | `cargo fallow boundaries` |
 | Do large files grow? | [Line limits for files and functions](docs/structure.md), and a growth gate against a base ref | `cargo fallow size` |
+| Which public API does a change remove? | [Added, removed and changed items of each published library](docs/api.md) against a base ref | `cargo fallow api --base <REF>` |
 | Do the tests detect a code change? | [Mutation testing](docs/mutation-testing.md) with test selection from a coverage map (opt-in, runs the tests) | `cargo fallow mutants` |
 
 `cargo fallow check` runs all the static checks and writes one report with a
@@ -312,6 +313,7 @@ line for each finding. [Output formats](docs/output.md) describes all formats.
 | [Unused files](docs/unused-files.md) | How `files` finds the files that no target compiles |
 | [Visibility](docs/visibility.md) | Kinds of `visibility`, and precise mode |
 | [Structure checks](docs/structure.md) | `boundaries`, `size`, `complexity` and `dupes` |
+| [API changes](docs/api.md) | `api --base <REF>` |
 | [Mutation testing](docs/mutation-testing.md) | `mutants`: tiers, status, test selection and safety |
 | [Trace](docs/trace.md) | `--trace` of `visibility`, `deps` and `dupes`, to see why a check reports one item or does not |
 | [Output formats](docs/output.md) | Each format, the JSON Schema, `explain` and the exit codes |

@@ -134,7 +134,8 @@ pub(super) const fn file_message(name: RustGateName, file: &GateFile) -> &'stati
         }
         // The structure gates count findings and list no gate files.
         (
-            RustGateName::BoundaryViolations
+            RustGateName::ApiRemovals
+            | RustGateName::BoundaryViolations
             | RustGateName::DuplicationFindings
             | RustGateName::DuplicationThreshold
             | RustGateName::FileGrowth

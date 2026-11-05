@@ -12,7 +12,7 @@ branding:
 
 inputs:
   command:
-    description: 'The command to run: check, deps, files, visibility, boundaries, size, complexity, dupes or mutants.'
+    description: 'The command to run: check, deps, files, visibility, boundaries, size, complexity, dupes, mutants or api. api needs base.'
     required: false
     default: 'check'
   working-directory:
@@ -36,7 +36,7 @@ inputs:
     required: false
     default: ''
   base:
-    description: 'The git ref to compare with: size gets it as --base, and mutants as --in-diff. `auto` takes the base commit of the pull request, or on a push the commit before the push. The checkout needs the history of that ref (fetch-depth: 0).'
+    description: 'The git ref to compare with: check, size and api get it as --base, and mutants as --in-diff. `auto` takes the base commit of the pull request, or on a push the commit before the push. The checkout needs the history of that ref (fetch-depth: 0).'
     required: false
     default: ''
   changed-since:

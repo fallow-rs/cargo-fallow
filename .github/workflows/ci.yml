@@ -60,8 +60,13 @@ jobs:
       - uses: ./.github/actions/setup-rust
         with:
           components: clippy
+          targets: x86_64-pc-windows-msvc
       # The pedantic, nursery and restriction lints come from [lints] in Cargo.toml.
       - run: cargo clippy --all-targets --locked -- -D warnings
+      # The Windows job runs only on a schedule. This step checks the
+      # `cfg(windows)` and `cfg(unix)` code of each pull request for Windows.
+      - name: Clippy for Windows
+        run: cargo clippy --all-targets --locked --target x86_64-pc-windows-msvc -- -D warnings
       - name: Check for uncommitted changes
         run: git diff --exit-code
 

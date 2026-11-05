@@ -40,7 +40,7 @@ fail() {
 # the older name of the same gate.
 gate_flags() {
   case "$1" in
-    check | deps | files | visibility) echo "--fail-on-issues" ;;
+    check | deps | files | visibility | api) echo "--fail-on-issues" ;;
     boundaries) echo "--fail-on-issues --fail-on-violations" ;;
     size) echo "--fail-on-issues --fail-on-growth" ;;
     complexity) echo "--fail-on-issues --fail-on-complexity" ;;
@@ -100,7 +100,7 @@ path_prefix() {
 
 COMMAND="$INPUT_COMMAND"
 GATE_FLAGS="$(gate_flags "$COMMAND")" \
-  || fail "Invalid 'command' input: ${COMMAND}. Use check, deps, files, visibility, boundaries, size, complexity, dupes or mutants."
+  || fail "Invalid 'command' input: ${COMMAND}. Use check, deps, files, visibility, boundaries, size, complexity, dupes, mutants or api."
 case "$INPUT_FORMAT" in
   human | json | sarif) ;;
   *) fail "Invalid 'format' input: ${INPUT_FORMAT}. Use human, json or sarif." ;;
@@ -144,16 +144,29 @@ fi
 # The commit that `base: auto` compares with: the base commit of a pull
 # request, else the commit before a push. A push of a new branch or tag has the
 # zero commit. A shallow checkout can miss the commit, so the script fetches
-# it. With no usable commit, the run has no base. Each notice goes to stderr,
+# it. With no usable commit, the run has no base. Each message goes to stderr,
 # because the caller reads the commit from stdout.
+#
+# A command whose gate needs the base (check, size, mutants) fails the step
+# when it cannot read the commit, because without a base the growth or
+# in-diff gate passes without a check. A run with no pull request base and no
+# push, or a push of a new branch, has no base to read: that stays a notice.
 ZERO_SHA="0000000000000000000000000000000000000000"
+BASE_LEVEL=notice
+BASE_END="The run compares with no base."
+case "$COMMAND" in
+  check | size | mutants)
+    BASE_LEVEL=error
+    BASE_END="The step fails, because ${COMMAND} needs the base. To compare with a branch instead, set base to a ref, for example origin/main."
+    ;;
+esac
 has_commit() {
   git -C "$INPUT_WORKING_DIRECTORY" cat-file -e "${1}^{commit}" 2> /dev/null
 }
 usable_commit() {
-  local sha="$1"
+  local sha="$1" level="${2:-notice}" end="${3:-The run compares with no base.}"
   if ! [[ "$sha" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]]; then
-    echo "::notice::base: auto got '${sha}', which is not a commit SHA. The run compares with no base." >&2
+    echo "::${level}::base: auto got '${sha}', which is not a commit SHA. ${end}" >&2
     return 1
   fi
   if ! git -C "$INPUT_WORKING_DIRECTORY" rev-parse --git-dir > /dev/null 2>&1 || has_commit "$sha"; then
@@ -164,7 +177,7 @@ usable_commit() {
   if has_commit "$sha"; then
     return 0
   fi
-  echo "::notice::base: auto cannot read the commit ${sha}. Use fetch-depth: 0 in actions/checkout. After a force push, the old commit can be gone. The run compares with no base." >&2
+  echo "::${level}::base: auto cannot read the commit ${sha}. Use fetch-depth: 0 in actions/checkout. After a force push, the old commit can be gone. ${end}" >&2
   return 1
 }
 auto_base() {
@@ -180,15 +193,18 @@ auto_base() {
     echo "::notice::base: auto found no commit before the push: the push made a new branch or tag. The run compares with no base." >&2
     return 0
   fi
-  if usable_commit "$sha"; then
+  if usable_commit "$sha" "$BASE_LEVEL" "$BASE_END"; then
     printf '%s' "$sha"
+    return 0
   fi
-  return 0
+  [ "$BASE_LEVEL" = notice ]
 }
 
 BASE="$INPUT_BASE"
 if [ "$BASE" = "auto" ]; then
-  BASE="$(auto_base)"
+  if ! BASE="$(auto_base)"; then
+    exit 1
+  fi
 fi
 # The scope inputs of the static commands. `mutants` takes the base input.
 CHANGED_SINCE="$INPUT_CHANGED_SINCE"
@@ -216,10 +232,12 @@ fi
 
 if [ -n "$BASE" ]; then
   case "$COMMAND" in
-    size) ARGS+=(--base "$BASE") ;;
+    check | size | api) ARGS+=(--base "$BASE") ;;
     mutants) ARGS+=(--in-diff "$BASE") ;;
-    *) echo "::warning::The 'base' input applies only to size and mutants. The ${COMMAND} run ignores it." ;;
+    *) echo "::warning::The 'base' input applies only to check, size, api and mutants. The ${COMMAND} run ignores it." ;;
   esac
+elif [ "$COMMAND" = "api" ]; then
+  fail "command: api needs the base input, for example base: auto or base: origin/main. Use fetch-depth: 0 in actions/checkout."
 fi
 
 MUTANTS_INPUTS="${INPUT_PACKAGE}${INPUT_MAX_MUTANTS}${INPUT_TIME_BUDGET}${INPUT_JOBS}${INPUT_TIMEOUT}"

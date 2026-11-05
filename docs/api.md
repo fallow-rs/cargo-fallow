@@ -1,0 +1,101 @@
+# API changes
+
+`cargo fallow api --base <REF>` reports the public API changes of the
+published libraries of the workspace. A published library is a library whose
+`publish` is not `false`. The command compares HEAD with the merge base of HEAD
+and the ref, the same as `size --base`. `cargo fallow check` does not run it.
+
+```bash
+cargo fallow api --base origin/main
+cargo fallow api --base origin/main -p app-core --format json
+cargo fallow api --base origin/main --fail-on-issues
+```
+
+## How the command compares
+
+The command reads the full tree of the merge base with `git archive`, runs
+`cargo metadata --no-deps` on it, and builds the module graph of both
+versions. git only reads: the command changes no index, no ref and no work
+tree.
+
+The key of an item is each path that another crate can write:
+
+- the path through `pub` modules;
+- each `pub use` path, and each path through a `pub use <module>::*`;
+- the `pub` fields and the variants of a public type, and the `pub` items of
+  its inherent `impl` blocks. An `impl` block counts for a type only when its
+  self path resolves to that type;
+- the members of a public trait;
+- each `#[macro_export]` macro, at the crate root.
+
+A `#[doc(hidden)]` item, `pub use` or `impl` block, and the items below
+it, are not API. A glob re-export that points back to a module on the way,
+for example `pub use super::*`, adds no path, so a removal counts one time. One key can hold
+more than one item, for example one item for each `cfg` variant. The command
+reports `removed` only when no item with the key is left.
+
+| `change` | Meaning |
+| --- | --- |
+| `added` | HEAD has a key that the base does not have. |
+| `removed` | The base has a key that HEAD does not have. |
+| `changed` | The header of an item at the key changed. |
+| `crate-added` | HEAD publishes a library that the base does not publish. |
+| `crate-removed` | The base publishes a library that HEAD does not publish. |
+| `feature-removed` | The base has a feature that HEAD does not have. |
+
+The header of an item is its signature with the `cfg` and `derive`
+attributes, without the body, the doc comments and the layout. A body change
+is no API change. These changes are no change either, because no caller sees
+them: the name of a parameter, the name of a generic parameter or a
+lifetime, the module part of a path (`std::vec::Vec<u8>` and `Vec<u8>`), and
+the order of the names in `#[derive(..)]`.
+
+A member below a key that is a type alias at HEAD gives no `removed`
+finding. The members of the alias target can still exist, and the command
+does not follow the alias.
+
+## The gate
+
+The `api-removals` gate counts each `removed`, `crate-removed` and
+`feature-removed` finding of a library when the breaking part of its version
+did not change. The breaking part is the same as for Cargo: the major version
+from 1.0, the minor version from 0.1, and the patch version for 0.0.x. Thus a removal in `0.3.1 -> 0.3.2` counts, and a
+removal in `0.3.1 -> 0.4.0` does not count. Each such finding has
+`breaking: true`. Only `--fail-on-issues` enforces the gate. A `changed`
+finding does not count.
+
+## Output
+
+Each finding has `crate`, `path`, `item_kind`, `change`, `before`, `after`,
+`file`, `line`, `version_base`, `version_head`, `breaking` and `actions`. The
+summary has `base`, `merge_base`, `crates`, `added`, `removed` and `changed`.
+
+- `before` and `after` are the headers, or `null`. More than one header, for
+  example one for each `cfg` variant, are joined with ` | `.
+- For a removal, `file` and `line` point to the nearest item around the path
+  at HEAD, or to the root file of the library. When the library is gone, they
+  point to its manifest.
+- SARIF, CodeClimate and the annotations show the removals and the changes.
+  An addition is only in the JSON report and in the counts.
+- The rules are `api-removal`, `api-change` and `api-addition`. See
+  `cargo fallow explain api-removal`.
+
+`-p <name>` keeps the findings of the packages that it names. The command
+does not take `--baseline`, `--save-baseline` or `--changed-since`. A rule
+that `[workspace.metadata.fallow.rules]` sets to `off` gives no finding.
+
+## Errors
+
+- A ref that git does not know exits 2.
+- A shallow clone without the merge base exits 2. The help names the fetch:
+  in GitHub Actions, set `fetch-depth: 0` in actions/checkout.
+
+## Limits
+
+The command does not judge a type change behind a re-export, an added or a
+removed trait implementation, an auto trait, the meaning of a bound,
+`#[non_exhaustive]` or the MSRV. It is not a full semver check. A change of
+the type of a tuple field and a trait method that loses its default body give
+no finding. `git archive` follows `export-ignore` in `.gitattributes`, so a
+file with that attribute is missing from the base tree, and its items show
+as `added`.

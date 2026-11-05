@@ -41,6 +41,9 @@
       "$ref": "#/$defs/document-dupes"
     },
     {
+      "$ref": "#/$defs/document-api"
+    },
+    {
       "$ref": "#/$defs/document-mutants"
     },
     {
@@ -85,6 +88,175 @@
         "description"
       ],
       "description": "A next step for a finding."
+    },
+    "ApiChange": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "added",
+          "description": "HEAD has a public path that the base does not have."
+        },
+        {
+          "type": "string",
+          "const": "removed",
+          "description": "The base has a public path that HEAD does not have."
+        },
+        {
+          "type": "string",
+          "const": "changed",
+          "description": "The header of an item at the path changed."
+        },
+        {
+          "type": "string",
+          "const": "crate-added",
+          "description": "HEAD publishes a library that the base does not publish."
+        },
+        {
+          "type": "string",
+          "const": "crate-removed",
+          "description": "The base publishes a library that HEAD does not publish."
+        },
+        {
+          "type": "string",
+          "const": "feature-removed",
+          "description": "The base has a feature that HEAD does not have."
+        }
+      ],
+      "description": "The kind of one change."
+    },
+    "ApiFinding": {
+      "type": "object",
+      "properties": {
+        "crate": {
+          "type": "string",
+          "description": "The package name."
+        },
+        "path": {
+          "type": "string",
+          "description": "The public path, or the feature name for `feature-removed`, or the\npackage name for a crate change."
+        },
+        "item_kind": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The kind of the item, or `null` for a crate or a feature change."
+        },
+        "change": {
+          "$ref": "#/$defs/ApiChange",
+          "description": "The change."
+        },
+        "before": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The header at the base, or `null`. More than one header, for example\none for each `cfg` variant, are joined with ` | `."
+        },
+        "after": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The header at HEAD, or `null`."
+        },
+        "file": {
+          "type": "string",
+          "description": "The file at HEAD. For a removal, the file of the nearest item around\nthe path at HEAD, else the package manifest."
+        },
+        "line": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The line in `file`."
+        },
+        "version_base": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The package version at the base, or `null`."
+        },
+        "version_head": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The package version at HEAD, or `null`."
+        },
+        "breaking": {
+          "type": "boolean",
+          "description": "True when the finding counts for the `api-removals` gate."
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/StructureAction"
+          },
+          "description": "The next steps."
+        }
+      },
+      "required": [
+        "crate",
+        "path",
+        "item_kind",
+        "change",
+        "before",
+        "after",
+        "file",
+        "line",
+        "version_base",
+        "version_head",
+        "breaking",
+        "actions"
+      ],
+      "description": "One API change."
+    },
+    "ApiSummary": {
+      "type": "object",
+      "properties": {
+        "base": {
+          "type": "string",
+          "description": "The ref of `--base`."
+        },
+        "merge_base": {
+          "type": "string",
+          "description": "The merge base of HEAD and the ref."
+        },
+        "crates": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The published libraries at the base or at HEAD."
+        },
+        "added": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The `added` and `crate-added` findings."
+        },
+        "removed": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The `removed`, `crate-removed` and `feature-removed` findings."
+        },
+        "changed": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The `changed` findings."
+        }
+      },
+      "required": [
+        "base",
+        "merge_base",
+        "crates",
+        "added",
+        "removed",
+        "changed"
+      ],
+      "description": "The summary of an `api` run."
     },
     "Baseline": {
       "type": "object",
@@ -283,6 +455,17 @@
           },
           "description": "The `Cargo.toml` sections of the dependency, for a crate rule."
         },
+        "origin": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BoundariesOrigin"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Where the path of an item rule is."
+        },
         "message": {
           "type": "string",
           "description": "The message."
@@ -324,9 +507,34 @@
           "type": "string",
           "const": "module-path",
           "description": "A module uses a denied module."
+        },
+        {
+          "type": "string",
+          "const": "item-path",
+          "description": "Code uses a denied workspace item, with the path resolved."
+        },
+        {
+          "type": "string",
+          "const": "glob-reexport",
+          "description": "A `pub use <path>::*` re-exports a denied crate or module."
         }
       ],
       "description": "The kind of a boundary finding."
+    },
+    "BoundariesOrigin": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "code",
+          "description": "In code."
+        },
+        {
+          "type": "string",
+          "const": "macro",
+          "description": "In the tokens of a macro. The line is the line of the macro."
+        }
+      ],
+      "description": "Where the path of an item rule finding is."
     },
     "BoundariesSummary": {
       "type": "object",
@@ -349,6 +557,24 @@
           "minimum": 0,
           "description": "The module rules."
         },
+        "item_rules": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The item rules."
+        },
+        "reexport_rules": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The glob re-export rules."
+        },
+        "unresolved": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The uses that the item rules cannot resolve and that name a denied\nitem: a path that does not resolve to its end, a method call or a\nfield access. They give no finding."
+        },
         "workspace_edges": {
           "type": "integer",
           "format": "uint",
@@ -366,6 +592,9 @@
         "crate_rules",
         "source_rules",
         "module_rules",
+        "item_rules",
+        "reexport_rules",
+        "unresolved",
         "workspace_edges",
         "source_files"
       ],
@@ -549,6 +778,7 @@
           "description": "The gate outcomes of each check that ran, keyed by gate name.",
           "propertyNames": {
             "enum": [
+              "api-removals",
               "boundary-violations",
               "duplication-findings",
               "duplication-threshold",
@@ -1284,6 +1514,7 @@
           "description": "The gate outcomes, keyed by gate name.",
           "propertyNames": {
             "enum": [
+              "api-removals",
               "boundary-violations",
               "duplication-findings",
               "duplication-threshold",
@@ -3570,6 +3801,7 @@
           "description": "The gate outcomes, keyed by gate name.",
           "propertyNames": {
             "enum": [
+              "api-removals",
               "boundary-violations",
               "duplication-findings",
               "duplication-threshold",
@@ -4034,6 +4266,80 @@
       ],
       "description": "One mutant that the removal loop removed."
     },
+    "Report_of_ApiSummary": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The version of the report shape."
+        },
+        "version": {
+          "type": "string",
+          "description": "The version of cargo-fallow."
+        },
+        "kind": {
+          "type": "string",
+          "description": "The name of the subcommand."
+        },
+        "language": {
+          "type": "string",
+          "description": "Always `rust`."
+        },
+        "summary": {
+          "$ref": "#/$defs/ApiSummary",
+          "description": "The counts and the settings of the run."
+        },
+        "total_issues": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The number of findings."
+        },
+        "findings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ApiFinding"
+          },
+          "description": "The findings, in a fixed order."
+        },
+        "gate_outcomes": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/GateOutcome"
+          },
+          "description": "The gate outcomes, keyed by gate name.",
+          "propertyNames": {
+            "enum": [
+              "api-removals",
+              "boundary-violations",
+              "duplication-findings",
+              "duplication-threshold",
+              "error-severity-findings",
+              "file-growth",
+              "health-findings",
+              "parse-error",
+              "stale-baseline",
+              "surviving-mutants",
+              "unused-files",
+              "visibility-findings"
+            ]
+          }
+        }
+      },
+      "required": [
+        "schema_version",
+        "version",
+        "kind",
+        "language",
+        "summary",
+        "total_issues",
+        "findings",
+        "gate_outcomes"
+      ],
+      "description": "The report of one structure check. The field order is the wire order."
+    },
     "Report_of_BoundariesSummary": {
       "type": "object",
       "properties": {
@@ -4080,6 +4386,7 @@
           "description": "The gate outcomes, keyed by gate name.",
           "propertyNames": {
             "enum": [
+              "api-removals",
               "boundary-violations",
               "duplication-findings",
               "duplication-threshold",
@@ -4153,6 +4460,7 @@
           "description": "The gate outcomes, keyed by gate name.",
           "propertyNames": {
             "enum": [
+              "api-removals",
               "boundary-violations",
               "duplication-findings",
               "duplication-threshold",
@@ -4226,6 +4534,7 @@
           "description": "The gate outcomes, keyed by gate name.",
           "propertyNames": {
             "enum": [
+              "api-removals",
               "boundary-violations",
               "duplication-findings",
               "duplication-threshold",
@@ -4299,6 +4608,7 @@
           "description": "The gate outcomes, keyed by gate name.",
           "propertyNames": {
             "enum": [
+              "api-removals",
               "boundary-violations",
               "duplication-findings",
               "duplication-threshold",
@@ -4372,6 +4682,7 @@
           "description": "The gate outcomes, keyed by gate name.",
           "propertyNames": {
             "enum": [
+              "api-removals",
               "boundary-violations",
               "duplication-findings",
               "duplication-threshold",
@@ -5696,6 +6007,7 @@
           "description": "The gate outcomes, keyed by gate name.",
           "propertyNames": {
             "enum": [
+              "api-removals",
               "boundary-violations",
               "duplication-findings",
               "duplication-threshold",
@@ -5895,6 +6207,35 @@
         "failures"
       ],
       "description": "The run of the survivors against the tests of each workspace member."
+    },
+    "document-api": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/Report_of_ApiSummary"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "api"
+            },
+            "language": {
+              "const": "rust"
+            },
+            "_meta": {
+              "description": "With `--explain`: the meaning, an example and the fix of each rule with a finding, keyed by rule, and the documentation address.",
+              "type": "object",
+              "properties": {
+                "rules": {
+                  "type": "object"
+                },
+                "docs": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      ]
     },
     "document-baseline": {
       "$ref": "#/$defs/BaselineFile"

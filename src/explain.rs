@@ -198,7 +198,7 @@ pub const RULES: &[Explanation] = &[
         rule: "boundaries",
         check: "boundaries",
         severity: "error",
-        meaning: "A rule of [workspace.metadata.fallow.boundaries] found a violation. The finding has the name of the rule. The kind is crate-dependency, source-pattern or module-path.",
+        meaning: "A rule of [workspace.metadata.fallow.boundaries] found a violation. The finding has the name of the rule. The kind is crate-dependency, source-pattern, module-path, item-path or glob-reexport.",
         example: "A source rule `no-exit` that denies `std::process::exit` in crates/core, and a call in crates/core/src/run.rs.",
         fix: "Move the code or the dependency, or change the rule.",
         docs: "https://github.com/fallow-rs/cargo-fallow/blob/main/docs/structure.md",
@@ -231,6 +231,24 @@ pub const RULES: &[Explanation] = &[
         docs: "https://github.com/fallow-rs/cargo-fallow/blob/main/docs/structure.md",
     },
     Explanation {
+        rule: "item-path",
+        check: "boundaries",
+        severity: "error",
+        meaning: "Code of a package uses a workspace item that an item rule denies. The path resolves through `use`, aliases and re-exports. A path that does not resolve gives no finding. The finding has the name of the rule.",
+        example: "A rule `from = [\"app-cli\"]`, `deny = [\"engine::dead_code::analyze\"]`, and `use engine::dead_code::analyze as run;` in app-cli.",
+        fix: "Use the item through a module of `allow-via`, move the code, or change the rule.",
+        docs: "https://github.com/fallow-rs/cargo-fallow/blob/main/docs/structure.md",
+    },
+    Explanation {
+        rule: "glob-reexport",
+        check: "boundaries",
+        severity: "error",
+        meaning: "A `pub use <path>::*` in a package re-exports a crate or a module that a re-export rule denies. An alias of the crate does not hide it.",
+        example: "A rule `from = [\"app-api\"]`, `deny = [\"app_types\"]`, and `pub use app_types::*;` in app-api.",
+        fix: "Re-export the items by name, or change the rule.",
+        docs: "https://github.com/fallow-rs/cargo-fallow/blob/main/docs/structure.md",
+    },
+    Explanation {
         rule: "grown-file",
         check: "size",
         severity: "error",
@@ -247,6 +265,33 @@ pub const RULES: &[Explanation] = &[
         example: "A new file src/gen.rs with 2100 lines, with a limit of 2000.",
         fix: "Split the file. A file with a generator header or an `@generated` comment does not count.",
         docs: "https://github.com/fallow-rs/cargo-fallow/blob/main/docs/structure.md",
+    },
+    Explanation {
+        rule: "api-removal",
+        check: "api",
+        severity: "error",
+        meaning: "`cargo fallow api --base <REF>`: a published library removed a public path, the crate or a feature. The `api-removals` gate counts it when the breaking part of the version did not change: the major version from 1.0, else the minor version.",
+        example: "`pub fn parse` is gone from `app_core` 1.4.0, and HEAD has version 1.4.1.",
+        fix: "Keep the path, for example with a `pub use`, or bump the breaking part of the version.",
+        docs: "https://github.com/fallow-rs/cargo-fallow/blob/main/docs/api.md",
+    },
+    Explanation {
+        rule: "api-change",
+        check: "api",
+        severity: "warn",
+        meaning: "`cargo fallow api --base <REF>`: the header of a public item changed. The header is the signature with the `cfg` and `derive` attributes, without the body. It does not count for a gate.",
+        example: "`pub fn parse(text: &str)` became `pub fn parse(text: String)`.",
+        fix: "Check that the callers stay valid, and bump the version when they do not.",
+        docs: "https://github.com/fallow-rs/cargo-fallow/blob/main/docs/api.md",
+    },
+    Explanation {
+        rule: "api-addition",
+        check: "api",
+        severity: "warn",
+        meaning: "`cargo fallow api --base <REF>`: a published library has a new public path, or the workspace publishes a new library. Only the JSON report and the counts show it.",
+        example: "`pub fn render` is new in `app_core`.",
+        fix: "Check that the item is meant to be public API.",
+        docs: "https://github.com/fallow-rs/cargo-fallow/blob/main/docs/api.md",
     },
     Explanation {
         rule: "complexity",
@@ -407,6 +452,9 @@ mod tests {
                 crate::files::RULE,
                 crate::gates::RustGateName::ParseError.as_str(),
                 crate::structure::complexity::RULE,
+                crate::api::REMOVAL_RULE,
+                crate::api::CHANGE_RULE,
+                crate::api::ADDITION_RULE,
                 crate::structure::crap::RULE,
                 crate::structure::dupes::DUPES_RULE,
                 crate::render::mutants::SURVIVING_RULE,
@@ -464,7 +512,11 @@ mod tests {
             S::GrownFile | S::NewLargeFile => S::ALL.len(),
         };
         let boundary = match boundary {
-            B::CrateDependency | B::SourcePattern | B::ModulePath => B::ALL.len(),
+            B::CrateDependency
+            | B::SourcePattern
+            | B::ModulePath
+            | B::ItemPath
+            | B::GlobReexport => B::ALL.len(),
         };
         deps + kind + size + boundary
     }

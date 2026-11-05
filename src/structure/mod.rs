@@ -37,6 +37,10 @@ pub enum Command {
     Complexity(ComplexityArgs),
     /// Find duplicated code in the normalized token streams of the workspace.
     Dupes(DupesArgs),
+    /// Report the public API changes of the published libraries between the
+    /// merge base of a ref and HEAD: added, removed and changed items, and
+    /// crate and feature changes.
+    Api(crate::api::ApiArgs),
 }
 
 /// The flags that each structure subcommand has.
@@ -168,6 +172,7 @@ impl Command {
             Self::Size(args) => &args.common,
             Self::Complexity(args) => &args.common,
             Self::Dupes(args) => &args.common,
+            Self::Api(args) => &args.common,
         }
     }
 }
@@ -188,6 +193,7 @@ pub fn run(command: &Command) -> u8 {
         Command::Size(args) => size::run(args),
         Command::Complexity(args) => complexity::run(args),
         Command::Dupes(args) => dupes::run(args),
+        Command::Api(args) => crate::api::run(args),
     };
     result
         .and_then(|section| section.write(common.format))

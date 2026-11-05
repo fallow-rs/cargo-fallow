@@ -19,6 +19,24 @@ def mutants_line:
   .summary as $s
   | "Mutation score \($s.score | percent): \($s.killed) killed, \($s.survived) survived, \($s.no_coverage) no coverage, \($s.timeout) timeout, \($s.pending) pending.";
 
+# A code span in a table cell. A backtick would end the span, so it becomes
+# a quote. An empty or a null value gives an empty cell.
+def code: (. // "" | tostring) as $text | if $text == "" then "" else "`\($text | gsub("`"; "'") | cell)`" end;
+
+def api_rows:
+  [.findings[]? | select(.change != "added" and .change != "crate-added")] as $rows
+  | ($rows[0:20]) as $shown
+  | if ($rows | length) == 0 then empty
+    else
+      "",
+      "#### API changes\(if ($rows | length) > ($shown | length) then " (\($shown | length) of \($rows | length))" else "" end)",
+      "",
+      "| Crate | Change | Path | Before -> after |",
+      "| --- | --- | --- | --- |",
+      ($shown[]
+        | "| \(.crate // "" | cell) | \(.change // "" | cell) | \(.path | code) | \(.before | code) -> \(.after | code) |")
+    end;
+
 def findings($results):
   ($results | length) as $total
   | ($results[0:($max | tonumber)]) as $shown
@@ -46,9 +64,10 @@ else
   "",
   "\(plural(.total_issues // 0; "issue")), exit code \($exit_code).",
   (if .kind == "mutants" and .summary.score != null then "", mutants_line else empty end),
+  (if .kind == "api" then "", "\(.summary.added // 0) added, \(.summary.removed // 0) removed, \(.summary.changed // 0) changed against \(.summary.base // "the base" | cell)." else empty end),
   "",
   "| Gate | Status | Enforced | Observed |",
   "| --- | --- | --- | --- |",
   gate_rows,
-  findings([$sarif[0].runs[]?.results[]?])
+  if .kind == "api" then api_rows else findings([$sarif[0].runs[]?.results[]?]) end
 end

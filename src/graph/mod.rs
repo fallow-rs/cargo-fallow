@@ -10,6 +10,7 @@
 //! macros. A name in macro tokens counts as a reference to each item with that
 //! name, so a gap in the graph hides a finding and does not make one.
 
+pub mod credits;
 pub mod doc_links;
 pub mod extract;
 pub mod resolve;

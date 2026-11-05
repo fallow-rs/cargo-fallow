@@ -22,7 +22,7 @@ because that flag asks for the growth gate.
 
 | Command | Reports | Gate flag | Gate |
 | --- | --- | --- | --- |
-| `cargo fallow boundaries` | Violations of the crate, source and module rules | `--fail-on-issues` or `--fail-on-violations` | `boundary-violations` |
+| `cargo fallow boundaries` | Violations of the crate, source, module, item and glob re-export rules | `--fail-on-issues` or `--fail-on-violations` | `boundary-violations` |
 | `cargo fallow size` | Files and functions over the line limits, and growth of a large file | `--fail-on-issues` or `--fail-on-growth`. The gate needs `--base <REF>` or `--staged`, also in `cargo fallow check` | `file-growth` |
 | `cargo fallow complexity` | Functions over the cyclomatic or the cognitive limit. With `--coverage <LCOV>`, also functions at or over the CRAP limit | `--fail-on-issues` or `--fail-on-complexity` | `health-findings` |
 | `cargo fallow dupes` | Clone groups on normalized token streams | `--fail-on-issues` or `--fail-on-clones`, and `--threshold <PERCENT>` | `duplication-findings`, `duplication-threshold` |
@@ -53,6 +53,17 @@ paths = ["crates/cli/src"]
 deny = ["process_group(0)", "libc::waitid"]
 owner = "app-process"
 
+# `scope = "production"` skips test code. A file in `allow` passes up to `max`
+# matches of all patterns of the rule. Each match over `max` is a finding.
+[[workspace.metadata.fallow.boundaries.sources]]
+rule = "parse-through-parse-bounded"
+paths = ["crates"]
+deny = ["Parser::new("]
+scope = "production"
+allow = [
+    { path = "crates/extract/src/parse.rs", max = 2 },
+]
+
 # A module of `from` must not use a module of `deny`. The rule reads `use`
 # items and paths that start with `crate`, `self` or `super`.
 [[workspace.metadata.fallow.boundaries.modules]]
@@ -60,6 +71,22 @@ rule = "render-does-not-run"
 package = "app-cli"
 from = ["crate::render"]
 deny = ["crate::engine"]
+
+# The code of a package of `from` must not use an item of `deny`. A path in
+# `deny` starts with the crate name. A module or a type includes its items.
+# A use through a module of `allow-via` stays allowed.
+[[workspace.metadata.fallow.boundaries.items]]
+rule = "cli-runs-dead-code-through-the-session"
+from = ["app-cli"]
+deny = ["app_engine::dead_code::analyze"]
+allow-via = ["app_engine::session"]
+
+# A `pub use <path>::*` in a package of `from` must not read a crate or a
+# module of `deny`.
+[[workspace.metadata.fallow.boundaries.reexports]]
+rule = "no-glob-reexport-of-types"
+from = ["app-api"]
+deny = ["app_types"]
 
 [workspace.metadata.fallow.size]
 max-file-lines = 2000     # a file over this must not grow
@@ -79,13 +106,27 @@ threshold = 0.0           # 0 means no limit
 production = false        # true leaves out test code
 ```
 
+A source rule gives one finding for each pattern in a file: the first match
+outside the code that `scope` skips.
+`scope` sets the code that the rule reads. The default, `all`, reads all of
+each file. With `production`, the rule skips the files of test targets, the
+files below a test module declaration, and the items with a test attribute,
+for example `#[cfg(test)] mod tests` or `#[test]`. A file that a test module
+and other code both reach is production code. With `production`, a file that
+does not parse gets a warning, and the rule does not judge it. `allow` lists
+files, each with a `max` count. The rule counts each match of each pattern in
+such a file, in file order. A place where two patterns match counts one time.
+Each match after the first `max` matches is a finding, so `max = 0` reports
+each match. An `allow` path must name a file that the rule reads, one time.
+Else the table is not valid. A file that the source walk does not reach, and
+the bench and example targets, count as production code.
+
 With `production = true`, or with `cargo fallow dupes --production`, the
 clone search leaves out test code. Test code is a test target, a file below
 a test module declaration, and an item with a test attribute, for example
 `#[cfg(test)] mod tests` or `#[test]`. Bench and example targets stay in the
-search. The line counts
-and the duplication percentage then count only production code, so the
-`threshold` judges production code. `--no-production` keeps test code also
+search. The line counts and the duplication percentage then count only
+production code, so the `threshold` judges production code. `--no-production` keeps test code also
 when the table sets `production = true`. A clone never spans a test item that
 the search leaves out. A file that production code and test code both reach
 counts as production code. The summary has `production: true`. This is the
@@ -148,6 +189,51 @@ The complexity counts have these known differences from other tools:
   change of the operator adds 1 more. Thus `a && (b && c)` adds 1, and `a && (b || c)` adds 2. A
   sequence ends at an operand with no logical operator in it, so
   `(a && b) || (c && d)` adds 3. fallow for JavaScript uses the same model.
+
+## Item rules and glob re-export rules
+
+An item rule (`kind: "item-path"`) and a glob re-export rule
+(`kind: "glob-reexport"`) work on the workspace module graph. The graph
+resolves a path through `use`, aliases such as `use app_engine as engine`,
+re-exports and glob imports.
+
+- An item rule reads each import and each path in the code of the packages
+  of `from`, also in test code. A finding needs a path that resolves to its
+  end. A path with a first name that is not in scope, for example a generic
+  `T::new()`, gives no finding. A method call and a field access give no
+  finding either, because the syntax does not show the type.
+- The summary counts these uses in `unresolved` when the last name is the
+  name of a denied item or of a member of a denied type. The items of a
+  denied module or crate do not count here. A high count tells you that the rule cannot see
+  some uses.
+- A path in the documentation or in an attribute does not count. A path in
+  the tokens of a macro counts when it resolves. The finding then has
+  `origin: "macro"`, and its line is the line of the macro.
+- `allow-via` lists modules. A use whose path goes through one of them
+  stays allowed. A name that an import through `allow-via` brings in also
+  stays allowed, for example `use app_engine::session::analyze;` followed by
+  `analyze()`. A path through a glob re-export of such a module does not
+  count as a path through it.
+- A name that only a glob import brings in gives no finding, because a local
+  variable or a generic parameter with the same name can shadow it. It
+  counts in `unresolved`.
+- A `deny` or `allow-via` path starts with the name of a library crate of
+  the workspace. A path to a crate outside the workspace or to a macro is an
+  error with the code `CARGO_FALLOW_INVALID_CONFIG`. For items outside the
+  workspace, use a source rule. A path that names no item, for example
+  after the code removed the item, gives a warning.
+- An import with a finding gives one finding. The uses of its name give no
+  second finding.
+- When `from` names the package that holds a denied item, the rule also
+  checks the code of that package.
+- `unresolved` counts the uses of each item rule. A scope flag such as
+  `--changed-since` and a rule level do not change it.
+- A glob re-export rule reads each `pub use <path>::*` in the packages of
+  `from`, in a module that the crate exports. It matches the module that the glob path resolves to, so
+  `use app_types as t; pub use t::extract::*;` matches `deny = ["app_types"]`.
+
+The rules do not check that code uses an item ("must use" rules), and they
+do not infer types.
 
 ## CRAP score
 

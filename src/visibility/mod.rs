@@ -27,6 +27,7 @@ use std::path::PathBuf;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
+use crate::graph::credits::{Credits, Site};
 use crate::graph::extract::{Binding, ItemFlags, ItemKind, Origin, RefKind, Vis};
 use crate::graph::resolve::{Class, Credit, Resolver};
 use crate::graph::{CrateKind, Graph, ItemId, ModuleId};
@@ -243,10 +244,14 @@ pub fn analyze(graph: &Graph, options: &Options) -> Analysis {
         .filter(|finding| !known.contains(&(finding.item, finding.kind)))
         .collect();
     let mut cfg_used: Vec<ItemId> = credits
+        .direct
         .iter()
         .filter(|credit| credit.under_cfg)
         .map(|credit| credit.item)
         .collect();
+    for site in credits.sites.iter().filter(|site| site.credit.under_cfg) {
+        cfg_used.extend_from_slice(credits.targets(site));
+    }
     cfg_used.sort_unstable();
     cfg_used.dedup();
     let mut analysis = Analysis {
@@ -616,40 +621,31 @@ struct Uses {
 fn decide(
     graph: &Graph,
     surface: &Surface,
-    credits: &[Credit],
+    credits: &Credits,
     options: &Options,
     keep: impl Fn(&Credit) -> bool,
 ) -> Vec<Finding> {
-    let credits: Vec<&Credit> = credits.iter().filter(|credit| keep(credit)).collect();
+    let sites: Vec<&Site> = credits
+        .sites
+        .iter()
+        .filter(|site| keep(&site.credit))
+        .collect();
+    let credits_one: Vec<&Credit> = credits
+        .direct
+        .iter()
+        .filter(|credit| keep(credit))
+        .collect();
     let mut uses: Vec<Uses> = vec![Uses::default(); graph.items.len()];
-    for credit in &credits {
-        let target = &graph.items[credit.item];
-        let entry = &mut uses[credit.item];
-        if credit.origin == Origin::Signature
-            && let Some(owner) = credit.owner
-            && owner != credit.item
-            && signature_visible(graph, owner)
-        {
-            entry.exposed = true;
-        }
-        let from_macro_export = credit
-            .owner
-            .is_some_and(|owner| graph.items[owner].flags.macro_export);
-        if credit.krate != target.krate || credit.origin == Origin::Doc || from_macro_export {
-            entry.cross_crate = true;
-        } else if credit.owner != Some(credit.item) {
-            // A `macro_rules!` body expands at each call site, in any module.
-            let in_macro = credit
-                .owner
-                .is_some_and(|owner| graph.items[owner].kind == ItemKind::Macro);
-            entry.from_modules.push(if in_macro {
-                graph.crates[credit.krate].root_module
-            } else {
-                credit.module
-            });
-        }
+    for credit in &credits_one {
+        add_use(graph, &mut uses, credit);
     }
-    let (production, any) = live_items(graph, surface, &credits);
+    add_site_uses(graph, credits, &sites, &mut uses);
+    let (production, any) = live_items(graph, surface, &credits_one, &sites, credits);
+    let names = Names {
+        sites: &sites,
+        all: credits,
+    };
+    let credits = credits_one;
     let live_modules = modules_with_live_items(graph, &any);
     let facts = Facts {
         uses: &uses,
@@ -661,7 +657,7 @@ fn decide(
     // of its signature, so the findings are computed again with it held.
     let mut held: FxHashSet<ItemId> = FxHashSet::default();
     loop {
-        let required = required_items(graph, surface, &credits, &uses, &held);
+        let required = required_items(graph, surface, &credits, &names, &uses, &held);
         let findings = judge(graph, surface, options, &facts, &required);
         let public: FxHashSet<ItemId> = findings
             .iter()
@@ -681,6 +677,129 @@ fn decide(
             return findings;
         }
         held.extend(kept);
+    }
+}
+
+/// Adds the facts of one credit to the uses of its item.
+fn add_use(graph: &Graph, uses: &mut [Uses], credit: &Credit) {
+    let target = &graph.items[credit.item];
+    let entry = &mut uses[credit.item];
+    if credit.origin == Origin::Signature
+        && let Some(owner) = credit.owner
+        && owner != credit.item
+        && signature_visible(graph, owner)
+    {
+        entry.exposed = true;
+    }
+    let from_macro_export = credit
+        .owner
+        .is_some_and(|owner| graph.items[owner].flags.macro_export);
+    if credit.krate != target.krate || credit.origin == Origin::Doc || from_macro_export {
+        entry.cross_crate = true;
+    } else if credit.owner != Some(credit.item) {
+        entry.from_modules.push(use_module(graph, credit));
+    }
+}
+
+/// The module that a credit uses the item from. A `macro_rules!` body
+/// expands at each call site, in any module.
+fn use_module(graph: &Graph, credit: &Credit) -> ModuleId {
+    let in_macro = credit
+        .owner
+        .is_some_and(|owner| graph.items[owner].kind == ItemKind::Macro);
+    if in_macro {
+        graph.crates[credit.krate].root_module
+    } else {
+        credit.module
+    }
+}
+
+/// The name sites of a run, with their groups.
+struct Names<'a> {
+    sites: &'a [&'a Site],
+    all: &'a Credits,
+}
+
+/// What one site gives to the items of its group.
+#[derive(Default)]
+struct SiteFacts {
+    /// The crate and the module of the use, for a site in a workspace crate.
+    places: Vec<(usize, ModuleId)>,
+    /// The number of sites in a signature with a visibility.
+    exposed: usize,
+}
+
+/// The facts of the sites of one name group, once for the group.
+#[derive(Default)]
+struct GroupUse {
+    /// The crate and the module of each site, with the number of sites.
+    places: FxHashMap<(usize, ModuleId), usize>,
+    /// True when a site is a doc test or the body of a `#[macro_export]`
+    /// macro: such code is in another crate for each item.
+    outside: bool,
+    /// The number of sites in a signature with a visibility.
+    exposed: usize,
+    /// The facts of the sites whose owner is an item of the group. The old
+    /// rule gives an item no module and no exposure from code inside the item.
+    own: FxHashMap<ItemId, SiteFacts>,
+}
+
+/// Adds the facts of the name sites to the uses of the items of their groups.
+/// Each group gets the union of its sites once, so the work grows with the
+/// sites and the items, not with their product. A site inside an item of its
+/// own group does not count for that item, the same as a direct credit.
+fn add_site_uses(graph: &Graph, credits: &Credits, sites: &[&Site], uses: &mut [Uses]) {
+    let mut groups: FxHashMap<usize, GroupUse> = FxHashMap::default();
+    for site in sites {
+        let credit = &site.credit;
+        let group = groups.entry(site.group).or_default();
+        let outside = credit.origin == Origin::Doc
+            || credit
+                .owner
+                .is_some_and(|owner| graph.items[owner].flags.macro_export);
+        group.outside |= outside;
+        let exposed = usize::from(
+            credit.origin == Origin::Signature
+                && credit
+                    .owner
+                    .is_some_and(|owner| signature_visible(graph, owner)),
+        );
+        group.exposed += exposed;
+        let place = (!outside).then(|| (credit.krate, use_module(graph, credit)));
+        if let Some(place) = place {
+            *group.places.entry(place).or_default() += 1;
+        }
+        if let Some(owner) = credit.owner
+            && credits.groups[site.group].binary_search(&owner).is_ok()
+        {
+            let own = group.own.entry(owner).or_default();
+            own.exposed += exposed;
+            own.places.extend(place);
+        }
+    }
+    for (group, facts) in groups {
+        for &item in &credits.groups[group] {
+            let krate = graph.items[item].krate;
+            let own = facts.own.get(&item);
+            let entry = &mut uses[item];
+            entry.exposed |= facts.exposed > own.map_or(0, |own| own.exposed);
+            entry.cross_crate |= facts.outside;
+            for (&(site_crate, module), &count) in &facts.places {
+                if site_crate != krate {
+                    entry.cross_crate = true;
+                    continue;
+                }
+                let inside = own.map_or(0, |own| {
+                    own.places
+                        .iter()
+                        .filter(|&&place| place == (site_crate, module))
+                        .count()
+                });
+                if count > inside {
+                    entry.from_modules.push(module);
+                }
+            }
+        }
     }
 }
 
@@ -843,6 +962,7 @@ fn required_items(
     graph: &Graph,
     surface: &Surface,
     credits: &[&Credit],
+    names: &Names<'_>,
     uses: &[Uses],
     held: &FxHashSet<ItemId>,
 ) -> FxHashSet<ItemId> {
@@ -883,6 +1003,9 @@ fn required_items(
             signature.entry(enumeration).or_default().push(credit.item);
         }
     }
+    let groups = SignatureGroups::new(graph, names);
+    let mut expanded: FxHashSet<usize> = FxHashSet::default();
+    work.extend(groups.seeds(graph, names, &mut expanded));
     let members = members_of_types(graph);
     work.extend(
         (0..graph.items.len())
@@ -911,6 +1034,12 @@ fn required_items(
                 .copied()
                 .map(Work::Require),
         );
+        // A group needs its items once, for the first owner that needs it.
+        for &group in groups.by_owner.get(&item).into_iter().flatten() {
+            if expanded.insert(group) {
+                work.extend(names.all.groups[group].iter().copied().map(Work::Require));
+            }
+        }
         // rustc checks the members of a type that stays `pub` against the
         // visibility of the type. A member that is no candidate keeps its
         // visibility, so it holds the types of its signature.
@@ -951,6 +1080,82 @@ const fn is_type(kind: ItemKind) -> bool {
         kind,
         ItemKind::Struct | ItemKind::Enum | ItemKind::Union | ItemKind::Trait | ItemKind::TypeAlias
     )
+}
+
+/// The name groups that [`required_items`] reads: the groups that a
+/// signature or a doc link of an owner names, the groups of a doc link of a
+/// library root, and the groups of macro tokens that can write a `pub` item.
+#[derive(Default)]
+struct SignatureGroups {
+    by_owner: FxHashMap<ItemId, Vec<usize>>,
+    required: Vec<usize>,
+    types: FxHashSet<usize>,
+}
+
+impl SignatureGroups {
+    /// The items that the groups require before the walk: each item of a
+    /// group of a library root doc link, and each type that macro tokens
+    /// with `pub` name.
+    fn seeds(
+        &self,
+        graph: &Graph,
+        names: &Names<'_>,
+        expanded: &mut FxHashSet<usize>,
+    ) -> Vec<Work> {
+        let mut work = Vec::new();
+        for &group in &self.required {
+            if expanded.insert(group) {
+                work.extend(names.all.groups[group].iter().copied().map(Work::Require));
+            }
+        }
+        for &group in &self.types {
+            work.extend(
+                names.all.groups[group]
+                    .iter()
+                    .copied()
+                    .filter(|&item| is_type(graph.items[item].kind))
+                    .map(Work::Require),
+            );
+        }
+        work
+    }
+
+    fn new(graph: &Graph, names: &Names<'_>) -> Self {
+        let mut groups = Self::default();
+        for site in names.sites {
+            let credit = &site.credit;
+            if credit.origin == Origin::PublicMacro {
+                groups.types.insert(site.group);
+            }
+            if !matches!(credit.origin, Origin::Signature | Origin::DocLink) {
+                continue;
+            }
+            let owner = credit.owner.or_else(|| {
+                (credit.origin == Origin::DocLink)
+                    .then(|| graph.modules[credit.module].item)
+                    .flatten()
+            });
+            let Some(owner) = owner else {
+                let root = graph.crates[credit.krate].root_module == credit.module;
+                if credit.origin == Origin::DocLink
+                    && root
+                    && graph.crates[credit.krate].kind.is_library()
+                {
+                    groups.required.push(site.group);
+                }
+                continue;
+            };
+            groups.by_owner.entry(owner).or_default().push(site.group);
+            if let Some(enumeration) = variant_enum(graph, owner) {
+                groups
+                    .by_owner
+                    .entry(enumeration)
+                    .or_default()
+                    .push(site.group);
+            }
+        }
+        groups
+    }
 }
 
 /// One step of [`required_items`].
@@ -1061,29 +1266,47 @@ impl Surface {
 }
 
 /// The items that a production root reaches, and the items that any root
-/// reaches.
+/// reaches. A name group is one more node of the walk, after the items: each
+/// site reaches the group, and the group reaches its items.
 fn live_items(
     graph: &Graph,
     surface: &Surface,
     credits: &[&Credit],
+    sites: &[&Site],
+    all: &Credits,
 ) -> (FxHashSet<ItemId>, FxHashSet<ItemId>) {
     let mut edges: FxHashMap<ItemId, Vec<(ItemId, bool)>> = FxHashMap::default();
     let mut production_roots = Vec::new();
     let mut other_roots = Vec::new();
-    for credit in credits {
+    let group_node = |group: usize| graph.items.len() + group;
+    let mut add = |credit: &Credit, node: ItemId, production_roots: &mut Vec<ItemId>| {
         if credit.import {
-            continue;
+            return;
         }
         match (credit.owner, credit.origin) {
             // A doc link is no use in code, so it makes nothing live.
             (_, Origin::DocLink) => {}
-            (_, Origin::Doc) => other_roots.push(credit.item),
+            (_, Origin::Doc) => other_roots.push(node),
             (Some(owner), _) => edges
                 .entry(owner)
                 .or_default()
-                .push((credit.item, credit_test_only(graph, credit))),
-            (None, _) => production_roots.push(credit.item),
+                .push((node, credit_test_only(graph, credit))),
+            (None, _) => production_roots.push(node),
         }
+    };
+    for credit in credits {
+        add(credit, credit.item, &mut production_roots);
+    }
+    for site in sites {
+        add(&site.credit, group_node(site.group), &mut production_roots);
+    }
+    for site in sites {
+        edges.entry(group_node(site.group)).or_insert_with(|| {
+            all.targets(site)
+                .iter()
+                .map(|&item| (item, false))
+                .collect()
+        });
     }
     for (item, entry) in graph.items.iter().enumerate() {
         let krate = &graph.crates[entry.krate];
@@ -1116,10 +1339,13 @@ fn live_items(
     }
     // An external user can call each item of an external API.
     production_roots.extend(surface.api_surface(graph));
-    let production = reach(&edges, production_roots.iter().copied(), false);
+    let mut production = reach(&edges, production_roots.iter().copied(), false);
     let mut all_roots = production_roots;
     all_roots.extend(other_roots);
-    let any = reach(&edges, all_roots.into_iter(), true);
+    let mut any = reach(&edges, all_roots.into_iter(), true);
+    // The group nodes are no items.
+    production.retain(|&node| node < graph.items.len());
+    any.retain(|&node| node < graph.items.len());
     (production, any)
 }
 

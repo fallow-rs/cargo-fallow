@@ -128,6 +128,9 @@ pub struct Crate {
     pub features: Vec<String>,
     /// True when a registry can publish the package.
     pub published: bool,
+    /// True for a crate of a consumer workspace: its code counts as a use,
+    /// and it gets no finding.
+    pub consumer: bool,
     /// The features that the target needs.
     pub required_features: Vec<String>,
     /// The names that the code blocks of the documentation can use. rustdoc
@@ -328,13 +331,10 @@ fn build_inner(workspace: &Workspace, production: &Production, scan: bool) -> (G
     let parsed = parse_all(root, &targets, scan);
     let mut graph = Graph::default();
     let mut scans = FileScans::default();
-    let libs: BTreeMap<&str, CrateId> = targets
-        .iter()
-        .enumerate()
-        .filter(|(_, (_, target))| CrateKind::of(target).is_library())
-        .map(|(id, (member, _))| (member.name.as_str(), id))
-        .collect();
+    let libs = libraries(&targets, true);
+    let own_libs = libraries(&targets, false);
     for (id, ((member, target), mut files)) in targets.iter().zip(parsed).enumerate() {
+        let libs = if member.consumer { &libs } else { &own_libs };
         let kind = CrateKind::of(target);
         let edition = parse_edition(&target.edition);
         for file in &mut files.files {
@@ -342,19 +342,14 @@ fn build_inner(workspace: &Workspace, production: &Production, scan: bool) -> (G
                 scans.entry((file.path.clone(), edition)).or_insert(found);
             }
         }
-        let production = kind == CrateKind::Bin
-            && (production.bins.is_empty()
-                || production
-                    .bins
-                    .iter()
-                    .any(|(package, bin)| *package == member.name && *bin == target.name));
+        let production = is_production(production, member, target, kind);
         let lib = libs
             .get(member.name.as_str())
             .copied()
             .filter(|lib| *lib != id);
-        let externs = externs_of(member, kind, lib, &libs, workspace);
+        let externs = externs_of(member, kind, lib, libs, workspace);
         let doc_externs = if kind.is_library() && target.doctest {
-            let mut names = externs_of(member, CrateKind::Test, Some(id), &libs, workspace);
+            let mut names = externs_of(member, CrateKind::Test, Some(id), libs, workspace);
             names.retain(|name| name.target != Some(id) || name.name == crate_name(&target.name));
             names
         } else {
@@ -377,6 +372,7 @@ fn build_inner(workspace: &Workspace, production: &Production, scan: bool) -> (G
             externs,
             features: member.features.clone(),
             published: member.published,
+            consumer: member.consumer,
             required_features: target.required_features.clone(),
             doc_externs,
         });
@@ -397,6 +393,37 @@ fn build_inner(workspace: &Workspace, production: &Production, scan: bool) -> (G
         );
     }
     (graph, scans)
+}
+
+/// The library of each package, by package name. A workspace crate links
+/// only to workspace libraries, so `consumers` is false for it. A consumer
+/// crate links to both.
+fn libraries<'w>(targets: &[(&'w Member, &Target)], consumers: bool) -> BTreeMap<&'w str, CrateId> {
+    targets
+        .iter()
+        .enumerate()
+        .filter(|(_, (member, target))| {
+            CrateKind::of(target).is_library() && (consumers || !member.consumer)
+        })
+        .map(|(id, (member, _))| (member.name.as_str(), id))
+        .collect()
+}
+
+/// True for a production binary. A consumer binary, for example a fuzz
+/// target, is a real user, so it is one too.
+fn is_production(
+    production: &Production,
+    member: &Member,
+    target: &Target,
+    kind: CrateKind,
+) -> bool {
+    kind == CrateKind::Bin
+        && (production.bins.is_empty()
+            || member.consumer
+            || production
+                .bins
+                .iter()
+                .any(|(package, bin)| *package == member.name && *bin == target.name))
 }
 
 /// Parses the files of each target. The targets run on parallel threads.

@@ -153,7 +153,12 @@ fn visibility_report(options: &cli::VisibilityOptions) -> Result<u8, CliError> {
     let production = graph::Production {
         bins: options.production.clone(),
     };
-    let module_graph = graph::build(&workspace, &production);
+    // The code of a consumer workspace counts as a use.
+    let extended = visibility::consumers::extend(&workspace, options)?;
+    let graph_workspace = extended
+        .as_ref()
+        .map_or(&workspace, |extended| &extended.workspace);
+    let module_graph = graph::build(graph_workspace, &production);
     if let Some(target) = &options.trace {
         progress.step("Tracing the item");
         let check_options =

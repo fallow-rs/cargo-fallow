@@ -73,6 +73,9 @@ pub struct VisibilityOptions {
     pub public: Option<Vec<String>>,
     /// True when the fields of one struct change visibility as a group.
     pub uniform_fields: bool,
+    /// The manifests of the consumer workspaces, relative to the workspace
+    /// root. `None` means `fuzz/Cargo.toml` when it exists.
+    pub consumers: Option<Vec<String>>,
     /// The finding kinds to report. Empty means each kind.
     pub kinds: Vec<crate::visibility::FindingKind>,
     /// True when a finding fails the run.
@@ -497,6 +500,7 @@ impl From<VisibilityArgs> for VisibilityOptions {
             production: args.production,
             exclude: args.exclude_crate,
             public: (!args.public_crate.is_empty()).then_some(args.public_crate),
+            consumers: None,
             cargo_flags: args.cargo.flags(),
             uniform_fields: args.uniform_fields,
             kinds: args

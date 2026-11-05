@@ -847,6 +847,12 @@ fn each_finding_has_the_keyword_change_as_its_action() {
             "change-visibility inner::here [pub(crate)] -> [] at 3:5-15",
         ]
     );
+    // A dead item gets the removal as its second step.
+    assert_eq!(report["findings"][0]["actions"][1]["type"], "remove-item");
+    assert_eq!(
+        report["findings"][1]["actions"].as_array().map(Vec::len),
+        Some(1)
+    );
 }
 
 #[test]

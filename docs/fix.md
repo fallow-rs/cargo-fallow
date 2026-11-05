@@ -39,8 +39,8 @@ cargo fallow fix --yes --only visibility   # only the visibility edits
 - When no dependency table of the package has the key after the edit, the
   command also removes `dep:<key>`, `<key>/<feature>` and `<key>?/<feature>`
   from each feature.
-- For each `visibility` finding (fast mode), the command changes the
-  visibility keyword at the `range` of its action. `pub` becomes
+- For each `visibility` finding (fast mode) with an `auto_fixable` action,
+  the command changes the visibility keyword at the `range` of its action. `pub` becomes
   `pub(crate)`, and the command removes a restricted keyword. The edit counts
   characters, not bytes, so a wide character before the keyword on the same
   line does not put the edit at the wrong place.
@@ -56,14 +56,23 @@ cargo fallow fix --yes --only visibility   # only the visibility edits
 - The command compares the compiler warnings before and after the edits. An
   edit that adds a warning breaks a workspace that builds with `-D warnings`,
   so a new warning fails the check, the same as an error. A new `dead_code`
-  warning does not count: a `dead-public` edit shows the dead code on
-  purpose. The check runs `cargo check`, so a new clippy lint does not show.
+  warning counts too. The check runs `cargo check`, so a new clippy lint does
+  not show.
+- A `dead-public` finding and a finding with `test_only: true` get no edit.
+  A smaller keyword on such an item makes the compiler report dead code. The
+  finding counts in `skipped`, and its actions stay for a person.
 - When the check after the edits fails, the command writes back the old bytes
-  of each file and of `Cargo.lock`. Then it leaves out the edits of the items
-  that the compiler errors and the new warnings name, and tries again. The command does at most
-  five rounds of edits and checks. In the report, each left-out edit has
-  `applied: false`. When there is no edit left to leave out, the command
-  exits 2 with the compiler errors.
+  of each file and of `Cargo.lock`. Then it leaves out the edits that the
+  compiler errors and the new warnings name, and tries again. A message names
+  an edit by the item name in backticks, or by a span at the line of the
+  edit. When no message names an edit, the command leaves out each edit in a
+  file of a message. The command does at most five rounds of edits and
+  checks. When the messages leave out each edit, the command changes no file
+  and exits 0.
+- In the report, each left-out edit has `applied: false`, a `skip_reason`
+  (`compiler_error` or `compiler_warning`) and the compiler message in
+  `diagnostic`. When the check fails and no message names a file of an edit,
+  the command exits 2 with the compiler errors.
 - `cargo check` builds for one platform. It does not build code under a `cfg`
   for another platform, and it does not build doc tests. An edit can break
   such code. After `fix`, run the tests on each platform, or use `--dry-run`

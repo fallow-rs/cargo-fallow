@@ -160,7 +160,7 @@ fn failed_check_after_the_edit_writes_back_each_file() {
     fs::write(
         &script,
         format!(
-            "#!/bin/sh\nif [ \"$1\" = check ]; then\n  if [ -f '{c}' ]; then echo 'error[E0603]: function `helper` is private' >&2; exit 101; fi\n  touch '{c}'; exit 0\nfi\nexec '{real}' \"$@\"\n",
+            "#!/bin/sh\nif [ \"$1\" = check ]; then\n  if [ -f '{c}' ]; then echo 'error: could not compile' >&2; exit 101; fi\n  touch '{c}'; exit 0\nfi\nexec '{real}' \"$@\"\n",
             c = counter.display()
         ),
     )
@@ -176,7 +176,7 @@ fn failed_check_after_the_edit_writes_back_each_file() {
     let error = json(&stdout);
     assert_eq!(error["code"], "CARGO_FALLOW_FIX_FAILED", "{error}");
     let message = error["message"].as_str().unwrap_or_default();
-    assert!(message.contains("E0603"), "{message}");
+    assert!(message.contains("could not compile"), "{message}");
     assert_eq!(read(&dir, "core/src/lib.rs"), CORE);
 }
 
@@ -378,19 +378,20 @@ fn a_configured_baseline_that_is_missing_does_not_stop_fix() {
 }
 
 /// A fake cargo whose `check` passes, and prints a JSON warning for each
-/// `(pattern, lint, message)` when the library file holds the pattern.
+/// `(pattern, lint, message, line)` when the library file holds the pattern.
+/// The primary span of the warning is at the line.
 #[cfg(unix)]
-fn warning_cargo(dir: &TempDir, warnings: &[(&str, &str, &str)]) -> String {
+fn warning_cargo(dir: &TempDir, warnings: &[(&str, &str, &str, u32)]) -> String {
     use std::fmt::Write as _;
     use std::os::unix::fs::PermissionsExt as _;
 
     let real = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
     let lib = dir.path().join("core/src/lib.rs");
     let mut body = String::new();
-    for (pattern, lint, message) in warnings {
+    for (pattern, lint, message, line) in warnings {
         let _ = writeln!(
             body,
-            "  if grep -q '{pattern}' '{lib}'; then echo '{{\"reason\":\"compiler-message\",\"message\":{{\"level\":\"warning\",\"message\":\"{message}\",\"code\":{{\"code\":\"{lint}\"}},\"spans\":[{{\"file_name\":\"core/src/lib.rs\",\"line_start\":2,\"column_start\":1,\"is_primary\":true}}]}}}}'; fi",
+            "  if grep -q '{pattern}' '{lib}'; then echo '{{\"reason\":\"compiler-message\",\"message\":{{\"level\":\"warning\",\"message\":\"{message}\",\"code\":{{\"code\":\"{lint}\"}},\"spans\":[{{\"file_name\":\"core/src/lib.rs\",\"line_start\":{line},\"line_end\":{line},\"column_start\":1,\"is_primary\":true}}]}}}}'; fi",
             lib = lib.display()
         );
     }
@@ -406,13 +407,29 @@ fn warning_cargo(dir: &TempDir, warnings: &[(&str, &str, &str)]) -> String {
     script.to_str().expect("the path is UTF-8").to_owned()
 }
 
+/// The `skip_reason` of the edit of each item, in report order.
+#[cfg(unix)]
+fn skip_reasons(report: &Value) -> Vec<(String, String)> {
+    report["fixes"]
+        .as_array()
+        .expect("fixes is an array")
+        .iter()
+        .map(|fix| {
+            (
+                fix["item"].as_str().unwrap_or_default().to_owned(),
+                fix["skip_reason"].as_str().unwrap_or_default().to_owned(),
+            )
+        })
+        .collect()
+}
+
 /// An edit that adds a compiler warning is left out, the same as an edit
-/// that adds an error. A new `dead_code` warning is the purpose of a
-/// `dead-public` edit, so it does not count.
+/// that adds an error. A new `dead_code` warning counts too: a narrowed item
+/// that the compiler reports as dead breaks a `-D warnings` build.
 #[cfg(unix)]
 #[test]
-fn edit_that_adds_a_warning_is_left_out_and_dead_code_does_not_count() {
-    let core = "pub fn used() { helper(); other(); }\npub fn helper() {}\npub fn other() {}\npub fn dead() {}\n";
+fn edit_that_adds_a_warning_or_dead_code_is_left_out_with_its_reason() {
+    let core = "pub fn used() { helper(); other(); third(); }\npub fn helper() {}\npub fn other() {}\npub fn third() {}\n";
     let dir = workspace(core, APP);
     let script = warning_cargo(
         &dir,
@@ -421,11 +438,13 @@ fn edit_that_adds_a_warning_is_left_out_and_dead_code_does_not_count() {
                 "pub(crate) fn helper",
                 "private_interfaces",
                 "type `Data` is more private than the item `helper`",
+                2,
             ),
             (
-                "pub(crate) fn dead",
+                "pub(crate) fn other",
                 "dead_code",
-                "function `dead` is never used",
+                "function `other` is never used",
+                3,
             ),
         ],
     );
@@ -435,12 +454,163 @@ fn edit_that_adds_a_warning_is_left_out_and_dead_code_does_not_count() {
         Some(&script),
     );
     assert_eq!(code, 0, "{stderr} {stdout}");
-    assert_eq!(json(&stdout)["total_fixed"], 2, "{stdout}");
+    let report = json(&stdout);
+    assert_eq!(report["total_fixed"], 1, "{report}");
     assert_eq!(
         read(&dir, "core/src/lib.rs"),
-        "pub fn used() { helper(); other(); }\npub fn helper() {}\npub(crate) fn other() {}\n\
-         pub(crate) fn dead() {}\n"
+        "pub fn used() { helper(); other(); third(); }\npub fn helper() {}\npub fn other() {}\n\
+         pub(crate) fn third() {}\n"
     );
+    assert_eq!(
+        skip_reasons(&report),
+        [
+            ("helper".to_owned(), "compiler_warning".to_owned()),
+            ("other".to_owned(), "compiler_warning".to_owned()),
+            ("third".to_owned(), String::new()),
+        ],
+        "{report}"
+    );
+    let diagnostic = report["fixes"][1]["diagnostic"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(diagnostic.contains("is never used"), "{report}");
+}
+
+/// A warning that names no item, for example "multiple fields are never
+/// read", leaves out the edit at a line of its spans.
+#[cfg(unix)]
+#[test]
+fn a_warning_without_a_name_leaves_out_the_edit_at_its_span() {
+    let core = "pub fn used() { helper(); other(); }\npub fn helper() {}\npub fn other() {}\n";
+    let dir = workspace(core, APP);
+    let script = warning_cargo(
+        &dir,
+        &[(
+            "pub(crate) fn helper",
+            "dead_code",
+            "multiple fields are never read",
+            2,
+        )],
+    );
+    let (code, stdout, stderr) = fix(
+        &dir,
+        &["--yes", "--format", "json", "--quiet"],
+        Some(&script),
+    );
+    assert_eq!(code, 0, "{stderr} {stdout}");
+    assert_eq!(json(&stdout)["total_fixed"], 1, "{stdout}");
+    assert_eq!(
+        read(&dir, "core/src/lib.rs"),
+        "pub fn used() { helper(); other(); }\npub fn helper() {}\npub(crate) fn other() {}\n"
+    );
+}
+
+/// When each edit adds a warning, `fix` leaves out each edit and exits 0
+/// with no applied edit, so one bad edit does not stop the run.
+#[cfg(unix)]
+#[test]
+fn a_run_that_leaves_out_each_edit_exits_0_and_changes_nothing() {
+    let dir = workspace(CORE, APP);
+    let script = warning_cargo(
+        &dir,
+        &[(
+            "pub(crate) fn helper",
+            "unused_imports",
+            "unused import: `scripts::helper`",
+            2,
+        )],
+    );
+    let (code, stdout, stderr) = fix(
+        &dir,
+        &["--yes", "--format", "json", "--quiet"],
+        Some(&script),
+    );
+    assert_eq!(code, 0, "{stderr} {stdout}");
+    let report = json(&stdout);
+    assert_eq!(report["total_fixed"], 0, "{report}");
+    assert_eq!(report["fixes"][0]["skip_reason"], "compiler_warning");
+    assert_eq!(read(&dir, "core/src/lib.rs"), CORE);
+}
+
+/// A warning that names no edit and has no span at an edit leaves out the
+/// edits of its file. The other files keep their edits.
+#[cfg(unix)]
+#[test]
+fn a_warning_that_matches_no_edit_leaves_out_the_edits_of_its_file() {
+    let core = "pub fn used() { helper(); }\npub fn helper() {}\n";
+    let dir = workspace(core, APP);
+    let script = warning_cargo(
+        &dir,
+        &[("pub(crate) fn helper", "unused_mut", "something changed", 9)],
+    );
+    let (code, stdout, stderr) = fix(
+        &dir,
+        &["--yes", "--format", "json", "--quiet"],
+        Some(&script),
+    );
+    assert_eq!(code, 0, "{stderr} {stdout}");
+    assert_eq!(json(&stdout)["total_fixed"], 0, "{stdout}");
+    assert_eq!(read(&dir, "core/src/lib.rs"), core);
+}
+
+/// An item that only tests use and a `dead-public` item get no edit: a
+/// smaller keyword makes the compiler report them as dead code. Their actions
+/// stay for a person.
+#[cfg(unix)]
+#[test]
+fn an_item_that_only_tests_use_and_a_dead_item_get_no_edit() {
+    let core = "pub fn used() { helper(); }\npub fn helper() {}\npub fn dead() {}\npub fn probe() {}\n\
+                #[cfg(test)]\nmod tests {\n    #[test]\n    fn t() {\n        super::probe();\n    }\n}\n";
+    let dir = workspace(core, APP);
+    let cargo = fake_cargo(&dir, 0);
+    let (code, stdout, stderr) = fix(
+        &dir,
+        &["--dry-run", "--format", "json", "--quiet"],
+        Some(&cargo),
+    );
+    assert_eq!(code, 0, "{stderr}");
+    let report = json(&stdout);
+    let items: Vec<&str> = report["fixes"]
+        .as_array()
+        .expect("fixes is an array")
+        .iter()
+        .filter_map(|fix| fix["item"].as_str())
+        .collect();
+    assert_eq!(items, ["helper"], "{report}");
+    assert_eq!(report["skipped"], 2, "{report}");
+    let output = Command::cargo_bin("cargo-fallow")
+        .expect("the binary exists")
+        .current_dir(dir.path())
+        .args(["visibility", "--format", "json", "--quiet"])
+        .output()
+        .expect("run the binary");
+    let visibility = json(&String::from_utf8_lossy(&output.stdout));
+    let finding = |item: &str| -> Value {
+        visibility["findings"]
+            .as_array()
+            .expect("findings is an array")
+            .iter()
+            .find(|finding| finding["item"] == item)
+            .cloned()
+            .unwrap_or_else(|| panic!("no finding for {item}: {visibility}"))
+    };
+    let dead = finding("dead");
+    assert_eq!(dead["kind"], "dead-public", "{dead}");
+    assert_eq!(dead["actions"][0]["type"], "change-visibility", "{dead}");
+    assert_eq!(dead["actions"][1]["type"], "remove-item", "{dead}");
+    let probe = finding("probe");
+    assert_eq!(probe["test_only"], true, "{probe}");
+    for finding in [dead, probe] {
+        assert!(
+            finding["actions"]
+                .as_array()
+                .expect("actions is an array")
+                .iter()
+                .all(|action| action["auto_fixable"] == false),
+            "{finding}"
+        );
+    }
+    assert_eq!(finding("helper")["actions"][0]["auto_fixable"], true);
 }
 
 /// A warning that the workspace has before the edits is no new warning.
@@ -450,7 +620,12 @@ fn a_warning_from_before_the_edits_keeps_each_edit() {
     let dir = workspace(CORE, APP);
     let script = warning_cargo(
         &dir,
-        &[("used", "unused_mut", "variable does not need to be mutable")],
+        &[(
+            "used",
+            "unused_mut",
+            "variable does not need to be mutable",
+            1,
+        )],
     );
     let (code, stdout, stderr) = fix(
         &dir,
@@ -497,4 +672,44 @@ fn a_formatted_file_stays_formatted_after_the_edits() {
         .status()
         .expect("run rustfmt");
     assert!(after.success(), "{}", read(&dir, "core/src/lib.rs"));
+}
+
+/// When `fix` cannot write back the old bytes of a file after a failed
+/// check, it stops with exit 2 and names the file. It does not start a new
+/// round from the edited bytes.
+#[cfg(unix)]
+#[test]
+fn a_failed_write_back_stops_the_run() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let dir = workspace(CORE, APP);
+    let real = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
+    let src = dir.path().join("core/src");
+    let lib = src.join("lib.rs");
+    let script = dir.path().join("fake-cargo");
+    fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = check ]; then\n  if grep -q 'pub(crate) fn helper' '{lib}'; then chmod 555 '{src}'; echo '{{\"reason\":\"compiler-message\",\"message\":{{\"level\":\"warning\",\"message\":\"function `helper` is never used\",\"code\":{{\"code\":\"dead_code\"}},\"spans\":[{{\"file_name\":\"core/src/lib.rs\",\"line_start\":2,\"column_start\":1,\"is_primary\":true}}]}}}}'; fi\n  exit 0\nfi\nexec '{real}' \"$@\"\n",
+            lib = lib.display(),
+            src = src.display()
+        ),
+    )
+    .expect("write the script");
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).expect("make it executable");
+    let script = script.to_str().expect("the path is UTF-8").to_owned();
+    let (code, stdout, stderr) = fix(
+        &dir,
+        &["--yes", "--format", "json", "--quiet"],
+        Some(&script),
+    );
+    fs::set_permissions(&src, fs::Permissions::from_mode(0o755)).expect("make the folder writable");
+    assert_eq!(code, 2, "{stderr} {stdout}");
+    let error = json(&stdout);
+    assert!(
+        error["help"]
+            .as_str()
+            .is_some_and(|help| help.contains("cannot write back")),
+        "{error}"
+    );
 }

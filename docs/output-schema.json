@@ -2655,6 +2655,20 @@
         "applied": {
           "type": "boolean",
           "description": "True when the command wrote the edit."
+        },
+        "skip_reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Why the command left out the edit: `compiler_error` or\n`compiler_warning`. The `cargo check` after the edits gave an error or\na new warning for the item."
+        },
+        "diagnostic": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The compiler message that left out the edit."
         }
       },
       "required": [
@@ -6266,11 +6280,11 @@
       "properties": {
         "type": {
           "type": "string",
-          "description": "`change-visibility`, or `remove-item` for an enum variant."
+          "description": "`change-visibility`, or `remove-item` for an enum variant and as the\nsecond step of a `dead-public` finding."
         },
         "auto_fixable": {
           "type": "boolean",
-          "description": "True for a `change-visibility` step of a finding with a keyword range:\n`cargo fallow fix` applies it, and checks the build after the edit. A\nchange can still need a change in other code, so `fix` leaves out an\nedit that breaks the build. An undecided candidate and a `remove-item`\nstep stay false."
+          "description": "True for a `change-visibility` step of a finding with a keyword range:\n`cargo fallow fix` applies it, and checks the build after the edit. A\nchange can still need a change in other code, so `fix` leaves out an\nedit that breaks the build. An undecided candidate, a `remove-item`\nstep, a `dead-public` finding and a `test_only` finding stay false: a\nsmaller keyword on them makes the compiler report dead code."
         },
         "description": {
           "type": "string",

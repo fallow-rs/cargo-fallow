@@ -173,7 +173,7 @@ pub const RULES: &[Explanation] = &[
         severity: "error",
         meaning: "A `pub` item that no code of the workspace reaches.",
         example: "`pub fn helper()` in a library that no crate calls.",
-        fix: "Make the item `pub(crate)`, or run `cargo fallow fix`. When no code of the crate uses it, the compiler then reports dead code.",
+        fix: "Remove the item when no code needs it. `cargo fallow fix` does not change it, because a smaller keyword makes the compiler report dead code.",
         docs: "https://github.com/fallow-rs/cargo-fallow/blob/main/docs/visibility.md",
     },
     Explanation {

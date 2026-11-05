@@ -34,7 +34,8 @@ fn run(dir: &Path, args: &[&str]) -> (i32, String) {
 /// A function body that the clone check finds when it occurs twice.
 const CLONE: &str = "    let mut total = 0;\n    for value in [1, 2, 3, 4, 5, 6, 7, 8] {\n        if value % 2 == 0 {\n            total += value * 3;\n        } else {\n            total -= value / 2;\n        }\n    }\n    println!(\"{total}\");\n    total\n";
 
-/// A workspace with an unused file and a public item that no code uses.
+/// A workspace with an unused file, a public item that no code uses, and a
+/// public item that only its own crate uses.
 fn workspace(clones: bool) -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("create a temporary directory");
     write(
@@ -57,7 +58,8 @@ fn workspace(clones: bool) -> tempfile::TempDir {
         "lib/Cargo.toml",
         "[package]\nname = \"lib\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n",
     );
-    let mut lib = String::from("pub fn used() {}\npub fn unused() {}\n");
+    let mut lib =
+        String::from("pub fn used() {\n    helper();\n}\npub fn helper() {}\npub fn unused() {}\n");
     if clones {
         let _ = write!(
             lib,

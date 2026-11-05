@@ -199,6 +199,8 @@ pub struct Summary {
     pub min_tokens: u32,
     /// The smallest clone, in lines.
     pub min_lines: u32,
+    /// True when the check leaves out test code.
+    pub production: bool,
     /// The counts.
     pub stats: Stats,
     /// The files with a generator header or an `@generated` comment, which
@@ -220,8 +222,13 @@ pub fn run(args: &DupesArgs) -> Result<Section, CliError> {
         threshold: args.threshold.is_some(),
     };
     // A flag that changes the clone search narrows the findings.
-    let scope = Scope::load(&workspace, &args.common.scope)?
-        .narrowed(args.mode.is_some() || args.min_tokens.is_some() || args.min_lines.is_some());
+    let scope = Scope::load(&workspace, &args.common.scope)?.narrowed(
+        args.mode.is_some()
+            || args.min_tokens.is_some()
+            || args.min_lines.is_some()
+            || args.production
+            || args.no_production,
+    );
     scope.annotate(section(&loaded, &settings, gates, &scope, progress)?)
 }
 
@@ -262,6 +269,9 @@ fn load(
     if let Some(value) = args.threshold {
         settings.threshold = value;
     }
+    if args.production || args.no_production {
+        settings.production = args.production;
+    }
     progress.step("Reading the token streams");
     let loaded = source::load(
         &workspace,
@@ -291,8 +301,10 @@ pub fn section(
     scope: &Scope,
     progress: Progress,
 ) -> Result<Section, CliError> {
-    let files: Vec<&File> = loaded
-        .files
+    let production = production_files(loaded, settings);
+    let files: Vec<&File> = production
+        .as_ref()
+        .unwrap_or(&loaded.files)
         .iter()
         .filter(|file| !file.skip_metrics && !matches_prefix(&file.path, &settings.exclude))
         .collect();
@@ -358,6 +370,7 @@ pub fn section(
         mode: settings.mode.as_str(),
         min_tokens: settings.min_tokens,
         min_lines: settings.min_lines,
+        production: settings.production,
         stats,
         generated_files: loaded.files.iter().filter(|file| file.skip_metrics).count(),
         clone_families: families,
@@ -394,6 +407,48 @@ pub fn section(
         findings,
         gates: report.gate_outcomes,
     })
+}
+
+/// The production code of each file with `production = true`, else `None`.
+fn production_files(loaded: &Loaded, settings: &Duplication) -> Option<Vec<File>> {
+    settings
+        .production
+        .then(|| loaded.files.iter().filter_map(production_file).collect())
+}
+
+/// The production code of a file, or `None` for a file of test code. One
+/// barrier token takes the place of each test item, so no clone spans it. The
+/// line count leaves out the lines of the test items.
+fn production_file(file: &File) -> Option<File> {
+    if file.test_only {
+        return None;
+    }
+    let mut tokens = Vec::with_capacity(file.tokens.len());
+    for (index, token) in file.tokens.iter().enumerate() {
+        if !token.test {
+            tokens.push(*token);
+        } else if index == 0 || !file.tokens[index - 1].test {
+            tokens.push(tokens::Token {
+                hash: barrier_hash(&file.path, index),
+                test: false,
+                ..*token
+            });
+        }
+    }
+    Some(File {
+        path: file.path.clone(),
+        lines: file.lines.saturating_sub(file.test_lines),
+        skip_metrics: file.skip_metrics,
+        functions: Vec::new(),
+        tokens,
+        test_only: false,
+        test_lines: 0,
+    })
+}
+
+/// A hash that no other token has: the file and the place of the barrier.
+fn barrier_hash(path: &str, index: usize) -> u64 {
+    xxh3_64(format!("\0barrier\0{path}\0{index}").as_bytes())
 }
 
 /// The `duplication-threshold` gate: it fails when the duplicated lines are

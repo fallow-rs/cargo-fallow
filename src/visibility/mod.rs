@@ -1,9 +1,11 @@
 //! The visibility check on the module graph.
 //!
 //! The model is the closed-world model of hawk: the workspace is the only user
-//! of its libraries. Two kinds of library are an exception: a library that a
-//! registry can publish, and a library that `exclude-crates` names. Their
-//! exported items are an external API, so they are entry points.
+//! of its libraries. Two kinds of library are an exception: a library that
+//! `exclude-crates` names, and a public library. A public library is a
+//! library that `public-crates` names, or without `public-crates` a library
+//! that a registry can publish. Their exported items are an external API, so
+//! they are entry points.
 //!
 //! - `dead_public`: a `pub` item that the library exports, and that no
 //!   production root and no test, bench, example or doctest reaches.
@@ -34,6 +36,9 @@ use crate::graph::{CrateKind, Graph, ItemId, ModuleId};
 pub struct Options {
     /// The crate names whose public items are an external API.
     pub exclude: Vec<String>,
+    /// The libraries whose exported items are an external API, or `None` for
+    /// each library that a registry can publish.
+    pub public: Option<Vec<String>>,
     /// True when the fields of a struct with one written visibility change as
     /// a group, as hawk's `preserve-uniform-field-visibility`.
     pub uniform_fields: bool,
@@ -149,10 +154,48 @@ impl Analysis {
     }
 }
 
+/// True when the exported items of the crate are an external API: an
+/// excluded crate, a library that `public` names, or without `public` a
+/// library that a registry can publish.
+pub fn is_api(krate: &crate::graph::Crate, exclude: &[String], public: Option<&[String]>) -> bool {
+    if exclude.contains(&krate.name) {
+        return true;
+    }
+    if !krate.kind.is_library() {
+        return false;
+    }
+    public.map_or(krate.published, |names| {
+        names
+            .iter()
+            .any(|name| name_matches(name, &krate.name) || name_matches(name, &krate.package))
+    })
+}
+
+/// True when `name` matches `pattern`. A `*` in the pattern matches any text.
+pub fn name_matches(pattern: &str, name: &str) -> bool {
+    let mut parts = pattern.split('*');
+    let first = parts.next().unwrap_or_default();
+    let Some(mut rest) = name.strip_prefix(first) else {
+        return false;
+    };
+    let parts: Vec<&str> = parts.collect();
+    let Some((last, middle)) = parts.split_last() else {
+        return rest.is_empty();
+    };
+    for part in middle {
+        match rest.find(part) {
+            Some(at) => rest = &rest[at + part.len()..],
+            None => return false,
+        }
+    }
+    rest.len() >= last.len() && rest.ends_with(last)
+}
+
 /// The options of the analysis for the resolved command options.
 pub fn check_options(options: &crate::cli::VisibilityOptions, root: PathBuf) -> Options {
     Options {
         exclude: options.exclude.clone(),
+        public: options.public.clone(),
         uniform_fields: options.uniform_fields,
         root,
     }
@@ -364,7 +407,7 @@ impl Surface {
             .iter()
             .enumerate()
             .filter(|(id, entry)| {
-                excluded.contains(id) || (entry.published && entry.kind.is_library())
+                excluded.contains(id) || is_api(entry, &[], options.public.as_deref())
             })
             .map(|(id, _)| id)
             .collect();

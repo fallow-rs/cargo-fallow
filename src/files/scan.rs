@@ -208,6 +208,7 @@ fn collect_declarations(
             path_attr,
             under_cfg: false,
             cfg_off: false,
+            test_only: false,
         };
         found
             .modules
@@ -257,6 +258,7 @@ fn macro_tokens(token: &SyntaxToken, rest: &[SyntaxToken], found: &mut Scan) {
                     path_attr: None,
                     under_cfg: false,
                     cfg_off: false,
+                    test_only: false,
                 });
             }
             [SyntaxKind::IDENT, SyntaxKind::L_CURLY, ..] => nested_file_modules(&rest[1..], found),
@@ -282,6 +284,7 @@ fn macro_tokens(token: &SyntaxToken, rest: &[SyntaxToken], found: &mut Scan) {
             path_attr: Some(value),
             under_cfg: false,
             cfg_off: false,
+            test_only: false,
         });
     }
 }

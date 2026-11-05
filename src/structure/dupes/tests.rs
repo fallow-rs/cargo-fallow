@@ -22,8 +22,10 @@ fn file(path: &str, source: &str, mode: Mode) -> File {
         path: path.to_owned(),
         lines: count_lines(source),
         skip_metrics: false,
+        test_only: false,
         functions: Vec::new(),
         tokens,
+        test_lines: 0,
     }
 }
 
@@ -34,6 +36,37 @@ fn run(files: &[File], settings: &Duplication) -> Found {
 fn run_limited(files: &[File], settings: &Duplication, limits: &Limits) -> Result<Found, TimedOut> {
     let refs: Vec<&File> = files.iter().collect();
     detect(&refs, settings, limits, &|_, _| false)
+}
+
+#[test]
+fn production_mode_puts_a_barrier_where_a_test_item_was() {
+    let test_item = "#[cfg(test)]\nfn t() {}\n";
+    let split = format!("{}{test_item}{}", body("a", 1), body("b", 2));
+    let joined = format!("{}{}", body("a", 1), body("b", 2));
+    let mut x = file("x.rs", &split, Mode::Mild);
+    x.test_lines = 2;
+    let mut files: Vec<File> = production_file(&x).into_iter().collect();
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].lines, count_lines(&split) - 2);
+    files.push(file("y.rs", &joined, Mode::Mild));
+    let found = run(&files, &Duplication::default());
+    // The test item is on lines 12 and 13 of `x.rs`. No copy spans them.
+    for group in &found.groups {
+        for instance in group.instances.iter().filter(|i| i.file == "x.rs") {
+            assert!(
+                instance.end_line < 12 || instance.start_line > 13,
+                "{instance:?}"
+            );
+        }
+    }
+    assert_eq!(found.groups.len(), 2, "{:?}", found.groups);
+}
+
+#[test]
+fn production_mode_leaves_out_a_test_file() {
+    let mut x = file("x.rs", &body("a", 1), Mode::Mild);
+    x.test_only = true;
+    assert!(production_file(&x).is_none());
 }
 
 #[test]

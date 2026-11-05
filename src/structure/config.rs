@@ -197,6 +197,9 @@ pub struct Complexity {
     pub max_cyclomatic: u32,
     /// A function over this cognitive complexity is a finding.
     pub max_cognitive: u32,
+    /// With `--coverage`, a function with a CRAP score at or over this value
+    /// is a finding. The value 0 turns the CRAP check off.
+    pub max_crap: f64,
     /// How the `max-cyclomatic` limit counts the cyclomatic complexity.
     pub cyclomatic_policy: CyclomaticPolicy,
     /// The folders and files that the check skips.
@@ -208,9 +211,27 @@ impl Default for Complexity {
         Self {
             max_cyclomatic: 20,
             max_cognitive: 15,
+            max_crap: 30.0,
             cyclomatic_policy: CyclomaticPolicy::Standard,
             exclude: Vec::new(),
         }
+    }
+}
+
+impl Complexity {
+    /// Stops a run with a CRAP limit that is not a finite value of 0 or more.
+    pub fn validate(&self) -> Result<(), CliError> {
+        if self.max_crap.is_finite() && self.max_crap >= 0.0 {
+            return Ok(());
+        }
+        Err(CliError::new(
+            ErrorCode::InvalidConfig,
+            format!(
+                "`[workspace.metadata.{ROOT_KEY}.complexity]` is not valid: `max-crap` is {}, but it must be 0 or more",
+                self.max_crap
+            ),
+        )
+        .with_help("Set `max-crap` to a number, for example 30. The value 0 turns the CRAP check off."))
     }
 }
 
@@ -272,6 +293,9 @@ pub struct Duplication {
     pub skip_local: bool,
     /// Leave `use` items and `extern crate` items out of the token streams.
     pub ignore_imports: bool,
+    /// Leave out test code: test targets, test modules
+    /// and items with a test attribute.
+    pub production: bool,
     /// The folders and files that the check skips.
     pub exclude: Vec<String>,
 }
@@ -286,6 +310,7 @@ impl Default for Duplication {
             threshold: 0.0,
             skip_local: false,
             ignore_imports: true,
+            production: false,
             exclude: Vec::new(),
         }
     }

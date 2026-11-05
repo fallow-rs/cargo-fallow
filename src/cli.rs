@@ -67,6 +67,10 @@ pub struct VisibilityOptions {
     pub production: Vec<(String, String)>,
     /// The library crates whose public items are an external API.
     pub exclude: Vec<String>,
+    /// The libraries whose exported items are an external API, as crate or
+    /// package names with `*` globs. `None` means each library that a
+    /// registry can publish.
+    pub public: Option<Vec<String>>,
     /// True when the fields of one struct change visibility as a group.
     pub uniform_fields: bool,
     /// The finding kinds to report. Empty means each kind.
@@ -398,6 +402,11 @@ struct VisibilityArgs {
     /// A library crate whose public items are an external API. The flag can repeat.
     #[arg(long, value_name = "CRATE")]
     exclude_crate: Vec<String>,
+    /// A library whose exported items are an external API. Each other
+    /// library is internal, also when a registry can publish it. A crate or
+    /// package name, with `*` as a glob. The flag can repeat.
+    #[arg(long, value_name = "CRATE")]
+    public_crate: Vec<String>,
     /// Change the visibility of the fields of one struct as a group, when all
     /// fields have the same written visibility.
     #[arg(long)]
@@ -467,6 +476,7 @@ impl From<VisibilityArgs> for VisibilityOptions {
             quiet: args.quiet,
             production: args.production,
             exclude: args.exclude_crate,
+            public: (!args.public_crate.is_empty()).then_some(args.public_crate),
             cargo_flags: args.cargo.flags(),
             uniform_fields: args.uniform_fields,
             kinds: args
@@ -582,6 +592,8 @@ struct CheckArgs {
     cargo: CargoArgs,
     #[command(flatten)]
     health: crate::hotspots::HealthArgs,
+    #[command(flatten)]
+    coverage: crate::structure::crap::CoverageArgs,
 }
 
 /// The flags that the command gives to each of its cargo calls.
@@ -629,6 +641,7 @@ impl From<CheckArgs> for crate::check::Options {
             cargo_flags: args.cargo.flags(),
             scope: args.scope,
             health: args.health,
+            coverage: args.coverage,
         }
     }
 }

@@ -25,6 +25,9 @@ pub struct ModuleDecl {
     /// True when a `cfg` that can be off in a build with all features and
     /// tests is on the module.
     pub cfg_off: bool,
+    /// True when the module exists only in a test build, for example with
+    /// `#[cfg(test)]`. Only the source walk of the structure checks sets it.
+    pub test_only: bool,
 }
 
 /// A target root of a package.
@@ -34,6 +37,8 @@ pub struct TargetRoot {
     pub path: String,
     /// The edition of the target.
     pub edition: Edition,
+    /// True for a test target, for example a file in `tests/`.
+    pub test_only: bool,
 }
 
 /// A file that the walk reaches.
@@ -55,6 +60,9 @@ pub struct Visit {
     pub cfg_off: bool,
     /// The module path of the file, from the crate root.
     pub module_path: Vec<String>,
+    /// True when the file is part of a test target, or a declaration on the
+    /// way to the file sets [`ModuleDecl::test_only`].
+    pub test_only: bool,
 }
 
 /// A file that the walk reached but cannot use.
@@ -91,7 +99,7 @@ pub fn walk<T>(
     let mut skipped = Vec::new();
     let mut seen = BTreeSet::new();
     let mut folders = BTreeSet::new();
-    let mut queue: Vec<Visit> = roots
+    let (mut tests, mut queue): (Vec<Visit>, Vec<Visit>) = roots
         .iter()
         .map(|root| {
             if let Some(parent) = Path::new(&root.path).parent() {
@@ -105,10 +113,13 @@ pub fn walk<T>(
                 under_cfg: false,
                 cfg_off: false,
                 module_path: Vec::new(),
+                test_only: root.test_only,
             }
         })
-        .collect();
-    while let Some(next) = queue.pop() {
+        .partition(|visit| visit.test_only);
+    // The walk visits test code only after all other code. A file that test
+    // code and other code both reach then does not count as test code.
+    while let Some(next) = queue.pop().or_else(|| tests.pop()) {
         if !seen.insert(next.path.clone()) {
             continue;
         }
@@ -117,7 +128,9 @@ pub fn walk<T>(
                 let dir = child_dir(&next.path, next.is_mod_rs);
                 for module in &modules {
                     let child = resolve_module(workspace, &next.path, &dir, module);
-                    queue.extend(child.map(|(path, is_mod_rs)| Visit {
+                    let test_only = next.test_only || module.test_only;
+                    let stack = if test_only { &mut tests } else { &mut queue };
+                    stack.extend(child.map(|(path, is_mod_rs)| Visit {
                         path,
                         edition: next.edition,
                         is_root: false,
@@ -125,6 +138,7 @@ pub fn walk<T>(
                         under_cfg: next.under_cfg || module.under_cfg,
                         cfg_off: next.cfg_off || module.cfg_off,
                         module_path: child_module_path(&next.module_path, module),
+                        test_only,
                     }));
                 }
                 files.insert(next.path.clone(), file);
@@ -263,6 +277,7 @@ mod tests {
             path_attr: path_attr.map(str::to_owned),
             under_cfg: false,
             cfg_off: false,
+            test_only: false,
         }
     }
 
@@ -312,6 +327,7 @@ mod tests {
         let roots = [TargetRoot {
             path: "src/lib.rs".to_owned(),
             edition: Edition::Edition2021,
+            test_only: false,
         }];
         let walked = walk(dir.path(), &roots, |visit| {
             let modules = match visit.path.as_str() {

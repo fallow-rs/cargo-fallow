@@ -4,6 +4,7 @@
 //! [workspace.metadata.fallow.visibility]
 //! production = ["app:app"]
 //! exclude-crates = ["my_api"]
+//! public-crates = ["my_api", "my_types"]
 //! uniform-fields = true
 //! kinds = ["dead-public", "unnecessary-public"]
 //! ```
@@ -30,6 +31,9 @@ struct Config {
     production: Vec<String>,
     /// The library crates whose public items are an external API.
     exclude_crates: Vec<String>,
+    /// The libraries whose exported items are an external API. Each other
+    /// library is internal.
+    public_crates: Option<Vec<String>>,
     /// True when the fields of one struct change visibility as a group.
     uniform_fields: bool,
     /// The finding kinds to report.
@@ -92,6 +96,9 @@ pub fn resolve(
     }
     if options.exclude.is_empty() {
         options.exclude = config.exclude_crates;
+    }
+    if options.public.is_none() {
+        options.public = config.public_crates;
     }
     options.uniform_fields |= config.uniform_fields;
     if options.kinds.is_empty() {

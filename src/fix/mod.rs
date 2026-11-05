@@ -225,6 +225,7 @@ fn plan(
             quiet: args.quiet,
             production: Vec::new(),
             exclude: Vec::new(),
+            public: None,
             uniform_fields: false,
             kinds: Vec::new(),
             fail_on_issues: false,

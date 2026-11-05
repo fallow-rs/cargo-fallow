@@ -43,6 +43,7 @@ fn precise_findings(proto_header: &str) -> Vec<String> {
     let module_graph = graph::build(&workspace, &Production { bins: Vec::new() });
     let options = Options {
         exclude: Vec::new(),
+        public: None,
         uniform_fields: false,
         root: root.to_path_buf(),
     };
@@ -93,4 +94,15 @@ fn a_reexport_in_a_generated_file_still_holds_back_its_target() {
         !generated.iter().any(|row| row.contains("src/proto.rs")),
         "{generated:?}"
     );
+}
+
+#[test]
+fn a_public_crate_pattern_matches_with_globs() {
+    assert!(super::name_matches("base", "base"));
+    assert!(super::name_matches("ba*", "base"));
+    assert!(super::name_matches("*-api", "fallow-api"));
+    assert!(super::name_matches("f*l*w", "fallow"));
+    assert!(super::name_matches("*", "anything"));
+    assert!(!super::name_matches("base", "based"));
+    assert!(!super::name_matches("a*a", "a"));
 }

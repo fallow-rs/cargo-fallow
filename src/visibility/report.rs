@@ -294,6 +294,7 @@ impl VisibilityReport {
             crates: graph
                 .crates
                 .iter()
+                .filter(|entry| !entry.consumer)
                 .map(|entry| crate_row(graph, entry))
                 .collect(),
             findings,

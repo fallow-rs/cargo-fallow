@@ -19,6 +19,7 @@
 //! access, or a name in macro tokens, in an attribute or in a doc code block.
 
 pub mod config;
+pub mod consumers;
 pub mod precise;
 pub mod report;
 pub mod trace;
@@ -108,8 +109,8 @@ pub struct Analysis {
     pub findings: Vec<Finding>,
     /// The findings that only untyped credits stop.
     pub undecided: Vec<Finding>,
-    /// The items with a use in code under a `cfg` other than a test condition.
-    /// rust-analyzer does not see such code when the condition is off, so
+    /// The items with a use in code under a `cfg` other than a test condition,
+    /// or in a consumer workspace. rust-analyzer does not see such code, so
     /// `--precise` mode does not decide these items. Sorted.
     pub cfg_used: Vec<ItemId>,
     /// The undecided candidates that code the graph cannot read can use: the
@@ -243,13 +244,15 @@ pub fn analyze(graph: &Graph, options: &Options) -> Analysis {
         .into_iter()
         .filter(|finding| !known.contains(&(finding.item, finding.kind)))
         .collect();
+    // rust-analyzer does not read a consumer workspace either.
+    let unseen = |credit: &Credit| credit.under_cfg || graph.crates[credit.krate].consumer;
     let mut cfg_used: Vec<ItemId> = credits
         .direct
         .iter()
-        .filter(|credit| credit.under_cfg)
+        .filter(|credit| unseen(credit))
         .map(|credit| credit.item)
         .collect();
-    for site in credits.sites.iter().filter(|site| site.credit.under_cfg) {
+    for site in credits.sites.iter().filter(|site| unseen(&site.credit)) {
         cfg_used.extend_from_slice(credits.targets(site));
     }
     cfg_used.sort_unstable();
@@ -261,6 +264,12 @@ pub fn analyze(graph: &Graph, options: &Options) -> Analysis {
         opaque: Vec::new(),
     };
     hold_opaque(graph, options, &mut analysis);
+    // A crate of a consumer workspace is not part of the workspace, so it
+    // gets no finding.
+    let own = |finding: &Finding| !graph.crates[graph.items[finding.item].krate].consumer;
+    analysis.findings.retain(own);
+    analysis.undecided.retain(own);
+    analysis.opaque.retain(own);
     analysis
 }
 

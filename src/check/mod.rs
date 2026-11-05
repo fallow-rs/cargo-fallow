@@ -498,6 +498,7 @@ fn visibility_flags(options: &Options, enforced: bool) -> VisibilityOptions {
         exclude: Vec::new(),
         public: None,
         uniform_fields: false,
+        consumers: None,
         kinds: Vec::new(),
         fail_on_issues: enforced,
         scope: crate::scope::ScopeArgs::default(),
@@ -600,6 +601,15 @@ fn graph_sections(inputs: &GraphInputs<'_>, module_graph: &Graph) -> Result<Grap
     }
     if let Some(options) = visibility_options {
         progress.step("Checking the visibility");
+        // The code of a consumer workspace counts as a use, so the check
+        // reads a graph with its crates.
+        let own = visibility::consumers::extend(workspace, options)?.map(|extended| {
+            let production = graph::Production {
+                bins: options.production.clone(),
+            };
+            graph::build(&extended.workspace, &production)
+        });
+        let module_graph = own.as_ref().unwrap_or(module_graph);
         let report = visibility::fast_report(module_graph, options, workspace, scope);
         part.public_items = Some(public_items(module_graph, options));
         part.dead_public = Some(report.summary.dead_public);
@@ -647,8 +657,10 @@ fn public_items(module_graph: &Graph, options: &VisibilityOptions) -> usize {
 }
 
 /// True when the public items of the crate are an external API.
+/// A crate of a consumer workspace is not part of the workspace, so it counts
+/// as an external API too.
 fn is_api(krate: &graph::Crate, options: &VisibilityOptions) -> bool {
-    visibility::is_api(krate, &options.exclude, options.public.as_deref())
+    krate.consumer || visibility::is_api(krate, &options.exclude, options.public.as_deref())
 }
 
 /// Walks the source once and runs `size`, `complexity` and `dupes` on it.

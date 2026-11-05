@@ -50,6 +50,11 @@ pub struct Member {
     /// in its manifest. It is not part of the report.
     #[serde(skip)]
     pub published: bool,
+    /// True for a package of a consumer workspace, for example `fuzz/`. Its
+    /// code counts as a use, and it gets no finding. It is not part of the
+    /// report.
+    #[serde(skip)]
+    pub consumer: bool,
 }
 
 /// The section of `Cargo.toml` that declares a dependency.
@@ -298,7 +303,27 @@ fn member(root: &Utf8Path, package: &Package) -> Member {
         links: package.dependencies.iter().map(link_of).collect(),
         features: package.features.keys().cloned().collect(),
         published: is_published(package),
+        consumer: false,
     }
+}
+
+/// The members of a consumer workspace, with paths relative to `root`. A
+/// consumer workspace is a separate workspace, for example `fuzz/`, whose
+/// code uses the items of the workspace at `root`.
+pub fn consumer_members(
+    root: &Utf8Path,
+    manifest: &Path,
+    cargo_flags: &[String],
+) -> Result<Vec<Member>, CliError> {
+    let metadata = metadata(Some(manifest), false, cargo_flags)?;
+    Ok(metadata
+        .workspace_packages()
+        .into_iter()
+        .map(|package| Member {
+            consumer: true,
+            ..member(root, package)
+        })
+        .collect())
 }
 
 /// True for a package that a registry can publish: `publish` is not `false`

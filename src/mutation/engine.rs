@@ -1518,41 +1518,63 @@ impl Engine<'_> {
             self.confirm_kill(run, state, &first, &mut done)?;
             done.elapsed = start.elapsed();
         }
-        let retry_useful = if done.verdict.status == Status::Timeout {
-            retry_can_change_a_timeout(limit, picked.baseline_ms)
-        } else {
-            // A second run of only the doctests says nothing about the lines.
-            !picked.empty && setup.retry_a_pass
-        };
-        if self.options.retry && !done.retried && done.verdict.wants_retry() && retry_useful {
-            // Host load often lasts into the retry, so a timeout waits twice as long.
-            let factor = if done.verdict.status == Status::Timeout {
-                2
-            } else {
-                1
-            };
-            let retry = self.shared_pass(run, factor)?;
-            let mut second = Done {
-                tests_run: retry.tests_run,
-                doctests_run: retry.doctests_run,
-                ..Done::of(retry.verdict.clone())
-            };
-            // A failure in the retry can also come from another test process, so it
-            // gets the same second look as a kill in the first run.
-            let retry_failed = second.verdict.status == Status::Killed;
-            if retry_failed {
-                self.confirm_kill(run, state, &retry, &mut second)?;
-            }
-            done.verdict = merge_retry(done.verdict, second.verdict, retry_failed);
-            done.retried = true;
-            done.tests_run += second.tests_run;
-            done.doctests_run += second.doctests_run;
+        if self.retry_wanted(setup, picked, limit, &done) {
+            self.retry_pass(run, state, &mut done)?;
             done.elapsed = start.elapsed();
         }
         if picked.empty && done.verdict.status == Status::Survived {
             done.verdict = Verdict::with_reason(Status::NoCoverage, NO_TEST_BUT_DOCTESTS);
         }
         Ok(done)
+    }
+
+    /// True when the result asks for a retry and a retry can change it.
+    fn retry_wanted(
+        &self,
+        setup: &TierRun<'_>,
+        picked: &Picked,
+        limit: Duration,
+        done: &Done,
+    ) -> bool {
+        let useful = if done.verdict.status == Status::Timeout {
+            retry_can_change_a_timeout(limit, picked.baseline_ms)
+        } else {
+            // A second run of only the doctests says nothing about the lines.
+            !picked.empty && setup.retry_a_pass
+        };
+        self.options.retry && !done.retried && done.verdict.wants_retry() && useful
+    }
+
+    /// The retry of one mutant. The verdict of the retry merges into `done`.
+    fn retry_pass(
+        &self,
+        run: MutantRun<'_>,
+        state: RunState<'_>,
+        done: &mut Done,
+    ) -> io::Result<()> {
+        // Host load often lasts into the retry, so a timeout waits twice as long.
+        let factor = if done.verdict.status == Status::Timeout {
+            2
+        } else {
+            1
+        };
+        let retry = self.shared_pass(run, factor)?;
+        let mut second = Done {
+            tests_run: retry.tests_run,
+            doctests_run: retry.doctests_run,
+            ..Done::of(retry.verdict.clone())
+        };
+        // A failure in the retry can also come from another test process, so it
+        // gets the same second look as a kill in the first run.
+        let retry_failed = second.verdict.status == Status::Killed;
+        if retry_failed {
+            self.confirm_kill(run, state, &retry, &mut second)?;
+        }
+        done.verdict = merge_retry(done.verdict.clone(), second.verdict, retry_failed);
+        done.retried = true;
+        done.tests_run += second.tests_run;
+        done.doctests_run += second.doctests_run;
+        Ok(())
     }
 
     /// Takes a second look at a kill, with no other test process of this run.

@@ -16,7 +16,7 @@ use ra_ap_ide_db::base_db::{
     CrateOrigin, EditionedFileId, ProcMacroLoadingError, SourceDatabase, all_crates,
 };
 use ra_ap_ide_db::defs::{Definition, NameClass};
-use ra_ap_ide_db::search::SearchScope;
+use ra_ap_ide_db::search::{FileReference, SearchScope};
 use ra_ap_load_cargo::{LoadCargoConfig, ProcMacroServerChoice, load_workspace};
 use ra_ap_paths::{AbsPathBuf, Utf8PathBuf};
 use ra_ap_project_model::{
@@ -238,42 +238,11 @@ fn decide<'db>(
     let Some(home) = definition.krate(db) else {
         return Decision::Unresolved;
     };
-    let home_module = definition.module(db);
     let restricted = candidate.kind == "unnecessary-restricted-visibility";
-    let mut same_crate = false;
-    for (file, references) in definition.usages(sema).in_scope(&files.scope).all() {
-        if references.is_empty() {
-            continue;
-        }
-        let crates: Vec<Crate> = sema
-            .file_to_module_defs(file.file_id(db))
-            .map(|module| module.krate(db))
-            .collect();
-        if crates.iter().any(|krate| *krate != home) {
-            return Decision::Keep {
-                reason: KeepReason::OtherCrate,
-            };
-        }
-        same_crate = true;
-        for reference in &references {
-            let Some(node) = reference.name.syntax().parent() else {
-                continue;
-            };
-            if restricted
-                && let (Some(scope), Some(home_module)) = (sema.scope(&node), home_module)
-                && !within(db, scope.module(), home_module)
-            {
-                return Decision::Keep {
-                    reason: KeepReason::OutsideModule,
-                };
-            }
-            if !restricted && in_public_signature(&node) {
-                return Decision::Keep {
-                    reason: KeepReason::PublicSignature,
-                };
-            }
-        }
-    }
+    let same_crate = match scan_usages(sema, db, &definition, home, &files.scope, restricted) {
+        Ok(same_crate) => same_crate,
+        Err(reason) => return Decision::Keep { reason },
+    };
     if files
         .large
         .iter()
@@ -291,6 +260,56 @@ fn decide<'db>(
         "dead-public".to_owned()
     };
     Decision::Report { kind }
+}
+
+/// Scans the uses of the definition in the search scope. The result is the
+/// reason to keep the visibility, or else true when the home crate uses the
+/// definition.
+fn scan_usages<'db>(
+    sema: &Semantics<'db, RootDatabase>,
+    db: &'db RootDatabase,
+    definition: &Definition<'db>,
+    home: Crate,
+    scope: &SearchScope,
+    restricted: bool,
+) -> Result<bool, KeepReason> {
+    let home_module = definition.module(db);
+    let mut same_crate = false;
+    for (file, references) in definition.usages(sema).in_scope(scope).all() {
+        if references.is_empty() {
+            continue;
+        }
+        let mut crates = sema
+            .file_to_module_defs(file.file_id(db))
+            .map(|module| module.krate(db));
+        if crates.any(|krate| krate != home) {
+            return Err(KeepReason::OtherCrate);
+        }
+        same_crate = true;
+        for reference in &references {
+            if let Some(reason) = reference_keep(sema, db, reference, restricted, home_module) {
+                return Err(reason);
+            }
+        }
+    }
+    Ok(same_crate)
+}
+
+/// The reason to keep the visibility because of one reference, if any.
+fn reference_keep(
+    sema: &Semantics<'_, RootDatabase>,
+    db: &RootDatabase,
+    reference: &FileReference,
+    restricted: bool,
+    home_module: Option<ra_ap_hir::Module>,
+) -> Option<KeepReason> {
+    let node = reference.name.syntax().parent()?;
+    if !restricted {
+        return in_public_signature(&node).then_some(KeepReason::PublicSignature);
+    }
+    let scope = sema.scope(&node)?;
+    let home_module = home_module?;
+    (!within(db, scope.module(), home_module)).then_some(KeepReason::OutsideModule)
 }
 
 /// True when `name` is in `text` as a whole identifier.

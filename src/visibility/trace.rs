@@ -398,50 +398,60 @@ impl VisibilityTrace {
         let mut text = String::new();
         let _ = writeln!(text, "cargo fallow visibility --trace {}", self.trace);
         for item in &self.items {
-            let visibility = if item.visibility.is_empty() {
-                "private"
-            } else {
-                item.visibility.as_str()
-            };
-            let _ = writeln!(
-                text,
-                "\n{}::{} ({} {} in {} of `{}`) at {}:{}",
-                item.krate,
-                item.path,
-                visibility,
-                item.item_kind,
-                item.crate_kind,
-                item.package,
-                item.file,
-                item.line
-            );
-            let _ = writeln!(text, "  {}", item.reason);
-            if !item.holds.is_empty() {
-                let _ = writeln!(text, "  holds: {}", item.holds.join(", "));
-            }
-            if item.uses.is_empty() {
-                let _ = writeln!(text, "  no use in the workspace");
-            }
-            for entry in &item.uses {
-                let mut notes = vec![entry.class];
-                if entry.test_only {
-                    notes.push("test");
-                }
-                if entry.under_cfg {
-                    notes.push("cfg");
-                }
-                let _ = writeln!(
-                    text,
-                    "  {}:{} {} in {} `{}` ({})",
-                    entry.file,
-                    crate::trace::line_text(entry.line),
-                    entry.credit,
-                    entry.crate_kind,
-                    entry.krate,
-                    notes.join(", ")
-                );
-            }
+            write_item(&mut text, item);
         }
         text
     }
+}
+
+/// Writes the heading, the reason, the holds and the uses of one item.
+fn write_item(text: &mut String, item: &TracedItem) {
+    let visibility = if item.visibility.is_empty() {
+        "private"
+    } else {
+        item.visibility.as_str()
+    };
+    let _ = writeln!(
+        text,
+        "\n{}::{} ({} {} in {} of `{}`) at {}:{}",
+        item.krate,
+        item.path,
+        visibility,
+        item.item_kind,
+        item.crate_kind,
+        item.package,
+        item.file,
+        item.line
+    );
+    let _ = writeln!(text, "  {}", item.reason);
+    if !item.holds.is_empty() {
+        let _ = writeln!(text, "  holds: {}", item.holds.join(", "));
+    }
+    if item.uses.is_empty() {
+        let _ = writeln!(text, "  no use in the workspace");
+    }
+    for entry in &item.uses {
+        write_use(text, entry);
+    }
+}
+
+/// Writes one use line with its class and its notes.
+fn write_use(text: &mut String, entry: &TracedUse) {
+    let mut notes = vec![entry.class];
+    if entry.test_only {
+        notes.push("test");
+    }
+    if entry.under_cfg {
+        notes.push("cfg");
+    }
+    let _ = writeln!(
+        text,
+        "  {}:{} {} in {} `{}` ({})",
+        entry.file,
+        crate::trace::line_text(entry.line),
+        entry.credit,
+        entry.crate_kind,
+        entry.krate,
+        notes.join(", ")
+    );
 }

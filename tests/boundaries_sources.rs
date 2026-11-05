@@ -285,16 +285,14 @@ fn an_allowed_file_with_fewer_matches_than_its_count_is_a_finding() {
         message.contains("2 matches") && message.contains("`max = 3`"),
         "{message}"
     );
-    let (code, _) = {
-        let dir = workspace(rule, 2);
-        let output = Command::cargo_bin("cargo-fallow")
-            .expect("the binary exists")
-            .current_dir(dir.path())
-            .args(["fallow", "boundaries", "--quiet", "--fail-on-issues"])
-            .output()
-            .expect("run the binary");
-        (output.status.code(), ())
-    };
+    let dir = workspace(rule, 2);
+    let output = Command::cargo_bin("cargo-fallow")
+        .expect("the binary exists")
+        .current_dir(dir.path())
+        .args(["fallow", "boundaries", "--quiet", "--fail-on-issues"])
+        .output()
+        .expect("run the binary");
+    let code = output.status.code();
     assert_eq!(code, Some(1));
 }
 

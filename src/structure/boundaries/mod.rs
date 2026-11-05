@@ -1110,24 +1110,19 @@ fn sarif_log(report: &Report<Summary, Finding>, findings: &[shared::Finding]) ->
     // so it does not depend on the order of the findings.
     let mut rules: BTreeMap<String, String> = BTreeMap::new();
     for finding in &report.findings {
-        let text = {
-            let text = match finding.kind {
-                Kind::CrateDependency => "A workspace crate depends on a crate that a rule denies.",
-                Kind::SourcePattern => "A file contains a pattern that a rule denies.",
-                Kind::ModulePath => "A module uses a module that a rule denies.",
-                Kind::ItemPath => "Code uses a workspace item that a rule denies.",
-                Kind::GlobReexport => {
-                    "A glob re-export reads a crate or a module that a rule denies."
-                }
-                Kind::CfgPath => {
-                    "Code that a cfg build compiles uses an item that the build does not compile."
-                }
-                Kind::AllowEntry => {
-                    "An allow entry of a source rule does not fit its file: fewer matches than \
+        let text = match finding.kind {
+            Kind::CrateDependency => "A workspace crate depends on a crate that a rule denies.",
+            Kind::SourcePattern => "A file contains a pattern that a rule denies.",
+            Kind::ModulePath => "A module uses a module that a rule denies.",
+            Kind::ItemPath => "Code uses a workspace item that a rule denies.",
+            Kind::GlobReexport => "A glob re-export reads a crate or a module that a rule denies.",
+            Kind::CfgPath => {
+                "Code that a cfg build compiles uses an item that the build does not compile."
+            }
+            Kind::AllowEntry => {
+                "An allow entry of a source rule does not fit its file: fewer matches than \
                      max, or a missing required pattern."
-                }
-            };
-            text
+            }
         };
         if finding.kind == Kind::AllowEntry {
             rules

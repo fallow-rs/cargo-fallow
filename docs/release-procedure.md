@@ -84,6 +84,11 @@ commit collects the fragments.
 
 ## Prepare the release commit
 
+From the merge of the release pull request until the tag push, `main` must
+not change. The `plan` job and `scripts/publish-github-release.mjs` stop when
+`origin/main` is not the release commit. Before step 1, stop each other
+session and pull request that can merge to `main`, also auto-merge.
+
 1. Make a branch from the newest `main`: `git switch -c chore/release-vX.Y.Z`.
 2. Run `node scripts/changelog-fragments.mjs collect`. The command moves each
    fragment into `[Unreleased]` and deletes the fragment files.
@@ -194,6 +199,19 @@ If the workflow fails, repair it and run it again. No tag is used yet. If the
 release creation fails after the tag push, keep the signed tag. Remove only an
 incomplete draft, then run `gh release create` again with the same values.
 Never move or create the signed tag again.
+
+## Publish the action to the GitHub Marketplace
+
+The GitHub Marketplace reads `action.yml` at the release tag. Do this step
+after the release creation:
+
+1. Open the release on GitHub and click **Edit**.
+2. Select **Publish this Action to the GitHub Marketplace**.
+3. Select a primary category, for example **Code quality**.
+4. Click **Update release**.
+
+The Marketplace rejects a `description` of 125 characters or more.
+`action/tests/run.sh` fails before a release when the description is too long.
 
 ## Change the release environment after this procedure merges
 

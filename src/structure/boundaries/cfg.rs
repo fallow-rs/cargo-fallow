@@ -178,52 +178,15 @@ struct Site {
 fn sites(graph: &Graph) -> Vec<Site> {
     let resolver = Resolver::new(graph);
     let doubt = Doubt::new(graph, &resolver);
-    let mut by_source: BTreeMap<(u8, usize), (bool, CrateId, Vec<ItemId>)> = BTreeMap::new();
-    for credit in resolver.credits() {
-        let key = match credit.source {
-            Source::Import(index) => (0, index),
-            Source::Ref(index) => (1, index),
-        };
-        let entry = by_source
-            .entry(key)
-            .or_insert((true, credit.krate, Vec::new()));
-        entry.0 &= credit.class == Class::Exact
-            && !credit.outside
-            && matches!(credit.origin, Origin::Body | Origin::Signature);
-        entry.2.push(credit.item);
-    }
     let mut modules = vec![None; graph.modules.len()];
     let mut sites = Vec::new();
-    for ((source, index), (exact, krate, mut items)) in by_source {
+    for ((source, index), (exact, krate, mut items)) in credit_groups(&resolver) {
         items.sort_unstable();
         items.dedup();
         if !exact || items.is_empty() || !doubt.sure(graph, krate, &items) {
             continue;
         }
-        let (module, own, file, line) = if source == 0 {
-            let import = &graph.imports[index];
-            // A `use` in a block can name a local item, which the graph does
-            // not see.
-            if !anchored(&import.path, import.global) {
-                continue;
-            }
-            (import.module, &import.cfg, import.file, import.line)
-        } else {
-            let reference = &graph.refs[index];
-            let RefKind::Path { segments, global } = &reference.kind else {
-                continue;
-            };
-            if !anchored(segments, *global) {
-                continue;
-            }
-            (
-                reference.module,
-                &reference.cfg,
-                reference.file,
-                reference.line,
-            )
-        };
-        let Some(path) = graph.paths.get(file as usize).filter(|_| line > 0) else {
+        let Some((module, own, path, line)) = place(graph, source, index) else {
             continue;
         };
         let mut conditions = own.clone();
@@ -237,9 +200,10 @@ fn sites(graph: &Graph) -> Vec<Site> {
             .iter()
             .map(|&item| {
                 let mut list = graph.items[item].cfg.clone();
+                let around = graph.items[item].module;
                 list.extend(module_conditions(
                     graph,
-                    graph.items[item].module,
+                    around,
                     &doubt.shared,
                     &mut modules,
                 ));
@@ -261,6 +225,58 @@ fn sites(graph: &Graph) -> Vec<Site> {
         });
     }
     sites
+}
+
+/// The credits of each import (`0`) and each reference (`1`): true when each
+/// credit is exact, in a body or a signature and inside the workspace, the
+/// crate of the code, and the items.
+type Groups = BTreeMap<(u8, usize), (bool, CrateId, Vec<ItemId>)>;
+
+fn credit_groups(resolver: &Resolver<'_>) -> Groups {
+    let mut groups = Groups::new();
+    for credit in resolver.credits() {
+        let key = match credit.source {
+            Source::Import(index) => (0, index),
+            Source::Ref(index) => (1, index),
+        };
+        let entry = groups
+            .entry(key)
+            .or_insert((true, credit.krate, Vec::new()));
+        entry.0 &= credit.class == Class::Exact
+            && !credit.outside
+            && matches!(credit.origin, Origin::Body | Origin::Signature);
+        entry.2.push(credit.item);
+    }
+    groups
+}
+
+/// The module, the conditions, the file and the line of an anchored import
+/// (`source` 0) or path (`source` 1). A `use` in a block can name a local
+/// item, which the graph does not see, so an import must be anchored too.
+fn place(
+    graph: &Graph,
+    source: u8,
+    index: usize,
+) -> Option<(ModuleId, &Vec<String>, &String, u32)> {
+    let (module, own, file, line) = if source == 0 {
+        let import = &graph.imports[index];
+        anchored(&import.path, import.global).then_some(())?;
+        (import.module, &import.cfg, import.file, import.line)
+    } else {
+        let reference = &graph.refs[index];
+        let RefKind::Path { segments, global } = &reference.kind else {
+            return None;
+        };
+        anchored(segments, *global).then_some(())?;
+        (
+            reference.module,
+            &reference.cfg,
+            reference.file,
+            reference.line,
+        )
+    };
+    let path = graph.paths.get(file as usize).filter(|_| line > 0)?;
+    Some((module, own, path, line))
 }
 
 /// True for a path that starts at a module: `crate`, `self`, `super` or `::`.

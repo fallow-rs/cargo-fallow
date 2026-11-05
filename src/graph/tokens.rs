@@ -106,49 +106,83 @@ fn chains(pieces: &[Piece<'_>]) -> Vec<TokenPath> {
     let mut paths = Vec::new();
     let mut index = 0;
     while index < pieces.len() {
-        let after_dollar = index > 0 && pieces[index - 1] == Piece::Dollar;
-        let current = pieces[index];
-        let Piece::Ident(first) = current else {
-            index += 1;
-            continue;
+        index = match chain_start(pieces, index) {
+            Some(first) => push_chain(pieces, index, first, &mut records, &mut paths),
+            None => index + 1,
         };
-        if after_dollar && first != "crate" {
-            index += 1;
-            continue;
-        }
-        let global = index >= 2
-            && pieces[index - 1] == Piece::Colon
-            && pieces[index - 2] == Piece::Colon
-            && !matches!(pieces.get(index.wrapping_sub(3)), Some(Piece::Ident(_)));
-        let mut segments = vec![first.to_owned()];
-        let mut next = index + 1;
-        while let (Some(Piece::Colon), Some(Piece::Colon), Some(Piece::Ident(name))) =
-            (pieces.get(next), pieces.get(next + 1), pieces.get(next + 2))
-        {
-            segments.push((*name).to_owned());
-            next += 3;
-        }
-        let single_colon =
-            pieces.get(next) == Some(&Piece::Colon) && pieces.get(next + 1) != Some(&Piece::Colon);
-        let member = segments.len() == 1
-            && ((index > 0 && pieces[index - 1] == Piece::Dot)
-                || single_colon
-                || matches!(pieces.get(next), Some(Piece::Comma | Piece::CloseBrace)));
-        if pieces.get(next) == Some(&Piece::OpenBrace) && starts_upper(&segments) {
-            for field in record_fields(pieces, next) {
-                records.insert(field, segments.clone());
-            }
-        }
-        let record = records.remove(&index);
-        paths.push(TokenPath {
-            segments,
-            global,
-            member: member && record.is_none(),
-            record,
-        });
-        index = next;
     }
     paths
+}
+
+/// Adds the chain that starts with `first` at `index` to `paths`, and returns
+/// the index of the piece after the chain. A struct expression after the
+/// chain records its field names in `records`.
+fn push_chain(
+    pieces: &[Piece<'_>],
+    index: usize,
+    first: &str,
+    records: &mut FxHashMap<usize, Vec<String>>,
+    paths: &mut Vec<TokenPath>,
+) -> usize {
+    let (segments, next) = chain_segments(pieces, index, first);
+    let member = chain_member(pieces, index, next, segments.len());
+    if pieces.get(next) == Some(&Piece::OpenBrace) && starts_upper(&segments) {
+        for field in record_fields(pieces, next) {
+            records.insert(field, segments.clone());
+        }
+    }
+    let record = records.remove(&index);
+    paths.push(TokenPath {
+        segments,
+        global: chain_global(pieces, index),
+        member: member && record.is_none(),
+        record,
+    });
+    next
+}
+
+/// The first name of a chain at `index`: a name that does not follow `$`,
+/// or `$crate`.
+fn chain_start<'a>(pieces: &[Piece<'a>], index: usize) -> Option<&'a str> {
+    let Piece::Ident(first) = pieces[index] else {
+        return None;
+    };
+    let after_dollar = index > 0 && pieces[index - 1] == Piece::Dollar;
+    (!after_dollar || first == "crate").then_some(first)
+}
+
+/// True when a `::` without a name before it comes before the chain at
+/// `index`.
+fn chain_global(pieces: &[Piece<'_>], index: usize) -> bool {
+    index >= 2
+        && pieces[index - 1] == Piece::Colon
+        && pieces[index - 2] == Piece::Colon
+        && !matches!(pieces.get(index.wrapping_sub(3)), Some(Piece::Ident(_)))
+}
+
+/// The segments of the chain that starts with `first` at `index`, and the
+/// index of the piece after the chain.
+fn chain_segments(pieces: &[Piece<'_>], index: usize, first: &str) -> (Vec<String>, usize) {
+    let mut segments = vec![first.to_owned()];
+    let mut next = index + 1;
+    while let (Some(Piece::Colon), Some(Piece::Colon), Some(Piece::Ident(name))) =
+        (pieces.get(next), pieces.get(next + 1), pieces.get(next + 2))
+    {
+        segments.push((*name).to_owned());
+        next += 3;
+    }
+    (segments, next)
+}
+
+/// True when a chain of one name can be a field or a method: it follows
+/// `.`, or comes before a single `:`, a `,` or a `}`.
+fn chain_member(pieces: &[Piece<'_>], index: usize, next: usize, len: usize) -> bool {
+    let single_colon =
+        pieces.get(next) == Some(&Piece::Colon) && pieces.get(next + 1) != Some(&Piece::Colon);
+    len == 1
+        && ((index > 0 && pieces[index - 1] == Piece::Dot)
+            || single_colon
+            || matches!(pieces.get(next), Some(Piece::Comma | Piece::CloseBrace)))
 }
 
 /// True when the last segment of a path starts with an upper case letter, as

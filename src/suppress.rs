@@ -354,36 +354,9 @@ impl Registry {
             }
             let mut state = self.lock();
             for marker in &markers.markers {
-                let mine: Vec<String> = marker
-                    .kinds
-                    .iter()
-                    .filter(|kind| self.owner(kind) == Some(check))
-                    .cloned()
-                    .collect();
-                let unknown = marker
-                    .kinds
-                    .iter()
-                    .filter(|kind| self.owner(kind).is_none() && kind.as_str() != STALE_RULE);
-                for kind in unknown {
-                    if state
-                        .warned
-                        .insert((path.to_owned(), marker.line, kind.clone()))
-                    {
-                        crate::render::warn(&format!(
-                            "`{path}:{}`: the suppression kind `{kind}` names no check or rule",
-                            marker.line
-                        ));
-                    }
-                }
-                let used = state
-                    .used
-                    .contains(&(path.to_owned(), marker.line, check.to_owned()));
-                if !mine.is_empty() && !used {
-                    stale.push(Stale {
-                        path: path.to_owned(),
-                        line: marker.line,
-                        kinds: mine,
-                    });
+                self.warn_unknown(&mut state, path, marker);
+                if let Some(entry) = self.stale_marker(&state, check, path, marker) {
+                    stale.push(entry);
                 }
             }
             drop(state);
@@ -393,7 +366,50 @@ impl Registry {
         stale
     }
 
-    /// The check that owns a kind.
+    /// Warns once for each kind of the marker that no check or rule owns.
+    fn warn_unknown(&self, state: &mut State, path: &str, marker: &Marker) {
+        let unknown = marker
+            .kinds
+            .iter()
+            .filter(|kind| self.owner(kind).is_none() && kind.as_str() != STALE_RULE);
+        for kind in unknown {
+            if state
+                .warned
+                .insert((path.to_owned(), marker.line, kind.clone()))
+            {
+                crate::render::warn(&format!(
+                    "`{path}:{}`: the suppression kind `{kind}` names no check or rule",
+                    marker.line
+                ));
+            }
+        }
+    }
+
+    /// The stale entry of the marker for `check`: the marker has a kind of
+    /// `check` and hid no finding of `check`.
+    fn stale_marker(
+        &self,
+        state: &State,
+        check: &str,
+        path: &str,
+        marker: &Marker,
+    ) -> Option<Stale> {
+        let mine: Vec<String> = marker
+            .kinds
+            .iter()
+            .filter(|kind| self.owner(kind) == Some(check))
+            .cloned()
+            .collect();
+        let used = state
+            .used
+            .contains(&(path.to_owned(), marker.line, check.to_owned()));
+        (!mine.is_empty() && !used).then(|| Stale {
+            path: path.to_owned(),
+            line: marker.line,
+            kinds: mine,
+        })
+    }
+
     /// The check that owns a kind. A check name or a rule name wins over a
     /// boundary rule with the same name.
     fn owner(&self, kind: &str) -> Option<&'static str> {

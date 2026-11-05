@@ -7,7 +7,9 @@
 use std::path::Path;
 
 use ra_ap_syntax::ast::{self, HasAttrs, HasModuleItem, HasName};
-use ra_ap_syntax::{AstNode, AstToken, NodeOrToken, SyntaxKind, SyntaxToken, WalkEvent};
+use ra_ap_syntax::{
+    AstNode, AstToken, NodeOrToken, SyntaxKind, SyntaxNode, SyntaxToken, WalkEvent,
+};
 
 use crate::attrs::{attr_body, path_attribute, plain_name};
 use crate::modules::{ModuleDecl, normalize};
@@ -107,20 +109,7 @@ fn has_hiding_escape(text: &str) -> bool {
 pub fn scan(file: &ast::SourceFile, path: &str) -> Scan {
     let mut found = Scan::default();
     collect_declarations(file.items(), &mut Vec::new(), &mut found);
-    let in_block = file
-        .syntax()
-        .descendants()
-        .filter_map(ast::Module::cast)
-        .filter(|module| module.item_list().is_none())
-        .any(|module| {
-            module.syntax().parent().is_some_and(|parent| {
-                !matches!(
-                    parent.kind(),
-                    SyntaxKind::SOURCE_FILE | SyntaxKind::ITEM_LIST
-                )
-            })
-        });
-    if in_block {
+    if declares_module_in_block(file) {
         found.undecide("a function or a block declares a module");
     }
     let folder = Path::new(path).parent().unwrap_or_else(|| Path::new(""));
@@ -134,43 +123,70 @@ pub fn scan(file: &ast::SourceFile, path: &str) -> Scan {
         let WalkEvent::Enter(node) = event else {
             continue;
         };
-        if !matches!(
-            node.kind(),
-            SyntaxKind::MACRO_CALL
-                | SyntaxKind::MACRO_RULES
-                | SyntaxKind::MACRO_DEF
-                | SyntaxKind::ATTR
-                | SyntaxKind::ERROR
-        ) {
+        if !is_macro_like(&node) {
             continue;
         }
         walk.skip_subtree();
-        let tokens: Vec<SyntaxToken> = node
-            .descendants_with_tokens()
-            .filter_map(NodeOrToken::into_token)
-            .filter(|token| !token.kind().is_trivia())
-            .collect();
-        for (index, token) in tokens.iter().enumerate() {
-            let rest = &tokens[index + 1..];
-            if INCLUDE_MACROS.contains(&token.text()) {
-                include_call(token.text(), rest, folder, &mut found);
-            }
-            if in_macro_tokens(token) {
-                macro_tokens(token, rest, &mut found);
-                // A macro can give a literal to an include call, so a `.rs`
-                // literal in macro tokens counts as an include.
-                if token.kind() == SyntaxKind::STRING
-                    && let Some(value) = string_value(token)
-                    && is_rust_path(&value)
-                {
-                    found.credited.extend(normalize(&folder.join(value)));
-                }
-            }
-        }
+        scan_tokens(&node, folder, &mut found);
     }
     found.includes.sort();
     found.includes.dedup();
     found
+}
+
+/// True when a function or a block of the file declares a `mod name;`.
+fn declares_module_in_block(file: &ast::SourceFile) -> bool {
+    file.syntax()
+        .descendants()
+        .filter_map(ast::Module::cast)
+        .filter(|module| module.item_list().is_none())
+        .any(|module| {
+            module.syntax().parent().is_some_and(|parent| {
+                !matches!(
+                    parent.kind(),
+                    SyntaxKind::SOURCE_FILE | SyntaxKind::ITEM_LIST
+                )
+            })
+        })
+}
+
+/// True when the node can hold an include call or macro tokens.
+fn is_macro_like(node: &SyntaxNode) -> bool {
+    matches!(
+        node.kind(),
+        SyntaxKind::MACRO_CALL
+            | SyntaxKind::MACRO_RULES
+            | SyntaxKind::MACRO_DEF
+            | SyntaxKind::ATTR
+            | SyntaxKind::ERROR
+    )
+}
+
+/// Records the include calls and the macro token paths in the tokens of the
+/// node.
+fn scan_tokens(node: &SyntaxNode, folder: &Path, found: &mut Scan) {
+    let tokens: Vec<SyntaxToken> = node
+        .descendants_with_tokens()
+        .filter_map(NodeOrToken::into_token)
+        .filter(|token| !token.kind().is_trivia())
+        .collect();
+    for (index, token) in tokens.iter().enumerate() {
+        let rest = &tokens[index + 1..];
+        if INCLUDE_MACROS.contains(&token.text()) {
+            include_call(token.text(), rest, folder, found);
+        }
+        if in_macro_tokens(token) {
+            macro_tokens(token, rest, found);
+            // A macro can give a literal to an include call, so a `.rs`
+            // literal in macro tokens counts as an include.
+            if token.kind() == SyntaxKind::STRING
+                && let Some(value) = string_value(token)
+                && is_rust_path(&value)
+            {
+                found.credited.extend(normalize(&folder.join(value)));
+            }
+        }
+    }
 }
 
 /// The `mod name;` declarations of the items, also in inline modules. A

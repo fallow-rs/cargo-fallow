@@ -549,6 +549,15 @@ fn externs_of(
     names
 }
 
+/// The crate that [`add_files`] adds the files of.
+struct CrateContext<'a> {
+    root: &'a Path,
+    package: &'a Path,
+    krate: CrateId,
+    edition: Edition,
+    doctest: bool,
+}
+
 fn add_files(
     graph: &mut Graph,
     root: &Path,
@@ -559,95 +568,138 @@ fn add_files(
 ) {
     graph.skipped.extend(files.skipped);
     graph.unreached += files.unreached;
-    let root_module = graph.crates[krate].root_module;
-    let edition = graph.crates[krate].edition;
+    let context = CrateContext {
+        root,
+        package,
+        krate,
+        edition: graph.crates[krate].edition,
+        doctest,
+    };
     let mut by_path: BTreeMap<Vec<String>, ModuleId> = BTreeMap::new();
-    by_path.insert(Vec::new(), root_module);
+    by_path.insert(Vec::new(), graph.crates[krate].root_module);
     for file in files.files {
-        graph.files += 1;
-        let file_id = FileId::try_from(graph.paths.len()).unwrap_or(FileId::MAX);
-        graph.paths.push(file.path.clone());
-        let base = file.module_path.clone();
-        if file.facts.allow_dead {
-            let module = module_id(graph, &mut by_path, &base);
-            graph.modules[module].allow_dead = true;
-        }
-        let mut ids = Vec::with_capacity(file.facts.items.len());
-        for raw in &file.facts.items {
-            let mut path = base.clone();
-            path.extend(raw.inline.iter().cloned());
-            let module = module_id(graph, &mut by_path, &path);
-            let id = graph.items.len();
-            ids.push(id);
-            let child_module = (raw.kind == ItemKind::Module).then(|| {
-                let mut child = path.clone();
-                child.push(raw.name.clone());
-                let child_id = module_id(graph, &mut by_path, &child);
-                graph.modules[child_id].item = Some(id);
-                child_id
-            });
-            graph.items.push(Item {
-                krate,
-                module,
-                name: raw.name.clone(),
-                kind: raw.kind,
-                vis: raw.vis.clone(),
-                file: file.path.clone(),
-                line: raw.line,
-                column: raw.column,
-                end_line: raw.end_line,
-                vis_span: raw.vis_span,
-                parent: None,
-                impl_self: raw.impl_self.clone(),
-                impl_trait: raw.impl_trait.is_some(),
-                child_module,
-                test_only: raw.test_only || module_is_test(graph, module),
-                under_cfg: raw.under_cfg || file.under_cfg,
-                cfg: raw.cfg.clone(),
-                flags: raw.flags,
-            });
-        }
-        for (raw, id) in file.facts.items.iter().zip(&ids) {
-            graph.items[*id].parent = raw.parent.map(|parent| ids[parent]);
-        }
-        for path in item_macro_paths(&base, &file.facts) {
-            let module = module_id(graph, &mut by_path, &path);
-            graph.macro_modules.insert(module);
-        }
-        for raw in file.facts.uses {
-            let mut path = base.clone();
-            path.extend(raw.inline.iter().cloned());
-            let module = module_id(graph, &mut by_path, &path);
-            graph
-                .imports
-                .push(import_of(raw, krate, module, &ids, file_id));
-        }
-        let rest = FileFacts {
-            uses: Vec::new(),
-            ..file.facts
-        };
-        let refs = file_refs(root, package, &file.path, rest, edition, doctest);
-        for raw in refs {
-            if raw.origin == Origin::Doc && !doctest {
-                continue;
-            }
-            let mut path = base.clone();
-            path.extend(raw.inline.iter().cloned());
-            let module = module_id(graph, &mut by_path, &path);
-            graph.refs.push(Ref {
-                krate,
-                module,
-                owner: raw.owner.map(|index| ids[index]),
-                kind: unraw_kind(raw.kind),
-                origin: raw.origin,
-                test_only: raw.test_only,
-                under_cfg: raw.under_cfg || file.cfg_off,
-                file: file_id,
-                line: raw.line,
-                cfg: raw.cfg,
-            });
-        }
+        add_file(graph, &mut by_path, &context, file);
     }
+}
+
+/// Adds the items, the imports and the references of one file to the graph.
+fn add_file(
+    graph: &mut Graph,
+    by_path: &mut BTreeMap<Vec<String>, ModuleId>,
+    context: &CrateContext<'_>,
+    file: ParsedFile,
+) {
+    graph.files += 1;
+    let file_id = FileId::try_from(graph.paths.len()).unwrap_or(FileId::MAX);
+    graph.paths.push(file.path.clone());
+    let base = file.module_path.clone();
+    if file.facts.allow_dead {
+        let module = module_id(graph, by_path, &base);
+        graph.modules[module].allow_dead = true;
+    }
+    let ids = add_items(graph, by_path, context.krate, &file);
+    for path in item_macro_paths(&base, &file.facts) {
+        let module = module_id(graph, by_path, &path);
+        graph.macro_modules.insert(module);
+    }
+    let ParsedFile {
+        path,
+        cfg_off,
+        mut facts,
+        ..
+    } = file;
+    for raw in std::mem::take(&mut facts.uses) {
+        let module = inline_module(graph, by_path, &base, &raw.inline);
+        graph
+            .imports
+            .push(import_of(raw, context.krate, module, &ids, file_id));
+    }
+    let refs = file_refs(
+        context.root,
+        context.package,
+        &path,
+        facts,
+        context.edition,
+        context.doctest,
+    );
+    for raw in refs {
+        if raw.origin == Origin::Doc && !context.doctest {
+            continue;
+        }
+        let module = inline_module(graph, by_path, &base, &raw.inline);
+        graph.refs.push(Ref {
+            krate: context.krate,
+            module,
+            owner: raw.owner.map(|index| ids[index]),
+            kind: unraw_kind(raw.kind),
+            origin: raw.origin,
+            test_only: raw.test_only,
+            under_cfg: raw.under_cfg || cfg_off,
+            file: file_id,
+            line: raw.line,
+            cfg: raw.cfg,
+        });
+    }
+}
+
+/// Adds the items of one file to the graph, and returns their ids in the
+/// order of the file facts.
+fn add_items(
+    graph: &mut Graph,
+    by_path: &mut BTreeMap<Vec<String>, ModuleId>,
+    krate: CrateId,
+    file: &ParsedFile,
+) -> Vec<ItemId> {
+    let mut ids = Vec::with_capacity(file.facts.items.len());
+    for raw in &file.facts.items {
+        let module = inline_module(graph, by_path, &file.module_path, &raw.inline);
+        let id = graph.items.len();
+        ids.push(id);
+        let child_module = (raw.kind == ItemKind::Module).then(|| {
+            let mut child = file.module_path.clone();
+            child.extend(raw.inline.iter().cloned());
+            child.push(raw.name.clone());
+            let child_id = module_id(graph, by_path, &child);
+            graph.modules[child_id].item = Some(id);
+            child_id
+        });
+        graph.items.push(Item {
+            krate,
+            module,
+            name: raw.name.clone(),
+            kind: raw.kind,
+            vis: raw.vis.clone(),
+            file: file.path.clone(),
+            line: raw.line,
+            column: raw.column,
+            end_line: raw.end_line,
+            vis_span: raw.vis_span,
+            parent: None,
+            impl_self: raw.impl_self.clone(),
+            impl_trait: raw.impl_trait.is_some(),
+            child_module,
+            test_only: raw.test_only || module_is_test(graph, module),
+            under_cfg: raw.under_cfg || file.under_cfg,
+            cfg: raw.cfg.clone(),
+            flags: raw.flags,
+        });
+    }
+    for (raw, id) in file.facts.items.iter().zip(&ids) {
+        graph.items[*id].parent = raw.parent.map(|parent| ids[parent]);
+    }
+    ids
+}
+
+/// The module of an inline module path under the module path of a file.
+fn inline_module(
+    graph: &mut Graph,
+    by_path: &mut BTreeMap<Vec<String>, ModuleId>,
+    base: &[String],
+    inline: &[String],
+) -> ModuleId {
+    let mut path = base.to_vec();
+    path.extend(inline.iter().cloned());
+    module_id(graph, by_path, &path)
 }
 
 /// The module paths of the macro calls and the `include!` calls at the level

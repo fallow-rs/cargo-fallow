@@ -482,23 +482,35 @@ impl<'a> Walker<'a> {
         self.cursor = usize::from(node.text_range().start());
         let first_item = self.facts.items.len();
         if let Some(owner) = ast::AnyHasAttrs::cast(node.clone()) {
-            match attributes_of(node) {
-                AttrClass::Test => self.push(node, Frame::Test),
-                AttrClass::Cfg => self.push(node, Frame::Cfg),
-                AttrClass::Other => {}
-            }
-            if cfg_can_be_off(&owner) {
-                self.push(node, Frame::CfgUnsure);
-            }
-            let conditions = cfg_conditions(&owner);
-            if !conditions.is_empty() {
-                self.push(node, Frame::Conditions(conditions));
-            }
-            self.attr_refs(&owner);
+            self.attr_frames(node, &owner);
         }
         if Self::is_body(node) {
             self.push(node, Frame::Body);
         }
+        self.kind_facts(node);
+        self.doc_links(node, first_item);
+    }
+
+    /// Pushes the frames that the attributes of the node open, and records
+    /// the references in the attributes.
+    fn attr_frames(&mut self, node: &SyntaxNode, owner: &ast::AnyHasAttrs) {
+        match attributes_of(node) {
+            AttrClass::Test => self.push(node, Frame::Test),
+            AttrClass::Cfg => self.push(node, Frame::Cfg),
+            AttrClass::Other => {}
+        }
+        if cfg_can_be_off(owner) {
+            self.push(node, Frame::CfgUnsure);
+        }
+        let conditions = cfg_conditions(owner);
+        if !conditions.is_empty() {
+            self.push(node, Frame::Conditions(conditions));
+        }
+        self.attr_refs(owner);
+    }
+
+    /// Reads the facts of the node for its syntax kind.
+    fn kind_facts(&mut self, node: &SyntaxNode) {
         match node.kind() {
             SyntaxKind::STMT_LIST => self.push(node, Frame::LocalItems),
             SyntaxKind::USE => self.use_item(node),
@@ -516,7 +528,6 @@ impl<'a> Walker<'a> {
             SyntaxKind::MACRO_RULES | SyntaxKind::MACRO_DEF => self.macro_def(node),
             _ => self.plain_item(node),
         }
-        self.doc_links(node, first_item);
     }
 
     /// The intra-doc links of the documentation of the node: its doc comments

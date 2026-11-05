@@ -12,7 +12,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::graph::credits::{Credits, NameFilter, Site};
 use crate::graph::extract::{ALL_FIELDS, Binding, ItemKind, Origin, RefKind};
-use crate::graph::{CrateId, Extern, Graph, ItemId, ModuleId};
+use crate::graph::{CrateId, Extern, Graph, Item, ItemId, ModuleId};
 use crate::parse::Edition;
 
 /// The names that resolve outside the workspace when no item has them.
@@ -112,53 +112,78 @@ pub struct Resolver<'g> {
     expanded: RefCell<Vec<FxHashMap<ModuleId, usize>>>,
 }
 
+/// The declared items of each module, the members of each type name and the
+/// items of each name.
+type ItemIndexes<'g> = (
+    Vec<FxHashMap<&'g str, Vec<ItemId>>>,
+    FxHashMap<(CrateId, &'g str), Vec<ItemId>>,
+    FxHashMap<&'g str, Vec<ItemId>>,
+);
+
+/// Indexes the items of the graph. Skips impl blocks.
+fn item_indexes(graph: &Graph) -> ItemIndexes<'_> {
+    let mut declared: Vec<FxHashMap<&str, Vec<ItemId>>> =
+        vec![FxHashMap::default(); graph.modules.len()];
+    let mut members: FxHashMap<(CrateId, &str), Vec<ItemId>> = FxHashMap::default();
+    let mut by_name: FxHashMap<&str, Vec<ItemId>> = FxHashMap::default();
+    for (id, item) in graph.items.iter().enumerate() {
+        if item.kind == ItemKind::Impl {
+            continue;
+        }
+        by_name.entry(item.name.as_str()).or_default().push(id);
+        match item.parent.map(|parent| &graph.items[parent]) {
+            None if item.kind != ItemKind::Use => declared[item.module]
+                .entry(item.name.as_str())
+                .or_default()
+                .push(id),
+            None => {}
+            Some(parent) => {
+                if let Some(owner) = member_owner(parent) {
+                    members
+                        .entry((item.krate, owner.as_str()))
+                        .or_default()
+                        .push(id);
+                }
+            }
+        }
+    }
+    (declared, members, by_name)
+}
+
+/// The type name that owns the members of a parent item: the self type of an
+/// impl block, or else the name of the parent.
+fn member_owner(parent: &Item) -> Option<&String> {
+    match parent.kind {
+        ItemKind::Impl => parent.impl_self.as_ref().and_then(|path| path.last()),
+        _ => Some(&parent.name),
+    }
+}
+
+/// The named imports by module and name, and the glob imports of each module.
+type ImportIndexes<'g> = (FxHashMap<(ModuleId, &'g str), Vec<usize>>, Vec<Vec<usize>>);
+
+/// Indexes the imports of the graph by their binding.
+fn import_indexes(graph: &Graph) -> ImportIndexes<'_> {
+    let mut named: FxHashMap<(ModuleId, &str), Vec<usize>> = FxHashMap::default();
+    let mut globs = vec![Vec::new(); graph.modules.len()];
+    for (index, import) in graph.imports.iter().enumerate() {
+        match &import.binding {
+            Binding::Name(name) => named
+                .entry((import.module, name.as_str()))
+                .or_default()
+                .push(index),
+            Binding::Glob => globs[import.module].push(index),
+            Binding::Underscore => {}
+        }
+    }
+    (named, globs)
+}
+
 impl<'g> Resolver<'g> {
     /// Indexes the graph.
     pub fn new(graph: &'g Graph) -> Self {
-        let mut declared: Vec<FxHashMap<&str, Vec<ItemId>>> =
-            vec![FxHashMap::default(); graph.modules.len()];
-        let mut members: FxHashMap<(CrateId, &str), Vec<ItemId>> = FxHashMap::default();
-        let mut by_name: FxHashMap<&str, Vec<ItemId>> = FxHashMap::default();
-        for (id, item) in graph.items.iter().enumerate() {
-            if item.kind == ItemKind::Impl {
-                continue;
-            }
-            by_name.entry(item.name.as_str()).or_default().push(id);
-            match item.parent.map(|parent| &graph.items[parent]) {
-                None => {
-                    if item.kind != ItemKind::Use {
-                        declared[item.module]
-                            .entry(item.name.as_str())
-                            .or_default()
-                            .push(id);
-                    }
-                }
-                Some(parent) => {
-                    let owner = match parent.kind {
-                        ItemKind::Impl => parent.impl_self.as_ref().and_then(|path| path.last()),
-                        _ => Some(&parent.name),
-                    };
-                    if let Some(owner) = owner {
-                        members
-                            .entry((item.krate, owner.as_str()))
-                            .or_default()
-                            .push(id);
-                    }
-                }
-            }
-        }
-        let mut named: FxHashMap<(ModuleId, &str), Vec<usize>> = FxHashMap::default();
-        let mut globs = vec![Vec::new(); graph.modules.len()];
-        for (index, import) in graph.imports.iter().enumerate() {
-            match &import.binding {
-                Binding::Name(name) => named
-                    .entry((import.module, name.as_str()))
-                    .or_default()
-                    .push(index),
-                Binding::Glob => globs[import.module].push(index),
-                Binding::Underscore => {}
-            }
-        }
+        let (declared, members, by_name) = item_indexes(graph);
+        let (named, globs) = import_indexes(graph);
         Self {
             graph,
             declared,
@@ -606,17 +631,7 @@ impl<'g> Resolver<'g> {
             if current.iter().all(|target| *target == Target::Outside) {
                 return (current, Class::Exact, through);
             }
-            let mut next = Vec::new();
-            for target in &current {
-                match target {
-                    Target::Item(item) => through.push(*item),
-                    Target::Module(module) => through.extend(self.graph.modules[*module].item),
-                    Target::Outside => {}
-                }
-                next.extend(self.step(*target, segment));
-            }
-            next.sort_unstable();
-            next.dedup();
+            let next = self.step_all(&current, segment, &mut through);
             if next.is_empty() {
                 return (current, Class::Fallback, through);
             }
@@ -628,6 +643,28 @@ impl<'g> Resolver<'g> {
             Class::Exact
         };
         (current, class, through)
+    }
+
+    /// The sorted targets of one segment after each current target. Records
+    /// the items that the path goes through.
+    fn step_all(
+        &self,
+        current: &[Target],
+        segment: &str,
+        through: &mut Vec<ItemId>,
+    ) -> Vec<Target> {
+        let mut next = Vec::new();
+        for target in current {
+            match target {
+                Target::Item(item) => through.push(*item),
+                Target::Module(module) => through.extend(self.graph.modules[*module].item),
+                Target::Outside => {}
+            }
+            next.extend(self.step(*target, segment));
+        }
+        next.sort_unstable();
+        next.dedup();
+        next
     }
 
     /// The types and modules called `name` in the visible crates.

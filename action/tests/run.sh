@@ -687,6 +687,14 @@ if grep -nE '^\s+(- )?uses: [^.][^@]*@' "$ACTION_YML" | grep -vE '@[0-9a-f]{40} 
 else
   pass "each action is pinned by SHA"
 fi
+# The GitHub Marketplace rejects a description of 125 characters or more.
+MARKETPLACE_DESCRIPTION_MAX=124
+description="$(sed -n "s/^description: '\(.*\)'$/\1/p" "$ACTION_YML")"
+if [ -n "$description" ] && [ "${#description}" -le "$MARKETPLACE_DESCRIPTION_MAX" ]; then
+  pass "the description fits the Marketplace limit"
+else
+  fail "the description fits the Marketplace limit" "${#description} characters: ${description}"
+fi
 for script in "$SCRIPTS"/*.sh; do
   name="$(basename "$script")"
   if grep -q "action/scripts/${name}" "$ACTION_YML"; then pass "action.yml runs ${name}"; else fail "action.yml runs ${name}" "no step runs it"; fi

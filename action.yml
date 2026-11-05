@@ -1,5 +1,5 @@
 name: 'cargo-fallow'
-description: 'Codebase analysis for Rust workspaces in CI: unused dependencies, visibility, boundaries, size, complexity, duplication and mutation testing.'
+description: 'Rust workspace checks in CI: unused dependencies, visibility, boundaries, size, complexity, duplicates, API diffs, mutants.'
 author: 'Bart Waardenburg'
 
 branding:

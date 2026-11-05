@@ -79,9 +79,20 @@ pub fn api_crates(workspace: &Workspace) -> Option<(Vec<String>, Vec<String>)> {
         })
 }
 
+/// The `exclude-crates` list and the `public-crates` patterns of the table,
+/// for `api`. The patterns are `None` when the table has no `public-crates`.
+/// A pattern that matches no library is an error.
+pub fn external_api(workspace: &Workspace) -> Result<(Vec<String>, Option<Vec<String>>), CliError> {
+    let config: Config = crate::structure::config::section(workspace, KEY)?;
+    if let Some(patterns) = &config.public_crates {
+        check_public(workspace, patterns)?;
+    }
+    Ok((config.exclude_crates, config.public_crates))
+}
+
 /// Fails when a `public-crates` pattern matches no library of the workspace.
 /// A typo would make each library internal without notice.
-fn check_public(workspace: &Workspace, patterns: &[String]) -> Result<(), CliError> {
+pub fn check_public(workspace: &Workspace, patterns: &[String]) -> Result<(), CliError> {
     for pattern in patterns {
         let matched = workspace.members.iter().any(|member| {
             member

@@ -3,7 +3,9 @@
 //!
 //! The command reads the full tree of the merge base, runs `cargo metadata
 //! --no-deps` on it, and builds the module graph of both versions. A
-//! published library is a library whose `publish` is not `false`. The
+//! published library is a library whose `publish` is not `false`. When
+//! `public-crates` of the `visibility` table is set, the published libraries
+//! are the libraries that it and `exclude-crates` name. The
 //! command compares the keys of [`surface`]: each public path of each item.
 //!
 //! - A key that only HEAD has is `added`. A key that only the base has is
@@ -64,6 +66,34 @@ pub struct ApiArgs {
     /// with no breaking version bump.
     #[arg(long)]
     fail_on_issues: bool,
+    /// A library whose API the command reads. The flag replaces
+    /// `public-crates` of the visibility table. A crate or package name, with
+    /// `*` as a glob. The flag can repeat.
+    #[arg(long, value_name = "CRATE", conflicts_with = "all_published")]
+    public_crate: Vec<String>,
+    /// Read each library that a registry can publish, and ignore
+    /// `public-crates` and `exclude-crates`.
+    #[arg(long)]
+    all_published: bool,
+}
+
+impl ApiArgs {
+    /// The libraries of HEAD that the run reads, before the base tree loads:
+    /// a bad table or pattern stops the run early.
+    fn head_selection(&self, head: &workspace::Workspace) -> Result<surface::Selection, CliError> {
+        if self.all_published {
+            return Ok(surface::Selection::published());
+        }
+        let (exclude, public) = crate::visibility::config::external_api(head)?;
+        if self.public_crate.is_empty() {
+            return Ok(surface::Selection { exclude, public });
+        }
+        crate::visibility::config::check_public(head, &self.public_crate)?;
+        Ok(surface::Selection {
+            exclude,
+            public: Some(self.public_crate.clone()),
+        })
+    }
 }
 
 /// The kind of one change.
@@ -181,12 +211,19 @@ pub fn run(args: &ApiArgs) -> Result<Section, CliError> {
     let root = head.root.as_std_path();
     let merge_base = crate::structure::git::merge_base(root, &args.base)?;
     let scope = Scope::load(&head, &args.common.scope)?;
+    let mut selection = args.head_selection(&head)?;
     progress.step("Reading the tree of the merge base");
     let tree = tree::checkout(root, &merge_base)?;
     let base = workspace::load(Some(&tree.root.join("Cargo.toml")), &cargo_flags)?;
+    // One selection reads both trees, so a change of the lists gives no
+    // crate finding. The table of the base adds its names: a library that a
+    // change removes together with its name still gives `crate-removed`.
+    if !args.all_published && args.public_crate.is_empty() {
+        selection.add_base(&base);
+    }
     progress.step("Reading the API of the published libraries");
-    let before = surface::surface(&base);
-    let after = surface::surface(&head);
+    let before = surface::surface(&base, &selection);
+    let after = surface::surface(&head, &selection);
     // `-p` keeps the findings of the packages that it names: a finding
     // belongs to its package, also when the item comes from another crate.
     let manifests: BTreeMap<&String, &String> = before

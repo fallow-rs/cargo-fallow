@@ -62,8 +62,56 @@ pub struct Surface {
     pub versions: BTreeMap<String, String>,
 }
 
+/// The libraries that `api` reads.
+#[derive(Debug, Clone, Default)]
+pub struct Selection {
+    /// The `exclude-crates` list of the `visibility` table.
+    pub exclude: Vec<String>,
+    /// The `public-crates` patterns of the `visibility` table, or `None`.
+    pub public: Option<Vec<String>>,
+}
+
+impl Selection {
+    /// The libraries that a registry can publish, with no table.
+    pub const fn published() -> Self {
+        Self {
+            exclude: Vec::new(),
+            public: None,
+        }
+    }
+
+    /// Adds the names of the table of the base tree. A base table that is not
+    /// valid adds nothing. Without `public-crates` at HEAD, the base list
+    /// adds nothing either.
+    pub fn add_base(&mut self, base: &Workspace) {
+        let Ok((exclude, public)) = crate::visibility::config::external_api(base) else {
+            return;
+        };
+        for name in exclude {
+            if !self.exclude.contains(&name) {
+                self.exclude.push(name);
+            }
+        }
+        if let (Some(list), Some(names)) = (&mut self.public, public) {
+            for name in names {
+                if !list.contains(&name) {
+                    list.push(name);
+                }
+            }
+        }
+    }
+
+    /// True when `api` reads the library: a library that `visibility` treats
+    /// as an external API. Without `public-crates`, these are the libraries
+    /// that a registry can publish and the excluded libraries.
+    fn reads(&self, krate: &graph::Crate) -> bool {
+        krate.kind.is_library()
+            && crate::visibility::is_api(krate, &self.exclude, self.public.as_deref())
+    }
+}
+
 /// Reads the API of each published library of `workspace`.
-pub fn surface(workspace: &Workspace) -> Surface {
+pub fn surface(workspace: &Workspace, selection: &Selection) -> Surface {
     let module_graph = graph::build(workspace, &graph::Production::default());
     let resolver = Resolver::new(&module_graph);
     let walker = Walker::new(workspace, &module_graph, &resolver);
@@ -74,7 +122,7 @@ pub fn surface(workspace: &Workspace) -> Surface {
             .insert(member.name.clone(), member.version.clone());
     }
     for (id, krate) in module_graph.crates.iter().enumerate() {
-        if !krate.published || !krate.kind.is_library() {
+        if !selection.reads(krate) {
             continue;
         }
         let Some(member) = workspace

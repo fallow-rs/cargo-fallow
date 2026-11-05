@@ -322,7 +322,14 @@ run_analyze INPUT_COMMAND=size INPUT_BASE=auto INPUT_FORMAT=json PUSH_BEFORE_SHA
 assert_equals "$(call_args 1)" "size --fail-on-issues --format json " "base auto on the push of a new branch gives no base"
 assert_contains "$OUT" "a new branch or tag" "base auto on a new branch explains it"
 run_analyze INPUT_COMMAND=size INPUT_BASE=auto INPUT_FORMAT=json PUSH_BEFORE_SHA="--upload-pack=x"
-assert_equals "$(call_args 1)" "size --fail-on-issues --format json " "base auto refuses a value that is not a commit SHA"
+assert_equals "$CODE" "1" "base auto with a value that is not a commit SHA fails the size step"
+assert_equals "$(calls_made)" "0" "base auto with a value that is not a commit SHA runs nothing"
+assert_contains "$OUT" "::error::base: auto got '--upload-pack=x'" "base auto names the value that is not a commit SHA"
+run_analyze INPUT_COMMAND=complexity INPUT_BASE=auto INPUT_FORMAT=json PUSH_BEFORE_SHA="--upload-pack=x"
+assert_equals "$CODE" "0" "base auto with a bad value stays a notice for a command without a base gate"
+assert_contains "$OUT" "::notice::base: auto got" "base auto with a bad value gives a notice for a command without a base gate"
+run_analyze INPUT_COMMAND=check INPUT_BASE=auto INPUT_FORMAT=json PUSH_BEFORE_SHA="$SHA_A"
+assert_equals "$(call_args 1)" "check --fail-on-issues --base $SHA_A --format json " "check: base auto becomes --base"
 # A repository with a remote: the commit that the checkout lacks comes from
 # the remote, a commit that no remote has gives no base.
 GIT_ID=(-c user.name=Test -c user.email=test@example.com -c commit.gpgsign=false)
@@ -342,16 +349,35 @@ run_analyze INPUT_COMMAND=size INPUT_BASE=auto INPUT_FORMAT=json INPUT_WORKING_D
 assert_equals "$(call_args 1)" "size --fail-on-issues --base $REMOTE_SHA --format json " "base auto uses a commit that the checkout has"
 run_analyze INPUT_COMMAND=size INPUT_BASE=auto INPUT_FORMAT=json INPUT_WORKING_DIRECTORY="$SHALLOW" \
   PUSH_BEFORE_SHA=89abcdef0123456789abcdef0123456789abcdef
-assert_equals "$(call_args 1)" "size --fail-on-issues --format json " "base auto with a commit that no remote has gives no base"
+assert_equals "$CODE" "1" "base auto with a commit that no remote has fails the size step"
+assert_equals "$(calls_made)" "0" "base auto with a missing commit runs nothing"
+assert_contains "$OUT" "::error::base: auto cannot read the commit" "base auto with a missing commit is an error"
 assert_contains "$OUT" "fetch-depth: 0" "base auto with a missing commit names the checkout fix"
+run_analyze INPUT_COMMAND=mutants INPUT_BASE=auto STUB_JSON="$FIXTURES/mutants.json" INPUT_WORKING_DIRECTORY="$SHALLOW" \
+  PUSH_BEFORE_SHA=89abcdef0123456789abcdef0123456789abcdef
+assert_equals "$CODE" "1" "base auto with a missing commit fails the mutants step"
+assert_equals "$(calls_made)" "0" "base auto with a missing commit runs no mutant"
+run_analyze INPUT_COMMAND=check INPUT_BASE=auto INPUT_FORMAT=json INPUT_WORKING_DIRECTORY="$SHALLOW" \
+  INPUT_FAIL_ON_ISSUES=false PR_BASE_SHA=89abcdef0123456789abcdef0123456789abcdef
+assert_equals "$CODE" "1" "base auto with a missing commit fails the check step, also with fail-on-issues false"
+assert_contains "$OUT" "set base to a ref" "base auto with a missing commit names the force push fix"
+run_analyze INPUT_COMMAND=check INPUT_BASE=auto INPUT_FORMAT=json
+assert_equals "$CODE" "0" "check: base auto with no pull request and no push stays a notice"
+assert_equals "$(call_args 1)" "check --fail-on-issues --format json " "check: base auto with no base gives no flag"
+run_analyze INPUT_COMMAND=check INPUT_BASE=auto INPUT_FORMAT=json PUSH_BEFORE_SHA=0000000000000000000000000000000000000000
+assert_equals "$CODE" "0" "check: base auto on a new branch stays a notice"
+run_analyze INPUT_COMMAND=size INPUT_FORMAT=json INPUT_WORKING_DIRECTORY="$SHALLOW" \
+  INPUT_AUTO_CHANGED_SINCE=true PR_BASE_SHA=89abcdef0123456789abcdef0123456789abcdef
+assert_equals "$CODE" "0" "auto-changed-since with a missing commit stays a notice"
+assert_contains "$OUT" "::notice::base: auto cannot read the commit" "auto-changed-since with a missing commit gives a notice"
 run_analyze INPUT_COMMAND=size INPUT_BASE=auto INPUT_FORMAT=json INPUT_WORKING_DIRECTORY="$SHALLOW" \
   PR_BASE_SHA=89abcdef0123456789abcdef0123456789abcdef
-assert_equals "$(call_args 1)" "size --fail-on-issues --format json " "base auto checks the pull request base too"
+assert_equals "$CODE" "1" "base auto checks the pull request base too"
 run_analyze INPUT_COMMAND=size INPUT_BASE=origin/main INPUT_FORMAT=json
 assert_equals "$(call_args 1)" "size --fail-on-issues --base origin/main --format json " "size: base becomes --base"
 run_analyze INPUT_COMMAND=complexity INPUT_BASE=origin/main INPUT_PACKAGE=x INPUT_FORMAT=json
 assert_equals "$(call_args 1)" "complexity --fail-on-issues --format json " "complexity: base and mutants inputs give no flags"
-assert_contains "$OUT" "The 'base' input applies only to size and mutants" "complexity: base gives a warning"
+assert_contains "$OUT" "The 'base' input applies only to check, size and mutants" "complexity: base gives a warning"
 assert_contains "$OUT" "The mutants-* inputs apply only to command: mutants" "complexity: mutants inputs give a warning"
 
 run_analyze INPUT_COMMAND=check INPUT_MANIFEST_PATH="crates/a b/Cargo.toml" INPUT_FORMAT=json

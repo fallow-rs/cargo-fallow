@@ -549,37 +549,54 @@ fn rss_loop(shared: &Shared, probe: &dyn Probe, limits: Limits) {
     let mut last_sweep = Instant::now();
     while !shared.stop.load(Ordering::SeqCst) {
         let roots = current_roots(shared);
-        let mut tick = RSS_TICK;
-        if !roots.is_empty() {
-            // An orphan can grow during a long run, and no tree holds it.
-            if last_sweep.elapsed() >= ORPHAN_TICK {
-                last_sweep = Instant::now();
-                sweep_orphans(shared, Some(probe));
-            }
-            let free = shared.read_free(probe);
-            if !table_needed(shared, &roots, free, limits) {
-                blind = 0;
-            } else if let Ok(rows) = probe.table() {
-                let rows = shared.keep_table(rows);
-                blind = 0;
-                let trees = trees_of(&rows, &roots);
-                let (candidate, to_stop) = rss_decision(shared, &trees, &rows, free, limits);
-                if candidate {
-                    tick = CANDIDATE_RSS_TICK;
-                }
-                if !to_stop.is_empty() {
-                    signal("-STOP", &to_stop);
-                }
-            } else {
-                blind += 1;
-                if blind >= BLIND_LIMIT {
-                    for &(ticket, _, _) in &roots {
-                        kill(shared, ticket, KillReason::Blind);
-                    }
-                }
+        if roots.is_empty() {
+            thread::sleep(RSS_TICK);
+            continue;
+        }
+        // An orphan can grow during a long run, and no tree holds it.
+        if last_sweep.elapsed() >= ORPHAN_TICK {
+            last_sweep = Instant::now();
+            sweep_orphans(shared, Some(probe));
+        }
+        thread::sleep(rss_check(shared, probe, &roots, limits, &mut blind));
+    }
+}
+
+/// One RSS check of the running processes. The result is the time to the next
+/// check. `blind` counts the checks in a row that could not read the process
+/// table.
+fn rss_check(
+    shared: &Shared,
+    probe: &dyn Probe,
+    roots: &[(u64, u32, Scope)],
+    limits: Limits,
+    blind: &mut u32,
+) -> Duration {
+    let free = shared.read_free(probe);
+    if !table_needed(shared, roots, free, limits) {
+        *blind = 0;
+        return RSS_TICK;
+    }
+    let Ok(rows) = probe.table() else {
+        *blind += 1;
+        if *blind >= BLIND_LIMIT {
+            for &(ticket, _, _) in roots {
+                kill(shared, ticket, KillReason::Blind);
             }
         }
-        thread::sleep(tick);
+        return RSS_TICK;
+    };
+    let rows = shared.keep_table(rows);
+    *blind = 0;
+    let trees = trees_of(&rows, roots);
+    let (candidate, to_stop) = rss_decision(shared, &trees, &rows, free, limits);
+    if !to_stop.is_empty() {
+        signal("-STOP", &to_stop);
+    }
+    if candidate {
+        CANDIDATE_RSS_TICK
+    } else {
+        RSS_TICK
     }
 }
 

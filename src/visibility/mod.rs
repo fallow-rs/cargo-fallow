@@ -30,7 +30,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use crate::graph::credits::{Credits, Site};
 use crate::graph::extract::{Binding, ItemFlags, ItemKind, Origin, RefKind, Vis};
 use crate::graph::resolve::{Class, Credit, Resolver};
-use crate::graph::{CrateKind, Graph, ItemId, ModuleId};
+use crate::graph::{CrateKind, Graph, Import, ItemId, ModuleId};
 
 /// The options of the check.
 #[derive(Debug, Clone, Default)]
@@ -471,6 +471,25 @@ impl Surface {
     }
 
     fn grow(&mut self, graph: &Graph, resolver: &Resolver<'_>) {
+        self.grow_modules(graph);
+        for (index, import) in graph.imports.iter().enumerate() {
+            if import.vis != Vis::Public {
+                continue;
+            }
+            self.modules_with_reexports.insert(import.module);
+            if !self.exported_modules.contains(&import.module) {
+                continue;
+            }
+            if import.binding == Binding::Glob {
+                self.add_glob_reexport(graph, resolver, index);
+            } else {
+                self.add_named_reexport(graph, resolver, import, index);
+            }
+        }
+    }
+
+    /// Marks each `pub` module as exported when its parent is exported.
+    fn grow_modules(&mut self, graph: &Graph) {
         for (id, module) in graph.modules.iter().enumerate() {
             let public = module
                 .item
@@ -483,44 +502,45 @@ impl Surface {
                 self.exported_modules.insert(id);
             }
         }
-        for (index, import) in graph.imports.iter().enumerate() {
-            if import.vis != Vis::Public {
-                continue;
-            }
-            self.modules_with_reexports.insert(import.module);
-            if !self.exported_modules.contains(&import.module) {
-                continue;
-            }
-            if import.binding == Binding::Glob {
-                let (modules, enums) = resolver.glob_sources(index);
-                for module in modules {
-                    self.exported_modules.insert(module);
-                    for (item, entry) in graph.items.iter().enumerate() {
-                        if entry.module == module
-                            && entry.parent.is_none()
-                            && entry.vis == Vis::Public
-                        {
-                            self.glob_exported.insert(item);
-                        }
-                    }
-                }
-                self.glob_exported.extend(enums);
-                continue;
-            }
-            let (items, modules) = resolver.import_items(index);
-            self.reexported.extend(items.iter().copied());
-            if let Some(own) = import.item {
-                let local = !items.is_empty()
-                    && modules.is_empty()
-                    && items
-                        .iter()
-                        .all(|item| graph.items[*item].krate == import.krate);
-                if local {
-                    self.local_reexports.insert(own);
-                }
-                self.reexport_targets.insert(own, items);
-            }
+    }
+
+    /// Records the modules and the top-level `pub` items that a `pub use`
+    /// glob in an exported module re-exports.
+    fn add_glob_reexport(&mut self, graph: &Graph, resolver: &Resolver<'_>, index: usize) {
+        let (modules, enums) = resolver.glob_sources(index);
+        for module in modules {
+            self.exported_modules.insert(module);
+            let items = graph.items.iter().enumerate().filter(|(_, entry)| {
+                entry.module == module && entry.parent.is_none() && entry.vis == Vis::Public
+            });
+            self.glob_exported.extend(items.map(|(item, _)| item));
         }
+        self.glob_exported.extend(enums);
+    }
+
+    /// Records the items that a named `pub use` in an exported module
+    /// re-exports.
+    fn add_named_reexport(
+        &mut self,
+        graph: &Graph,
+        resolver: &Resolver<'_>,
+        import: &Import,
+        index: usize,
+    ) {
+        let (items, modules) = resolver.import_items(index);
+        self.reexported.extend(items.iter().copied());
+        let Some(own) = import.item else {
+            return;
+        };
+        let local = !items.is_empty()
+            && modules.is_empty()
+            && items
+                .iter()
+                .all(|item| graph.items[*item].krate == import.krate);
+        if local {
+            self.local_reexports.insert(own);
+        }
+        self.reexport_targets.insert(own, items);
     }
 
     /// True when another crate can name the item.

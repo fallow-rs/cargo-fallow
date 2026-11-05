@@ -10,7 +10,7 @@ This skill runs `docs/release-procedure.md` from the first check to the
 Marketplace listing. The procedure is canonical. When this skill and the
 procedure disagree, follow the procedure and update this skill.
 
-release-contract: 3e17605cb565407c65c84044f219bf15d0e976e5eb0b2544ec476959c7ad8803
+release-contract: e2d022fbd0bb7e8932ca2aed47b7fa83f3890d815b93a1b1d3090a528dc651d7
 
 `.github/scripts/release-skill.test.mjs` fails when a contract file changes
 and this pin stays the same. Read the change, update the steps below, then
@@ -38,7 +38,10 @@ ls changelog.d/*.md | grep -v README.md
 ```
 
 The status must be empty, and the CI check must pass. The last command
-lists the fragments of the release. At least one fragment must exist.
+lists the fragments of the release. At least one fragment must exist, except
+in a resume: `Cargo.toml` already has the new version, `CHANGELOG.md` has its
+section, and the tag is absent. Then skip step 2, and in step 4 use the
+recovery for a commit that landed on top of the release commit.
 
 Done when: each check passes.
 

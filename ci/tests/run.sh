@@ -283,6 +283,18 @@ assert_contains "$(cat "$WORK/comment.log")" "is unchanged" "an unchanged note e
 
 reset
 printf '## cargo fallow check\n' > "$OUT/report.md"
+printf '{"error":true,"message":"bad","code":"X"}\n' > "$OUT/error.json"
+run_comment GITLAB_TOKEN=secret RESULTS_FILE="$OUT/error.json" EXIT_CODE=0
+assert_contains "$(cat "$CURL_LOG")" "POST" "an error document is not clean"
+
+reset
+printf '## cargo fallow check\n' > "$OUT/report.md"
+printf '{"kind":"check","total_issues":2}\n' > "$OUT/issues.json"
+run_comment GITLAB_TOKEN=secret RESULTS_FILE="$OUT/issues.json" EXIT_CODE=0
+assert_contains "$(cat "$CURL_LOG")" "POST" "a run with issues and exit code 0 is not clean"
+
+reset
+printf '## cargo fallow check\n' > "$OUT/report.md"
 run_job CARGO_FALLOW_COMMENT=true CI_MERGE_REQUEST_IID=12 STUB_JSON='{"kind":"check","total_issues":0}' \
   CI_API_V4_URL="https://gitlab.example/api/v4" CI_PROJECT_ID=7 GITLAB_TOKEN=secret
 assert_not_contains "$(cat "$CURL_LOG")" "POST" "run.sh gives the results to the note, so a clean job posts no note"

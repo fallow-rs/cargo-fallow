@@ -76,12 +76,13 @@ api_warning() {
 comments="$(gh api --paginate "repos/${GH_REPO}/issues/${PR_NUMBER}/comments")" || api_warning read
 # One line `<id> <same>` for the comment of the action, or nothing. `same` is
 # true when the body of the comment is the new body. The API can give other
-# line ends and no last newline, so the compare ignores them.
+# line ends and no last newline, so the compare ignores them. jq on Windows
+# ends each line with CRLF, so `tr` removes the CR.
 match="$(printf '%s' "$comments" | jq -r --arg marker "$MARKER" --arg author "$COMMENT_AUTHOR" \
   --rawfile body "$BODY" \
   'def norm: gsub("\r\n"; "\n") | sub("\\s+$"; "");
    .[] | select(.user.login == $author and ((.body // "") | startswith($marker)))
-   | "\(.id) \((.body | norm) == ($body | norm))"' | head -n 1)"
+   | "\(.id) \((.body | norm) == ($body | norm))"' | tr -d '\r' | head -n 1)"
 existing="${match%% *}"
 
 # A clean run has no issue, exit code 0 and no gate that fails or warns. Like
@@ -91,7 +92,7 @@ existing="${match%% *}"
 clean="$(jq -r --arg exit_code "$EXIT_CODE" \
   '$exit_code == "0" and .error != true and (.total_issues // 0) == 0
    and ([(.gate_outcomes // {})[] | select(.status == "fail" or .status == "warn")] | length) == 0' \
-  "$RESULTS_FILE" 2> /dev/null || echo false)"
+  "$RESULTS_FILE" 2> /dev/null | tr -d '\r' || echo false)"
 
 if [ -z "$existing" ] && [ "$clean" = "true" ]; then
   echo "::notice::The run is clean and the pull request has no comment of the action, so the action posts no comment."

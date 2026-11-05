@@ -787,6 +787,25 @@ assert_contains "$OUT" "is unchanged" "comment: an unchanged comment explains th
 jq -n --rawfile body "$WORK/body-first.md" '[{id: 42, body: ($body | rtrimstr("\n") | gsub("\n"; "\r\n")), user: {login: "github-actions[bot]"}}]' > "$WORK/comments-crlf.json"
 GH_COMMENTS="$WORK/comments-crlf.json" run_comment PR_NUMBER=7
 assert_equals "$(grep -c -- '-X PATCH\|-X POST' "$GH_LOG")" "0" "comment: a body with other line ends is unchanged"
+jq '.error = true' "$FIXTURES/check-clean.json" > "$WORK/check-error.json"
+GH_COMMENTS="$WORK/comments-none.json" run_comment PR_NUMBER=7 RESULTS_FILE="$WORK/check-error.json" FALLOW_COMMAND=check
+assert_contains "$(cat "$GH_LOG")" "-X POST" "comment: an error document is not clean"
+jq '.total_issues = 2' "$FIXTURES/check-clean.json" > "$WORK/check-issues.json"
+GH_COMMENTS="$WORK/comments-none.json" run_comment PR_NUMBER=7 RESULTS_FILE="$WORK/check-issues.json" FALLOW_COMMAND=check
+assert_contains "$(cat "$GH_LOG")" "-X POST" "comment: a run with issues and exit code 0 is not clean"
+# jq on Windows ends each line with CRLF.
+CRLF_DIR="$WORK/jq-crlf"
+mkdir -p "$CRLF_DIR"
+printf '#!/usr/bin/env bash\n"%s" "$@" | sed "s/$/\\r/"\n' "$(command -v jq)" > "$CRLF_DIR/jq"
+chmod +x "$CRLF_DIR/jq"
+GH_COMMENTS="$WORK/comments-none.json" run_comment PR_NUMBER=7 RESULTS_FILE="$FIXTURES/check-clean.json" FALLOW_COMMAND=check \
+  PATH="$CRLF_DIR:$GH_DIR:$BASE_PATH"
+assert_equals "$(grep -c -- '-X POST' "$GH_LOG")" "0" "comment: a clean run with CRLF jq output posts no comment"
+GH_COMMENTS="$WORK/comments-check.json" run_comment PR_NUMBER=7 RESULTS_FILE="$FIXTURES/check-clean.json" FALLOW_COMMAND=check \
+  PATH="$CRLF_DIR:$GH_DIR:$BASE_PATH"
+assert_contains "$(cat "$GH_LOG")" "-X PATCH repos/o/r/issues/comments/42 " "comment: CRLF jq output gives a clean comment id"
+GH_COMMENTS="$WORK/comments-same.json" run_comment PR_NUMBER=7 PATH="$CRLF_DIR:$GH_DIR:$BASE_PATH"
+assert_equals "$(grep -c -- '-X PATCH\|-X POST' "$GH_LOG")" "0" "comment: CRLF jq output still finds an unchanged comment"
 printf '#!/usr/bin/env bash\nexit 1\n' > "$WORK/gh-fail"
 mkdir -p "$WORK/gh-fail-dir" && cp "$WORK/gh-fail" "$WORK/gh-fail-dir/gh" && chmod +x "$WORK/gh-fail-dir/gh"
 OUT="$(env -i PATH="$WORK/gh-fail-dir:$BASE_PATH" RUNNER_TEMP="$WORK" ACTION_JQ_DIR="$JQ_DIR" \

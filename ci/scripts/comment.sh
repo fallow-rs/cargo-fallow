@@ -73,7 +73,7 @@ while [ -z "$match" ]; do
   match="$(printf '%s' "$notes" | jq -r --arg marker "$MARKER" --argjson me "$me" --rawfile body "$BODY" \
     'def norm: gsub("\r\n"; "\n") | sub("\\s+$"; "");
      [.[] | select((.system | not) and .author.id == $me and ((.body // "") | startswith($marker)))
-       | "\(.id) \((.body | norm) == ($body | norm))"] | first // empty')" || api_warning read
+       | "\(.id) \((.body | norm) == ($body | norm))"] | first // empty' | tr -d '\r')" || api_warning read
   [ "$(printf '%s' "$notes" | jq 'length')" -lt 100 ] && break
   page=$((page + 1))
 done
@@ -88,7 +88,7 @@ if [ -n "$RESULTS_FILE" ] && [ -f "$RESULTS_FILE" ]; then
   clean="$(jq -r --arg exit_code "$EXIT_CODE" \
     '$exit_code == "0" and .error != true and (.total_issues // 0) == 0
      and ([(.gate_outcomes // {})[] | select(.status == "fail" or .status == "warn")] | length) == 0' \
-    "$RESULTS_FILE" 2> /dev/null || echo false)"
+    "$RESULTS_FILE" 2> /dev/null | tr -d '\r' || echo false)"
 fi
 
 if [ -z "$existing" ] && [ "$clean" = "true" ]; then

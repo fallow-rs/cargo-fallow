@@ -47,6 +47,10 @@ pub fn extend(
         {
             continue;
         }
+        // Most workspaces have no `fuzz/`, so the default is silent then.
+        if !explicit && !manifest.is_file() {
+            continue;
+        }
         let members = if manifest.is_file() {
             workspace::consumer_members(&workspace.root, &manifest, &options.cargo_flags)
         } else {

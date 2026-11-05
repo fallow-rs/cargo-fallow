@@ -37,10 +37,6 @@ pub fn link_paths(text: &str) -> Vec<(usize, LinkPath)> {
             paragraph.flush(&mut paths);
             continue;
         }
-        // An indented code block starts after a blank line.
-        if paragraph.text.is_empty() && line.starts_with("    ") {
-            continue;
-        }
         if let Some(target) = definition(trimmed) {
             paragraph.flush(&mut paths);
             paths.extend(path_of(target).map(|path| (index, path)));
@@ -124,8 +120,12 @@ fn definition(line: &str) -> Option<&str> {
 }
 
 /// The paths of the links in one paragraph, with the offset of each link.
+/// The next `[` and `]` stay cached, so the scan is linear in the text.
 fn scan(text: &str) -> Vec<(usize, LinkPath)> {
     let mut paths = Vec::new();
+    let next_of = |from: usize, mark: char| text[from..].find(mark).map(|found| from + found);
+    let mut next_close: Option<usize> = None;
+    let mut next_open: Option<usize> = None;
     let mut at = 0;
     while let Some(found) = text[at..].find(['[', '`']) {
         let open = at + found;
@@ -140,13 +140,22 @@ fn scan(text: &str) -> Vec<(usize, LinkPath)> {
             continue;
         }
         let content_start = open + 1;
-        let Some(close) = closing_bracket(&text[content_start..]) else {
+        if next_close.is_none_or(|close| close < content_start) {
+            next_close = next_of(content_start, ']');
+        }
+        if next_open.is_none_or(|inner| inner < content_start) {
+            next_open = next_of(content_start, '[');
+        }
+        let Some(close) = next_close else {
+            break;
+        };
+        if next_open.is_some_and(|inner| inner < close) {
             // An inner `[` starts a new bracket.
             at = content_start;
             continue;
-        };
-        let content = &text[content_start..content_start + close];
-        let after = content_start + close + 1;
+        }
+        let content = &text[content_start..close];
+        let after = close + 1;
         let rest = &text[after..];
         if let Some(inner) = rest.strip_prefix('(') {
             let end = inner.find(')').unwrap_or(inner.len());
@@ -178,16 +187,6 @@ fn inline_target(text: &str) -> &str {
     text.split_whitespace().next().unwrap_or("")
 }
 
-/// The offset of the `]` that closes a bracket, or `None` when a `[` comes
-/// first.
-fn closing_bracket(text: &str) -> Option<usize> {
-    let close = text.find(']')?;
-    match text.find('[') {
-        Some(open) if open < close => None,
-        _ => Some(close),
-    }
-}
-
 /// The path of a link target, or `None` when the target is not a path, for
 /// example a URL.
 fn path_of(target: &str) -> Option<LinkPath> {
@@ -213,7 +212,13 @@ fn path_of(target: &str) -> Option<LinkPath> {
         Some(rest) => (rest, true),
         None => (text.as_str(), false),
     };
-    let segments: Vec<String> = body.split("::").map(str::to_owned).collect();
+    // A turbofish such as `Gen::<u8>::new` leaves an empty segment.
+    let segments: Vec<String> = body
+        .split("::")
+        .enumerate()
+        .filter(|(index, segment)| *index == 0 || !segment.is_empty())
+        .map(|(_, segment)| segment.to_owned())
+        .collect();
     segments
         .iter()
         .all(|segment| is_identifier(segment))
@@ -313,10 +318,29 @@ mod tests {
     }
 
     #[test]
-    fn indented_code_and_long_fences_hold_no_link() {
-        let text = "/// Text.\n///\n///     let x = [a];\n///\n/// ````\n/// ```\n/// [b]\n\
+    fn long_fences_hold_no_link_and_an_indented_line_does() {
+        let text = "/// Text.\n///\n///     more [a].\n///\n/// ````\n/// ```\n/// [b]\n\
                     /// ````\n/// [c]\n";
-        assert_eq!(paths(text), ["c"]);
+        assert_eq!(paths(text), ["a", "c"]);
+    }
+
+    #[test]
+    fn a_turbofish_keeps_the_path() {
+        assert_eq!(paths("/// [`Gen::<u8>::new`]\n"), ["Gen::new"]);
+    }
+
+    #[test]
+    fn a_label_with_a_url_definition_still_gives_credit() {
+        let text = "/// Uses [tokio] and [`Item`].\n///\n/// [tokio]: https://tokio.rs\n";
+        assert_eq!(paths(text), ["tokio", "Item"]);
+    }
+
+    #[test]
+    fn many_open_brackets_scan_in_linear_time() {
+        let text = format!("/// {}x{}\n", "[".repeat(200_000), "]".repeat(200_000));
+        let start = std::time::Instant::now();
+        let _ = link_paths(&text);
+        assert!(start.elapsed() < std::time::Duration::from_secs(10));
     }
 
     #[test]

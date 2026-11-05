@@ -243,6 +243,9 @@ pub enum Origin {
     Signature,
     /// In the tokens of a macro call or a `macro_rules!` body.
     Macro,
+    /// In the tokens of a macro call or a macro body that can write a `pub`
+    /// item: the tokens have `pub` or a `vis` fragment.
+    PublicMacro,
     /// In the tokens of an attribute.
     Attr,
     /// In a code block of the documentation.
@@ -302,6 +305,9 @@ pub struct FileFacts {
 pub struct DocInclude {
     /// The path in the string literal, relative to the file of the item.
     pub path: String,
+    /// True when the path is relative to the folder of the package, through
+    /// `env!("CARGO_MANIFEST_DIR")`.
+    pub from_package: bool,
     /// The reference of each link, without its path.
     pub site: RawRef,
 }
@@ -540,8 +546,30 @@ impl<'a> Walker<'a> {
             under_cfg: self.cfg_off(),
             line,
         };
+        // `Self` is the self type of the `impl` block, or the documented type.
+        // For a field or a variant, the type is the enclosing item.
+        let self_path = self.impl_self().or_else(|| {
+            node.ancestors()
+                .find(|ancestor| {
+                    matches!(
+                        ancestor.kind(),
+                        SyntaxKind::STRUCT
+                            | SyntaxKind::ENUM
+                            | SyntaxKind::UNION
+                            | SyntaxKind::TRAIT
+                    )
+                })
+                .and_then(ast::AnyHasName::cast)
+                .and_then(|item| item.name())
+                .map(|name| vec![plain_name(&name)])
+        });
         let mut refs = Vec::new();
-        for (index, (segments, global)) in crate::graph::doc_links::link_paths(&docs.text) {
+        for (index, (mut segments, global)) in crate::graph::doc_links::link_paths(&docs.text) {
+            if let Some(self_path) = &self_path
+                && segments.first().is_some_and(|first| first == "Self")
+            {
+                segments.splice(0..1, self_path.iter().cloned());
+            }
             let line = docs.lines.get(index).copied().unwrap_or(0);
             for scope in &scopes {
                 let kind = RefKind::Path {
@@ -552,7 +580,7 @@ impl<'a> Walker<'a> {
             }
         }
         let mut includes = Vec::new();
-        for (path, line) in docs.includes {
+        for (path, line, from_package) in docs.includes {
             for scope in &scopes {
                 let kind = RefKind::Path {
                     segments: Vec::new(),
@@ -560,6 +588,7 @@ impl<'a> Walker<'a> {
                 };
                 includes.push(DocInclude {
                     path: path.clone(),
+                    from_package,
                     site: site(scope, line, kind),
                 });
             }
@@ -1156,7 +1185,12 @@ impl<'a> Walker<'a> {
             }
         }
         if let Some(tree) = call.token_tree() {
-            self.token_refs(tree.syntax(), Origin::Macro);
+            let origin = if writes_pub(tree.syntax()) {
+                Origin::PublicMacro
+            } else {
+                Origin::Macro
+            };
+            self.token_refs(tree.syntax(), origin);
         }
     }
 
@@ -1172,7 +1206,12 @@ impl<'a> Walker<'a> {
             .filter(|child| child.kind() == SyntaxKind::TOKEN_TREE)
             .collect::<Vec<_>>();
         for tree in tree {
-            self.token_refs(&tree, Origin::Macro);
+            let origin = if writes_pub(&tree) {
+                Origin::PublicMacro
+            } else {
+                Origin::Macro
+            };
+            self.token_refs(&tree, origin);
         }
     }
 
@@ -1429,7 +1468,9 @@ fn string_literals(node: &SyntaxNode) -> Vec<String> {
 struct DocText {
     text: String,
     lines: Vec<u32>,
-    includes: Vec<(String, u32)>,
+    /// The path, the line and true when the path is relative to the folder
+    /// of the package.
+    includes: Vec<(String, u32, bool)>,
 }
 
 impl DocText {
@@ -1460,11 +1501,21 @@ fn doc_meta(meta: ast::Meta, line: u32, docs: &mut DocText) {
                         (name.text() == "include_str").then_some(call.token_tree()?)
                     });
                     if let Some(tree) = include {
-                        docs.includes.extend(
-                            string_literals(tree.syntax())
-                                .into_iter()
-                                .map(|path| (path, line)),
-                        );
+                        // `concat!(env!("CARGO_MANIFEST_DIR"), "/README.md")`
+                        // names a file in the folder of the package.
+                        let manifest = tree
+                            .syntax()
+                            .text()
+                            .to_string()
+                            .contains("CARGO_MANIFEST_DIR");
+                        // The literals of a `concat!` form one path.
+                        let path: String = string_literals(tree.syntax())
+                            .into_iter()
+                            .filter(|part| part != "CARGO_MANIFEST_DIR")
+                            .collect();
+                        if !path.is_empty() {
+                            docs.includes.push((path, line, manifest));
+                        }
                     }
                 }
                 _ => {
@@ -1484,6 +1535,25 @@ fn doc_meta(meta: ast::Meta, line: u32, docs: &mut DocText) {
         | ast::Meta::CfgMeta(_)
         | ast::Meta::PathMeta(_) => {}
     }
+}
+
+/// True when macro tokens can write a `pub` item: they hold the `pub`
+/// keyword or a `$name:vis` fragment.
+fn writes_pub(tree: &SyntaxNode) -> bool {
+    let mut after_colon = false;
+    for token in tree
+        .descendants_with_tokens()
+        .filter_map(ra_ap_syntax::NodeOrToken::into_token)
+    {
+        match token.kind() {
+            SyntaxKind::PUB_KW => return true,
+            SyntaxKind::COLON => after_colon = true,
+            SyntaxKind::IDENT if after_colon && token.text() == "vis" => return true,
+            SyntaxKind::WHITESPACE | SyntaxKind::COMMENT => {}
+            _ => after_colon = false,
+        }
+    }
+    false
 }
 
 fn vis_of(node: &SyntaxNode) -> Vis {

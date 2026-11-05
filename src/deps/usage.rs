@@ -204,7 +204,7 @@ pub fn sites(graph: &Graph, package: &str, names: &[String], include: bool) -> V
                 };
                 let via = match reference.origin {
                     Origin::Body | Origin::Signature => "path",
-                    Origin::Macro => "macro-tokens",
+                    Origin::Macro | Origin::PublicMacro => "macro-tokens",
                     Origin::Attr => "attribute",
                     Origin::Doc => "doc-code",
                     Origin::DocLink => "doc-link",

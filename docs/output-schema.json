@@ -2189,7 +2189,7 @@
           "type": "integer",
           "format": "uint",
           "minimum": 0,
-          "description": "The findings that `fix` does not change, for example a warning."
+          "description": "The findings that `fix` does not change, for example a warning. A check\nthat `--only` or `--skip` leaves out adds nothing."
         },
         "skipped_packages": {
           "type": "array",

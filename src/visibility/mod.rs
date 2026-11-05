@@ -810,6 +810,11 @@ fn required_items(
     let mut signature: FxHashMap<ItemId, Vec<ItemId>> = FxHashMap::default();
     let mut work: Vec<Work> = Vec::new();
     for credit in credits {
+        // The output of a macro can hold a `pub` item that names the type,
+        // and the syntax cannot show its signature.
+        if credit.origin == Origin::PublicMacro && is_type(graph.items[credit.item].kind) {
+            work.push(Work::Require(credit.item));
+        }
         if !matches!(credit.origin, Origin::Signature | Origin::DocLink) {
             continue;
         }
@@ -895,6 +900,14 @@ fn required_items(
         work.extend(graph.items[item].parent.map(Work::Require));
     }
     required
+}
+
+/// True for a kind that can be a type in a signature.
+const fn is_type(kind: ItemKind) -> bool {
+    matches!(
+        kind,
+        ItemKind::Struct | ItemKind::Enum | ItemKind::Union | ItemKind::Trait | ItemKind::TypeAlias
+    )
 }
 
 /// One step of [`required_items`].

@@ -357,13 +357,15 @@ pub fn absolute_path(root: &Utf8Path, relative: &str) -> PathBuf {
 
 /// Runs `cargo check --workspace --all-targets` with `flags`, for example
 /// `--offline`, and with `--all-features` when `all_features` is true.
-/// Returns each error line of the compiler on a failure.
+/// It uses the JSON message format.
+/// Returns the compiler warnings of a passing build, or the compiler errors
+/// of a failing build.
 pub fn cargo_check(
     manifest_path: Option<&Path>,
     root: &Path,
     flags: &[String],
     all_features: bool,
-) -> Result<(), String> {
+) -> Result<Vec<crate::fix::check::Diagnostic>, String> {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     #[expect(
         clippy::disallowed_methods,
@@ -385,7 +387,7 @@ pub fn cargo_check(
             "--all-targets",
             "--quiet",
             "--message-format",
-            "short",
+            "json",
         ])
         .args(flags);
     if let Some(path) = manifest_path {
@@ -394,19 +396,84 @@ pub fn cargo_check(
     let output = command
         .output()
         .map_err(|err| format!("cannot run `cargo check`: {err}"))?;
+    let diagnostics = crate::fix::check::diagnostics(&String::from_utf8_lossy(&output.stdout));
     if output.status.success() {
-        return Ok(());
+        return Ok(diagnostics
+            .into_iter()
+            .filter(|diagnostic| !diagnostic.error)
+            .collect());
     }
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let errors: Vec<&str> = stderr
-        .lines()
-        .filter(|line| line.starts_with("error") || line.contains(": error"))
+    let mut errors: Vec<String> = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.error)
+        .map(crate::fix::check::Diagnostic::line)
         .collect();
+    if errors.is_empty() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        errors = stderr
+            .lines()
+            .filter(|line| line.starts_with("error") || line.contains(": error"))
+            .map(str::to_owned)
+            .collect();
+    }
     Err(if errors.is_empty() {
         format!("`cargo check` failed with {}", output.status)
     } else {
         errors.join("\n")
     })
+}
+
+/// The longest time that one `rustfmt` run can take.
+const RUSTFMT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Formats Rust source text with `rustfmt` through stdin, so the run does not
+/// follow `mod` declarations to other files. `rustfmt` reads its config from
+/// `folder` and the folders above it. Returns `None` when `rustfmt` is not
+/// available or cannot format the text.
+pub fn rustfmt(text: &str, edition: &str, folder: &Path) -> Option<String> {
+    use std::io::Write as _;
+
+    let program = std::env::var_os("RUSTFMT").unwrap_or_else(|| "rustfmt".into());
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "`fix` formats the files that it changed, when the files were formatted before"
+    )]
+    let mut child = std::process::Command::new(program)
+        .args(["--edition", edition, "--emit", "stdout"])
+        .current_dir(folder)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+    let mut stdin = child.stdin.take()?;
+    let mut stdout = child.stdout.take()?;
+    let input = text.to_owned();
+    let writer = std::thread::spawn(move || stdin.write_all(input.as_bytes()));
+    let reader = std::thread::spawn(move || {
+        let mut out = Vec::new();
+        std::io::Read::read_to_end(&mut stdout, &mut out).map(|_| out)
+    });
+    // A `rustfmt` that does not end, for example a toolchain shim that waits
+    // for a download, does not hold the run.
+    let deadline = std::time::Instant::now() + RUSTFMT_TIMEOUT;
+    let status = loop {
+        if let Some(status) = child.try_wait().ok()? {
+            break status;
+        }
+        if std::time::Instant::now() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    writer.join().ok()?.ok()?;
+    let out = reader.join().ok()?.ok()?;
+    if !status.success() {
+        return None;
+    }
+    String::from_utf8(out).ok()
 }
 
 #[cfg(test)]

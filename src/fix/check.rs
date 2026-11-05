@@ -111,6 +111,7 @@ pub fn diagnostics(stdout: &str) -> Vec<Diagnostic> {
 /// and "unused import: `B`".
 pub fn new_warnings<'a>(before: &[Diagnostic], after: &'a [Diagnostic]) -> Vec<&'a Diagnostic> {
     let mut known: FxHashMap<(&str, &str, &str), usize> = FxHashMap::default();
+    let present: FxHashSet<(&str, &str, &str)> = before.iter().map(Diagnostic::key).collect();
     let mut named: FxHashMap<(&str, &str), FxHashSet<&str>> = FxHashMap::default();
     for warning in before {
         *known.entry(warning.key()).or_default() += 1;
@@ -129,7 +130,12 @@ pub fn new_warnings<'a>(before: &[Diagnostic], after: &'a [Diagnostic]) -> Vec<&
             }
             _ => true,
         })
+        // A warning with a message from before that the count marks as new is
+        // new. Only a message that did not exist can merge old names.
         .filter(|warning| {
+            if present.contains(&warning.key()) {
+                return true;
+            }
             let names = crate::fix::visibility::named_items(&warning.message);
             let old = named.get(&(warning.file.as_str(), warning.code.as_str()));
             names.is_empty() || !old.is_some_and(|old| names.iter().all(|name| old.contains(name)))
@@ -179,6 +185,20 @@ mod tests {
         ];
         let after = [warning("unused_imports", "unused imports: `A` and `B`", 1)];
         assert!(new_warnings(&before, &after).is_empty());
+    }
+
+    #[test]
+    fn a_second_warning_with_an_old_message_is_new() {
+        let before = [warning("dead_code", "function `helper` is never used", 1)];
+        let after = [
+            warning("dead_code", "function `helper` is never used", 1),
+            warning("dead_code", "function `helper` is never used", 9),
+        ];
+        let lines: Vec<u64> = new_warnings(&before, &after)
+            .iter()
+            .map(|warning| warning.line)
+            .collect();
+        assert_eq!(lines, [9]);
     }
 
     #[test]

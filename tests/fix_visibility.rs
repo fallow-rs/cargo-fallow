@@ -672,3 +672,43 @@ fn a_formatted_file_stays_formatted_after_the_edits() {
         .expect("run rustfmt");
     assert!(after.success(), "{}", read(&dir, "core/src/lib.rs"));
 }
+
+/// When `fix` cannot write back the old bytes of a file after a failed
+/// check, it stops with exit 2 and names the file. It does not start a new
+/// round from the edited bytes.
+#[cfg(unix)]
+#[test]
+fn a_failed_write_back_stops_the_run() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let dir = workspace(CORE, APP);
+    let real = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
+    let src = dir.path().join("core/src");
+    let lib = src.join("lib.rs");
+    let script = dir.path().join("fake-cargo");
+    fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = check ]; then\n  if grep -q 'pub(crate) fn helper' '{lib}'; then chmod 555 '{src}'; echo '{{\"reason\":\"compiler-message\",\"message\":{{\"level\":\"warning\",\"message\":\"function `helper` is never used\",\"code\":{{\"code\":\"dead_code\"}},\"spans\":[{{\"file_name\":\"core/src/lib.rs\",\"line_start\":2,\"column_start\":1,\"is_primary\":true}}]}}}}'; fi\n  exit 0\nfi\nexec '{real}' \"$@\"\n",
+            lib = lib.display(),
+            src = src.display()
+        ),
+    )
+    .expect("write the script");
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).expect("make it executable");
+    let script = script.to_str().expect("the path is UTF-8").to_owned();
+    let (code, stdout, stderr) = fix(
+        &dir,
+        &["--yes", "--format", "json", "--quiet"],
+        Some(&script),
+    );
+    fs::set_permissions(&src, fs::Permissions::from_mode(0o755)).expect("make the folder writable");
+    assert_eq!(code, 2, "{stderr} {stdout}");
+    let error = json(&stdout);
+    assert!(
+        error["help"]
+            .as_str()
+            .is_some_and(|help| help.contains("cannot write back")),
+        "{error}"
+    );
+}

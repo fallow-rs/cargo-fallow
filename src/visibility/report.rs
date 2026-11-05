@@ -521,6 +521,11 @@ fn message(finding: &FindingRow) -> String {
             "No code reaches the {} `{}`. Remove it when no code needs it.",
             finding.item_kind, finding.item
         ),
+        _ if finding.test_only => format!(
+            "Only test code uses the {} `{}`. Put `#[cfg(test)]` on it, or move it into the \
+             test module.",
+            finding.item_kind, finding.item
+        ),
         "unnecessary-public" => format!(
             "Only its own crate uses the {} `{}`. Make it {to}.",
             finding.item_kind, finding.item

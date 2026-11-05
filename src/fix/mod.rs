@@ -403,10 +403,16 @@ fn apply_all(
         }
         let mut planned = Vec::new();
         for (path, edits) in deps::by_manifest(&plan.deps) {
-            planned.push(edited(root, path, |text| deps::apply(text, &edits))?);
+            planned.push(
+                edited(root, path, |text| deps::apply(text, &edits))
+                    .inspect_err(|_| lock.restore())?,
+            );
         }
         for (path, edits) in visibility::by_file(&kept) {
-            planned.push(edited(root, path, |text| visibility::apply(text, &edits))?);
+            planned.push(
+                edited(root, path, |text| visibility::apply(text, &edits))
+                    .inspect_err(|_| lock.restore())?,
+            );
         }
         progress.step("Writing the edits");
         let mut compiler = None;
@@ -446,9 +452,18 @@ fn apply_all(
             }
             Ok(())
         });
-        let Err(error) = outcome else {
-            format_files(workspace, &planned, &formatted);
-            return Ok(Applied { kept, left_out });
+        let error = match outcome {
+            Ok(()) => {
+                format_files(workspace, &planned, &formatted);
+                return Ok(Applied { kept, left_out });
+            }
+            // A file that keeps the edited bytes would be the old bytes of
+            // the next round, so the run stops.
+            Err(Failed::Stuck(error)) => {
+                lock.restore();
+                return Err(error);
+            }
+            Err(Failed::Restored(error)) => error,
         };
         // The compiler names the items that the edits broke. Each round
         // leaves out the edits of those items, and the next round starts from
@@ -501,12 +516,25 @@ fn leave_out(
     for warning in warned {
         let names = visibility::named_items(&warning.message);
         let any_file = warning.code.starts_with("private_");
+        let by_name = |edit: &visibility::Edit| {
+            names.contains(visibility::last_segment(&edit.item))
+                && (any_file || edit.path == warning.file)
+        };
+        let by_span = |edit: &visibility::Edit| {
+            warning.spans.iter().any(|(file, first, last)| {
+                edit.path == *file && (*first..=*last).contains(&u64::from(edit.line))
+            })
+        };
+        // Two items of one file can have one name, for example `new`. A span
+        // at one of them picks it. A `private_` warning names the type of
+        // another file, so its spans do not pick.
+        let both = !any_file && kept.iter().any(|edit| by_name(edit) && by_span(edit));
         take(kept, &mut left, COMPILER_WARNING, &warning.line(), |edit| {
-            (names.contains(visibility::last_segment(&edit.item))
-                && (any_file || edit.path == warning.file))
-                || warning.spans.iter().any(|(file, first, last)| {
-                    edit.path == *file && (*first..=*last).contains(&u64::from(edit.line))
-                })
+            if both {
+                by_name(edit) && by_span(edit)
+            } else {
+                by_name(edit) || by_span(edit)
+            }
         });
     }
     if !left.is_empty() {
@@ -695,12 +723,20 @@ fn edited(
     Ok((full, old, new))
 }
 
+/// A failed write or check.
+enum Failed {
+    /// Each file got its old bytes again.
+    Restored(CliError),
+    /// At least one file keeps the edited bytes.
+    Stuck(CliError),
+}
+
 /// Writes the files and runs `check`. On a failure, writes back the old bytes
 /// of each file.
 fn write_and_check(
     planned: &[Planned],
     check: impl FnOnce() -> Result<(), String>,
-) -> Result<(), CliError> {
+) -> Result<(), Failed> {
     let mut written: Vec<(&Path, &[u8])> = Vec::new();
     let mut outcome = Ok(());
     for (path, old, new) in planned {
@@ -725,13 +761,13 @@ fn write_and_check(
         .map(|(path, _)| path.display().to_string())
         .collect();
     if kept.is_empty() {
-        return Err(error.with_help(RESTORED_HELP));
+        return Err(Failed::Restored(error.with_help(RESTORED_HELP)));
     }
-    Err(error.with_help(format!(
+    Err(Failed::Stuck(error.with_help(format!(
         "The command cannot write back the old bytes of {}. Undo the edits of these files by \
          hand.",
         kept.join(", ")
-    )))
+    ))))
 }
 
 /// The help of a failed run after each file got its old bytes again.
@@ -863,6 +899,25 @@ mod tests {
             column: 1,
             spans: Vec::new(),
         }
+    }
+
+    #[test]
+    fn a_span_picks_the_edit_among_the_edits_of_one_name() {
+        let mut first = edit("a::A::new", "src/a.rs");
+        first.line = 2;
+        let mut second = edit("a::B::new", "src/a.rs");
+        second.line = 7;
+        let mut kept = vec![first, second];
+        let mut dead = warning(
+            "dead_code",
+            "associated function `new` is never used",
+            "src/a.rs",
+        );
+        dead.spans = vec![("src/a.rs".to_owned(), 7, 7)];
+        let left = leave_out(&mut kept, None, &[dead]);
+        let items: Vec<&str> = left.iter().map(|edit| edit.item.as_str()).collect();
+        assert_eq!(items, ["a::B::new"]);
+        assert_eq!(kept.len(), 1);
     }
 
     #[test]

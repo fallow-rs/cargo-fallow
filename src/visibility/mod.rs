@@ -829,53 +829,17 @@ fn judge(
     facts: &Facts<'_>,
     required: &FxHashSet<ItemId>,
 ) -> Vec<Finding> {
-    let Facts {
-        uses,
-        production,
-        any,
-        live_modules,
-    } = *facts;
     let mut findings = Vec::new();
-    for (item, entry) in graph.items.iter().enumerate() {
-        let test_only = !production.contains(&item) && any.contains(&item);
-        // A consumer path to a required item can go through the re-export,
-        // and the syntax cannot show which path it took.
-        let reexports_required = entry.kind == ItemKind::Use
-            && surface
-                .reexport_targets
-                .get(&item)
-                .is_some_and(|targets| targets.iter().any(|target| required.contains(target)));
-        if surface.public_candidate(graph, item) && !required.contains(&item) && !reexports_required
-        {
-            let live = any.contains(&item)
-                || graph.items[item]
-                    .child_module
-                    .is_some_and(|module| live_modules.contains(&module));
-            let kind = if live {
-                FindingKind::UnnecessaryPublic
-            } else {
-                FindingKind::DeadPublic
-            };
-            if !(entry.kind == ItemKind::Variant && kind == FindingKind::UnnecessaryPublic) {
-                findings.push(Finding {
-                    kind,
-                    item,
-                    test_only,
-                });
-            }
-        }
-        let excluded = surface.excluded.contains(&entry.krate);
-        // A test helper is the only `pub` item that the check judges outside
-        // the exported surface.
-        let crate_public = entry.test_only && surface.crate_public(graph, item);
-        if !excluded
-            && (restricted_candidate(entry) || crate_public)
-            && !surface.use_targets.contains(&item)
-            && !surface.macro_covered[item]
-            && !uses[item].exposed
-            && !uses[item].cross_crate
-            && only_own_module(graph, item, &uses[item])
-        {
+    for item in 0..graph.items.len() {
+        let test_only = !facts.production.contains(&item) && facts.any.contains(&item);
+        findings.extend(
+            public_kind(graph, surface, facts, required, item).map(|kind| Finding {
+                kind,
+                item,
+                test_only,
+            }),
+        );
+        if restricted_finding(graph, surface, facts.uses, item) {
             findings.push(Finding {
                 kind: FindingKind::UnnecessaryRestricted,
                 item,
@@ -890,6 +854,54 @@ fn judge(
     keep_shared_files(graph, &mut findings);
     findings.sort();
     findings
+}
+
+/// The public finding kind of an item, or `None` when the item keeps `pub`.
+fn public_kind(
+    graph: &Graph,
+    surface: &Surface,
+    facts: &Facts<'_>,
+    required: &FxHashSet<ItemId>,
+    item: ItemId,
+) -> Option<FindingKind> {
+    let entry = &graph.items[item];
+    // A consumer path to a required item can go through the re-export, and
+    // the syntax cannot show which path it took.
+    let reexports_required = entry.kind == ItemKind::Use
+        && surface
+            .reexport_targets
+            .get(&item)
+            .is_some_and(|targets| targets.iter().any(|target| required.contains(target)));
+    if !surface.public_candidate(graph, item) || required.contains(&item) || reexports_required {
+        return None;
+    }
+    let live = facts.any.contains(&item)
+        || entry
+            .child_module
+            .is_some_and(|module| facts.live_modules.contains(&module));
+    match (live, entry.kind) {
+        // A variant has the visibility of its enum.
+        (true, ItemKind::Variant) => None,
+        (true, _) => Some(FindingKind::UnnecessaryPublic),
+        (false, _) => Some(FindingKind::DeadPublic),
+    }
+}
+
+/// True when a restricted item, or a test helper that other crates cannot
+/// name, can be private: only its own module and its child modules use it.
+fn restricted_finding(graph: &Graph, surface: &Surface, uses: &[Uses], item: ItemId) -> bool {
+    let entry = &graph.items[item];
+    // A test helper is the only `pub` item that the check judges outside the
+    // exported surface.
+    let crate_public = entry.test_only && surface.crate_public(graph, item);
+    let candidate = restricted_candidate(entry) || crate_public;
+    candidate
+        && !surface.excluded.contains(&entry.krate)
+        && !surface.use_targets.contains(&item)
+        && !surface.macro_covered[item]
+        && !uses[item].exposed
+        && !uses[item].cross_crate
+        && only_own_module(graph, item, &uses[item])
 }
 
 /// True when the signature of `owner` has a visibility wider than private. An
@@ -975,58 +987,12 @@ fn required_items(
     uses: &[Uses],
     held: &FxHashSet<ItemId>,
 ) -> FxHashSet<ItemId> {
-    // rustdoc warns when the documentation of an item that stays `pub` links
-    // to a less visible item, so a doc link holds its target as a signature
-    // does. The inner documentation of a file belongs to its `mod` item. The
-    // documentation of a library root is always public.
-    let mut signature: FxHashMap<ItemId, Vec<ItemId>> = FxHashMap::default();
-    let mut work: Vec<Work> = Vec::new();
-    for credit in credits {
-        // The output of a macro can hold a `pub` item that names the type,
-        // and the syntax cannot show its signature.
-        if credit.origin == Origin::PublicMacro && is_type(graph.items[credit.item].kind) {
-            work.push(Work::Require(credit.item));
-        }
-        if !matches!(credit.origin, Origin::Signature | Origin::DocLink) {
-            continue;
-        }
-        let owner = credit.owner.or_else(|| {
-            (credit.origin == Origin::DocLink)
-                .then(|| graph.modules[credit.module].item)
-                .flatten()
-        });
-        let Some(owner) = owner else {
-            let root = graph.crates[credit.krate].root_module == credit.module;
-            if credit.origin == Origin::DocLink
-                && root
-                && graph.crates[credit.krate].kind.is_library()
-            {
-                work.push(Work::Require(credit.item));
-            }
-            continue;
-        };
-        signature.entry(owner).or_default().push(credit.item);
-        // A field of a variant is as visible as its enum, so a required
-        // enum needs the types of its variant fields.
-        if let Some(enumeration) = variant_enum(graph, owner) {
-            signature.entry(enumeration).or_default().push(credit.item);
-        }
-    }
+    let (signature, mut work) = signature_map(graph, credits);
     let groups = SignatureGroups::new(graph, names);
     let mut expanded: FxHashSet<usize> = FxHashSet::default();
     work.extend(groups.seeds(graph, names, &mut expanded));
     let members = members_of_types(graph);
-    work.extend(
-        (0..graph.items.len())
-            .filter(|&item| uses[item].cross_crate || surface.glob_exported.contains(&item))
-            .map(Work::Require),
-    );
-    work.extend(surface.api_surface(graph).into_iter().map(Work::Require));
-    work.extend(
-        (0..graph.items.len())
-            .filter(|&item| held.contains(&item) || surface.stays_exported(graph, item))
-            .map(Work::Hold),
-    );
+    work.extend(start_work(graph, surface, uses, held));
     let mut required: FxHashSet<ItemId> = FxHashSet::default();
     let mut holding: FxHashSet<ItemId> = FxHashSet::default();
     while let Some(next) = work.pop() {
@@ -1089,6 +1055,75 @@ const fn is_type(kind: ItemKind) -> bool {
         kind,
         ItemKind::Struct | ItemKind::Enum | ItemKind::Union | ItemKind::Trait | ItemKind::TypeAlias
     )
+}
+
+/// The items that a signature or a doc link of each owner names, and the
+/// items that the run requires before the walk: a type that macro tokens with
+/// `pub` name, and the target of a doc link of a library root.
+fn signature_map(
+    graph: &Graph,
+    credits: &[&Credit],
+) -> (FxHashMap<ItemId, Vec<ItemId>>, Vec<Work>) {
+    // rustdoc warns when the documentation of an item that stays `pub` links
+    // to a less visible item, so a doc link holds its target as a signature
+    // does. The inner documentation of a file belongs to its `mod` item. The
+    // documentation of a library root is always public.
+    let mut signature: FxHashMap<ItemId, Vec<ItemId>> = FxHashMap::default();
+    let mut work: Vec<Work> = Vec::new();
+    for credit in credits {
+        // The output of a macro can hold a `pub` item that names the type,
+        // and the syntax cannot show its signature.
+        if credit.origin == Origin::PublicMacro && is_type(graph.items[credit.item].kind) {
+            work.push(Work::Require(credit.item));
+        }
+        if !matches!(credit.origin, Origin::Signature | Origin::DocLink) {
+            continue;
+        }
+        let owner = credit.owner.or_else(|| {
+            (credit.origin == Origin::DocLink)
+                .then(|| graph.modules[credit.module].item)
+                .flatten()
+        });
+        let Some(owner) = owner else {
+            let root = graph.crates[credit.krate].root_module == credit.module;
+            if credit.origin == Origin::DocLink
+                && root
+                && graph.crates[credit.krate].kind.is_library()
+            {
+                work.push(Work::Require(credit.item));
+            }
+            continue;
+        };
+        signature.entry(owner).or_default().push(credit.item);
+        // A field of a variant is as visible as its enum, so a required
+        // enum needs the types of its variant fields.
+        if let Some(enumeration) = variant_enum(graph, owner) {
+            signature.entry(enumeration).or_default().push(credit.item);
+        }
+    }
+    (signature, work)
+}
+
+/// The first steps of [`required_items`]: each item that another crate uses,
+/// each glob re-export, the API surface, and each item that stays `pub`
+/// without a path.
+fn start_work(
+    graph: &Graph,
+    surface: &Surface,
+    uses: &[Uses],
+    held: &FxHashSet<ItemId>,
+) -> Vec<Work> {
+    let mut work: Vec<Work> = (0..graph.items.len())
+        .filter(|&item| uses[item].cross_crate || surface.glob_exported.contains(&item))
+        .map(Work::Require)
+        .collect();
+    work.extend(surface.api_surface(graph).into_iter().map(Work::Require));
+    work.extend(
+        (0..graph.items.len())
+            .filter(|&item| held.contains(&item) || surface.stays_exported(graph, item))
+            .map(Work::Hold),
+    );
+    work
 }
 
 /// The name groups that [`required_items`] reads: the groups that a
@@ -1208,6 +1243,41 @@ fn variant_enum(graph: &Graph, field: ItemId) -> Option<ItemId> {
 /// the fields of a variant and the items of a trait. A type also has each
 /// `impl` block with the type as self type, and the items of those blocks.
 fn members_of_types(graph: &Graph) -> FxHashMap<ItemId, Vec<ItemId>> {
+    let types = types_by_name(graph);
+    let types_of = |block: &crate::graph::Item| -> Vec<ItemId> {
+        block
+            .impl_self
+            .as_ref()
+            .and_then(|path| path.last())
+            .and_then(|name| types.get(&(block.krate, name.as_str())))
+            .cloned()
+            .unwrap_or_default()
+    };
+    let mut members: FxHashMap<ItemId, Vec<ItemId>> = FxHashMap::default();
+    let mut add = |owners: &[ItemId], member: ItemId| {
+        for &owner in owners {
+            members.entry(owner).or_default().push(member);
+        }
+    };
+    for (id, entry) in graph.items.iter().enumerate() {
+        if entry.kind == ItemKind::Impl {
+            add(&types_of(entry), id);
+        }
+        let Some(parent) = entry.parent else {
+            continue;
+        };
+        let owner = &graph.items[parent];
+        if owner.kind == ItemKind::Impl {
+            add(&types_of(owner), id);
+        } else {
+            add(&[parent], id);
+        }
+    }
+    members
+}
+
+/// The structs, enums and unions of each crate by name, at module level.
+fn types_by_name(graph: &Graph) -> FxHashMap<(usize, &str), Vec<ItemId>> {
     let mut types: FxHashMap<(usize, &str), Vec<ItemId>> = FxHashMap::default();
     for (id, entry) in graph.items.iter().enumerate() {
         let is_type = matches!(
@@ -1221,35 +1291,7 @@ fn members_of_types(graph: &Graph) -> FxHashMap<ItemId, Vec<ItemId>> {
                 .push(id);
         }
     }
-    let types_of = |block: &crate::graph::Item| -> Vec<ItemId> {
-        block
-            .impl_self
-            .as_ref()
-            .and_then(|path| path.last())
-            .and_then(|name| types.get(&(block.krate, name.as_str())))
-            .cloned()
-            .unwrap_or_default()
-    };
-    let mut members: FxHashMap<ItemId, Vec<ItemId>> = FxHashMap::default();
-    for (id, entry) in graph.items.iter().enumerate() {
-        if entry.kind == ItemKind::Impl {
-            for ty in types_of(entry) {
-                members.entry(ty).or_default().push(id);
-            }
-        }
-        let Some(parent) = entry.parent else {
-            continue;
-        };
-        let owner = &graph.items[parent];
-        if owner.kind == ItemKind::Impl {
-            for ty in types_of(owner) {
-                members.entry(ty).or_default().push(id);
-            }
-        } else {
-            members.entry(parent).or_default().push(id);
-        }
-    }
-    members
+    types
 }
 
 impl Surface {
@@ -1284,78 +1326,107 @@ fn live_items(
     sites: &[&Site],
     all: &Credits,
 ) -> (FxHashSet<ItemId>, FxHashSet<ItemId>) {
-    let mut edges: FxHashMap<ItemId, Vec<(ItemId, bool)>> = FxHashMap::default();
-    let mut production_roots = Vec::new();
-    let mut other_roots = Vec::new();
+    let mut walk = LiveWalk::default();
     let group_node = |group: usize| graph.items.len() + group;
-    let mut add = |credit: &Credit, node: ItemId, production_roots: &mut Vec<ItemId>| {
-        if credit.import {
-            return;
-        }
-        match (credit.owner, credit.origin) {
-            // A doc link is no use in code, so it makes nothing live.
-            (_, Origin::DocLink) => {}
-            (_, Origin::Doc) => other_roots.push(node),
-            (Some(owner), _) => edges
-                .entry(owner)
-                .or_default()
-                .push((node, credit_test_only(graph, credit))),
-            (None, _) => production_roots.push(node),
-        }
-    };
     for credit in credits {
-        add(credit, credit.item, &mut production_roots);
+        walk.add(graph, credit, credit.item);
     }
     for site in sites {
-        add(&site.credit, group_node(site.group), &mut production_roots);
-    }
-    for site in sites {
-        edges.entry(group_node(site.group)).or_insert_with(|| {
+        walk.add(graph, &site.credit, group_node(site.group));
+        walk.edges.entry(group_node(site.group)).or_insert_with(|| {
             all.targets(site)
                 .iter()
                 .map(|&item| (item, false))
                 .collect()
         });
     }
-    for (item, entry) in graph.items.iter().enumerate() {
-        let krate = &graph.crates[entry.krate];
-        let main = entry.name == "main"
-            && entry.kind == ItemKind::Function
-            && entry.parent.is_none()
-            && entry.module == krate.root_module;
-        let derived_field = entry.kind == ItemKind::Field
-            && entry.parent.is_some_and(|parent| derived(graph, parent));
-        // A derive outside the standard library, for example `Deserialize`,
-        // can construct each variant.
-        let derived_variant = entry.kind == ItemKind::Variant
-            && entry
-                .parent
-                .is_some_and(|parent| graph.items[parent].flags.helper_derive);
-        if (main && krate.production)
-            || entry.flags.external
-            || surface.dead_allowed[item]
-            || entry.flags.trait_impl
-            || entry.flags.trait_item
-            || entry.flags.proc_macro
-            || surface.macro_covered[item]
-            || derived_field
-            || derived_variant
-        {
-            production_roots.push(item);
-        } else if main || entry.flags.test_fn {
-            other_roots.push(item);
+    for item in 0..graph.items.len() {
+        match item_root(graph, surface, item) {
+            Some(Root::Production) => walk.production_roots.push(item),
+            Some(Root::Other) => walk.other_roots.push(item),
+            None => {}
         }
     }
     // An external user can call each item of an external API.
-    production_roots.extend(surface.api_surface(graph));
-    let mut production = reach(&edges, production_roots.iter().copied(), false);
-    let mut all_roots = production_roots;
-    all_roots.extend(other_roots);
-    let mut any = reach(&edges, all_roots.into_iter(), true);
+    walk.production_roots.extend(surface.api_surface(graph));
+    let mut production = reach(&walk.edges, walk.production_roots.iter().copied(), false);
+    let mut all_roots = walk.production_roots;
+    all_roots.extend(walk.other_roots);
+    let mut any = reach(&walk.edges, all_roots.into_iter(), true);
     // The group nodes are no items.
     production.retain(|&node| node < graph.items.len());
     any.retain(|&node| node < graph.items.len());
     (production, any)
+}
+
+/// The edges and the roots of the walk of live items.
+#[derive(Default)]
+struct LiveWalk {
+    edges: FxHashMap<ItemId, Vec<(ItemId, bool)>>,
+    production_roots: Vec<ItemId>,
+    other_roots: Vec<ItemId>,
+}
+
+impl LiveWalk {
+    /// Adds the use of one credit: an edge from its owner to `node`, or a
+    /// root. `node` is the item, or the node of a name group.
+    fn add(&mut self, graph: &Graph, credit: &Credit, node: ItemId) {
+        if credit.import {
+            return;
+        }
+        match (credit.owner, credit.origin) {
+            // A doc link is no use in code, so it makes nothing live.
+            (_, Origin::DocLink) => {}
+            (_, Origin::Doc) => self.other_roots.push(node),
+            (Some(owner), _) => self
+                .edges
+                .entry(owner)
+                .or_default()
+                .push((node, credit_test_only(graph, credit))),
+            (None, _) => self.production_roots.push(node),
+        }
+    }
+}
+
+/// The kind of root of the walk of live items.
+enum Root {
+    /// Production code reaches the item.
+    Production,
+    /// A test, a bench, an example or a doc test reaches the item.
+    Other,
+}
+
+/// The root kind of an item without a use, or `None` when the item is no
+/// root.
+fn item_root(graph: &Graph, surface: &Surface, item: ItemId) -> Option<Root> {
+    let entry = &graph.items[item];
+    let krate = &graph.crates[entry.krate];
+    let main = entry.name == "main"
+        && entry.kind == ItemKind::Function
+        && entry.parent.is_none()
+        && entry.module == krate.root_module;
+    let derived_field =
+        entry.kind == ItemKind::Field && entry.parent.is_some_and(|parent| derived(graph, parent));
+    // A derive outside the standard library, for example `Deserialize`, can
+    // construct each variant.
+    let derived_variant = entry.kind == ItemKind::Variant
+        && entry
+            .parent
+            .is_some_and(|parent| graph.items[parent].flags.helper_derive);
+    let flags = &entry.flags;
+    let held = flags.external
+        || flags.trait_impl
+        || flags.trait_item
+        || flags.proc_macro
+        || surface.dead_allowed[item]
+        || surface.macro_covered[item];
+    if (main && krate.production) || held || derived_field || derived_variant {
+        Some(Root::Production)
+    } else if main || flags.test_fn {
+        Some(Root::Other)
+    } else {
+        None
+    }
 }
 
 /// A flag of each item that an enclosing item or module passes on: the item

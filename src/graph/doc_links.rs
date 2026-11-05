@@ -123,56 +123,93 @@ fn definition(line: &str) -> Option<&str> {
 /// The next `[` and `]` stay cached, so the scan is linear in the text.
 fn scan(text: &str) -> Vec<(usize, LinkPath)> {
     let mut paths = Vec::new();
-    let next_of = |from: usize, mark: char| text[from..].find(mark).map(|found| from + found);
-    let mut next_close: Option<usize> = None;
-    let mut next_open: Option<usize> = None;
+    let mut brackets = Brackets::default();
     let mut at = 0;
     while let Some(found) = text[at..].find(['[', '`']) {
         let open = at + found;
         if text[open..].starts_with('`') {
-            // A code span outside brackets holds no link.
-            let run = text[open..].len() - text[open..].trim_start_matches('`').len();
-            let ticks = &text[open..open + run];
-            let after = open + run;
-            at = text[after..]
-                .find(ticks)
-                .map_or(after, |end| after + end + run);
+            at = after_code_span(text, open);
             continue;
         }
         let content_start = open + 1;
-        if next_close.is_none_or(|close| close < content_start) {
-            next_close = next_of(content_start, ']');
-        }
-        if next_open.is_none_or(|inner| inner < content_start) {
-            next_open = next_of(content_start, '[');
-        }
-        let Some(close) = next_close else {
-            break;
-        };
-        if next_open.is_some_and(|inner| inner < close) {
+        let close = match brackets.close_of(text, content_start) {
+            Close::At(close) => close,
             // An inner `[` starts a new bracket.
-            at = content_start;
-            continue;
-        }
-        let content = &text[content_start..close];
-        let after = close + 1;
-        let rest = &text[after..];
-        if let Some(inner) = rest.strip_prefix('(') {
-            let end = inner.find(')').unwrap_or(inner.len());
-            paths.extend(path_of(inline_target(&inner[..end])).map(|path| (open, path)));
-            at = after + 1 + end;
-        } else if let Some(inner) = rest.strip_prefix('[') {
-            let end = inner.find(']').unwrap_or(inner.len());
-            let label = &inner[..end];
-            let target = if label.is_empty() { content } else { label };
-            paths.extend(path_of(target).map(|path| (open, path)));
-            at = after + 1 + end;
-        } else {
-            paths.extend(path_of(content).map(|path| (open, path)));
-            at = after;
-        }
+            Close::Inner => {
+                at = content_start;
+                continue;
+            }
+            Close::Missing => break,
+        };
+        let (target, next) = link_target(text, &text[content_start..close], close + 1);
+        paths.extend(path_of(target).map(|path| (open, path)));
+        at = next;
     }
     paths
+}
+
+/// The offset after a code span that starts at `open`. A code span outside
+/// brackets holds no link.
+fn after_code_span(text: &str, open: usize) -> usize {
+    let run = text[open..].len() - text[open..].trim_start_matches('`').len();
+    let ticks = &text[open..open + run];
+    let after = open + run;
+    text[after..]
+        .find(ticks)
+        .map_or(after, |end| after + end + run)
+}
+
+/// The target of the link with the bracket text `content`, which ends before
+/// `after`, and the offset where the scan goes on.
+fn link_target<'a>(text: &'a str, content: &'a str, after: usize) -> (&'a str, usize) {
+    let rest = &text[after..];
+    if let Some(inner) = rest.strip_prefix('(') {
+        let end = inner.find(')').unwrap_or(inner.len());
+        return (inline_target(&inner[..end]), after + 1 + end);
+    }
+    if let Some(inner) = rest.strip_prefix('[') {
+        let end = inner.find(']').unwrap_or(inner.len());
+        let label = &inner[..end];
+        let target = if label.is_empty() { content } else { label };
+        return (target, after + 1 + end);
+    }
+    (content, after)
+}
+
+/// The next `[` and `]` of a scan. They stay cached, so the scan is linear in
+/// the text.
+#[derive(Default)]
+struct Brackets {
+    close: Option<usize>,
+    open: Option<usize>,
+}
+
+impl Brackets {
+    /// The `]` that closes the bracket whose text starts at `start`.
+    fn close_of(&mut self, text: &str, start: usize) -> Close {
+        let next_of = |mark: char| text[start..].find(mark).map(|found| start + found);
+        if self.close.is_none_or(|close| close < start) {
+            self.close = next_of(']');
+        }
+        if self.open.is_none_or(|inner| inner < start) {
+            self.open = next_of('[');
+        }
+        match self.close {
+            None => Close::Missing,
+            Some(close) if self.open.is_some_and(|inner| inner < close) => Close::Inner,
+            Some(close) => Close::At(close),
+        }
+    }
+}
+
+/// The end of one bracket.
+enum Close {
+    /// The offset of the `]`.
+    At(usize),
+    /// A `[` comes before the next `]`.
+    Inner,
+    /// No `]` follows.
+    Missing,
 }
 
 /// The target of an inline link `(target "title")`, without the title and

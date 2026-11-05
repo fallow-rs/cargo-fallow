@@ -538,20 +538,7 @@ impl<'a> Walker<'a> {
         if docs.text.is_empty() && docs.includes.is_empty() {
             return;
         }
-        // The syntax cannot show if the documentation of a module resolves
-        // from the module or from its parent, so each scope gets the links.
-        let mut scopes = vec![self.inline()];
-        if let Some(name) = ast::Module::cast(node.clone()).and_then(|module| module.name()) {
-            let mut base = scopes[0].clone();
-            if self.frames.last().is_some_and(|(frame_node, frame)| {
-                frame_node == node && matches!(frame, Frame::Module(_))
-            }) {
-                base.pop();
-            }
-            let mut inside = base.clone();
-            inside.push(plain_name(&name));
-            scopes = vec![base, inside];
-        }
+        let scopes = self.doc_scopes(node);
         let site = |inline: &[String], line: u32, kind: RefKind| RawRef {
             inline: inline.to_vec(),
             owner,
@@ -562,23 +549,7 @@ impl<'a> Walker<'a> {
             line,
             cfg: self.conditions(),
         };
-        // `Self` is the self type of the `impl` block, or the documented type.
-        // For a field or a variant, the type is the enclosing item.
-        let self_path = self.impl_self().or_else(|| {
-            node.ancestors()
-                .find(|ancestor| {
-                    matches!(
-                        ancestor.kind(),
-                        SyntaxKind::STRUCT
-                            | SyntaxKind::ENUM
-                            | SyntaxKind::UNION
-                            | SyntaxKind::TRAIT
-                    )
-                })
-                .and_then(ast::AnyHasName::cast)
-                .and_then(|item| item.name())
-                .map(|name| vec![plain_name(&name)])
-        });
+        let self_path = self.doc_self_path(node);
         let mut refs = Vec::new();
         for (index, (mut segments, global)) in crate::graph::doc_links::link_paths(&docs.text) {
             if let Some(self_path) = &self_path
@@ -611,6 +582,46 @@ impl<'a> Walker<'a> {
         }
         self.facts.refs.extend(refs);
         self.facts.doc_link_includes.extend(includes);
+    }
+
+    /// The inline module paths that the doc links of the node resolve from.
+    /// The syntax cannot show if the documentation of a module resolves from
+    /// the module or from its parent, so each scope gets the links.
+    fn doc_scopes(&self, node: &SyntaxNode) -> Vec<Vec<String>> {
+        let here = self.inline();
+        let Some(name) = ast::Module::cast(node.clone()).and_then(|module| module.name()) else {
+            return vec![here];
+        };
+        let mut base = here;
+        if self.frames.last().is_some_and(|(frame_node, frame)| {
+            frame_node == node && matches!(frame, Frame::Module(_))
+        }) {
+            base.pop();
+        }
+        let mut inside = base.clone();
+        inside.push(plain_name(&name));
+        vec![base, inside]
+    }
+
+    /// The path of `Self` in the doc links of the node: the self type of the
+    /// `impl` block, or the documented type. For a field or a variant, the
+    /// type is the enclosing item.
+    fn doc_self_path(&self, node: &SyntaxNode) -> Option<Vec<String>> {
+        self.impl_self().or_else(|| {
+            node.ancestors()
+                .find(|ancestor| {
+                    matches!(
+                        ancestor.kind(),
+                        SyntaxKind::STRUCT
+                            | SyntaxKind::ENUM
+                            | SyntaxKind::UNION
+                            | SyntaxKind::TRAIT
+                    )
+                })
+                .and_then(ast::AnyHasName::cast)
+                .and_then(|item| item.name())
+                .map(|name| vec![plain_name(&name)])
+        })
     }
 
     /// Adds the doc comments and the `#[doc]` attributes that are direct
@@ -1563,35 +1574,12 @@ fn doc_meta(meta: ast::Meta, line: u32, docs: &mut DocText) {
             let Some(expr) = meta.expr().filter(|_| is_doc) else {
                 return;
             };
-            match &expr {
-                ast::Expr::MacroExpr(call) => {
-                    let include = call.macro_call().and_then(|call| {
-                        let name = call.path()?.segment()?.name_ref()?;
-                        (name.text() == "include_str").then_some(call.token_tree()?)
-                    });
-                    if let Some(tree) = include {
-                        // `concat!(env!("CARGO_MANIFEST_DIR"), "/README.md")`
-                        // names a file in the folder of the package.
-                        let manifest = tree
-                            .syntax()
-                            .text()
-                            .to_string()
-                            .contains("CARGO_MANIFEST_DIR");
-                        // The literals of a `concat!` form one path.
-                        let path: String = string_literals(tree.syntax())
-                            .into_iter()
-                            .filter(|part| part != "CARGO_MANIFEST_DIR")
-                            .collect();
-                        if !path.is_empty() {
-                            docs.includes.push((path, line, manifest));
-                        }
-                    }
-                }
-                _ => {
-                    for text in string_literals(expr.syntax()) {
-                        docs.push(&text.replace("\\n", "\n"), line);
-                    }
-                }
+            if let ast::Expr::MacroExpr(call) = &expr {
+                doc_include(call, line, docs);
+                return;
+            }
+            for text in string_literals(expr.syntax()) {
+                docs.push(&text.replace("\\n", "\n"), line);
             }
         }
         ast::Meta::CfgAttrMeta(meta) => {
@@ -1603,6 +1591,31 @@ fn doc_meta(meta: ast::Meta, line: u32, docs: &mut DocText) {
         | ast::Meta::TokenTreeMeta(_)
         | ast::Meta::CfgMeta(_)
         | ast::Meta::PathMeta(_) => {}
+    }
+}
+
+/// Adds the file of a `doc = include_str!(..)` attribute. The literals of a
+/// `concat!` form one path, and `env!("CARGO_MANIFEST_DIR")` makes the path
+/// relative to the folder of the package.
+fn doc_include(call: &ast::MacroExpr, line: u32, docs: &mut DocText) {
+    let include = call.macro_call().and_then(|call| {
+        let name = call.path()?.segment()?.name_ref()?;
+        (name.text() == "include_str").then_some(call.token_tree()?)
+    });
+    let Some(tree) = include else {
+        return;
+    };
+    let manifest = tree
+        .syntax()
+        .text()
+        .to_string()
+        .contains("CARGO_MANIFEST_DIR");
+    let path: String = string_literals(tree.syntax())
+        .into_iter()
+        .filter(|part| part != "CARGO_MANIFEST_DIR")
+        .collect();
+    if !path.is_empty() {
+        docs.includes.push((path, line, manifest));
     }
 }
 

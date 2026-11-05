@@ -189,7 +189,7 @@ pub const RULES: &[Explanation] = &[
         rule: "boundaries",
         check: "boundaries",
         severity: "error",
-        meaning: "A rule of [workspace.metadata.fallow.boundaries] found a violation. The finding has the name of the rule. The kind is crate-dependency, source-pattern or module-path.",
+        meaning: "A rule of [workspace.metadata.fallow.boundaries] found a violation. The finding has the name of the rule. The kind is crate-dependency, source-pattern, module-path, item-path or glob-reexport.",
         example: "A source rule `no-exit` that denies `std::process::exit` in crates/core, and a call in crates/core/src/run.rs.",
         fix: "Move the code or the dependency, or change the rule.",
         docs: "https://github.com/fallow-rs/cargo-fallow/blob/main/docs/structure.md",

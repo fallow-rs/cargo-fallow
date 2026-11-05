@@ -107,7 +107,8 @@ code-duplication = "off"
   equal, so `dead_public` and `dead-public` are one rule.
 - For a boundary rule, you can use three names. The first name is the `rule`
   name of its table. The second is the kind (`crate-dependency`,
-  `source-pattern` or `module-path`), which sets each rule of that kind. The
+  `source-pattern`, `module-path`, `item-path` or `glob-reexport`), which
+  sets each rule of that kind. The
   third is `boundaries`, which sets each boundary rule. When the table has
   more than one of these names, the first name in this order wins.
 - `code-duplication = "off"` also removes the `duplication-threshold` gate.

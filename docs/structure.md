@@ -128,43 +128,6 @@ test and snapshot folders, or files with a generator header or an
 `@generated` comment. `--base <REF>` compares HEAD with the merge base.
 `--staged` compares the index with HEAD.
 
-## Item rules and glob re-export rules
-
-An item rule (`kind: "item-path"`) and a glob re-export rule
-(`kind: "glob-reexport"`) work on the workspace module graph. The graph
-resolves a path through `use`, aliases such as `use app_engine as engine`,
-re-exports and glob imports.
-
-- An item rule reads each import and each path in the code of the packages
-  of `from`, also in test code. A finding needs a path that resolves to its
-  end. A path with a first name that is not in scope, for example a generic
-  `T::new()`, gives no finding. A method call and a field access give no
-  finding either, because the syntax does not show the type.
-- The summary counts these uses in `unresolved` when the last name is the
-  name of a denied item or of a member of a denied type. The items of a
-  denied module or crate do not count here. A high count tells you that the rule cannot see
-  some uses.
-- A path in the documentation or in an attribute does not count. A path in
-  the tokens of a macro counts when it resolves. The finding then has
-  `origin: "macro"`, and its line is the line of the macro.
-- `allow-via` lists modules or items. A use whose path goes through one of
-  them stays allowed. A name that an import through `allow-via` brings in
-  also stays allowed, for example `use app_engine::session::analyze;`
-  followed by `analyze()`.
-- A `deny` or `allow-via` path starts with the name of a library crate of
-  the workspace. A path to a crate outside the workspace or to a macro is an
-  error with the code `CARGO_FALLOW_INVALID_CONFIG`. For items outside the
-  workspace, use a source rule. A path that names no item, for example
-  after the code removed the item, gives a warning.
-- An import with a finding gives one finding. The uses of its name give no
-  second finding.
-- A glob re-export rule reads each `pub use <path>::*` in the packages of
-  `from`. It matches the module that the glob path resolves to, so
-  `use app_types as t; pub use t::extract::*;` matches `deny = ["app_types"]`.
-
-The rules do not check that code uses an item ("must use" rules), and they
-do not infer types.
-
 `complexity` and `dupes` use the same models as fallow for JavaScript. A
 unit is a `fn` with a body, or a closure. To suppress a complexity finding,
 put `// fallow-ignore-next-line complexity` above the function. To suppress a
@@ -196,6 +159,51 @@ The complexity counts have these known differences from other tools:
   change of the operator adds 1 more. Thus `a && (b && c)` adds 1, and `a && (b || c)` adds 2. A
   sequence ends at an operand with no logical operator in it, so
   `(a && b) || (c && d)` adds 3. fallow for JavaScript uses the same model.
+
+## Item rules and glob re-export rules
+
+An item rule (`kind: "item-path"`) and a glob re-export rule
+(`kind: "glob-reexport"`) work on the workspace module graph. The graph
+resolves a path through `use`, aliases such as `use app_engine as engine`,
+re-exports and glob imports.
+
+- An item rule reads each import and each path in the code of the packages
+  of `from`, also in test code. A finding needs a path that resolves to its
+  end. A path with a first name that is not in scope, for example a generic
+  `T::new()`, gives no finding. A method call and a field access give no
+  finding either, because the syntax does not show the type.
+- The summary counts these uses in `unresolved` when the last name is the
+  name of a denied item or of a member of a denied type. The items of a
+  denied module or crate do not count here. A high count tells you that the rule cannot see
+  some uses.
+- A path in the documentation or in an attribute does not count. A path in
+  the tokens of a macro counts when it resolves. The finding then has
+  `origin: "macro"`, and its line is the line of the macro.
+- `allow-via` lists modules. A use whose path goes through one of them
+  stays allowed. A name that an import through `allow-via` brings in also
+  stays allowed, for example `use app_engine::session::analyze;` followed by
+  `analyze()`. A path through a glob re-export of such a module does not
+  count as a path through it.
+- A name that only a glob import brings in gives no finding, because a local
+  variable or a generic parameter with the same name can shadow it. It
+  counts in `unresolved`.
+- A `deny` or `allow-via` path starts with the name of a library crate of
+  the workspace. A path to a crate outside the workspace or to a macro is an
+  error with the code `CARGO_FALLOW_INVALID_CONFIG`. For items outside the
+  workspace, use a source rule. A path that names no item, for example
+  after the code removed the item, gives a warning.
+- An import with a finding gives one finding. The uses of its name give no
+  second finding.
+- When `from` names the package that holds a denied item, the rule also
+  checks the code of that package.
+- `unresolved` counts the uses of each item rule. A scope flag such as
+  `--changed-since` and a rule level do not change it.
+- A glob re-export rule reads each `pub use <path>::*` in the packages of
+  `from`, in a module that the crate exports. It matches the module that the glob path resolves to, so
+  `use app_types as t; pub use t::extract::*;` matches `deny = ["app_types"]`.
+
+The rules do not check that code uses an item ("must use" rules), and they
+do not infer types.
 
 ## CRAP score
 

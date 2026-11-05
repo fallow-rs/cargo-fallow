@@ -22,7 +22,7 @@ use crate::graph::extract::{Binding, ItemKind, Origin, RefKind, Vis};
 use crate::graph::resolve::{PathResolution, Resolver};
 use crate::graph::{self, Graph, ItemId, ModuleId};
 use crate::render::warn;
-use crate::structure::boundaries::{Finding, Kind, Names, fill, invalid};
+use crate::structure::boundaries::{Finding, Kind, Names, Origin as FindingOrigin, fill, invalid};
 use crate::structure::config::{ItemRule, ReexportRule};
 use crate::structure::report::Action;
 use crate::workspace::Workspace;
@@ -81,9 +81,6 @@ enum Place {
     Module(ModuleId),
 }
 
-/// The deepest chain of glob imports that a binding walk follows.
-const MAX_GLOB_DEPTH: usize = 8;
-
 struct Context<'g> {
     graph: &'g Graph,
     resolver: &'g Resolver<'g>,
@@ -95,6 +92,8 @@ struct Context<'g> {
 struct ImportIndex<'g> {
     named: FxHashMap<(ModuleId, &'g str), Vec<usize>>,
     globs: FxHashMap<ModuleId, Vec<usize>>,
+    /// The names of the items that each module declares.
+    declared: FxHashSet<(ModuleId, &'g str)>,
 }
 
 impl<'g> ImportIndex<'g> {
@@ -111,11 +110,31 @@ impl<'g> ImportIndex<'g> {
                 Binding::Underscore => {}
             }
         }
+        for item in &graph.items {
+            if item.parent.is_none() && !matches!(item.kind, ItemKind::Use | ItemKind::Impl) {
+                index.declared.insert((item.module, item.name.as_str()));
+            }
+        }
         index
     }
 }
 
 impl Context<'_> {
+    /// The places of `allow-via`. Each one must be a module.
+    fn via_places(&self, rule: &ItemRule) -> Result<Places, CliError> {
+        let via = self.places(&rule.rule, &rule.allow_via, false)?;
+        if let Some(value) = via.labels.iter().find_map(|(place, label)| match place {
+            Place::Item(item) if self.graph.items[*item].child_module.is_none() => Some(label),
+            _ => None,
+        }) {
+            return Err(invalid(&format!(
+                "rule `{}` names `{value}` in `allow-via`, which is not a module; `allow-via` lists modules",
+                rule.rule
+            )));
+        }
+        Ok(via)
+    }
+
     fn item_rule(
         &self,
         rule: &ItemRule,
@@ -124,7 +143,7 @@ impl Context<'_> {
     ) -> Result<(), CliError> {
         let from = names.expand(&rule.rule, &rule.from)?;
         let deny = self.places(&rule.rule, &rule.deny, true)?;
-        let via = self.places(&rule.rule, &rule.allow_via, false)?;
+        let via = self.via_places(rule)?;
         let denied_names = self.denied_names(&deny);
         let checked = |krate: usize| from.contains(&self.graph.crates[krate].package);
         // The named imports with a finding or a path through `allow-via`. A
@@ -147,7 +166,7 @@ impl Context<'_> {
                     krate: import.krate,
                     file: import.file,
                     line: import.line,
-                    origin: "code",
+                    origin: FindingOrigin::Code,
                 };
                 self.record(rule, &use_site, to, &mut found);
             }
@@ -175,7 +194,15 @@ impl Context<'_> {
             let Some(first) = segments.first() else {
                 continue;
             };
-            if !global && self.bound_through(reference.module, first, &via, &settled, 0) {
+            if !global
+                && self.bound_through(
+                    reference.module,
+                    first,
+                    &via,
+                    &settled,
+                    &mut FxHashSet::default(),
+                )
+            {
                 continue;
             }
             let resolved =
@@ -190,13 +217,20 @@ impl Context<'_> {
             if resolved.guessed {
                 continue;
             }
+            // A name that only a glob import brings in can be a local binding:
+            // a variable, a parameter or a generic parameter shadows it, and
+            // the graph does not see local bindings.
+            if !global && self.glob_only(reference.krate, reference.module, first) {
+                outcome.unresolved += usize::from(self.denied_target(&resolved, &deny).is_some());
+                continue;
+            }
             if self.goes_via(&resolved, &via) {
                 continue;
             }
             if let Some(to) = self.denied_target(&resolved, &deny) {
                 let origin = match reference.origin {
-                    Origin::Macro | Origin::PublicMacro => "macro",
-                    _ => "code",
+                    Origin::Macro | Origin::PublicMacro => FindingOrigin::Macro,
+                    _ => FindingOrigin::Code,
                 };
                 let use_site = Use {
                     krate: reference.krate,
@@ -263,10 +297,11 @@ impl Context<'_> {
             if import.binding != Binding::Glob
                 || import.vis != Vis::Public
                 || !from.contains(&krate.package)
+                || !self.exported_module(import.module)
             {
                 continue;
             }
-            let (modules, enums) = self.resolver.glob_sources(index);
+            let (modules, enums) = self.glob_targets(index);
             let hit = modules
                 .iter()
                 .find_map(|&module| self.module_in(module, &deny))
@@ -410,38 +445,85 @@ impl Context<'_> {
     /// True when the name `name` in `module` comes from an import of
     /// `settled` (an import with a finding or a path through `allow-via`), or
     /// from a module in `via`. The walk follows glob imports, for example
-    /// `use super::*` in a test module.
+    /// `use super::*` in a test module. It visits each module one time.
     fn bound_through(
         &self,
         module: ModuleId,
         name: &str,
         via: &Places,
         settled: &FxHashSet<usize>,
-        depth: usize,
+        visited: &mut FxHashSet<ModuleId>,
     ) -> bool {
-        if depth > MAX_GLOB_DEPTH {
+        if settled.is_empty() && via.is_empty() {
+            return false;
+        }
+        if !visited.insert(module) {
             return false;
         }
         if self.module_in(module, via).is_some() {
             return true;
         }
-        let named = self.index.named.get(&(module, name));
-        if let Some(named) = named {
+        if let Some(named) = self.index.named.get(&(module, name)) {
             return named.iter().any(|index| settled.contains(index));
         }
-        self.index
-            .globs
-            .get(&module)
-            .into_iter()
-            .flatten()
-            .any(|&index| {
-                self.resolver
-                    .glob_sources(index)
-                    .0
-                    .into_iter()
-                    .filter(|&source| source != module)
-                    .any(|source| self.bound_through(source, name, via, settled, depth + 1))
-            })
+        let globs = self.index.globs.get(&module).cloned().unwrap_or_default();
+        globs.into_iter().any(|index| {
+            self.glob_targets(index)
+                .0
+                .into_iter()
+                .any(|source| self.bound_through(source, name, via, settled, visited))
+        })
+    }
+
+    /// True when only a glob import of `module` can bring the name `first`
+    /// in: the module declares no item with the name, no named import binds
+    /// it, and it is no crate name.
+    fn glob_only(&self, krate: usize, module: ModuleId, first: &str) -> bool {
+        !matches!(first, "crate" | "self" | "super" | "Self")
+            && self.index.globs.contains_key(&module)
+            && !self.index.declared.contains(&(module, first))
+            && !self.index.named.contains_key(&(module, first))
+            && !self.graph.crates[krate]
+                .externs
+                .iter()
+                .any(|entry| entry.name == first)
+    }
+
+    /// The modules and the enums that a glob import reads, when its path
+    /// resolves to its end.
+    fn glob_targets(&self, index: usize) -> (Vec<ModuleId>, Vec<ItemId>) {
+        let resolved = self.resolver.resolve_import(index);
+        if !resolved.exact || resolved.guessed {
+            return (Vec::new(), Vec::new());
+        }
+        let mut modules = resolved.modules;
+        let mut enums = Vec::new();
+        for item in resolved.items {
+            let entry = &self.graph.items[item];
+            match (entry.child_module, entry.kind) {
+                (Some(child), _) => modules.push(child),
+                (None, ItemKind::Enum) => enums.push(item),
+                _ => {}
+            }
+        }
+        (modules, enums)
+    }
+
+    /// True when another crate can name the module: each module on the way
+    /// from the crate root is `pub`.
+    fn exported_module(&self, module: ModuleId) -> bool {
+        let mut current = Some(module);
+        while let Some(id) = current {
+            let entry = &self.graph.modules[id];
+            if entry
+                .item
+                .is_some_and(|item| self.graph.items[item].vis != Vis::Public)
+            {
+                return false;
+            }
+            current = entry.parent;
+        }
+        true
     }
 
     /// The names of the denied items and of the members of a denied type. The
@@ -518,6 +600,10 @@ enum Owner {
 }
 
 impl Places {
+    fn is_empty(&self) -> bool {
+        self.items.is_empty() && self.modules.is_empty()
+    }
+
     fn insert(&mut self, place: Place, label: &str) {
         match place {
             Place::Item(item) => self.items.insert(item),
@@ -532,5 +618,5 @@ struct Use {
     krate: usize,
     file: graph::FileId,
     line: u32,
-    origin: &'static str,
+    origin: FindingOrigin,
 }

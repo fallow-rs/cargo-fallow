@@ -284,11 +284,15 @@
           "description": "The `Cargo.toml` sections of the dependency, for a crate rule."
         },
         "origin": {
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BoundariesOrigin"
+            },
+            {
+              "type": "null"
+            }
           ],
-          "description": "Where the path of an item rule is: `code`, or `macro` for the tokens\nof a macro."
+          "description": "Where the path of an item rule is."
         },
         "message": {
           "type": "string",
@@ -344,6 +348,21 @@
         }
       ],
       "description": "The kind of a boundary finding."
+    },
+    "BoundariesOrigin": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "code",
+          "description": "In code."
+        },
+        {
+          "type": "string",
+          "const": "macro",
+          "description": "In the tokens of a macro. The line is the line of the macro."
+        }
+      ],
+      "description": "Where the path of an item rule finding is."
     },
     "BoundariesSummary": {
       "type": "object",

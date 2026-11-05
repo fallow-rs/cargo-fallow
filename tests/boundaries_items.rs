@@ -349,3 +349,71 @@ fn a_name_from_a_glob_of_an_allowed_import_stays_allowed() {
     let first_new = u64::try_from(CLI.lines().count()).expect("a small count");
     assert!(lines.iter().all(|line| *line <= first_new), "{report:#}");
 }
+
+/// Writes `cli/src/lib.rs` and returns the item-path findings as
+/// `(line, to)`, with the report.
+fn cli_findings(rules: &str, lib: &str) -> (Vec<u64>, Value) {
+    let demo = Demo::new(rules);
+    fs::write(demo.dir.path().join("cli/src/lib.rs"), lib).expect("write lib.rs");
+    let (code, report) = demo.json(&["boundaries"]);
+    assert_eq!(code, 0, "{report:#}");
+    let lines = findings(&report, "item-path")
+        .iter()
+        .filter_map(|finding| finding["line"].as_u64())
+        .collect();
+    (lines, report)
+}
+
+#[test]
+fn a_local_binding_that_shadows_a_glob_name_gives_no_finding() {
+    let lib = "pub mod c {\n    use engine::dead_code::*;\n    pub fn f() {\n        let analyze = 1;\n        let _ = analyze;\n    }\n    pub fn g<T>() -> T {\n        T::new()\n    }\n}\n";
+    let (lines, report) = cli_findings(RULES, lib);
+    assert!(lines.is_empty(), "{report:#}");
+    assert!(
+        report["summary"]["unresolved"].as_u64() >= Some(2),
+        "{report:#}"
+    );
+}
+
+#[test]
+fn a_glob_clique_ends_in_time() {
+    let mut lib = String::new();
+    for i in 0..8 {
+        let _ = writeln!(lib, "pub mod m{i} {{");
+        for j in 0..8 {
+            if i != j {
+                let _ = writeln!(lib, "    pub use crate::m{j}::*;");
+            }
+        }
+        lib.push_str("    pub fn f() { analyze(); }\n}\n");
+    }
+    let started = std::time::Instant::now();
+    let (lines, report) = cli_findings(RULES, &lib);
+    assert!(lines.is_empty(), "{report:#}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(30));
+}
+
+#[test]
+fn allow_via_names_a_module_only() {
+    let rules = "\n[[workspace.metadata.fallow.boundaries.items]]\nrule = \"r\"\nfrom = [\"cli\"]\ndeny = [\"engine::dead_code::analyze\"]\nallow-via = [\"engine::session::analyze\"]\n";
+    let (code, report) = Demo::new(rules).json(&["boundaries"]);
+    assert_eq!(code, 2, "{report:#}");
+    assert_eq!(report["code"], "CARGO_FALLOW_INVALID_CONFIG");
+}
+
+#[test]
+fn a_glob_reexport_in_a_private_module_is_no_public_reexport() {
+    let rules = "\n[[workspace.metadata.fallow.boundaries.reexports]]\nrule = \"g\"\nfrom = [\"api\"]\ndeny = [\"types\"]\n";
+    let demo = Demo::new(rules);
+    fs::write(
+        demo.dir.path().join("api/src/lib.rs"),
+        "mod private {\n    pub use types::*;\n}\npub mod open {\n    pub use types::extract::*;\n}\n",
+    )
+    .expect("write lib.rs");
+    let (_, report) = demo.json(&["boundaries"]);
+    let lines: Vec<u64> = findings(&report, "glob-reexport")
+        .iter()
+        .filter_map(|finding| finding["line"].as_u64())
+        .collect();
+    assert_eq!(lines, [5], "{report:#}");
+}

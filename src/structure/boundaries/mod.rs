@@ -99,6 +99,17 @@ impl Kind {
     }
 }
 
+/// Where the path of an item rule finding is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+#[schemars(rename = "BoundariesOrigin")]
+pub enum Origin {
+    /// In code.
+    Code,
+    /// In the tokens of a macro. The line is the line of the macro.
+    Macro,
+}
+
 /// One violation of a rule.
 #[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 #[schemars(rename = "BoundariesFinding")]
@@ -123,10 +134,9 @@ pub struct Finding {
     /// The `Cargo.toml` sections of the dependency, for a crate rule.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub dependency_kinds: Vec<&'static str>,
-    /// Where the path of an item rule is: `code`, or `macro` for the tokens
-    /// of a macro.
+    /// Where the path of an item rule is.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub origin: Option<&'static str>,
+    pub origin: Option<Origin>,
     /// The message.
     pub message: String,
     /// The next steps.

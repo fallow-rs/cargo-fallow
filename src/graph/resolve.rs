@@ -10,6 +10,7 @@ use std::cell::RefCell;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
+use crate::graph::credits::{Credits, NameFilter, Site};
 use crate::graph::extract::{ALL_FIELDS, Binding, ItemKind, Origin, RefKind};
 use crate::graph::{CrateId, Extern, Graph, ItemId, ModuleId};
 use crate::parse::Edition;
@@ -172,8 +173,8 @@ impl<'g> Resolver<'g> {
     }
 
     /// The credits of every import and every reference of the graph.
-    pub fn credits(&self) -> Vec<Credit> {
-        let mut credits = Vec::new();
+    pub fn credits(&self) -> Credits {
+        let mut credits = Credits::default();
         for (index, import) in self.graph.imports.iter().enumerate() {
             let base = Credit {
                 item: 0,
@@ -195,7 +196,14 @@ impl<'g> Resolver<'g> {
                     import.global,
                     false,
                 );
-                push_targets(&mut credits, base, class, &targets, &modules, self.graph);
+                push_targets(
+                    &mut credits.direct,
+                    base,
+                    class,
+                    &targets,
+                    &modules,
+                    self.graph,
+                );
                 continue;
             }
             let targets = self.import_targets(index);
@@ -206,7 +214,14 @@ impl<'g> Resolver<'g> {
                 import.global,
                 false,
             );
-            push_targets(&mut credits, base, class, &targets, &modules, self.graph);
+            push_targets(
+                &mut credits.direct,
+                base,
+                class,
+                &targets,
+                &modules,
+                self.graph,
+            );
         }
         for (index, reference) in self.graph.refs.iter().enumerate() {
             let base = Credit {
@@ -316,7 +331,7 @@ impl<'g> Resolver<'g> {
         }
     }
 
-    fn credit_ref(&self, credits: &mut Vec<Credit>, base: Credit, kind: &RefKind) {
+    fn credit_ref(&self, credits: &mut Credits, base: Credit, kind: &RefKind) {
         let untyped_origin = matches!(
             base.origin,
             Origin::Macro | Origin::PublicMacro | Origin::Attr | Origin::Doc
@@ -327,9 +342,13 @@ impl<'g> Resolver<'g> {
                 if untyped_origin && segments.len() == 1 {
                     // A bare name cannot name a field or a method. A `Member`
                     // reference covers the names that can.
-                    self.credit_names(credits, base, &segments[0], Class::Untyped, |kind| {
-                        !matches!(kind, ItemKind::Field | ItemKind::Method)
-                    });
+                    self.credit_names(
+                        credits,
+                        base,
+                        &segments[0],
+                        Class::Untyped,
+                        NameFilter::NotMember,
+                    );
                     return;
                 }
                 let (targets, class, modules) =
@@ -339,9 +358,16 @@ impl<'g> Resolver<'g> {
                 } else {
                     class
                 };
-                push_targets(credits, base, class, &targets, &modules, self.graph);
+                push_targets(
+                    &mut credits.direct,
+                    base,
+                    class,
+                    &targets,
+                    &modules,
+                    self.graph,
+                );
                 if base.origin != Origin::Signature {
-                    self.credit_tuple_fields(credits, base, class, &targets);
+                    self.credit_tuple_fields(&mut credits.direct, base, class, &targets);
                 }
                 // A path that did not resolve to its end, for example through a
                 // type alias, can name any item with its last name.
@@ -350,20 +376,14 @@ impl<'g> Resolver<'g> {
                 {
                     // A path names no field. A one-name path names no method.
                     let single = segments.len() == 1;
-                    self.credit_names(credits, base, last, class, |kind| {
-                        kind != ItemKind::Field && !(single && kind == ItemKind::Method)
-                    });
+                    self.credit_names(credits, base, last, class, NameFilter::PathEnd { single });
                 }
             }
             RefKind::Method(name) => {
-                self.credit_names(credits, base, name, Class::Untyped, |kind| {
-                    matches!(kind, ItemKind::Method)
-                });
+                self.credit_names(credits, base, name, Class::Untyped, NameFilter::Method);
             }
             RefKind::Field(name) => {
-                self.credit_names(credits, base, name, Class::Untyped, |kind| {
-                    matches!(kind, ItemKind::Field)
-                });
+                self.credit_names(credits, base, name, Class::Untyped, NameFilter::Field);
             }
             RefKind::RecordField {
                 segments,
@@ -384,7 +404,7 @@ impl<'g> Resolver<'g> {
                     !targets.is_empty() && targets.iter().all(|target| *target == Target::Outside);
                 if !fields.is_empty() {
                     for item in fields {
-                        credits.push(Credit {
+                        credits.direct.push(Credit {
                             item,
                             class,
                             ..base
@@ -393,19 +413,15 @@ impl<'g> Resolver<'g> {
                 } else if !outside {
                     // The struct is unknown, so any field with the name can be
                     // the one.
-                    self.credit_names(credits, base, field, Class::Untyped, |kind| {
-                        kind == ItemKind::Field
-                    });
+                    self.credit_names(credits, base, field, Class::Untyped, NameFilter::Field);
                 }
             }
             RefKind::Member(name) => {
-                self.credit_names(credits, base, name, Class::Untyped, |kind| {
-                    matches!(kind, ItemKind::Field | ItemKind::Method)
-                });
+                self.credit_names(credits, base, name, Class::Untyped, NameFilter::Member);
             }
-            RefKind::Macro(name) => self.credit_names(credits, base, name, Class::Exact, |kind| {
-                kind == ItemKind::Macro
-            }),
+            RefKind::Macro(name) => {
+                self.credit_names(credits, base, name, Class::Exact, NameFilter::Macro);
+            }
         }
     }
 
@@ -467,29 +483,38 @@ impl<'g> Resolver<'g> {
     }
 
     /// Credits each item called `name` in the crate of `base` and in the
-    /// crates that it can use.
+    /// crates that it can use. The items form one group for each name, filter
+    /// and crate, and the site refers to its group.
     fn credit_names(
         &self,
-        credits: &mut Vec<Credit>,
+        credits: &mut Credits,
         base: Credit,
         name: &str,
         class: Class,
-        keep: impl Fn(ItemKind) -> bool,
+        filter: NameFilter,
     ) {
         let Some(items) = self.by_name.get(name) else {
             return;
         };
-        let visible = self.visible_crates(base.krate, base.origin == Origin::Doc);
-        for &item in items {
-            let candidate = &self.graph.items[item];
-            if keep(candidate.kind) && visible.contains(&candidate.krate) {
-                credits.push(Credit {
-                    item,
-                    class,
-                    ..base
-                });
-            }
+        let doc = base.origin == Origin::Doc;
+        let group = credits.group((filter, base.krate, doc), name, || {
+            let visible = self.visible_crates(base.krate, doc);
+            items
+                .iter()
+                .copied()
+                .filter(|&item| {
+                    let candidate = &self.graph.items[item];
+                    filter.keeps(candidate.kind) && visible.contains(&candidate.krate)
+                })
+                .collect()
+        });
+        if credits.groups[group].is_empty() {
+            return;
         }
+        credits.sites.push(Site {
+            group,
+            credit: Credit { class, ..base },
+        });
     }
 
     /// The crate and the workspace crates that it depends on, also through

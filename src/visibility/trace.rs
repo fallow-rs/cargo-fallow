@@ -134,7 +134,7 @@ pub fn trace(
         .map(|item| {
             let entry = &graph.items[item];
             let krate = &graph.crates[entry.krate];
-            let uses = uses_of(graph, &credits, item);
+            let uses = uses_of(graph, &credits.for_item(item), item);
             let holds = holds_of(graph, &surface, item, &analysis.opaque);
             let findings = kinds(&analysis.findings, item);
             let undecided = kinds(&analysis.undecided, item);

@@ -1,6 +1,7 @@
 //! Tests of the analysis order on a real module graph.
 
 use std::fmt::Debug;
+use std::fmt::Write as _;
 use std::fs;
 
 use super::*;
@@ -109,4 +110,60 @@ fn a_public_crate_pattern_matches_with_globs() {
     assert!(!super::name_matches("xy*yx", "xyx"));
     assert!(super::name_matches("**", ""));
     assert!(!super::name_matches("", "a"));
+}
+
+/// Each field access `.a` can name each field `a`. The credits keep one site
+/// for each access and one group for the name, so their size grows with the
+/// accesses and the fields, not with their product.
+#[test]
+fn name_credits_grow_with_the_sites_and_the_items() {
+    const COUNT: usize = 400;
+    let dir = ok(tempfile::tempdir(), "a temporary directory");
+    let root = dir.path();
+    ok(fs::create_dir_all(root.join("src")), "the src folder");
+    ok(
+        fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"big\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n[workspace]\n",
+        ),
+        "write the manifest",
+    );
+    let mut source = String::new();
+    for index in 0..COUNT {
+        let _ = writeln!(
+            source,
+            "pub struct S{index} {{ pub a: u32 }}\nimpl S{index} {{ fn g(&self) -> u32 {{ self.a }} }}"
+        );
+    }
+    ok(
+        fs::write(root.join("src/lib.rs"), source),
+        "write the source",
+    );
+    let workspace = ok(
+        crate::workspace::load(Some(&root.join("Cargo.toml")), &[]),
+        "the workspace",
+    );
+    let module_graph = graph::build(&workspace, &Production { bins: Vec::new() });
+    let credits = Resolver::new(&module_graph).credits();
+    let stored = credits.direct.len()
+        + credits.sites.len()
+        + credits.groups.iter().map(Vec::len).sum::<usize>();
+    assert!(
+        stored < COUNT * 20,
+        "{stored} stored credits for {COUNT} fields"
+    );
+    let field = module_graph
+        .items
+        .iter()
+        .position(|item| item.kind == ItemKind::Field)
+        .unwrap_or_default();
+    assert_eq!(
+        credits
+            .for_item(field)
+            .iter()
+            .filter(|credit| credit.class == Class::Untyped)
+            .count(),
+        COUNT,
+        "each access names the field"
+    );
 }

@@ -127,7 +127,7 @@ pub fn report(
     )
 }
 
-/// [`report`] with the findings of the `feature-unification-drift` rule.
+/// [`report()`] with the findings of the `feature-unification-drift` rule.
 pub fn report_with(
     workspace: &workspace::Workspace,
     metadata: &cargo_metadata::Metadata,

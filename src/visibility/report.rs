@@ -170,14 +170,16 @@ pub struct FindingRow {
 #[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 #[schemars(rename = "VisibilityAction")]
 pub struct Action {
-    /// `change-visibility`, or `remove-item` for an enum variant.
+    /// `change-visibility`, or `remove-item` for an enum variant and as the
+    /// second step of a `dead-public` finding.
     #[serde(rename = "type")]
     pub kind: &'static str,
     /// True for a `change-visibility` step of a finding with a keyword range:
     /// `cargo fallow fix` applies it, and checks the build after the edit. A
     /// change can still need a change in other code, so `fix` leaves out an
-    /// edit that breaks the build. An undecided candidate and a `remove-item`
-    /// step stay false.
+    /// edit that breaks the build. An undecided candidate, a `remove-item`
+    /// step, a `dead-public` finding and a `test_only` finding stay false: a
+    /// smaller keyword on them makes the compiler report dead code.
     pub auto_fixable: bool,
     /// What the step does.
     pub description: &'static str,
@@ -235,8 +237,15 @@ impl VisibilityReport {
             rows
         };
         let mut findings = rows(&analysis.findings);
-        for action in findings.iter_mut().flat_map(|row| &mut row.actions) {
-            action.auto_fixable = action.kind == CHANGE_ACTION && action.range.is_some();
+        for row in &mut findings {
+            // A smaller keyword on a dead item, or on an item that only tests
+            // use, makes the compiler report dead code, so these stay for a
+            // person.
+            let narrows = row.kind != FindingKind::DeadPublic.label() && !row.test_only;
+            for action in &mut row.actions {
+                action.auto_fixable =
+                    narrows && action.kind == CHANGE_ACTION && action.range.is_some();
+            }
         }
         let undecided = rows(&analysis.undecided);
         let mut summary = Summary {
@@ -489,12 +498,9 @@ fn crate_row(graph: &Graph, entry: &crate::graph::Crate) -> CrateRow {
     }
 }
 
-/// True when the step of the finding removes the item.
+/// True when the one step of the finding removes an enum variant.
 fn removes(finding: &FindingRow) -> bool {
-    finding
-        .actions
-        .first()
-        .is_some_and(|action| action.kind == REMOVE_ACTION)
+    finding.item_kind == ItemKind::Variant.label()
 }
 
 fn message(finding: &FindingRow) -> String {
@@ -512,8 +518,7 @@ fn message(finding: &FindingRow) -> String {
     };
     match finding.kind {
         "dead-public" => format!(
-            "No code reaches the {} `{}`. Make it {to}, and remove it when the compiler \
-             reports it as dead code.",
+            "No code reaches the {} `{}`. Remove it when no code needs it.",
             finding.item_kind, finding.item
         ),
         "unnecessary-public" => format!(
@@ -587,8 +592,8 @@ fn findings_gate(findings: &[FindingRow], enforced: bool) -> GateOutcome {
 const fn description(kind: FindingKind) -> &'static str {
     match kind {
         FindingKind::DeadPublic => {
-            "Make the item `pub(crate)`. The compiler then reports it as dead code when no \
-             code of the crate uses it."
+            "Make the item `pub(crate)` to let the compiler confirm the dead code. `fix` does \
+             not apply this step, because the dead code warning breaks a `-D warnings` build."
         }
         FindingKind::UnnecessaryPublic => "Make the item `pub(crate)`.",
         FindingKind::UnnecessaryRestricted => "Remove the visibility keyword.",
@@ -642,16 +647,51 @@ fn row(graph: &Graph, finding: &Finding) -> FindingRow {
         visibility: written.clone(),
         suggested: suggested.clone(),
         test_only: finding.test_only,
-        actions: vec![Action {
-            kind: CHANGE_ACTION,
-            auto_fixable: false,
-            description: description(finding.kind),
-            from: written,
-            to: suggested,
-            range,
-        }],
+        actions: actions(finding, written, suggested, range),
     }
 }
+
+/// The steps of a finding on an item with a keyword. A `dead-public` item
+/// gets the removal as a second step. An item that only tests use gets a step that names
+/// `#[cfg(test)]`.
+fn actions(
+    finding: &Finding,
+    written: String,
+    suggested: String,
+    range: Option<Range>,
+) -> Vec<Action> {
+    let change = Action {
+        kind: CHANGE_ACTION,
+        auto_fixable: false,
+        description: if finding.test_only {
+            TEST_ONLY_STEP
+        } else {
+            description(finding.kind)
+        },
+        from: written,
+        to: suggested,
+        range,
+    };
+    if finding.kind != FindingKind::DeadPublic {
+        return vec![change];
+    }
+    vec![
+        change,
+        Action {
+            kind: REMOVE_ACTION,
+            auto_fixable: false,
+            description: "Remove the item when no code needs it.",
+            from: String::new(),
+            to: String::new(),
+            range: None,
+        },
+    ]
+}
+
+/// The step of a finding on an item that only tests use.
+const TEST_ONLY_STEP: &str = "Only test code uses the item. Put `#[cfg(test)]` on it, or move it \
+                              into the test module. A smaller keyword alone makes the compiler \
+                              report dead code.";
 
 /// A variant has no visibility keyword of its own, so its one step is to
 /// remove it.

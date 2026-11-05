@@ -31,7 +31,7 @@ finding. A binary and a library with `publish = false` keep each rule. When a li
 
 | Kind | Meaning | Change |
 | --- | --- | --- |
-| `dead-public` | A `pub` item that is not reachable from a root. | `pub` to `pub(crate)`. Then the compiler shows the dead code. |
+| `dead-public` | A `pub` item that is not reachable from a root. | Remove the item, or make it `pub(crate)` to let the compiler confirm the dead code. |
 | `unnecessary-public` | A `pub` item that only its own crate uses. | `pub` to `pub(crate)`. |
 | `unnecessary-restricted-visibility` | A `pub(crate)`, `pub(super)` or `pub(in path)` item that only its own module and its child modules use. A `#[cfg(test)] pub` item that other crates cannot name gets this rule too. | Remove the keyword. |
 
@@ -143,14 +143,21 @@ The JSON report has `schema_version`, `version`, `kind` (`visibility`),
 `language`, `mode` (`fast` or `precise`), `total_issues`, `summary`,
 `gate_outcomes`, `precise`, `graph`, `crates`, `findings` and `undecided`.
 
-Each finding has an `actions` array with one action of type
+Each finding has an `actions` array. The first action has the type
 `change-visibility`. The action gives the written keyword (`from`), the new
 keyword (`to`, an empty text for private) and the `range` of the keyword. An
-enum variant has no keyword, so its action has the type `remove-item`.
+enum variant has no keyword, so its action has the type `remove-item`. A
+`dead-public` finding has a second action of type `remove-item`.
 
 A `change-visibility` action of a finding has `auto_fixable: true`, and
-`cargo fallow fix` applies it (see [Fix](fix.md#fix)). A `remove-item` action
-has `auto_fixable: false`, and so does the action of each undecided candidate.
+`cargo fallow fix` applies it (see [Fix](fix.md#fix)). These actions have
+`auto_fixable: false`:
+
+- a `remove-item` action;
+- the action of a `dead-public` finding and of a finding with
+  `test_only: true`, because a smaller keyword makes the compiler report dead
+  code. Put `#[cfg(test)]` on an item that only tests use;
+- the action of each undecided candidate.
 
 `undecided` lists the candidates that are used only by a name match without a
 type. These candidates are not findings. With `--format sarif`, the command

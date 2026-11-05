@@ -215,11 +215,18 @@ pub fn run(args: &FixArgs) -> Result<u8, CliError> {
         .collect();
     let mut skipped = plan.skipped;
     if !args.dry_run && !fixes.is_empty() {
-        let kept = apply_all(args, &workspace, &plan, progress)?;
+        let Applied { kept, left_out } = apply_all(args, &workspace, &plan, progress)?;
         for fix in &mut fixes {
             let applied = match fix {
                 Fix::Dependency(_) => true,
                 Fix::Visibility(edit) => {
+                    if let Some(other) = left_out
+                        .iter()
+                        .find(|other| visibility::same_place(edit, other))
+                    {
+                        edit.skip_reason = other.skip_reason;
+                        edit.diagnostic.clone_from(&other.diagnostic);
+                    }
                     kept.iter().any(|other| visibility::same_place(edit, other))
                 }
             };
@@ -354,6 +361,13 @@ fn plan_visibility(
     (visibility_edits, skipped)
 }
 
+/// The visibility edits after the check: the written edits, and the edits
+/// that the compiler messages left out, with their reason.
+struct Applied {
+    kept: Vec<visibility::Edit>,
+    left_out: Vec<visibility::Edit>,
+}
+
 /// Writes the edits and checks the workspace. On a failure after the first
 /// write, writes back the old bytes of each file.
 fn apply_all(
@@ -361,7 +375,7 @@ fn apply_all(
     workspace: &Workspace,
     plan: &Plan,
     progress: Progress,
-) -> Result<Vec<visibility::Edit>, CliError> {
+) -> Result<Applied, CliError> {
     let root = workspace.root.as_std_path();
     let manifest = args.manifest_path.as_deref();
     let flags = args.cargo_flags(false);
@@ -379,7 +393,14 @@ fn apply_all(
     };
     let formatted = formatted_files(workspace, &plan.visibility);
     let mut kept = plan.visibility.clone();
+    let mut left_out = Vec::new();
     for round in 1..=CHECK_ROUNDS {
+        // When the compiler messages left out each edit, the run ends with no
+        // edit, and the files keep their old bytes.
+        if kept.is_empty() && plan.deps.is_empty() {
+            lock.restore();
+            return Ok(Applied { kept, left_out });
+        }
         let mut planned = Vec::new();
         for (path, edits) in deps::by_manifest(&plan.deps) {
             planned.push(edited(root, path, |text| deps::apply(text, &edits))?);
@@ -427,42 +448,111 @@ fn apply_all(
         });
         let Err(error) = outcome else {
             format_files(workspace, &planned, &formatted);
-            return Ok(kept);
+            return Ok(Applied { kept, left_out });
         };
         // The compiler names the items that the edits broke. Each round
         // leaves out the edits of those items, and the next round starts from
         // the old bytes again.
-        let before = kept.len();
-        if round < CHECK_ROUNDS {
-            leave_out(&mut kept, compiler.as_deref(), &warned);
-        }
-        if kept.len() == before || (kept.is_empty() && plan.deps.is_empty()) {
+        let left = if round < CHECK_ROUNDS {
+            leave_out(&mut kept, compiler.as_deref(), &warned)
+        } else {
+            Vec::new()
+        };
+        if left.is_empty() {
             lock.restore();
             return Err(error);
         }
+        left_out.extend(left);
         progress.step("Leaving out the edits that the compiler names, and checking again");
     }
     lock.restore();
     Err(failed("the workspace does not build after the edits"))
 }
 
-/// Leaves out the edits of the items that the compiler errors or the new
-/// warnings name. A warning names an item of its own file. A
-/// `private_interfaces` or `private_bounds` warning names the type of another
-/// file too.
-fn leave_out(kept: &mut Vec<visibility::Edit>, errors: Option<&str>, warned: &[check::Diagnostic]) {
-    if let Some(message) = errors {
-        let names = visibility::named_items(message);
-        kept.retain(|edit| !names.contains(visibility::last_segment(&edit.item)));
+/// The `skip_reason` of an edit that a compiler error left out.
+const COMPILER_ERROR: &str = "compiler_error";
+/// The `skip_reason` of an edit that a new compiler warning left out.
+const COMPILER_WARNING: &str = "compiler_warning";
+
+/// Leaves out the edits that the compiler errors or the new warnings name,
+/// and returns them with their reason. A message names an edit by the item
+/// name in backticks, or by a span at the line of the edit. A warning names
+/// an item of its own file. A `private_interfaces` or `private_bounds`
+/// warning names the type of another file too. When no message names an
+/// edit, each edit in a file of a message goes, so one bad edit does not
+/// stop the run.
+fn leave_out(
+    kept: &mut Vec<visibility::Edit>,
+    errors: Option<&str>,
+    warned: &[check::Diagnostic],
+) -> Vec<visibility::Edit> {
+    let mut left = Vec::new();
+    let error_lines: Vec<&str> = errors
+        .map(|text| text.lines().collect())
+        .unwrap_or_default();
+    for line in &error_lines {
+        let names = visibility::named_items(line);
+        let place = error_place(line);
+        take(kept, &mut left, COMPILER_ERROR, line, |edit| {
+            names.contains(visibility::last_segment(&edit.item))
+                || place.is_some_and(|(file, at)| edit.path == file && u64::from(edit.line) == at)
+        });
     }
     for warning in warned {
         let names = visibility::named_items(&warning.message);
         let any_file = warning.code.starts_with("private_");
-        kept.retain(|edit| {
-            !(names.contains(visibility::last_segment(&edit.item))
+        take(kept, &mut left, COMPILER_WARNING, &warning.line(), |edit| {
+            (names.contains(visibility::last_segment(&edit.item))
                 && (any_file || edit.path == warning.file))
+                || warning.spans.iter().any(|(file, first, last)| {
+                    edit.path == *file && (*first..=*last).contains(&u64::from(edit.line))
+                })
         });
     }
+    if !left.is_empty() {
+        return left;
+    }
+    for line in &error_lines {
+        if let Some((file, _)) = error_place(line) {
+            take(kept, &mut left, COMPILER_ERROR, line, |edit| {
+                edit.path == file
+            });
+        }
+    }
+    for warning in warned {
+        take(kept, &mut left, COMPILER_WARNING, &warning.line(), |edit| {
+            edit.path == warning.file || warning.spans.iter().any(|(file, _, _)| edit.path == *file)
+        });
+    }
+    left
+}
+
+/// Moves each edit that `hit` matches from `kept` to `left`, with the reason
+/// and the compiler message.
+fn take(
+    kept: &mut Vec<visibility::Edit>,
+    left: &mut Vec<visibility::Edit>,
+    reason: &'static str,
+    diagnostic: &str,
+    hit: impl Fn(&visibility::Edit) -> bool,
+) {
+    let (out, stay): (Vec<_>, Vec<_>) = kept.drain(..).partition(|edit| hit(edit));
+    *kept = stay;
+    left.extend(out.into_iter().map(|mut edit| {
+        edit.skip_reason = Some(reason);
+        edit.diagnostic = Some(diagnostic.to_owned());
+        edit
+    }));
+}
+
+/// The file and the line of a compiler message line in the short format
+/// `file:line:column: error...`.
+fn error_place(line: &str) -> Option<(&str, u64)> {
+    let mut parts = line.splitn(4, ':');
+    let file = parts.next()?;
+    let at = parts.next()?.parse().ok()?;
+    parts.next()?.parse::<u64>().ok()?;
+    (!file.is_empty()).then_some((file, at))
 }
 
 /// The most write and check rounds. A round after a failed `cargo check`
@@ -720,8 +810,14 @@ fn line(fix: &Fix) -> String {
             } else {
                 &fix.to
             };
+            let reason = fix
+                .diagnostic
+                .as_ref()
+                .map_or_else(String::new, |diagnostic| {
+                    format!(", left out: {diagnostic}")
+                });
             format!(
-                "{}: `{}` from `{}` to `{to}` ({}:{})",
+                "{}: `{}` from `{}` to `{to}` ({}:{}){reason}",
                 fix.kind, fix.item, fix.from, fix.path, fix.line
             )
         }
@@ -746,6 +842,8 @@ mod tests {
             to: "pub(crate)".to_owned(),
             item_kind: "function",
             applied: false,
+            skip_reason: None,
+            diagnostic: None,
             range: Range {
                 line: 1,
                 column: 1,
@@ -763,6 +861,7 @@ mod tests {
             file: file.to_owned(),
             line: 1,
             column: 1,
+            spans: Vec::new(),
         }
     }
 
@@ -782,7 +881,11 @@ mod tests {
                 "src/a.rs",
             ),
         ];
-        leave_out(&mut kept, None, &warned);
+        let left = leave_out(&mut kept, None, &warned);
+        assert!(
+            left.iter()
+                .all(|edit| edit.skip_reason == Some(COMPILER_WARNING))
+        );
         let items: Vec<&str> = kept.iter().map(|edit| edit.item.as_str()).collect();
         assert_eq!(items, ["b::x", "c::other"]);
     }

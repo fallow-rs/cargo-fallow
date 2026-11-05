@@ -39,6 +39,14 @@ pub struct Edit {
     pub item_kind: &'static str,
     /// True when the command wrote the edit.
     pub applied: bool,
+    /// Why the command left out the edit: `compiler_error` or
+    /// `compiler_warning`. The `cargo check` after the edits gave an error or
+    /// a new warning for the item.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skip_reason: Option<&'static str>,
+    /// The compiler message that left out the edit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diagnostic: Option<String>,
     /// The range of the keyword. It is not part of the report.
     #[serde(skip)]
     pub range: Range,
@@ -94,6 +102,8 @@ fn edit(row: &FindingRow) -> Option<Edit> {
         to: action.to.clone(),
         item_kind: row.item_kind,
         applied: false,
+        skip_reason: None,
+        diagnostic: None,
         range,
     })
 }
@@ -232,6 +242,8 @@ mod tests {
             to: to.to_owned(),
             item_kind: "function",
             applied: false,
+            skip_reason: None,
+            diagnostic: None,
             range: Range {
                 line,
                 column,

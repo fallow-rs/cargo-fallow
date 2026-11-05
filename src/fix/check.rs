@@ -2,13 +2,11 @@
 //!
 //! The guard compares the warnings before and after the edits. An edit that
 //! adds a warning breaks a workspace that builds with `-D warnings`, so the
-//! guard leaves it out, the same as an edit that adds an error.
+//! guard leaves it out, the same as an edit that adds an error. A new
+//! `dead_code` warning counts too.
 
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde_json::Value;
-
-/// The lint that a `dead-public` edit makes the compiler report on purpose.
-const DEAD_CODE: &str = "dead_code";
 
 /// One compiler message.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,6 +23,10 @@ pub struct Diagnostic {
     pub line: u64,
     /// The one-based column of the primary span.
     pub column: u64,
+    /// The file, the first line and the last line of each span. A warning
+    /// that names no item, for example "multiple fields are never read",
+    /// marks each item with a span.
+    pub spans: Vec<(String, u64, u64)>,
 }
 
 impl Diagnostic {
@@ -65,16 +67,27 @@ pub fn diagnostics(stdout: &str) -> Vec<Diagnostic> {
             if level != "warning" && level != "error" {
                 return None;
             }
-            let span = message["spans"]
+            let all = message["spans"]
                 .as_array()
-                .and_then(|spans| {
-                    spans
-                        .iter()
-                        .find(|span| span["is_primary"] == true)
-                        .or_else(|| spans.first())
-                })
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+            let span = all
+                .iter()
+                .find(|span| span["is_primary"] == true)
+                .or_else(|| all.first())
                 .cloned()
                 .unwrap_or(Value::Null);
+            let spans = all
+                .iter()
+                .filter_map(|span| {
+                    let start = span["line_start"].as_u64()?;
+                    Some((
+                        span["file_name"].as_str()?.to_owned(),
+                        start,
+                        span["line_end"].as_u64().unwrap_or(start),
+                    ))
+                })
+                .collect();
             Some(Diagnostic {
                 error: level == "error",
                 code: message["code"]["code"]
@@ -85,6 +98,7 @@ pub fn diagnostics(stdout: &str) -> Vec<Diagnostic> {
                 file: span["file_name"].as_str().unwrap_or_default().to_owned(),
                 line: span["line_start"].as_u64().unwrap_or(0),
                 column: span["column_start"].as_u64().unwrap_or(0),
+                spans,
             })
         })
         .collect()
@@ -94,8 +108,7 @@ pub fn diagnostics(stdout: &str) -> Vec<Diagnostic> {
 /// in both counts as new only when `after` has it more times. A warning that
 /// only names what the warnings of its file and lint named before is not
 /// new, for example "unused imports: `A` and `B`" after "unused import: `A`"
-/// and "unused import: `B`". A `dead_code` warning is never new: a
-/// `dead-public` edit shows the dead code on purpose.
+/// and "unused import: `B`".
 pub fn new_warnings<'a>(before: &[Diagnostic], after: &'a [Diagnostic]) -> Vec<&'a Diagnostic> {
     let mut known: FxHashMap<(&str, &str, &str), usize> = FxHashMap::default();
     let mut named: FxHashMap<(&str, &str), FxHashSet<&str>> = FxHashMap::default();
@@ -108,7 +121,7 @@ pub fn new_warnings<'a>(before: &[Diagnostic], after: &'a [Diagnostic]) -> Vec<&
     }
     after
         .iter()
-        .filter(|warning| !warning.error && warning.code != DEAD_CODE)
+        .filter(|warning| !warning.error)
         .filter(|warning| match known.get_mut(&warning.key()) {
             Some(count) if *count > 0 => {
                 *count -= 1;
@@ -136,6 +149,7 @@ mod tests {
             file: "src/lib.rs".to_owned(),
             line,
             column: 1,
+            spans: Vec::new(),
         }
     }
 
@@ -176,15 +190,30 @@ mod tests {
     }
 
     #[test]
-    fn a_moved_warning_and_dead_code_are_not_new() {
+    fn a_moved_warning_is_not_new_and_dead_code_is_new() {
         let before = [warning("unused_mut", "m", 3)];
         let after = [
             warning("unused_mut", "m", 9),
             warning("unused_mut", "m", 10),
-            warning(DEAD_CODE, "function `f` is never used", 4),
+            warning("dead_code", "function `f` is never used", 4),
         ];
-        let new = new_warnings(&before, &after);
-        assert_eq!(new.len(), 1);
-        assert_eq!(new[0].line, 10);
+        let lines: Vec<u64> = new_warnings(&before, &after)
+            .iter()
+            .map(|warning| warning.line)
+            .collect();
+        assert_eq!(lines, [10, 4]);
+    }
+
+    #[test]
+    fn each_span_of_a_message_gives_its_lines() {
+        let stdout = "{\"reason\":\"compiler-message\",\"message\":{\"level\":\"warning\",\
+            \"message\":\"multiple fields are never read\",\"code\":{\"code\":\"dead_code\"},\
+            \"spans\":[{\"file_name\":\"a.rs\",\"line_start\":3,\"line_end\":3,\"column_start\":5,\
+            \"is_primary\":true},{\"file_name\":\"a.rs\",\"line_start\":7,\"column_start\":1}]}}\n";
+        let found = diagnostics(stdout);
+        assert_eq!(
+            found[0].spans,
+            [("a.rs".to_owned(), 3, 3), ("a.rs".to_owned(), 7, 7)]
+        );
     }
 }

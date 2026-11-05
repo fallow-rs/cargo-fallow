@@ -314,6 +314,12 @@ files, and it lists each finding. A finding that the base commit already has
 does not block. `--target git` installs the same check as a git pre-commit
 hook. [Hooks](docs/hooks.md) has the details.
 
+The skill in [`skills/cargo-fallow/SKILL.md`](skills/cargo-fallow/SKILL.md)
+tells a coding agent how to run each command, read the JSON and act on a
+block of the gate. Copy it to `.claude/skills/cargo-fallow/` or
+`.agents/skills/cargo-fallow/`. A test checks each command and flag in the
+skill against `cargo fallow --help`.
+
 ## Documentation
 
 | Page | Contents |

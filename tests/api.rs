@@ -430,3 +430,33 @@ fn a_rule_set_to_off_removes_its_findings() {
     );
     assert!(kinds.contains("removed"), "{report:#}");
 }
+
+/// With `public-crates`, `api` reads only the libraries that the list names:
+/// the same libraries that `visibility` treats as an external API. A library
+/// with `publish = false` in the list counts too.
+#[test]
+fn public_crates_selects_the_libraries_of_api() {
+    let repo = Repo::new("0.3.2");
+    let manifest = repo.root().join("Cargo.toml");
+    let text = fs::read_to_string(&manifest).expect("read the manifest");
+    let with = |list: &str| {
+        fs::write(
+            &manifest,
+            format!("{text}\n[workspace.metadata.fallow.visibility]\npublic-crates = [{list}]\n"),
+        )
+        .expect("write the manifest");
+    };
+    with("\"fresh\", \"internal\"");
+    let (code, report) = repo.json(&["api", "--base", "main", "--fail-on-issues"]);
+    assert_eq!(code, 0, "{report:#}");
+    assert_eq!(
+        changes(&report),
+        [entry("fresh", "crate-added", "fresh")],
+        "{report:#}"
+    );
+    assert_eq!(report["summary"]["crates"], 2, "{report:#}");
+    with("\"nothing-*\"");
+    let (code, report) = repo.json(&["api", "--base", "main"]);
+    assert_eq!(code, 2, "{report:#}");
+    assert_eq!(report["code"], "CARGO_FALLOW_INVALID_CONFIG", "{report:#}");
+}

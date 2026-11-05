@@ -62,8 +62,32 @@ pub struct Surface {
     pub versions: BTreeMap<String, String>,
 }
 
+/// The libraries that `api` reads.
+#[derive(Debug, Clone, Default)]
+pub struct Selection {
+    /// The `exclude-crates` list of the `visibility` table.
+    pub exclude: Vec<String>,
+    /// The `public-crates` patterns of the `visibility` table, or `None`.
+    pub public: Option<Vec<String>>,
+}
+
+impl Selection {
+    /// True when `api` reads the library. With `public-crates`, these are
+    /// the libraries that `visibility` treats as an external API. Without
+    /// it, these are the libraries that a registry can publish.
+    fn reads(&self, krate: &graph::Crate) -> bool {
+        if !krate.kind.is_library() {
+            return false;
+        }
+        match &self.public {
+            None => krate.published,
+            Some(_) => crate::visibility::is_api(krate, &self.exclude, self.public.as_deref()),
+        }
+    }
+}
+
 /// Reads the API of each published library of `workspace`.
-pub fn surface(workspace: &Workspace) -> Surface {
+pub fn surface(workspace: &Workspace, selection: &Selection) -> Surface {
     let module_graph = graph::build(workspace, &graph::Production::default());
     let resolver = Resolver::new(&module_graph);
     let walker = Walker::new(workspace, &module_graph, &resolver);
@@ -74,7 +98,7 @@ pub fn surface(workspace: &Workspace) -> Surface {
             .insert(member.name.clone(), member.version.clone());
     }
     for (id, krate) in module_graph.crates.iter().enumerate() {
-        if !krate.published || !krate.kind.is_library() {
+        if !selection.reads(krate) {
             continue;
         }
         let Some(member) = workspace

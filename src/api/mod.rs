@@ -3,7 +3,9 @@
 //!
 //! The command reads the full tree of the merge base, runs `cargo metadata
 //! --no-deps` on it, and builds the module graph of both versions. A
-//! published library is a library whose `publish` is not `false`. The
+//! published library is a library whose `publish` is not `false`. When
+//! `public-crates` of the `visibility` table is set, the published libraries
+//! are the libraries that it and `exclude-crates` name. The
 //! command compares the keys of [`surface`]: each public path of each item.
 //!
 //! - A key that only HEAD has is `added`. A key that only the base has is
@@ -184,9 +186,13 @@ pub fn run(args: &ApiArgs) -> Result<Section, CliError> {
     progress.step("Reading the tree of the merge base");
     let tree = tree::checkout(root, &merge_base)?;
     let base = workspace::load(Some(&tree.root.join("Cargo.toml")), &cargo_flags)?;
+    // The `public-crates` list of HEAD selects the libraries of both trees,
+    // so a change of the list gives no crate finding.
+    let (exclude, public) = crate::visibility::config::external_api(&head)?;
+    let selection = surface::Selection { exclude, public };
     progress.step("Reading the API of the published libraries");
-    let before = surface::surface(&base);
-    let after = surface::surface(&head);
+    let before = surface::surface(&base, &selection);
+    let after = surface::surface(&head, &selection);
     // `-p` keeps the findings of the packages that it names: a finding
     // belongs to its package, also when the item comes from another crate.
     let manifests: BTreeMap<&String, &String> = before

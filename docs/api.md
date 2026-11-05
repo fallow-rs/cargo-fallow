@@ -5,6 +5,16 @@ published libraries of the workspace. A published library is a library whose
 `publish` is not `false`. The command compares HEAD with the merge base of HEAD
 and the ref, the same as `size --base`. `cargo fallow check` does not run it.
 
+When `public-crates` of `[workspace.metadata.fallow.visibility]` is set, the
+command reads only the libraries that `public-crates` and `exclude-crates`
+name: the same libraries that `visibility` treats as an external API (see
+[Visibility](visibility.md)). A library with `publish = false` in the list
+counts too. Use this when a workspace publishes internal crates only because
+a published crate depends on them: a narrowed item of an internal crate is
+then no `removed` finding. The list of HEAD selects the libraries of both
+trees. A pattern that matches no library is an error with the code
+`CARGO_FALLOW_INVALID_CONFIG`.
+
 ```bash
 cargo fallow api --base origin/main
 cargo fallow api --base origin/main -p app-core --format json

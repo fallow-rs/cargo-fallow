@@ -365,7 +365,12 @@ impl Frame {
 const fn is_item(kind: SyntaxKind) -> bool {
     matches!(
         kind,
-        SyntaxKind::FN | SyntaxKind::MODULE | SyntaxKind::IMPL | SyntaxKind::TRAIT
+        SyntaxKind::FN
+            | SyntaxKind::MODULE
+            | SyntaxKind::IMPL
+            | SyntaxKind::TRAIT
+            | SyntaxKind::CONST
+            | SyntaxKind::STATIC
     )
 }
 
@@ -542,15 +547,6 @@ impl Finding {
             RULE
         }
     }
-
-    /// The names that a rule level can use for the finding.
-    fn level_names(&self) -> Vec<&'static str> {
-        if self.exceeded.only_crap() {
-            vec![crap::RULE, RULE]
-        } else {
-            vec![RULE]
-        }
-    }
 }
 
 /// The summary of a complexity run.
@@ -701,7 +697,7 @@ pub fn section(
     let counted = report
         .findings
         .iter()
-        .filter(|finding| scope.rules().counts(&finding.level_names(), true))
+        .filter(|finding| scope.rules().counts(&[finding.rule()], true))
         .count();
     report
         .gate_outcomes
@@ -796,7 +792,7 @@ fn finding(
 ) -> Option<Finding> {
     let score = measured.and_then(|measured| measured.score);
     let over_crap =
-        settings.max_crap > 0.0 && score.is_some_and(|score| score.crap >= settings.max_crap);
+        settings.max_crap > 0.0 && score.is_some_and(|score| score.exact >= settings.max_crap);
     let exceeded = Exceeded::of(
         function.cyclomatic > settings.max_cyclomatic,
         function.cognitive > settings.max_cognitive,
@@ -887,8 +883,12 @@ fn human(report: &Report<Summary, Finding>) -> String {
         summary.max_cyclomatic,
         summary.max_cognitive,
     );
-    if let Some(max_crap) = summary.max_crap {
-        let _ = write!(text, ", CRAP {max_crap:.1}");
+    match summary.max_crap {
+        Some(max_crap) if max_crap > 0.0 => {
+            let _ = write!(text, ", CRAP {max_crap:.1}");
+        }
+        Some(_) => text.push_str(", CRAP off"),
+        None => {}
     }
     text.push('\n');
     if report.findings.is_empty() {

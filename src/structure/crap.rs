@@ -78,6 +78,8 @@ impl CrapFields {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Lcov {
     files: BTreeMap<String, BTreeMap<u32, u64>>,
+    /// The `SF` records, with the paths outside the workspace.
+    records: usize,
 }
 
 /// The coverage data after the join with the source files.
@@ -92,6 +94,8 @@ pub struct Coverage {
 /// The score of one unit.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Score {
+    /// The CRAP score, not rounded. The limit uses this value.
+    pub exact: f64,
     /// The CRAP score, rounded to 1 decimal.
     pub crap: f64,
     /// The line coverage in percent, rounded to 1 decimal.
@@ -129,6 +133,7 @@ pub fn parse(text: &str, root: &Path, remap: Option<&Path>) -> Lcov {
     for line in text.lines() {
         let line = line.trim_end_matches('\r');
         if let Some(path) = line.strip_prefix("SF:") {
+            lcov.records += 1;
             current = workspace_key(path, root, canonical.as_deref(), remap);
         } else if line == "end_of_record" {
             current = None;
@@ -213,6 +218,13 @@ pub fn join(lcov: &Lcov, loaded: &Loaded, root: &Path) -> Result<Coverage, CliEr
             None => {}
         }
     }
+    if lcov.records == 0 {
+        return Err(CliError::new(
+            ErrorCode::InvalidArgument,
+            "the coverage file has no `SF` record, so it is not an LCOV file with data",
+        )
+        .with_help("Make the file with `cargo llvm-cov --lcov --output-path lcov.info`."));
+    }
     if !matched {
         return Err(CliError::new(
             ErrorCode::InvalidArgument,
@@ -236,7 +248,10 @@ impl Coverage {
     /// a unit with a `cfg` attribute in its body and a unit with no `DA` line
     /// get `None`.
     pub fn scores(&self, file: &File) -> Vec<Option<Score>> {
-        let counts = self.files.get(&file.path);
+        // The lines of a stale file do not match the code, so no unit of the
+        // file gets a score.
+        let stale = self.stale_files.binary_search(&file.path).is_ok();
+        let counts = self.files.get(&file.path).filter(|_| !stale);
         file.functions
             .iter()
             .enumerate()
@@ -269,6 +284,7 @@ pub fn score(cyclomatic: u32, hit: u32, total: u32) -> Score {
     let coverage = f64::from(hit) / f64::from(total);
     let crap = (cc * cc).mul_add((1.0 - coverage).powi(3), cc);
     Score {
+        exact: crap,
         crap: round(crap),
         coverage_pct: round(coverage * 100.0),
     }
@@ -337,6 +353,11 @@ mod tests {
     #[test]
     fn the_formula_follows_the_definition() {
         assert_eq!(score(5, 0, 4).crap, 30.0);
+        // 36 * (55/63)^3 + 6 = 29.954: the rounded value is 30.0, but the
+        // limit uses the exact value.
+        let near = score(6, 8, 63);
+        assert_eq!(near.crap, 30.0);
+        assert!(near.exact < 30.0);
         assert_eq!(score(6, 0, 8).crap, 42.0);
         assert_eq!(score(6, 8, 8).crap, 6.0);
         // 36 * 0.875^3 + 6 = 30.117
@@ -389,6 +410,13 @@ mod tests {
         let scores = coverage(&[(1, 0), (4, 0), (6, 0), (8, 0)]).scores(&file);
         assert_eq!(scores[0], None);
         assert!(scores[1].is_some());
+    }
+
+    #[test]
+    fn a_closure_in_a_test_constant_is_a_test_unit() {
+        let source = "#[cfg(test)]\nstatic CHECK: fn(u8) -> u8 = |a| a;\n#[cfg(test)]\nconst PICK: fn(u8) -> u8 = |a| a;\n";
+        let tests: Vec<bool> = file(source).functions.iter().map(|f| f.test).collect();
+        assert_eq!(tests, [true, true]);
     }
 
     #[test]

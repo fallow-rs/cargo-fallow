@@ -149,11 +149,16 @@ cargo fallow complexity --coverage lcov.info
   comes from another machine, give its workspace root with
   `--coverage-root <PATH>`. When no `SF` path matches, the run exits 2.
 - A file that is gone, or a `DA` line after the end of a file, gives a
-  warning. The summary lists these files in `stale_files`.
+  warning. The summary lists these files in `stale_files`. The lines of a
+  stale file do not match the code, so its functions get no score.
 - The gate stays `health-findings`. Without `--coverage`, the report has no
   CRAP field and no CRAP finding.
 - To suppress a CRAP finding, put
-  `// fallow-ignore-next-line complexity-crap` above the function.
+  `// fallow-ignore-next-line complexity-crap` above the function. A run
+  without `--coverage` does not judge such a comment as stale.
+- `complexity-crap` is its own key in `[workspace.metadata.fallow.rules]`.
+  The `complexity` key does not change a finding that only the CRAP limit
+  gives.
 
 The score uses line coverage only. It does not use branch coverage or an
 estimate of the coverage.

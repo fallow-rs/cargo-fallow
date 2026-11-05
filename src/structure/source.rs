@@ -63,7 +63,7 @@ pub struct Loaded {
 /// Walks the module tree of each target of each member.
 pub fn load(workspace: &Workspace, needs: Needs) -> Loaded {
     let root = workspace.root.as_std_path();
-    let roots: Vec<TargetRoot> = workspace
+    let mut roots: Vec<TargetRoot> = workspace
         .members
         .iter()
         .flat_map(|member| &member.targets)
@@ -73,6 +73,10 @@ pub fn load(workspace: &Workspace, needs: Needs) -> Loaded {
             test_only: target.kind.iter().any(|kind| kind == "test"),
         })
         .collect();
+    // The walk loads a file at its first visit, from the last root first. A
+    // file that a test target and another target both reach must not count
+    // as test code, so the test roots go first and the walk visits them last.
+    roots.sort_by_key(|root| !root.test_only);
     let walked = walk(root, &roots, |visit| load_file(root, visit, needs));
     Loaded {
         files: walked.files,

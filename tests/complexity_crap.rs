@@ -321,6 +321,8 @@ fn a_crap_limit_of_zero_turns_the_check_off() {
     let (code, report, _) = demo.json(&["complexity", "--coverage", &lcov]);
     assert_eq!(code, 0, "{report:#}");
     assert!(names(&report).is_empty(), "{report:#}");
+    let (_, human, _) = demo.run(&["complexity", "--coverage", &lcov]);
+    assert!(human.contains("CRAP off"), "{human}");
 }
 
 #[test]
@@ -387,5 +389,113 @@ fn the_human_output_and_sarif_name_the_crap_score() {
     assert!(
         rules.iter().all(|rule| *rule == "complexity-crap"),
         "{rules:?}"
+    );
+}
+
+#[test]
+fn complexity_crap_is_its_own_rule_key() {
+    let demo = Demo::new();
+    let manifest = demo.root().join("Cargo.toml");
+    let base = fs::read_to_string(&manifest).expect("read the manifest");
+    let lcov = demo.lcov(&standard(&demo, &root_prefix(&demo)));
+    fs::write(
+        &manifest,
+        format!("{base}\n[workspace.metadata.fallow.rules]\ncomplexity = \"off\"\n"),
+    )
+    .expect("write the manifest");
+    let (code, report, _) = demo.json(&["complexity", "--coverage", &lcov, "--fail-on-issues"]);
+    assert_eq!(code, 1, "{report:#}");
+    assert_eq!(names(&report).len(), 4);
+    fs::write(
+        &manifest,
+        format!("{base}\n[workspace.metadata.fallow.rules]\ncomplexity-crap = \"off\"\n"),
+    )
+    .expect("write the manifest");
+    let (code, report, _) = demo.json(&["complexity", "--coverage", &lcov, "--fail-on-issues"]);
+    assert_eq!(code, 0, "{report:#}");
+    assert!(names(&report).is_empty(), "{report:#}");
+}
+
+#[test]
+fn a_crap_comment_is_not_stale_in_a_run_without_coverage() {
+    let demo = Demo::new();
+    let lib = demo.root().join("src/lib.rs");
+    let text = fs::read_to_string(&lib).expect("read lib.rs");
+    let text = text.replacen(
+        "//! Demo.\n",
+        "// fallow-ignore-next-line complexity-crap\n",
+        1,
+    );
+    fs::write(&lib, text).expect("write lib.rs");
+    let (_, report, _) = demo.json(&["complexity"]);
+    assert_eq!(
+        report["stale_suppressions"].as_array().map_or(0, Vec::len),
+        0,
+        "{report:#}"
+    );
+    // With coverage and no CRAP finding below it, the comment is stale.
+    let prefix = root_prefix(&demo);
+    let (start, end) = demo.lines_of("risky");
+    let lcov = demo.lcov(&record(
+        &format!("{prefix}/src/lib.rs"),
+        &span(start, end, 1),
+    ));
+    let (_, report, _) = demo.json(&["complexity", "--coverage", &lcov]);
+    assert_eq!(
+        report["stale_suppressions"].as_array().map_or(0, Vec::len),
+        1,
+        "{report:#}"
+    );
+}
+
+#[test]
+fn a_file_with_stale_data_gets_no_score() {
+    let demo = Demo::new();
+    let prefix = root_prefix(&demo);
+    let mut text = standard(&demo, &prefix);
+    text.push_str(&record(&format!("{prefix}/src/lib.rs"), &[(9999, 1)]));
+    let lcov = demo.lcov(&text);
+    let (code, report, _) = demo.json(&["complexity", "--coverage", &lcov]);
+    assert_eq!(code, 0, "{report:#}");
+    assert!(names(&report).is_empty(), "{report:#}");
+    assert_eq!(
+        report["summary"]["stale_files"],
+        serde_json::json!(["src/lib.rs"])
+    );
+}
+
+#[test]
+fn a_file_that_a_test_target_and_the_library_reach_is_not_test_code() {
+    let demo = Demo::new();
+    let lib = demo.root().join("src/lib.rs");
+    let mut text = fs::read_to_string(&lib).expect("read lib.rs");
+    text.push_str("mod util;\n");
+    fs::write(&lib, text).expect("write lib.rs");
+    fs::write(demo.root().join("src/util.rs"), six("shared")).expect("write util.rs");
+    fs::write(
+        demo.root().join("tests/it.rs"),
+        "#[path = \"../src/util.rs\"]\nmod util;\n",
+    )
+    .expect("write it.rs");
+    let prefix = root_prefix(&demo);
+    let mut text = standard(&demo, &prefix);
+    text.push_str(&record(&format!("{prefix}/src/util.rs"), &span(1, 8, 0)));
+    let lcov = demo.lcov(&text);
+    let (code, report, _) = demo.json(&["complexity", "--coverage", &lcov]);
+    assert_eq!(code, 0, "{report:#}");
+    assert!(names(&report).contains(&"shared".to_owned()), "{report:#}");
+}
+
+#[test]
+fn an_empty_coverage_file_names_the_lcov_format() {
+    let demo = Demo::new();
+    let lcov = demo.lcov("");
+    let (code, report, _) = demo.json(&["complexity", "--coverage", &lcov]);
+    assert_eq!(code, 2);
+    assert!(
+        report["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("no `SF` record")),
+        "{report:#}"
     );
 }

@@ -368,7 +368,20 @@ impl Scope {
             .map(String::as_str)
             .filter(|path| self.keeps(path))
             .filter(|path| !crate::structure::config::matches_prefix(path, &unjudged));
-        let stale = self.suppressions.stale(check, files);
+        let mut stale = self.suppressions.stale(check, files);
+        // A run without coverage data gives no CRAP finding, so it cannot
+        // judge a comment that only names the CRAP rule.
+        let crap_off = section.json["summary"]["max_crap"]
+            .as_f64()
+            .is_none_or(|limit| limit <= 0.0);
+        if check == "complexity" && crap_off {
+            stale.retain(|marker| {
+                marker
+                    .kinds
+                    .iter()
+                    .any(|kind| kind != crate::structure::crap::RULE)
+            });
+        }
         section.add_stale_suppressions(check, &stale);
     }
 

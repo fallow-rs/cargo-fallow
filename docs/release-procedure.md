@@ -115,6 +115,14 @@ session and pull request that can merge to `main`, also auto-merge.
      --subject "chore: release vX.Y.Z"
    ```
 
+   Right after the merge, make sure that `origin/main` is the merge commit.
+   When another commit landed on top of it, the release cannot start:
+   - If the new commits add no fragment to `changelog.d/`, merge an empty
+     commit with the same subject through a new pull request
+     (`git commit --allow-empty -S -s -m "chore: release vX.Y.Z"`).
+   - If they add a fragment, prepare the release commit again from step 1 on
+     the new `main`. The new fragment goes into the `[X.Y.Z]` section.
+
 8. Wait until CI on the release commit passes:
 
    ```bash
@@ -212,6 +220,21 @@ after the release creation:
 
 The Marketplace rejects a `description` of 125 characters or more.
 `action/tests/run.sh` fails before a release when the description is too long.
+
+## Move the rolling tag
+
+A workflow can use `fallow-rs/cargo-fallow@v0` to get the newest 0.x
+release. `v0` is the only tag that moves. After the release creation, point
+it at the release commit:
+
+```bash
+git tag -s -f v0 "vX.Y.Z^{commit}" -m "v0: vX.Y.Z"
+git verify-tag v0
+git push -f origin refs/tags/v0
+```
+
+The tag ruleset lets only the owner update a `v*` tag. Never move a version
+tag such as `vX.Y.Z`.
 
 ## Change the release environment after this procedure merges
 

@@ -10,6 +10,8 @@ other clients read it directly. Each objective goes through four skills:
    commit.
 4. `sweep`: check each result, each follow-up and each worktree.
 
+`cargo-fallow-release` runs a release from `docs/release-procedure.md`.
+
 `.claude/skills/` holds the Claude adapter of each skill. Do not edit it.
 Edit the source here, then run `npm run generate:agent-adapters`. CI runs
 `npm run check:agent-adapters` and fails on a difference.

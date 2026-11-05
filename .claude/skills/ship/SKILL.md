@@ -31,6 +31,22 @@ description: Merge reviewed cargo-fallow work to main with pinned auto-merge, wa
    on `main` passes: `gh run list --commit <SHA>`, then
    `gh run watch <run ID> --exit-status`. A failure there needs a new pull
    request through `review` and `ship`.
+
+## In a T3 Code thread
+
+T3 forbids a poll for a pull request. It also sends no wake when a pull
+request merges (pingdotgg/t3code#25160). So steps 3 and 4 change:
+
+1. Do not arm auto-merge. Call `watch_pull_request` and end the turn.
+2. At each checks wake, read `gh pr view <N> --json mergeStateStatus`.
+   - `CLEAN`: merge by hand with
+     `gh pr merge <N> --squash --match-head-commit <reviewed SHA>`.
+   - `BLOCKED`: end the turn. Both required checks are jobs with `needs:`,
+     so GitHub makes them late. T3 can say that all required checks
+     passed before `CI` exists (pingdotgg/t3code#28183). The next wake
+     comes when the check appears.
+3. For step 5, run `gh run watch <run ID> --exit-status` in the
+   background and wait for it with `t3_background_wait`.
 6. Remove the worktree with `git worktree remove` and delete the local
    branch.
 

@@ -160,6 +160,12 @@ The comment starts with a hidden marker that contains the `comment-key`. On the
 next run of the job, the action finds the comment from this marker and updates
 it. The action does not add a second comment.
 
+A clean run has no issue, exit code `0` and no gate that fails or warns. A
+clean run posts no first comment, so a clean pull request gets no comment and
+no notification. When a comment of an earlier run exists, a clean run updates
+it, so the comment does not keep old findings. When the text of the comment
+does not change, the action does not update it.
+
 ```yaml
     permissions:
       contents: read

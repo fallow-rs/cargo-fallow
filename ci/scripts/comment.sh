@@ -9,9 +9,10 @@ set -euo pipefail
 #   CI_MERGE_REQUEST_IID
 # Optional env: GITLAB_TOKEN (a project or personal access token with the
 #   `api` scope; CI_JOB_TOKEN cannot write notes), COMMENT_KEY (default:
-#   check)
+#   check), RESULTS_FILE (the JSON report of the run) and EXIT_CODE (its
+#   exit code). Without both, the script does not treat the run as clean.
 
-: "${COMMENT_KEY:=check}" "${GITLAB_TOKEN:=}"
+: "${COMMENT_KEY:=check}" "${GITLAB_TOKEN:=}" "${RESULTS_FILE:=}" "${EXIT_CODE:=}"
 
 if ! [[ "$COMMENT_KEY" =~ ^[A-Za-z0-9._-]+$ ]]; then
   echo "ERROR: Invalid comment key: ${COMMENT_KEY}. Use letters, digits, '.', '_' and '-'."
@@ -62,16 +63,42 @@ api() {
 me="$(api --retry 3 "${CI_API_V4_URL}/user" | jq -r '.id // empty')" || api_warning read
 [ -n "$me" ] || api_warning read
 
-existing=""
+# One line `<id> <same>` for the note of the job, or nothing. `same` is true
+# when the body of the note is the new body. The compare ignores the line ends
+# and the last newline.
+match=""
 page=1
-while [ -z "$existing" ]; do
+while [ -z "$match" ]; do
   notes="$(api --retry 3 "${NOTES}?per_page=100&page=${page}")" || api_warning read
-  existing="$(printf '%s' "$notes" | jq -r --arg marker "$MARKER" --argjson me "$me" \
-    '[.[] | select((.system | not) and .author.id == $me and ((.body // "") | startswith($marker))) | .id] | first // empty')" || api_warning read
+  match="$(printf '%s' "$notes" | jq -r --arg marker "$MARKER" --argjson me "$me" --rawfile body "$BODY" \
+    'def norm: gsub("\r\n"; "\n") | sub("\\s+$"; "");
+     [.[] | select((.system | not) and .author.id == $me and ((.body // "") | startswith($marker)))
+       | "\(.id) \((.body | norm) == ($body | norm))"] | first // empty')" || api_warning read
   [ "$(printf '%s' "$notes" | jq 'length')" -lt 100 ] && break
   page=$((page + 1))
 done
+existing="${match%% *}"
 
+# A clean run has no issue, exit code 0 and no gate that fails or warns. Like
+# fallow, a clean run posts no first note, because that note only sends a
+# notification. A clean run still updates an old note, so the note does not
+# keep the findings of an earlier run.
+clean=false
+if [ -n "$RESULTS_FILE" ] && [ -f "$RESULTS_FILE" ]; then
+  clean="$(jq -r --arg exit_code "$EXIT_CODE" \
+    '$exit_code == "0" and .error != true and (.total_issues // 0) == 0
+     and ([(.gate_outcomes // {})[] | select(.status == "fail" or .status == "warn")] | length) == 0' \
+    "$RESULTS_FILE" 2> /dev/null || echo false)"
+fi
+
+if [ -z "$existing" ] && [ "$clean" = "true" ]; then
+  echo "NOTE: The run is clean and the merge request has no note of the job, so the job posts no note."
+  exit 0
+fi
+if [ "${match#* }" = "true" ]; then
+  echo "The merge request note ${existing} is unchanged, so the job does not update it."
+  exit 0
+fi
 if [ -n "$existing" ]; then
   api -X PUT --data-binary "@${PAYLOAD}" "${NOTES}/${existing}" > /dev/null || api_warning update
   echo "Updated the merge request note ${existing}."

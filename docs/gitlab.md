@@ -63,3 +63,9 @@ marker, `<!-- cargo-fallow-comment:<key> -->`, names the note of each key.
 Only a note of the user of the token counts, so a note of another user with the
 marker does not stop the update. A
 report over 900000 characters is cut.
+
+A clean run has no issue, exit code `0` and no gate that fails or warns. A
+clean run posts no first note, so a clean merge request gets no note and no
+notification. When a note of an earlier run exists, a clean run updates it, so
+the note does not keep old findings. When the text of the note does not
+change, the job does not update it.

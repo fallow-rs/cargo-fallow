@@ -765,6 +765,28 @@ assert_equals "$CODE" "1" "comment: a key that can close the marker fails"
 run_comment PR_NUMBER=7 RESULTS_FILE=/nonexistent
 assert_contains "$OUT" "posts no comment" "comment: a run with no summary posts no comment"
 assert_equals "$(cat "$GH_LOG")" "" "comment: a run with no summary calls no API"
+# A clean run: no issue, exit code 0 and no gate that fails or warns.
+GH_COMMENTS="$WORK/comments-none.json" run_comment PR_NUMBER=7 RESULTS_FILE="$FIXTURES/check-clean.json" FALLOW_COMMAND=check
+assert_equals "$CODE" "0" "comment: a clean first run exits 0"
+assert_equals "$(grep -c -- '-X POST' "$GH_LOG")" "0" "comment: a clean first run posts no comment"
+assert_contains "$OUT" "The run is clean" "comment: a clean first run explains the skip"
+printf '[{"id": 42, "body": "<!-- cargo-fallow-comment:check -->\\nold", "user": {"login": "github-actions[bot]"}}]\n' > "$WORK/comments-check.json"
+GH_COMMENTS="$WORK/comments-check.json" run_comment PR_NUMBER=7 RESULTS_FILE="$FIXTURES/check-clean.json" FALLOW_COMMAND=check
+assert_contains "$(cat "$GH_LOG")" "-X PATCH repos/o/r/issues/comments/42" "comment: a clean run updates an old comment"
+GH_COMMENTS="$WORK/comments-none.json" run_comment PR_NUMBER=7 RESULTS_FILE="$FIXTURES/check-clean.json" FALLOW_COMMAND=check EXIT_CODE=1
+assert_contains "$(cat "$GH_LOG")" "-X POST" "comment: a run with exit code 1 is not clean"
+jq '.gate_outcomes["parse-error"].status = "warn"' "$FIXTURES/check-clean.json" > "$WORK/check-warn.json"
+GH_COMMENTS="$WORK/comments-none.json" run_comment PR_NUMBER=7 RESULTS_FILE="$WORK/check-warn.json" FALLOW_COMMAND=check
+assert_contains "$(cat "$GH_LOG")" "-X POST" "comment: a run with a warned gate is not clean"
+GH_COMMENTS="$WORK/comments-none.json" run_comment PR_NUMBER=7
+cp "$GH_BODY" "$WORK/body-first.md"
+jq -n --rawfile body "$WORK/body-first.md" '[{id: 42, body: $body, user: {login: "github-actions[bot]"}}]' > "$WORK/comments-same.json"
+GH_COMMENTS="$WORK/comments-same.json" run_comment PR_NUMBER=7
+assert_equals "$(grep -c -- '-X PATCH\|-X POST' "$GH_LOG")" "0" "comment: an unchanged comment gets no update"
+assert_contains "$OUT" "is unchanged" "comment: an unchanged comment explains the skip"
+jq -n --rawfile body "$WORK/body-first.md" '[{id: 42, body: ($body | rtrimstr("\n") | gsub("\n"; "\r\n")), user: {login: "github-actions[bot]"}}]' > "$WORK/comments-crlf.json"
+GH_COMMENTS="$WORK/comments-crlf.json" run_comment PR_NUMBER=7
+assert_equals "$(grep -c -- '-X PATCH\|-X POST' "$GH_LOG")" "0" "comment: a body with other line ends is unchanged"
 printf '#!/usr/bin/env bash\nexit 1\n' > "$WORK/gh-fail"
 mkdir -p "$WORK/gh-fail-dir" && cp "$WORK/gh-fail" "$WORK/gh-fail-dir/gh" && chmod +x "$WORK/gh-fail-dir/gh"
 OUT="$(env -i PATH="$WORK/gh-fail-dir:$BASE_PATH" RUNNER_TEMP="$WORK" ACTION_JQ_DIR="$JQ_DIR" \

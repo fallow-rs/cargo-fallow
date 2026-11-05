@@ -74,8 +74,33 @@ api_warning() {
   exit 0
 }
 comments="$(gh api --paginate "repos/${GH_REPO}/issues/${PR_NUMBER}/comments")" || api_warning read
-existing="$(printf '%s' "$comments" | jq -r --arg marker "$MARKER" --arg author "$COMMENT_AUTHOR" \
-  '.[] | select(.user.login == $author and (.body | startswith($marker))) | .id' | head -n 1)"
+# One line `<id> <same>` for the comment of the action, or nothing. `same` is
+# true when the body of the comment is the new body. The API can give other
+# line ends and no last newline, so the compare ignores them.
+match="$(printf '%s' "$comments" | jq -r --arg marker "$MARKER" --arg author "$COMMENT_AUTHOR" \
+  --rawfile body "$BODY" \
+  'def norm: gsub("\r\n"; "\n") | sub("\\s+$"; "");
+   .[] | select(.user.login == $author and ((.body // "") | startswith($marker)))
+   | "\(.id) \((.body | norm) == ($body | norm))"' | head -n 1)"
+existing="${match%% *}"
+
+# A clean run has no issue, exit code 0 and no gate that fails or warns. Like
+# fallow, a clean run posts no first comment, because that comment only sends
+# a notification. A clean run still updates an old comment, so the comment
+# does not keep the findings of an earlier run.
+clean="$(jq -r --arg exit_code "$EXIT_CODE" \
+  '$exit_code == "0" and .error != true and (.total_issues // 0) == 0
+   and ([(.gate_outcomes // {})[] | select(.status == "fail" or .status == "warn")] | length) == 0' \
+  "$RESULTS_FILE" 2> /dev/null || echo false)"
+
+if [ -z "$existing" ] && [ "$clean" = "true" ]; then
+  echo "::notice::The run is clean and the pull request has no comment of the action, so the action posts no comment."
+  exit 0
+fi
+if [ "${match#* }" = "true" ]; then
+  echo "The pull request comment ${existing} is unchanged, so the action does not update it."
+  exit 0
+fi
 if [ -n "$existing" ]; then
   gh api -X PATCH "repos/${GH_REPO}/issues/comments/${existing}" -F "body=@${BODY}" > /dev/null \
     || api_warning update

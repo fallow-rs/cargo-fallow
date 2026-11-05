@@ -337,7 +337,15 @@ fn build_inner(workspace: &Workspace, production: &Production, scan: bool) -> (G
         .filter(|(_, (_, target))| CrateKind::of(target).is_library())
         .map(|(id, (member, _))| (member.name.as_str(), id))
         .collect();
+    // A workspace crate links only to workspace libraries. A consumer crate
+    // links to both.
+    let own_libs: BTreeMap<&str, CrateId> = libs
+        .iter()
+        .filter(|(_, id)| !targets[**id].0.consumer)
+        .map(|(name, id)| (*name, *id))
+        .collect();
     for (id, ((member, target), mut files)) in targets.iter().zip(parsed).enumerate() {
+        let libs = if member.consumer { &libs } else { &own_libs };
         let kind = CrateKind::of(target);
         let edition = parse_edition(&target.edition);
         for file in &mut files.files {
@@ -345,8 +353,10 @@ fn build_inner(workspace: &Workspace, production: &Production, scan: bool) -> (G
                 scans.entry((file.path.clone(), edition)).or_insert(found);
             }
         }
+        // A consumer binary, for example a fuzz target, is a real user.
         let production = kind == CrateKind::Bin
             && (production.bins.is_empty()
+                || member.consumer
                 || production
                     .bins
                     .iter()
@@ -355,9 +365,9 @@ fn build_inner(workspace: &Workspace, production: &Production, scan: bool) -> (G
             .get(member.name.as_str())
             .copied()
             .filter(|lib| *lib != id);
-        let externs = externs_of(member, kind, lib, &libs, workspace);
+        let externs = externs_of(member, kind, lib, libs, workspace);
         let doc_externs = if kind.is_library() && target.doctest {
-            let mut names = externs_of(member, CrateKind::Test, Some(id), &libs, workspace);
+            let mut names = externs_of(member, CrateKind::Test, Some(id), libs, workspace);
             names.retain(|name| name.target != Some(id) || name.name == crate_name(&target.name));
             names
         } else {

@@ -58,16 +58,28 @@ pub fn extend(
         let members = match members {
             Ok(members) => members,
             Err(err) if explicit => return Err(invalid(&name, &err)),
-            Err(_) => continue,
+            Err(err) => {
+                crate::render::warn(&format!(
+                    "`{name}` does not load, so its uses do not count: {}",
+                    err.message
+                ));
+                continue;
+            }
         };
         for member in members {
-            if !extended
+            if extended
                 .members
                 .iter()
                 .any(|known| known.name == member.name)
             {
-                extended.members.push(member);
+                crate::render::warn(&format!(
+                    "the consumer package `{}` of `{name}` has the name of another package, so \
+                     its uses do not count",
+                    member.name
+                ));
+                continue;
             }
+            extended.members.push(member);
         }
         manifests.push(manifest);
     }

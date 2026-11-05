@@ -181,3 +181,117 @@ fn fix_checks_the_consumer_workspace_too() {
         .count();
     assert_eq!(consumer, 2, "a check before and after the edits: {calls}");
 }
+
+/// Adds `only_fuzzed`, which only the fuzz target uses, with `target` as the
+/// text of the fuzz target.
+fn with_only_fuzzed(dir: &TempDir, target: &str) {
+    write(
+        dir.path(),
+        "core/src/lib.rs",
+        &format!("{CORE}pub fn only_fuzzed() {{}}\n"),
+    );
+    write(dir.path(), "fuzz/fuzz_targets/target_one.rs", target);
+}
+
+/// A consumer binary is a production root, also when `production` names
+/// other binaries, so a use in it is no test use.
+#[test]
+fn a_consumer_binary_is_a_production_root() {
+    let dir = workspace("fuzz", "production = [\"app:app\"]\n");
+    with_only_fuzzed(
+        &dir,
+        "fn main() {\n    core_lib::fuzzed();\n    core_lib::only_fuzzed();\n}\n",
+    );
+    let (code, report) = visibility(&dir);
+    assert_eq!(code, 0, "{report:#}");
+    assert_eq!(items(&report), ["unnecessary-public helper"], "{report:#}");
+}
+
+/// A cargo-fuzz target calls the code inside `fuzz_target!`.
+#[test]
+fn a_use_inside_fuzz_target_counts() {
+    let dir = workspace("fuzz", "");
+    with_only_fuzzed(
+        &dir,
+        "#![no_main]\nlibfuzzer_sys::fuzz_target!(|data: &[u8]| {\n    let _ = data;\n    core_lib::fuzzed();\n    core_lib::only_fuzzed();\n});\n",
+    );
+    let (code, report) = visibility(&dir);
+    assert_eq!(code, 0, "{report:#}");
+    assert_eq!(items(&report), ["unnecessary-public helper"], "{report:#}");
+}
+
+/// A fake cargo for `fix`. A `check` of the consumer runs `consumer`, and a
+/// `check` of the workspace runs `own`. Each other command runs the real
+/// cargo.
+#[cfg(unix)]
+fn fake_cargo(dir: &TempDir, consumer: &str, own: &str) -> String {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let real = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
+    let script = dir.path().join("fake-cargo");
+    fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = check ] || [ \"$2\" = check ]; then\n  case \"$*\" in\n    *fuzz/Cargo.toml*) {consumer} ;;\n    *) {own} ;;\n  esac\nfi\nexec '{real}' \"$@\"\n"
+        ),
+    )
+    .expect("write the script");
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).expect("make it executable");
+    script.to_str().expect("the path is UTF-8").to_owned()
+}
+
+#[cfg(unix)]
+fn fix(dir: &TempDir, cargo: &str) -> (Option<i32>, String, String) {
+    let output = Command::cargo_bin("cargo-fallow")
+        .expect("the binary exists")
+        .current_dir(dir.path())
+        .env("CARGO", cargo)
+        .args(["fix", "--yes", "--format", "json", "--quiet"])
+        .output()
+        .expect("run the binary");
+    (
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    )
+}
+
+/// A consumer that does not build before the edits gets a warning, and
+/// `fix` still applies the edits of the workspace.
+#[cfg(unix)]
+#[test]
+fn a_consumer_that_does_not_build_gets_a_warning() {
+    let dir = workspace("fuzz", "");
+    let cargo = fake_cargo(
+        &dir,
+        "echo 'error: no C++ compiler' >&2; exit 101",
+        "exit 0",
+    );
+    let (code, stdout, stderr) = fix(&dir, &cargo);
+    assert_eq!(code, Some(0), "{stdout} {stderr}");
+    assert!(
+        stderr.contains("does not build before the edits"),
+        "{stderr}"
+    );
+}
+
+/// A failed run writes back the `Cargo.lock` of the consumer too: a lock
+/// file that the check made goes again.
+#[cfg(unix)]
+#[test]
+fn a_failed_run_removes_the_lock_file_that_the_consumer_check_made() {
+    let dir = workspace("fuzz", "");
+    let lock = dir.path().join("fuzz/Cargo.lock");
+    let lib = dir.path().join("core/src/lib.rs");
+    let cargo = fake_cargo(
+        &dir,
+        &format!("touch '{}'; exit 0", lock.display()),
+        &format!(
+            "if grep -q 'pub(crate)' '{}'; then echo 'error: could not compile' >&2; exit 101; fi; exit 0",
+            lib.display()
+        ),
+    );
+    let (code, stdout, stderr) = fix(&dir, &cargo);
+    assert_eq!(code, Some(2), "{stdout} {stderr}");
+    assert!(!lock.exists(), "the consumer lock file stays");
+}

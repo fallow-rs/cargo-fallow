@@ -89,6 +89,10 @@ relative to the workspace root. The command reads the members of each
 consumer workspace with `cargo metadata --no-deps`, and adds their crates to
 the module graph. A use in their code then counts, so the command does not
 narrow an item that a fuzz target calls. A consumer crate gets no finding.
+A consumer binary is a production root. `--precise` does not decide an item
+that consumer code uses, because rust-analyzer does not read that code. A
+consumer package with the name of another package gets a warning, and its
+uses do not count.
 
 - Without the key, `fuzz/Cargo.toml` is a consumer when the file exists and
   is no member of the workspace. When it does not load, the command

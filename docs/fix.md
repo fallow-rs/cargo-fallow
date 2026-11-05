@@ -55,7 +55,10 @@ cargo fallow fix --yes --only visibility   # only the visibility edits
   the same check again.
 - The command also checks each consumer workspace of the visibility table,
   for example `fuzz/` (see [Consumer workspaces](visibility.md#consumer-workspaces)).
-  A consumer that does not build before the edits gets no check.
+  The consumer check has no `--locked`, because a consumer often has no
+  committed lock file. A consumer that does not build before the edits gets
+  a warning and no check. A failed run writes back the `Cargo.lock` of each
+  consumer too.
 - The command compares the compiler warnings before and after the edits. An
   edit that adds a warning breaks a workspace that builds with `-D warnings`,
   so a new warning fails the check, the same as an error. A new `dead_code`

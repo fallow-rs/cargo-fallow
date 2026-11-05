@@ -142,6 +142,13 @@ pub struct DupesArgs {
         overrides_with = "fail_on_clones"
     )]
     fail_on_clones: bool,
+    /// Leave out test code: test targets, test modules and
+    /// items with a test attribute. The default comes from the config.
+    #[arg(long, overrides_with = "no_production")]
+    production: bool,
+    /// Keep test code, also when the config sets `production = true`.
+    #[arg(long, overrides_with = "production")]
+    no_production: bool,
     /// Show the instances of one clone group instead of the report. Give the
     /// fingerprint of the group, for example `dup:1a2b3c4d`. The trace ignores
     /// the baseline, `--changed-since` and `--fail-on-issues`.

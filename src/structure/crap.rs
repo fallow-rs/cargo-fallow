@@ -341,6 +341,7 @@ mod tests {
             test_only: false,
             functions,
             tokens: Vec::new(),
+            test_lines: 0,
         }
     }
 

@@ -19,7 +19,7 @@ use crate::modules::{ModuleDecl, SkippedFile, TargetRoot, Visit, walk};
 use crate::parse::{ParseOutcome, with_parsed};
 use crate::structure::complexity::{Function, functions};
 use crate::structure::config::Mode;
-use crate::structure::dupes::tokens::{Token, tokens};
+use crate::structure::dupes::tokens::{Token, is_test_item, test_lines, tokens};
 use crate::workspace::Workspace;
 
 /// What a load computes for each file.
@@ -45,6 +45,9 @@ pub struct File {
     /// True when the file exists only in a test build: a file of a test
     /// target, or a file below a `#[cfg(test)]` module declaration.
     pub test_only: bool,
+    /// The lines of the test items in the file, when the load asked for the
+    /// tokens.
+    pub test_lines: u32,
     /// The functions, when the load asked for them.
     pub functions: Vec<Function>,
     /// The tokens, when the load asked for them.
@@ -63,7 +66,7 @@ pub struct Loaded {
 /// Walks the module tree of each target of each member.
 pub fn load(workspace: &Workspace, needs: Needs) -> Loaded {
     let root = workspace.root.as_std_path();
-    let mut roots: Vec<TargetRoot> = workspace
+    let roots: Vec<TargetRoot> = workspace
         .members
         .iter()
         .flat_map(|member| &member.targets)
@@ -73,10 +76,8 @@ pub fn load(workspace: &Workspace, needs: Needs) -> Loaded {
             test_only: target.kind.iter().any(|kind| kind == "test"),
         })
         .collect();
-    // The walk loads a file at its first visit, from the last root first. A
-    // file that a test target and another target both reach must not count
-    // as test code, so the test roots go first and the walk visits them last.
-    roots.sort_by_key(|root| !root.test_only);
+    // The walk visits test code last, so a file that a test target and
+    // another target both reach does not count as test code.
     let walked = walk(root, &roots, |visit| load_file(root, visit, needs));
     Loaded {
         files: walked.files,
@@ -90,29 +91,42 @@ fn load_file(root: &Path, visit: &Visit, needs: Needs) -> Result<(File, Vec<Modu
         .map_err(|err| format!("cannot read the file: {err}"))?;
     let lines = count_lines(&source);
     let skip_metrics = is_generated(&source) || has_generated_marker(&source);
-    let (functions, tokens, modules) = with_parsed(&source, edition, |file, text| {
-        let index = LineIndex::new(text);
-        let functions = if needs.functions && !skip_metrics {
-            functions(file.syntax(), &index)
-        } else {
-            Vec::new()
-        };
-        let tokens = needs
-            .tokens
-            .filter(|_| !skip_metrics)
-            .map(|(mode, ignore_imports)| tokens(file.syntax(), &index, mode, ignore_imports))
-            .unwrap_or_default();
-        (functions, tokens, declarations(file))
-    })
-    .map_err(parse_reason)?;
+    let (functions, (tokens, test_lines), (test_only, modules)) =
+        with_parsed(&source, edition, |file, text| {
+            let index = LineIndex::new(text);
+            let functions = if needs.functions && !skip_metrics {
+                functions(file.syntax(), &index)
+            } else {
+                Vec::new()
+            };
+            let tokens = needs
+                .tokens
+                .filter(|_| !skip_metrics)
+                .map(|(mode, ignore_imports)| {
+                    (
+                        tokens(file.syntax(), &index, mode, ignore_imports),
+                        test_lines(file.syntax(), &index),
+                    )
+                })
+                .unwrap_or_default();
+            // An inner `#![cfg(test)]` makes the whole file test code.
+            let test_only = visit.test_only || is_test_item(file.syntax());
+            (
+                functions,
+                tokens,
+                (test_only, declarations(file, test_only)),
+            )
+        })
+        .map_err(parse_reason)?;
     Ok((
         File {
             path: path.to_owned(),
             lines,
             skip_metrics,
-            test_only: visit.test_only,
+            test_only,
             functions,
             tokens,
+            test_lines,
         },
         modules,
     ))
@@ -143,13 +157,16 @@ pub struct Skipped {
 impl Loaded {
     /// The files that the walk reached but could not use.
     pub fn skipped_files(&self) -> Vec<Skipped> {
-        self.skipped
+        let mut skipped: Vec<Skipped> = self
+            .skipped
             .iter()
             .map(|file| Skipped {
                 path: file.path.clone(),
                 reason: file.reason.clone(),
             })
-            .collect()
+            .collect();
+        skipped.sort();
+        skipped
     }
 }
 
@@ -285,9 +302,9 @@ impl<'a> LineIndex<'a> {
 }
 
 /// The `mod name;` declarations of a file, also in inline modules.
-fn declarations(file: &ast::SourceFile) -> Vec<ModuleDecl> {
+fn declarations(file: &ast::SourceFile, test_only: bool) -> Vec<ModuleDecl> {
     let mut found = Vec::new();
-    collect_declarations(file.items(), &mut Vec::new(), false, &mut found);
+    collect_declarations(file.items(), &mut Vec::new(), test_only, &mut found);
     found
 }
 
@@ -309,6 +326,8 @@ fn collect_declarations(
         let name = plain_name(&name);
         let test_only = test_only || attributes_of(module.syntax()) == AttrClass::Test;
         if let Some(list) = module.item_list() {
+            // An inner `#![cfg(test)]` of an inline module is on its item list.
+            let test_only = test_only || is_test_item(list.syntax());
             inline.push(name);
             collect_declarations(list.items(), inline, test_only, found);
             inline.pop();

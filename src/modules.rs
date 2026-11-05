@@ -99,7 +99,7 @@ pub fn walk<T>(
     let mut skipped = Vec::new();
     let mut seen = BTreeSet::new();
     let mut folders = BTreeSet::new();
-    let mut queue: Vec<Visit> = roots
+    let (mut tests, mut queue): (Vec<Visit>, Vec<Visit>) = roots
         .iter()
         .map(|root| {
             if let Some(parent) = Path::new(&root.path).parent() {
@@ -116,8 +116,10 @@ pub fn walk<T>(
                 test_only: root.test_only,
             }
         })
-        .collect();
-    while let Some(next) = queue.pop() {
+        .partition(|visit| visit.test_only);
+    // The walk visits test code only after all other code. A file that test
+    // code and other code both reach then does not count as test code.
+    while let Some(next) = queue.pop().or_else(|| tests.pop()) {
         if !seen.insert(next.path.clone()) {
             continue;
         }
@@ -126,7 +128,9 @@ pub fn walk<T>(
                 let dir = child_dir(&next.path, next.is_mod_rs);
                 for module in &modules {
                     let child = resolve_module(workspace, &next.path, &dir, module);
-                    queue.extend(child.map(|(path, is_mod_rs)| Visit {
+                    let test_only = next.test_only || module.test_only;
+                    let stack = if test_only { &mut tests } else { &mut queue };
+                    stack.extend(child.map(|(path, is_mod_rs)| Visit {
                         path,
                         edition: next.edition,
                         is_root: false,
@@ -134,7 +138,7 @@ pub fn walk<T>(
                         under_cfg: next.under_cfg || module.under_cfg,
                         cfg_off: next.cfg_off || module.cfg_off,
                         module_path: child_module_path(&next.module_path, module),
-                        test_only: next.test_only || module.test_only,
+                        test_only,
                     }));
                 }
                 files.insert(next.path.clone(), file);

@@ -293,6 +293,9 @@ pub struct Duplication {
     pub skip_local: bool,
     /// Leave `use` items and `extern crate` items out of the token streams.
     pub ignore_imports: bool,
+    /// Leave out test code: test targets, test modules
+    /// and items with a test attribute.
+    pub production: bool,
     /// The folders and files that the check skips.
     pub exclude: Vec<String>,
 }
@@ -307,6 +310,7 @@ impl Default for Duplication {
             threshold: 0.0,
             skip_local: false,
             ignore_imports: true,
+            production: false,
             exclude: Vec::new(),
         }
     }

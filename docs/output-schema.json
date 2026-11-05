@@ -1519,6 +1519,10 @@
           "minimum": 0,
           "description": "The smallest clone, in lines."
         },
+        "production": {
+          "type": "boolean",
+          "description": "True when the check leaves out test code."
+        },
         "stats": {
           "$ref": "#/$defs/Stats",
           "description": "The counts."
@@ -1548,6 +1552,7 @@
         "mode",
         "min_tokens",
         "min_lines",
+        "production",
         "stats",
         "generated_files",
         "clone_families",

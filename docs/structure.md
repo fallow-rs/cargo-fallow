@@ -76,7 +76,26 @@ mode = "mild"             # strict, mild, weak or semantic
 min-tokens = 50
 min-lines = 5
 threshold = 0.0           # 0 means no limit
+production = false        # true leaves out test code
 ```
+
+With `production = true`, or with `cargo fallow dupes --production`, the
+clone search leaves out test code. Test code is a test target, a file below
+a test module declaration, and an item with a test attribute, for example
+`#[cfg(test)] mod tests` or `#[test]`. Bench and example targets stay in the
+search. The line counts
+and the duplication percentage then count only production code, so the
+`threshold` judges production code. `--no-production` keeps test code also
+when the table sets `production = true`. A clone never spans a test item that
+the search leaves out. A file that production code and test code both reach
+counts as production code. The summary has `production: true`. This is the
+`production` option of fallow for JavaScript for the duplication check.
+`cargo fallow check` reads the same table key, and the key changes only the
+duplication part of `check`. The test attributes are `#[cfg(test)]` and the
+test macros `test`, `bench`, `rstest`, `test_case` and `quickcheck`, also
+with a path, for example `#[tokio::test]`. Code in a macro call, for example
+a test in `proptest! { ... }`, stays production code, because the parser keeps
+a macro call as tokens.
 
 When the table sets `threshold`, the report shows the
 `duplication-threshold` gate. As with the other gates, this gate fails the

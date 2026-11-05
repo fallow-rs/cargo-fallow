@@ -5,6 +5,10 @@
 //! comments, are not tokens. With `ignore-imports`, the tokens of `use` items
 //! and `extern crate` items are left out.
 //!
+//! Each token has a `test` flag: true inside an item with a test attribute,
+//! for example `#[cfg(test)]` or `#[test]`. `production = true` leaves these
+//! tokens out.
+//!
 //! Each token becomes a hash of its class and, unless the mode blinds the
 //! class, its text. `strict` and `mild` keep every text. `weak` blinds string
 //! and character literals. `semantic` also blinds names, lifetimes and numbers.
@@ -13,6 +17,7 @@
 use ra_ap_syntax::{NodeOrToken, SyntaxKind, SyntaxNode, WalkEvent};
 use xxhash_rust::xxh3::xxh3_64;
 
+use crate::attrs::{AttrClass, attributes_of};
 use crate::structure::config::Mode;
 use crate::structure::source::{LineIndex, is_space_or_comment};
 
@@ -29,6 +34,44 @@ pub struct Token {
     pub end_line: u32,
     /// The column after the last character.
     pub end_column: u32,
+    /// True inside an item with a test attribute.
+    pub test: bool,
+}
+
+/// True for a node with a test attribute, for example `#[cfg(test)]`,
+/// `#[test]` or `#[cfg_attr(test, test)]`.
+pub fn is_test_item(node: &SyntaxNode) -> bool {
+    attributes_of(node) == AttrClass::Test
+}
+
+/// The number of lines with a part of a test item below `root`. A line counts
+/// once, also when two test items share it.
+pub fn test_lines(root: &SyntaxNode, index: &LineIndex<'_>) -> u32 {
+    let mut ranges = Vec::new();
+    let mut walk = root.preorder();
+    while let Some(event) = walk.next() {
+        let WalkEvent::Enter(node) = event else {
+            continue;
+        };
+        if is_test_item(&node) {
+            let range = node.text_range();
+            ranges.push((
+                index.position(range.start()).0,
+                index.position(range.end()).0,
+            ));
+            walk.skip_subtree();
+        }
+    }
+    ranges.sort_unstable();
+    let (mut lines, mut covered) = (0, 0);
+    for (first, last) in ranges {
+        let first = first.max(covered + 1);
+        if last >= first {
+            lines += last - first + 1;
+            covered = last;
+        }
+    }
+    lines
 }
 
 /// The class of a token for the normalization.
@@ -85,10 +128,19 @@ pub fn tokens(
     ignore_imports: bool,
 ) -> Vec<Token> {
     let mut found = Vec::new();
+    // The test items around the walk, outermost first.
+    let mut tests: Vec<SyntaxNode> = Vec::new();
     let mut walk = root.preorder_with_tokens();
     while let Some(event) = walk.next() {
-        let WalkEvent::Enter(element) = event else {
-            continue;
+        let element = match event {
+            WalkEvent::Enter(element) => element,
+            WalkEvent::Leave(NodeOrToken::Node(node)) => {
+                if tests.last() == Some(&node) {
+                    tests.pop();
+                }
+                continue;
+            }
+            WalkEvent::Leave(NodeOrToken::Token(_)) => continue,
         };
         match element {
             NodeOrToken::Node(node) => {
@@ -96,6 +148,8 @@ pub fn tokens(
                     && matches!(node.kind(), SyntaxKind::USE | SyntaxKind::EXTERN_CRATE)
                 {
                     walk.skip_subtree();
+                } else if is_test_item(&node) {
+                    tests.push(node);
                 }
             }
             NodeOrToken::Token(token) => {
@@ -111,6 +165,7 @@ pub fn tokens(
                     column,
                     end_line,
                     end_column,
+                    test: !tests.is_empty(),
                 });
             }
         }
@@ -133,6 +188,51 @@ mod tests {
                 .collect()
         })
         .unwrap_or_default()
+    }
+
+    /// The number of test tokens, all tokens and the test lines of `source`.
+    fn test_parts(source: &str) -> (usize, usize, u32) {
+        with_parsed(source, Edition::Edition2024, |file, text| {
+            let index = LineIndex::new(text);
+            let found = tokens(file.syntax(), &index, Mode::Mild, true);
+            (
+                found.iter().filter(|token| token.test).count(),
+                found.len(),
+                test_lines(file.syntax(), &index),
+            )
+        })
+        .unwrap_or_default()
+    }
+
+    #[test]
+    fn only_a_test_attribute_makes_test_tokens() {
+        for production in [
+            "#[cfg(not(test))]\nfn a() {}\n",
+            "#[cfg(any(test, feature = \"x\"))]\nfn a() {}\n",
+            "#[cfg(feature = \"x\")]\nfn a() {}\n",
+        ] {
+            assert_eq!(test_parts(production).0, 0, "{production}");
+        }
+        for test in [
+            "#[cfg(all(test, unix))]\nfn a() {}\n",
+            "#[cfg_attr(test, test)]\nfn a() {}\n",
+            "#[tokio::test]\nasync fn a() {}\n",
+        ] {
+            let (tests, all, lines) = test_parts(test);
+            assert_eq!((tests, lines), (all, 2), "{test}");
+        }
+    }
+
+    #[test]
+    fn an_inner_test_attribute_makes_each_token_a_test_token() {
+        let (tests, all, _) = test_parts("#![cfg(test)]\nfn a() {}\n");
+        assert_eq!(tests, all);
+    }
+
+    #[test]
+    fn two_test_items_on_one_line_count_the_line_once() {
+        let source = "fn p() {}\n#[test] fn a() {} #[test] fn b() {}\nfn q() {}\n";
+        assert_eq!(test_parts(source).2, 1);
     }
 
     #[test]

@@ -1900,14 +1900,36 @@ fn a_warn_rule_is_a_sarif_warning_also_with_an_enforced_gate() {
     );
 }
 
+/// An `off` rule hides each clone group, and the percentage gate still runs,
+/// so a workspace can gate the percentage without a finding for each group.
 #[test]
-fn an_off_duplication_rule_has_no_threshold_gate() {
+fn an_off_duplication_rule_keeps_the_threshold_gate_and_hides_the_groups() {
     let fixture = Fixture::new();
+    let manifest = fs::read_to_string(fixture.manifest()).expect("read the manifest");
+    fixture.write(
+        "Cargo.toml",
+        &format!("{manifest}\n[workspace.metadata.fallow.dupes]\nmin-tokens = 30\nthreshold = 1\n"),
+    );
     fixture.rules("code-duplication = \"off\"");
-    let (code, report) = fixture.json(&["dupes", "--min-tokens", "30", "--threshold", "1"]);
-    assert_eq!(code, 0, "{report:#}");
-    assert!(
-        report["gate_outcomes"]["duplication-threshold"].is_null(),
+    let (code, report) = fixture.json(&["dupes", "--threshold", "1"]);
+    assert_eq!(code, 1, "{report:#}");
+    assert_eq!(
+        report["gate_outcomes"]["duplication-threshold"]["status"], "fail",
         "{report:#}"
     );
+    assert_eq!(
+        report["findings"].as_array().map(Vec::len),
+        Some(0),
+        "{report:#}"
+    );
+    let (code, report) = fixture.json(&["dupes", "--threshold", "99"]);
+    assert_eq!(code, 0, "{report:#}");
+    let compact = fixture.run(&["dupes", "--quiet", "--format", "compact"]);
+    assert_eq!(compact.stdout.trim(), "", "{}", compact.stdout);
+    let (code, report) = fixture.json(&["check", "--only", "dupes", "--fail-on-issues"]);
+    assert_eq!(
+        report["gate_outcomes"]["duplication-threshold"]["status"], "fail",
+        "{report:#}"
+    );
+    assert_eq!(code, 1, "{report:#}");
 }

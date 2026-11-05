@@ -72,17 +72,41 @@ pub struct Selection {
 }
 
 impl Selection {
-    /// True when `api` reads the library. With `public-crates`, these are
-    /// the libraries that `visibility` treats as an external API. Without
-    /// it, these are the libraries that a registry can publish.
+    /// The libraries that a registry can publish, with no table.
+    pub const fn published() -> Self {
+        Self {
+            exclude: Vec::new(),
+            public: None,
+        }
+    }
+
+    /// Adds the names of the table of the base tree. A base table that is not
+    /// valid adds nothing. Without `public-crates` at HEAD, the base list
+    /// adds nothing either.
+    pub fn add_base(&mut self, base: &Workspace) {
+        let Ok((exclude, public)) = crate::visibility::config::external_api(base) else {
+            return;
+        };
+        for name in exclude {
+            if !self.exclude.contains(&name) {
+                self.exclude.push(name);
+            }
+        }
+        if let (Some(list), Some(names)) = (&mut self.public, public) {
+            for name in names {
+                if !list.contains(&name) {
+                    list.push(name);
+                }
+            }
+        }
+    }
+
+    /// True when `api` reads the library: a library that `visibility` treats
+    /// as an external API. Without `public-crates`, these are the libraries
+    /// that a registry can publish and the excluded libraries.
     fn reads(&self, krate: &graph::Crate) -> bool {
-        if !krate.kind.is_library() {
-            return false;
-        }
-        match &self.public {
-            None => krate.published,
-            Some(_) => crate::visibility::is_api(krate, &self.exclude, self.public.as_deref()),
-        }
+        krate.kind.is_library()
+            && crate::visibility::is_api(krate, &self.exclude, self.public.as_deref())
     }
 }
 

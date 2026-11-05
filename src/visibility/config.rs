@@ -89,7 +89,7 @@ pub fn external_api(workspace: &Workspace) -> Result<(Vec<String>, Option<Vec<St
 
 /// Fails when a `public-crates` pattern matches no library of the workspace.
 /// A typo would make each library internal without notice.
-fn check_public(workspace: &Workspace, patterns: &[String]) -> Result<(), CliError> {
+pub fn check_public(workspace: &Workspace, patterns: &[String]) -> Result<(), CliError> {
     for pattern in patterns {
         let matched = workspace.members.iter().any(|member| {
             member

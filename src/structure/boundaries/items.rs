@@ -146,21 +146,59 @@ impl Context<'_> {
         let via = self.via_places(rule)?;
         let denied_names = self.denied_names(&deny);
         let checked = |krate: usize| from.contains(&self.graph.crates[krate].package);
-        // The named imports with a finding or a path through `allow-via`. A
-        // path that starts with the name of such an import gives no second
-        // finding.
-        let mut settled: FxHashSet<usize> = FxHashSet::default();
         let mut found: BTreeMap<(String, u32, String), Finding> = BTreeMap::new();
+        let settled = self.import_findings(rule, &checked, &deny, &via, &mut found);
+        let scope = RuleScope {
+            deny: &deny,
+            via: &via,
+            denied_names: &denied_names,
+            settled: &settled,
+        };
+        for reference in &self.graph.refs {
+            if !checked(reference.krate) || outside_code(reference.origin) {
+                continue;
+            }
+            match self.reference_verdict(reference, &scope) {
+                RefVerdict::Skip => {}
+                RefVerdict::Unresolved => outcome.unresolved += 1,
+                RefVerdict::Denied(to) => {
+                    let use_site = Use {
+                        krate: reference.krate,
+                        file: reference.file,
+                        line: reference.line,
+                        origin: finding_origin(reference.origin),
+                    };
+                    self.record(rule, &use_site, to, &mut found);
+                }
+            }
+        }
+        outcome.findings.extend(found.into_values());
+        Ok(())
+    }
+
+    /// Records a finding for each named import of a checked crate that
+    /// resolves to a denied place. Returns the named imports with a finding
+    /// or a path through `allow-via`. A path that starts with the name of
+    /// such an import gives no second finding.
+    fn import_findings(
+        &self,
+        rule: &ItemRule,
+        checked: &impl Fn(usize) -> bool,
+        deny: &Places,
+        via: &Places,
+        found: &mut BTreeMap<(String, u32, String), Finding>,
+    ) -> FxHashSet<usize> {
+        let mut settled: FxHashSet<usize> = FxHashSet::default();
         for (index, import) in self.graph.imports.iter().enumerate() {
             if !checked(import.krate) || import.binding == Binding::Glob {
                 continue;
             }
             let resolved = self.resolver.resolve_import(index);
-            if self.goes_via(&resolved, &via) {
+            if self.goes_via(&resolved, via) {
                 settled.insert(index);
                 continue;
             }
-            if let Some(to) = self.denied_target(&resolved, &deny) {
+            if let Some(to) = self.denied_target(&resolved, deny) {
                 settled.insert(index);
                 let use_site = Use {
                     krate: import.krate,
@@ -168,81 +206,64 @@ impl Context<'_> {
                     line: import.line,
                     origin: FindingOrigin::Code,
                 };
-                self.record(rule, &use_site, to, &mut found);
+                self.record(rule, &use_site, to, found);
             }
         }
-        for reference in &self.graph.refs {
-            if !checked(reference.krate)
-                || matches!(
-                    reference.origin,
-                    Origin::Doc | Origin::DocLink | Origin::Attr
-                )
-            {
-                continue;
+        settled
+    }
+
+    /// Decides what one path, method call or field access gives for a rule.
+    fn reference_verdict<'p>(
+        &self,
+        reference: &graph::Ref,
+        scope: &RuleScope<'p>,
+    ) -> RefVerdict<'p> {
+        let (segments, global) = match &reference.kind {
+            RefKind::Path { segments, global }
+            | RefKind::RecordField {
+                segments, global, ..
+            } => (segments, *global),
+            RefKind::Method(name) | RefKind::Field(name) | RefKind::Member(name) => {
+                return RefVerdict::unresolved(scope.denied_names.contains(name.as_str()));
             }
-            let (segments, global) = match &reference.kind {
-                RefKind::Path { segments, global }
-                | RefKind::RecordField {
-                    segments, global, ..
-                } => (segments, *global),
-                RefKind::Method(name) | RefKind::Field(name) | RefKind::Member(name) => {
-                    outcome.unresolved += usize::from(denied_names.contains(name.as_str()));
-                    continue;
-                }
-                RefKind::Macro(_) => continue,
-            };
-            let Some(first) = segments.first() else {
-                continue;
-            };
-            if !global
-                && self.bound_through(
-                    reference.module,
-                    first,
-                    &via,
-                    &settled,
-                    &mut FxHashSet::default(),
-                )
-            {
-                continue;
-            }
-            let resolved =
-                self.resolver
-                    .resolve(reference.krate, reference.module, segments, global);
-            if !resolved.exact {
-                let last = segments.last().map(String::as_str).unwrap_or_default();
-                outcome.unresolved += usize::from(denied_names.contains(last));
-                continue;
-            }
-            // A guessed first name that resolves is outside the workspace.
-            if resolved.guessed {
-                continue;
-            }
-            // A name that only a glob import brings in can be a local binding:
-            // a variable, a parameter or a generic parameter shadows it, and
-            // the graph does not see local bindings.
-            if !global && self.glob_only(reference.krate, reference.module, first) {
-                outcome.unresolved += usize::from(self.denied_target(&resolved, &deny).is_some());
-                continue;
-            }
-            if self.goes_via(&resolved, &via) {
-                continue;
-            }
-            if let Some(to) = self.denied_target(&resolved, &deny) {
-                let origin = match reference.origin {
-                    Origin::Macro | Origin::PublicMacro => FindingOrigin::Macro,
-                    _ => FindingOrigin::Code,
-                };
-                let use_site = Use {
-                    krate: reference.krate,
-                    file: reference.file,
-                    line: reference.line,
-                    origin,
-                };
-                self.record(rule, &use_site, to, &mut found);
-            }
+            RefKind::Macro(_) => return RefVerdict::Skip,
+        };
+        let Some(first) = segments.first() else {
+            return RefVerdict::Skip;
+        };
+        if !global
+            && self.bound_through(
+                reference.module,
+                first,
+                scope.via,
+                scope.settled,
+                &mut FxHashSet::default(),
+            )
+        {
+            return RefVerdict::Skip;
         }
-        outcome.findings.extend(found.into_values());
-        Ok(())
+        let resolved = self
+            .resolver
+            .resolve(reference.krate, reference.module, segments, global);
+        if !resolved.exact {
+            let last = segments.last().map(String::as_str).unwrap_or_default();
+            return RefVerdict::unresolved(scope.denied_names.contains(last));
+        }
+        // A guessed first name that resolves is outside the workspace.
+        if resolved.guessed {
+            return RefVerdict::Skip;
+        }
+        // A name that only a glob import brings in can be a local binding:
+        // a variable, a parameter or a generic parameter shadows it, and
+        // the graph does not see local bindings.
+        if !global && self.glob_only(reference.krate, reference.module, first) {
+            return RefVerdict::unresolved(self.denied_target(&resolved, scope.deny).is_some());
+        }
+        if self.goes_via(&resolved, scope.via) {
+            return RefVerdict::Skip;
+        }
+        self.denied_target(&resolved, scope.deny)
+            .map_or(RefVerdict::Skip, RefVerdict::Denied)
     }
 
     fn record(
@@ -340,55 +361,67 @@ impl Context<'_> {
     fn places(&self, rule: &str, values: &[String], items: bool) -> Result<Places, CliError> {
         let mut places = Places::default();
         for value in values {
-            let segments: Vec<String> = value
-                .split("::")
-                .map(|part| part.trim().to_owned())
-                .collect();
-            let fail =
-                |reason: &str| invalid(&format!("rule `{rule}` names `{value}`, which {reason}"));
-            if segments.iter().any(String::is_empty) {
-                return Err(fail("is not a path"));
-            }
-            let Some(root) = self
-                .graph
-                .crates
-                .iter()
-                .position(|krate| krate.kind.is_library() && krate.name == segments[0])
-            else {
-                return Err(fail("is not a library crate of the workspace"));
-            };
-            let module = self.graph.crates[root].root_module;
-            if segments.len() == 1 {
-                places.insert(Place::Module(module), value);
-                continue;
-            }
-            let mut path = vec!["crate".to_owned()];
-            path.extend(segments[1..].iter().cloned());
-            let resolved = self.resolver.resolve(root, module, &path, false);
-            let targets = self.owned_items(&resolved);
-            // The code can remove a denied item. The rule then has nothing to
-            // check, but the configuration stays valid.
-            if !resolved.exact || (targets.is_empty() && resolved.modules.is_empty()) {
-                warn(&format!(
-                    "rule `{rule}` names `{value}`, which is not an item of the workspace"
-                ));
-                continue;
-            }
-            for &item in &targets {
-                let entry = &self.graph.items[item];
-                if items && entry.kind == ItemKind::Macro {
-                    return Err(fail("is a macro; an item rule cannot follow macro calls"));
-                }
-                places.insert(Place::Item(item), value);
-                if let Some(child) = entry.child_module {
-                    places.insert(Place::Module(child), value);
-                }
-            }
-            for &module in &resolved.modules {
-                places.insert(Place::Module(module), value);
-            }
+            self.add_place(rule, value, items, &mut places)?;
         }
         Ok(places)
+    }
+
+    /// Resolves one path of a rule and adds its items and modules to `places`.
+    fn add_place(
+        &self,
+        rule: &str,
+        value: &str,
+        items: bool,
+        places: &mut Places,
+    ) -> Result<(), CliError> {
+        let segments: Vec<String> = value
+            .split("::")
+            .map(|part| part.trim().to_owned())
+            .collect();
+        let fail =
+            |reason: &str| invalid(&format!("rule `{rule}` names `{value}`, which {reason}"));
+        if segments.iter().any(String::is_empty) {
+            return Err(fail("is not a path"));
+        }
+        let Some(root) = self
+            .graph
+            .crates
+            .iter()
+            .position(|krate| krate.kind.is_library() && krate.name == segments[0])
+        else {
+            return Err(fail("is not a library crate of the workspace"));
+        };
+        let module = self.graph.crates[root].root_module;
+        if segments.len() == 1 {
+            places.insert(Place::Module(module), value);
+            return Ok(());
+        }
+        let mut path = vec!["crate".to_owned()];
+        path.extend(segments[1..].iter().cloned());
+        let resolved = self.resolver.resolve(root, module, &path, false);
+        let targets = self.owned_items(&resolved);
+        // The code can remove a denied item. The rule then has nothing to
+        // check, but the configuration stays valid.
+        if !resolved.exact || (targets.is_empty() && resolved.modules.is_empty()) {
+            warn(&format!(
+                "rule `{rule}` names `{value}`, which is not an item of the workspace"
+            ));
+            return Ok(());
+        }
+        for &item in &targets {
+            let entry = &self.graph.items[item];
+            if items && entry.kind == ItemKind::Macro {
+                return Err(fail("is a macro; an item rule cannot follow macro calls"));
+            }
+            places.insert(Place::Item(item), value);
+            if let Some(child) = entry.child_module {
+                places.insert(Place::Module(child), value);
+            }
+        }
+        for &module in &resolved.modules {
+            places.insert(Place::Module(module), value);
+        }
+        Ok(())
     }
 
     /// The items of a resolved path whose owner the path names. The resolver
@@ -610,6 +643,47 @@ impl Places {
             Place::Module(module) => self.modules.insert(module),
         };
         self.labels.entry(place).or_insert_with(|| label.to_owned());
+    }
+}
+
+/// The places of one item rule, and the named imports that its import pass
+/// settled.
+struct RuleScope<'p> {
+    deny: &'p Places,
+    via: &'p Places,
+    denied_names: &'p FxHashSet<&'p str>,
+    settled: &'p FxHashSet<usize>,
+}
+
+/// What one path, method call or field access gives for an item rule.
+enum RefVerdict<'p> {
+    /// The use gives nothing.
+    Skip,
+    /// The rule cannot judge the use, and the use can reach a denied item.
+    Unresolved,
+    /// The use reaches the denied place with this label.
+    Denied(&'p str),
+}
+
+impl RefVerdict<'_> {
+    /// [`RefVerdict::Unresolved`] when a denied item can match, else
+    /// [`RefVerdict::Skip`].
+    const fn unresolved(denied: bool) -> Self {
+        if denied { Self::Unresolved } else { Self::Skip }
+    }
+}
+
+/// True for a reference in a doc comment, a doc link or an attribute. An
+/// item rule checks only code.
+const fn outside_code(origin: Origin) -> bool {
+    matches!(origin, Origin::Doc | Origin::DocLink | Origin::Attr)
+}
+
+/// The origin of a finding for a reference of this origin.
+const fn finding_origin(origin: Origin) -> FindingOrigin {
+    match origin {
+        Origin::Macro | Origin::PublicMacro => FindingOrigin::Macro,
+        _ => FindingOrigin::Code,
     }
 }
 

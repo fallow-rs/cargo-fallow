@@ -34,7 +34,7 @@ use crate::error::{CliError, ErrorCode};
 use crate::finding::{self as shared, Category, Draft, Impact, Location, Severity};
 use crate::gates::RustGateName as Gate;
 use crate::gates::parse_edition;
-use crate::modules::{ModuleDecl, TargetRoot, walk};
+use crate::modules::{ModuleDecl, TargetRoot, Walk, walk};
 use crate::parse::{Edition, with_parsed};
 use crate::render::{Progress, warn};
 use crate::rules::Level;
@@ -765,34 +765,15 @@ fn module_rule(workspace: &Workspace, rule: &ModuleRule) -> Result<Vec<Finding>,
         ));
         return Ok(Vec::new());
     };
-    let from = module_paths(&rule.rule, &rule.from)?;
-    let deny = module_paths(&rule.rule, &rule.deny)?;
-    let allow = module_paths(&rule.rule, &rule.allow)?;
+    let paths = RulePaths {
+        from: module_paths(&rule.rule, &rule.from)?,
+        deny: module_paths(&rule.rule, &rule.deny)?,
+        allow: module_paths(&rule.rule, &rule.allow)?,
+    };
     let root = workspace.root.as_std_path();
     let mut found: BTreeMap<(String, u32, u32, String), Finding> = BTreeMap::new();
     for target in &member.targets {
-        let edition = parse_edition(&target.edition);
-        let roots = [TargetRoot {
-            path: target.src_path.clone(),
-            edition,
-            test_only: false,
-        }];
-        let walked = walk(root, &roots, |visit| {
-            let text = fs::read_to_string(root.join(&visit.path))
-                .map_err(|err| format!("cannot read the file: {err}"))?;
-            let mut base = vec!["crate".to_owned()];
-            base.extend(visit.module_path.iter().cloned());
-            with_parsed(&text, visit.edition, |file, normalized| {
-                let mut scan = PathScan {
-                    text: normalized,
-                    used: Vec::new(),
-                    decls: Vec::new(),
-                };
-                scan.items(file.syntax(), &base, &mut Vec::new());
-                ((visit.path.clone(), scan.used), scan.decls)
-            })
-            .map_err(crate::structure::source::parse_reason)
-        });
+        let walked = used_paths(root, target);
         for skipped in &walked.skipped {
             warn(&format!(
                 "the rule `{}` does not judge `{}`: {}",
@@ -801,49 +782,100 @@ fn module_rule(workspace: &Workspace, rule: &ModuleRule) -> Result<Vec<Finding>,
         }
         for (path, used) in walked.files {
             for item in used {
-                if !from.iter().any(|prefix| starts_with(&item.module, prefix)) {
-                    continue;
-                }
-                let Some(denied) = deny.iter().find(|prefix| starts_with(&item.path, prefix))
-                else {
+                let Some(denied) = paths.denied(&item) else {
                     continue;
                 };
-                if allow.iter().any(|prefix| starts_with(&item.path, prefix))
-                    || starts_with(&item.path, &item.module)
-                {
-                    continue;
-                }
-                let module = item.module.join("::");
-                let to = item.path.join("::");
-                let message = rule.message.as_deref().map_or_else(
-                    || format!("{module} must not use {to}"),
-                    |template| fill(template, &[("from", &module), ("to", &to)]),
-                );
-                let key = (path.clone(), item.line, item.col, to.clone());
-                found.entry(key).or_insert_with(|| Finding {
-                    rule: rule.rule.clone(),
-                    kind: Kind::ModulePath,
-                    from: module.clone(),
-                    to: to.clone(),
-                    path: path.clone(),
-                    line: item.line,
-                    col: item.col,
-                    pattern: None,
-                    dependency_kinds: Vec::new(),
-                    origin: None,
-                    message,
-                    actions: vec![Action::manual(
-                        "move-code",
-                        format!(
-                            "Remove the use of {} from {module}, or move the shared code to a module that the rule allows",
-                            denied.join("::")
-                        ),
-                    )],
-                });
+                let finding = module_finding(rule, &path, &item, denied);
+                let key = (path.clone(), item.line, item.col, finding.to.clone());
+                found.entry(key).or_insert(finding);
             }
         }
     }
     Ok(found.into_values().collect())
+}
+
+/// The module paths of one module rule.
+struct RulePaths {
+    from: Vec<Vec<String>>,
+    deny: Vec<Vec<String>>,
+    allow: Vec<Vec<String>>,
+}
+
+impl RulePaths {
+    /// The denied prefix that a used path breaks, if the rule checks the
+    /// module of the path and does not allow the path.
+    fn denied(&self, item: &UsedPath) -> Option<&[String]> {
+        if !self
+            .from
+            .iter()
+            .any(|prefix| starts_with(&item.module, prefix))
+        {
+            return None;
+        }
+        let denied = self
+            .deny
+            .iter()
+            .find(|prefix| starts_with(&item.path, prefix))?;
+        let allowed = self
+            .allow
+            .iter()
+            .any(|prefix| starts_with(&item.path, prefix))
+            || starts_with(&item.path, &item.module);
+        (!allowed).then_some(denied.as_slice())
+    }
+}
+
+/// The paths that the code of one target uses, for each file.
+fn used_paths(root: &Path, target: &workspace::Target) -> Walk<(String, Vec<UsedPath>)> {
+    let roots = [TargetRoot {
+        path: target.src_path.clone(),
+        edition: parse_edition(&target.edition),
+        test_only: false,
+    }];
+    walk(root, &roots, |visit| {
+        let text = fs::read_to_string(root.join(&visit.path))
+            .map_err(|err| format!("cannot read the file: {err}"))?;
+        let mut base = vec!["crate".to_owned()];
+        base.extend(visit.module_path.iter().cloned());
+        with_parsed(&text, visit.edition, |file, normalized| {
+            let mut scan = PathScan {
+                text: normalized,
+                used: Vec::new(),
+                decls: Vec::new(),
+            };
+            scan.items(file.syntax(), &base, &mut Vec::new());
+            ((visit.path.clone(), scan.used), scan.decls)
+        })
+        .map_err(crate::structure::source::parse_reason)
+    })
+}
+
+/// The finding for a used path that breaks the denied prefix `denied`.
+fn module_finding(rule: &ModuleRule, path: &str, item: &UsedPath, denied: &[String]) -> Finding {
+    let module = item.module.join("::");
+    let to = item.path.join("::");
+    let message = rule.message.as_deref().map_or_else(
+        || format!("{module} must not use {to}"),
+        |template| fill(template, &[("from", &module), ("to", &to)]),
+    );
+    let advice = format!(
+        "Remove the use of {} from {module}, or move the shared code to a module that the rule allows",
+        denied.join("::")
+    );
+    Finding {
+        rule: rule.rule.clone(),
+        kind: Kind::ModulePath,
+        from: module,
+        to,
+        path: path.to_owned(),
+        line: item.line,
+        col: item.col,
+        pattern: None,
+        dependency_kinds: Vec::new(),
+        origin: None,
+        message,
+        actions: vec![Action::manual("move-code", advice)],
+    }
 }
 
 fn module_paths(rule: &str, values: &[String]) -> Result<Vec<Vec<String>>, CliError> {

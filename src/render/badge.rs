@@ -51,92 +51,49 @@ fn xml_escape(text: &str) -> String {
         .replace('>', "&gt;")
 }
 
+/// The first character of [`ASCII_WIDTHS`], the space.
+const FIRST_PRINTABLE: char = ' ';
+
+/// The width of a character outside [`ASCII_WIDTHS`].
+const OTHER_WIDTH: f64 = 10.7;
+
+/// The widths in Verdana at 11 px of the printable ASCII characters, from
+/// the space to the tilde, in code point order.
+#[rustfmt::skip]
+const ASCII_WIDTHS: [f64; 95] = [
+    //  !"#$%&'
+    3.87, 4.33, 5.05, 9.0, 6.99, 11.84, 7.99, 2.95,
+    // ()*+,-./
+    5.0, 5.0, 6.99, 9.0, 4.0, 5.0, 4.0, 5.0,
+    // 01234567
+    6.99, 6.99, 6.99, 6.99, 6.99, 6.99, 6.99, 6.99,
+    // 89:;<=>?
+    6.99, 6.99, 5.0, 5.0, 9.0, 9.0, 9.0, 6.0,
+    // @ABCDEFG
+    11.0, 7.52, 7.54, 7.68, 8.48, 6.96, 6.32, 8.53,
+    // HIJKLMNO
+    8.27, 4.63, 5.0, 7.62, 6.12, 9.27, 8.23, 8.66,
+    // PQRSTUVW
+    6.63, 8.66, 7.65, 7.52, 6.78, 8.05, 7.52, 10.88,
+    // XYZ[\]^_
+    7.54, 6.77, 7.54, 5.0, 5.0, 5.0, 9.0, 6.99,
+    // `abcdefg
+    6.99, 6.61, 6.85, 5.73, 6.85, 6.55, 3.87, 6.85,
+    // hijklmno
+    6.96, 3.02, 3.79, 6.51, 3.02, 10.7, 6.96, 6.68,
+    // pqrstuvw
+    6.85, 6.85, 4.69, 5.73, 4.33, 6.96, 6.51, 9.0,
+    // xyz{|}~
+    6.51, 6.51, 5.78, 6.98, 5.0, 6.98, 9.0,
+];
+
 /// The width of a character in Verdana at 11 px, the font of the badge.
-#[expect(
-    clippy::match_same_arms,
-    reason = "a table with one width for each character"
-)]
-const fn char_width(c: char) -> f64 {
-    match c {
-        ' ' => 3.87,
-        '!' => 4.33,
-        '"' => 5.05,
-        '#' => 9.0,
-        '$' => 6.99,
-        '%' => 11.84,
-        '&' => 7.99,
-        '\'' => 2.95,
-        '(' | ')' => 5.0,
-        '*' => 6.99,
-        '+' => 9.0,
-        ',' => 4.0,
-        '-' => 5.0,
-        '.' => 4.0,
-        '/' => 5.0,
-        '0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' => 6.99,
-        ':' | ';' => 5.0,
-        '<' | '=' | '>' => 9.0,
-        '?' => 6.0,
-        '@' => 11.0,
-        'A' => 7.52,
-        'B' => 7.54,
-        'C' => 7.68,
-        'D' => 8.48,
-        'E' => 6.96,
-        'F' => 6.32,
-        'G' => 8.53,
-        'H' => 8.27,
-        'I' => 4.63,
-        'J' => 5.0,
-        'K' => 7.62,
-        'L' => 6.12,
-        'M' => 9.27,
-        'N' => 8.23,
-        'O' => 8.66,
-        'P' => 6.63,
-        'Q' => 8.66,
-        'R' => 7.65,
-        'S' => 7.52,
-        'T' => 6.78,
-        'U' => 8.05,
-        'V' => 7.52,
-        'W' => 10.88,
-        'X' => 7.54,
-        'Y' => 6.77,
-        'Z' => 7.54,
-        '[' | '\\' | ']' => 5.0,
-        '^' => 9.0,
-        '_' | '`' => 6.99,
-        'a' => 6.61,
-        'b' => 6.85,
-        'c' => 5.73,
-        'd' => 6.85,
-        'e' => 6.55,
-        'f' => 3.87,
-        'g' => 6.85,
-        'h' => 6.96,
-        'i' => 3.02,
-        'j' => 3.79,
-        'k' => 6.51,
-        'l' => 3.02,
-        'm' => 10.7,
-        'n' => 6.96,
-        'o' => 6.68,
-        'p' | 'q' => 6.85,
-        'r' => 4.69,
-        's' => 5.73,
-        't' => 4.33,
-        'u' => 6.96,
-        'v' => 6.51,
-        'w' => 9.0,
-        'x' | 'y' => 6.51,
-        'z' => 5.78,
-        '{' => 6.98,
-        '|' => 5.0,
-        '}' => 6.98,
-        '~' => 9.0,
-        _ => 10.7,
-    }
+fn char_width(c: char) -> f64 {
+    (c as usize)
+        .checked_sub(FIRST_PRINTABLE as usize)
+        .and_then(|index| ASCII_WIDTHS.get(index))
+        .copied()
+        .unwrap_or(OTHER_WIDTH)
 }
 
 /// The width of a text in whole pixels, rounded up to an odd number, the
@@ -281,5 +238,24 @@ mod tests {
         let svg = render("a<&\"", "b>", "#000");
         assert!(svg.contains("a&lt;&amp;&quot;: b&gt;"), "{svg}");
         assert!(!svg.contains("a<&"), "{svg}");
+    }
+
+    #[test]
+    fn each_printable_character_keeps_its_verdana_width() {
+        // A sum weighted by position: a changed or moved width changes it.
+        let weighted: i64 = (' '..='~')
+            .zip(1_i64..)
+            .map(|(c, position)| {
+                #[expect(clippy::cast_possible_truncation, reason = "widths are small")]
+                let hundredths = (char_width(c) * 100.0).round() as i64;
+                hundredths * position
+            })
+            .sum();
+        assert_eq!(weighted, 3_075_862);
+        assert!((char_width(' ') - 3.87).abs() < f64::EPSILON);
+        assert!((char_width('~') - 9.0).abs() < f64::EPSILON);
+        assert!((char_width('\u{7f}') - 10.7).abs() < f64::EPSILON);
+        assert!((char_width('\u{1f}') - 10.7).abs() < f64::EPSILON);
+        assert!((char_width('é') - 10.7).abs() < f64::EPSILON);
     }
 }

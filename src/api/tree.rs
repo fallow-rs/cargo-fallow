@@ -158,8 +158,8 @@ mod tests {
     }
 
     #[test]
-    fn untar_writes_files_and_reads_a_long_pax_name() {
-        let dir = tempfile::tempdir().expect("make a folder");
+    fn untar_writes_files_and_reads_a_long_pax_name() -> Result<(), String> {
+        let dir = tempfile::tempdir().map_err(|err| err.to_string())?;
         let long = format!("{}/lib.rs", "deep".repeat(30));
         let mut tar = entry("pax_global_header", b"52 comment=abc\n", b'g');
         tar.extend(entry("src/", b"", b'5'));
@@ -168,17 +168,20 @@ mod tests {
         tar.extend(entry("PaxHeader", record.as_bytes(), b'x'));
         tar.extend(entry("ignored-name", b"pub fn f() {}\n", b'0'));
         tar.extend(vec![0; BLOCK * 2]);
-        untar(&tar, dir.path()).expect("untar");
-        let main = fs::read_to_string(dir.path().join("src/main.rs")).expect("read main");
+        untar(&tar, dir.path())?;
+        let main =
+            fs::read_to_string(dir.path().join("src/main.rs")).map_err(|err| err.to_string())?;
         assert_eq!(main, "fn main() {}\n");
         assert!(dir.path().join(long).is_file());
+        Ok(())
     }
 
     #[test]
-    fn untar_refuses_a_path_outside_the_tree() {
-        let dir = tempfile::tempdir().expect("make a folder");
+    fn untar_refuses_a_path_outside_the_tree() -> Result<(), String> {
+        let dir = tempfile::tempdir().map_err(|err| err.to_string())?;
         let mut tar = entry("../evil.rs", b"x", b'0');
         tar.extend(vec![0; BLOCK * 2]);
         assert!(untar(&tar, dir.path()).is_err());
+        Ok(())
     }
 }

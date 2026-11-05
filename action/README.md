@@ -94,7 +94,7 @@ does not fail on them:
 | `format` | `human` | The format of the report in the log and in the `report` output: `human`, `json` or `sarif`. |
 | `fail-on-issues` | `true` | Pass the gate flag to the command, so a failed gate fails the job. See [Gate flags](#gate-flags). |
 | `args` | empty | More arguments, separated by spaces. The action does not expand them in a shell. The action rejects `--format` and `--quiet`, because it sets them itself. For example, `--changed-since origin/main` reports only the findings in the changed files. |
-| `base` | empty | The ref to compare with. The action passes it as `--base` to `size` and `api`, and as `--in-diff` to `mutants`. `auto` uses the base commit of the pull request, or on a push, the commit before the push. See [Base](#base). |
+| `base` | empty | The ref to compare with. The action passes it as `--base` to `check`, `size` and `api`, and as `--in-diff` to `mutants`. `check --base` needs a cargo-fallow version after 0.1.0. `auto` uses the base commit of the pull request, or on a push, the commit before the push. See [Base](#base). |
 | `install` | `auto` | See [Install](#install). |
 | `version` | empty | The version for `install: release` and `install: cargo`. When empty, the action uses the version of its own ref. |
 | `sarif` | `false` | Upload the SARIF log to code scanning. The action does not upload for a pull request from a fork, because the token of that run is read-only. |
@@ -128,16 +128,27 @@ a warning.
 - On a pull request, it uses the base commit of the pull request.
 - On a push, it uses the commit before the push (`github.event.before`).
 - The push of a new branch or tag has no commit before it. The run then compares
-  with no base and writes a notice. `size` then has no growth gate, and `mutants`
-  runs each mutant.
+  with no base and writes a notice. `check` and `size` then have no growth gate,
+  and `mutants` runs each mutant.
 - On another event, for example `workflow_dispatch`, `schedule` or
   `merge_group`, there is no commit to use, so the run also compares with no base.
 
 A shallow checkout can miss the commit. In that case, the action fetches only that
-commit with `--depth=1`, and the clone gets it as a shallow commit. When the fetch
-fails, the run compares with no base, and the notice tells you to use
-`fetch-depth: 0`. After a force push, the old commit can be missing from the
-remote. Use `fetch-depth: 0` for a full comparison.
+commit with `--depth=1`, and the clone gets it as a shallow commit. After a force
+push, the old commit can be missing from the remote. Use `fetch-depth: 0` for a
+full comparison.
+
+When the action cannot read the commit, or the event gives a value that is not a
+commit SHA, the result depends on the command:
+
+- `check`, `size` and `mutants` need the base for a gate. Without it, the growth
+  gate or the in-diff selection passes without a check. So the step fails with an
+  error that tells you to use `fetch-depth: 0`. After a force push the old commit
+  is gone, so set `base` to a ref, for example `origin/main`.
+- Each other command ignores the base, so the run writes a notice and goes on.
+
+The cases with no commit to read (no pull request base and no push, or the push
+of a new branch) stay a notice for each command.
 
 ### Pull request comment
 
@@ -191,8 +202,8 @@ also accept an older flag for the same gate. When `args` has the older flag or
 | `dupes` | `--fail-on-clones` |
 | `mutants` | `--fail-on-survivors` |
 
-`size` has a growth gate only with `--base` or `--staged`. To enable the gate, set
-the `base` input.
+`size` and `check` have a growth gate only with `--base` or `--staged`. To enable
+the gate, set the `base` input.
 
 An execution error (exit code 2) fails the job, also with
 `fail-on-issues: false`.

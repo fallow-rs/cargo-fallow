@@ -244,10 +244,10 @@ fn compare(before: &Surface, after: &Surface) -> Vec<Finding> {
         match (before.crates.get(name), after.crates.get(name)) {
             (Some(old), Some(new)) => compare_crate(name, old, new, &versions, &mut found),
             (None, Some(new)) => {
-                found.push(crate_finding(name, Change::CrateAdded, new, &versions))
+                found.push(crate_finding(name, Change::CrateAdded, new, &versions));
             }
             (Some(old), None) => {
-                found.push(crate_finding(name, Change::CrateRemoved, old, &versions))
+                found.push(crate_finding(name, Change::CrateRemoved, old, &versions));
             }
             (None, None) => {}
         }

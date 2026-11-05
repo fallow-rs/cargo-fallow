@@ -8,8 +8,6 @@
 //! member has its own header. A header is one line of tokens with one space
 //! between two tokens, so a change of the layout is no change.
 
-use std::collections::HashMap;
-
 use ra_ap_syntax::ast::{self, HasAttrs, HasName};
 use ra_ap_syntax::{AstNode, NodeOrToken, SyntaxKind, SyntaxNode};
 
@@ -27,14 +25,14 @@ pub struct Fact {
 }
 
 /// The facts of the items of one file, by the line of the name and the name.
-pub type Facts = HashMap<(u32, String), Fact>;
+pub type Facts = rustc_hash::FxHashMap<(u32, String), Fact>;
 
 /// Reads the facts of each named item of `text`. A file that does not parse
 /// gives no facts.
 pub fn facts(text: &str, edition: Edition) -> Facts {
     with_parsed(text, edition, |file, normalized| {
         let index = LineIndex::new(normalized);
-        let mut found = Facts::new();
+        let mut found = Facts::default();
         for node in file.syntax().descendants() {
             let Some(named) = ast::AnyHasName::cast(node.clone()) else {
                 continue;

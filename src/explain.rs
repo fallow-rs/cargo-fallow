@@ -189,7 +189,7 @@ pub const RULES: &[Explanation] = &[
         rule: "boundaries",
         check: "boundaries",
         severity: "error",
-        meaning: "A rule of [workspace.metadata.fallow.boundaries] found a violation. The finding has the name of the rule. The kind is crate-dependency, source-pattern or module-path.",
+        meaning: "A rule of [workspace.metadata.fallow.boundaries] found a violation. The finding has the name of the rule. The kind is crate-dependency, source-pattern, module-path, item-path or glob-reexport.",
         example: "A source rule `no-exit` that denies `std::process::exit` in crates/core, and a call in crates/core/src/run.rs.",
         fix: "Move the code or the dependency, or change the rule.",
         docs: "https://github.com/fallow-rs/cargo-fallow/blob/main/docs/structure.md",
@@ -219,6 +219,24 @@ pub const RULES: &[Explanation] = &[
         meaning: "A module uses a module of the same package that a module rule denies. The finding has the name of the rule.",
         example: "A rule `from = [\"crate::parse\"]`, `deny = [\"crate::render\"]`, and `use crate::render::x` in src/parse.rs.",
         fix: "Move the code, or change the rule.",
+        docs: "https://github.com/fallow-rs/cargo-fallow/blob/main/docs/structure.md",
+    },
+    Explanation {
+        rule: "item-path",
+        check: "boundaries",
+        severity: "error",
+        meaning: "Code of a package uses a workspace item that an item rule denies. The path resolves through `use`, aliases and re-exports. A path that does not resolve gives no finding. The finding has the name of the rule.",
+        example: "A rule `from = [\"app-cli\"]`, `deny = [\"engine::dead_code::analyze\"]`, and `use engine::dead_code::analyze as run;` in app-cli.",
+        fix: "Use the item through a module of `allow-via`, move the code, or change the rule.",
+        docs: "https://github.com/fallow-rs/cargo-fallow/blob/main/docs/structure.md",
+    },
+    Explanation {
+        rule: "glob-reexport",
+        check: "boundaries",
+        severity: "error",
+        meaning: "A `pub use <path>::*` in a package re-exports a crate or a module that a re-export rule denies. An alias of the crate does not hide it.",
+        example: "A rule `from = [\"app-api\"]`, `deny = [\"app_types\"]`, and `pub use app_types::*;` in app-api.",
+        fix: "Re-export the items by name, or change the rule.",
         docs: "https://github.com/fallow-rs/cargo-fallow/blob/main/docs/structure.md",
     },
     Explanation {
@@ -290,7 +308,7 @@ pub const RULES: &[Explanation] = &[
         severity: "error",
         meaning: "A group of two or more copies of the same normalized token sequence.",
         example: "The same 60-token loop in src/a.rs and src/b.rs.",
-        fix: "Move the code to one function, or put `// fallow-ignore-next-line code-duplication` above a copy.",
+        fix: "Move the code to one function, or put `// fallow-ignore-next-line code-duplication` above a copy. To gate only the percentage, set the rule to `off` and keep `threshold`.",
         docs: "https://github.com/fallow-rs/cargo-fallow/blob/main/docs/structure.md",
     },
     Explanation {
@@ -484,7 +502,11 @@ mod tests {
             S::GrownFile | S::NewLargeFile => S::ALL.len(),
         };
         let boundary = match boundary {
-            B::CrateDependency | B::SourcePattern | B::ModulePath => B::ALL.len(),
+            B::CrateDependency
+            | B::SourcePattern
+            | B::ModulePath
+            | B::ItemPath
+            | B::GlobReexport => B::ALL.len(),
         };
         deps + kind + size + boundary
     }

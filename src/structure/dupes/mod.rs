@@ -389,10 +389,9 @@ pub fn section(
         ),
     );
     // The percentage counts the whole workspace, so a scoped run does not
-    // judge it.
-    // An `off` rule gives no finding, so the run does not judge the
-    // percentage either.
-    if settings.threshold > 0.0 && scope.is_full() && !scope.rules().is_off(&[DUPES_RULE]) {
+    // judge it. An `off` rule hides the clone groups, but the gate still
+    // judges the percentage: a workspace can gate the percentage only.
+    if settings.threshold > 0.0 && scope.is_full() {
         let observed = report.summary.stats.duplication_percentage;
         report.gate_outcomes.insert(
             Gate::DuplicationThreshold,

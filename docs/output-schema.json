@@ -283,6 +283,17 @@
           },
           "description": "The `Cargo.toml` sections of the dependency, for a crate rule."
         },
+        "origin": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BoundariesOrigin"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Where the path of an item rule is."
+        },
         "message": {
           "type": "string",
           "description": "The message."
@@ -324,9 +335,34 @@
           "type": "string",
           "const": "module-path",
           "description": "A module uses a denied module."
+        },
+        {
+          "type": "string",
+          "const": "item-path",
+          "description": "Code uses a denied workspace item, with the path resolved."
+        },
+        {
+          "type": "string",
+          "const": "glob-reexport",
+          "description": "A `pub use <path>::*` re-exports a denied crate or module."
         }
       ],
       "description": "The kind of a boundary finding."
+    },
+    "BoundariesOrigin": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "code",
+          "description": "In code."
+        },
+        {
+          "type": "string",
+          "const": "macro",
+          "description": "In the tokens of a macro. The line is the line of the macro."
+        }
+      ],
+      "description": "Where the path of an item rule finding is."
     },
     "BoundariesSummary": {
       "type": "object",
@@ -349,6 +385,24 @@
           "minimum": 0,
           "description": "The module rules."
         },
+        "item_rules": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The item rules."
+        },
+        "reexport_rules": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The glob re-export rules."
+        },
+        "unresolved": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The uses that the item rules cannot resolve and that name a denied\nitem: a path that does not resolve to its end, a method call or a\nfield access. They give no finding."
+        },
         "workspace_edges": {
           "type": "integer",
           "format": "uint",
@@ -366,6 +420,9 @@
         "crate_rules",
         "source_rules",
         "module_rules",
+        "item_rules",
+        "reexport_rules",
+        "unresolved",
         "workspace_edges",
         "source_files"
       ],
@@ -549,6 +606,7 @@
           "description": "The gate outcomes of each check that ran, keyed by gate name.",
           "propertyNames": {
             "enum": [
+              "api-removals",
               "boundary-violations",
               "duplication-findings",
               "duplication-threshold",
@@ -1263,6 +1321,7 @@
           "description": "The gate outcomes, keyed by gate name.",
           "propertyNames": {
             "enum": [
+              "api-removals",
               "boundary-violations",
               "duplication-findings",
               "duplication-threshold",
@@ -3549,6 +3608,7 @@
           "description": "The gate outcomes, keyed by gate name.",
           "propertyNames": {
             "enum": [
+              "api-removals",
               "boundary-violations",
               "duplication-findings",
               "duplication-threshold",
@@ -4059,6 +4119,7 @@
           "description": "The gate outcomes, keyed by gate name.",
           "propertyNames": {
             "enum": [
+              "api-removals",
               "boundary-violations",
               "duplication-findings",
               "duplication-threshold",
@@ -4132,6 +4193,7 @@
           "description": "The gate outcomes, keyed by gate name.",
           "propertyNames": {
             "enum": [
+              "api-removals",
               "boundary-violations",
               "duplication-findings",
               "duplication-threshold",
@@ -4205,6 +4267,7 @@
           "description": "The gate outcomes, keyed by gate name.",
           "propertyNames": {
             "enum": [
+              "api-removals",
               "boundary-violations",
               "duplication-findings",
               "duplication-threshold",
@@ -4278,6 +4341,7 @@
           "description": "The gate outcomes, keyed by gate name.",
           "propertyNames": {
             "enum": [
+              "api-removals",
               "boundary-violations",
               "duplication-findings",
               "duplication-threshold",
@@ -4351,6 +4415,7 @@
           "description": "The gate outcomes, keyed by gate name.",
           "propertyNames": {
             "enum": [
+              "api-removals",
               "boundary-violations",
               "duplication-findings",
               "duplication-threshold",
@@ -5670,6 +5735,7 @@
           "description": "The gate outcomes, keyed by gate name.",
           "propertyNames": {
             "enum": [
+              "api-removals",
               "boundary-violations",
               "duplication-findings",
               "duplication-threshold",

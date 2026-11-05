@@ -107,10 +107,14 @@ code-duplication = "off"
   equal, so `dead_public` and `dead-public` are one rule.
 - For a boundary rule, you can use three names. The first name is the `rule`
   name of its table. The second is the kind (`crate-dependency`,
-  `source-pattern` or `module-path`), which sets each rule of that kind. The
+  `source-pattern`, `module-path`, `item-path` or `glob-reexport`), which
+  sets each rule of that kind. The
   third is `boundaries`, which sets each boundary rule. When the table has
   more than one of these names, the first name in this order wins.
-- `code-duplication = "off"` also removes the `duplication-threshold` gate.
+- `code-duplication = "off"` hides each clone group, but the
+  `duplication-threshold` gate still judges the percentage. Use it to gate
+  the percentage only, without a warning for each group. To remove the gate,
+  remove `threshold` from `[workspace.metadata.fallow.dupes]`.
 - `parse-error`, `surviving-mutant` and `stale-suppression` have a fixed
   level. For an unknown rule, a fixed rule or an unknown level, the run exits
   2 with `CARGO_FALLOW_INVALID_CONFIG`.

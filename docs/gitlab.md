@@ -30,7 +30,7 @@ the vendored scripts.
 | `CARGO_FALLOW_FAIL_ON_ISSUES` | `true` | Fail the job when an enforced gate fails. |
 | `CARGO_FALLOW_CHANGED_SINCE` | empty | A ref for `--changed-since`. |
 | `CARGO_FALLOW_AUTO_CHANGED_SINCE` | `true` | In a merge request pipeline without `CARGO_FALLOW_CHANGED_SINCE`, give `--changed-since` the merge request base. The code quality report always has the full scope: GitLab compares it with the report of the target branch. |
-| `CARGO_FALLOW_COMMENT` | `false` | Post or update one merge request note. |
+| `CARGO_FALLOW_COMMENT` | `false` | Post or update one merge request note. A clean run posts no first note. |
 | `CARGO_FALLOW_COMMENT_KEY` | the command | The marker of the note. Give each job with a note its own key. |
 | `CARGO_FALLOW_INSTALL` | `cargo` | `cargo` runs `cargo install cargo-fallow`. `path` uses the `cargo-fallow` on the `PATH`. |
 | `CARGO_FALLOW_VERSION` | empty | The crates.io version for `cargo`. Empty means the newest version. Pin it: the cache then keeps the binary, and the next job does not build it. |
@@ -63,3 +63,9 @@ marker, `<!-- cargo-fallow-comment:<key> -->`, names the note of each key.
 Only a note of the user of the token counts, so a note of another user with the
 marker does not stop the update. A
 report over 900000 characters is cut.
+
+A clean run has no issue, exit code `0` and no gate that fails or warns. A
+clean run posts no first note, so a clean merge request gets no note and no
+notification. When a note of an earlier run exists, a clean run updates it, so
+the note does not keep old findings. When the text of the note does not
+change, the job does not update it.

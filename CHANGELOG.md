@@ -11,6 +11,175 @@ it.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-05
+
+### Added
+
+- `cargo fallow fix` formats each changed file with `rustfmt` when `rustfmt`
+  formatted it before the edits, so `cargo fmt --check` still passes.
+
+- `cargo fallow fix --only <CHECK>` and `--skip <CHECK>` limit the edits to
+  some checks. The values are `deps` and `visibility`. Each flag takes a list
+  with commas and can repeat. A `--skip` of both checks exits 2.
+
+- `[workspace.metadata.fallow.complexity] cyclomatic-policy = "flat-match"`
+  counts a flat `match` as one decision for the `max-cyclomatic` limit. A
+  flat `match` has no guard and no decision in an arm, for example a lookup
+  table. A finding then has `standard_cyclomatic` with the standard count.
+  The default stays `standard`, and the health score does not change.
+
+- `cargo fallow visibility` has the `--public-crate` flag and the
+  `public-crates` key of `[workspace.metadata.fallow.visibility]`. When they
+  name libraries, only those libraries are an external API. Each other
+  library gets each rule, also when a registry can publish it. A name can
+  have `*` as a glob. fallow for TypeScript names the same option
+  `publicPackages`.
+
+- `cargo fallow complexity --coverage <LCOV>` and `cargo fallow check
+  --coverage <LCOV>` give each function a CRAP score from its cyclomatic
+  complexity and its line coverage. A function at or over
+  `[workspace.metadata.fallow.complexity] max-crap` (default 30) is a
+  `complexity-crap` finding. `--coverage-root <PATH>` maps the `SF` paths of
+  an LCOV file from another machine.
+
+- `[workspace.metadata.fallow.dupes] production = true` and
+  `cargo fallow dupes --production` leave test code out of the clone search.
+  Test code is a test target, a test module and an item with a test
+  attribute, for example `#[cfg(test)]` or `#[test]`. The line counts and the
+  `threshold` then count only production code. The default stays `false`.
+  `--no-production` keeps test code.
+
+- `cargo fallow check` accepts `--base <REF>` and `--staged`, and gives them to
+  the size check. The `file-growth` gate then runs, and `--fail-on-issues`
+  enforces it, so one `check` run covers each gate.
+
+- A `boundaries.sources` rule takes `scope = "production"`. The rule then
+  skips test targets, test modules and items with a test attribute, for
+  example `#[cfg(test)]` or `#[test]`.
+- A `boundaries.sources` rule takes `allow = [{ path, max }]`. A listed file
+  passes up to `max` matches of the rule. Each match over `max` is a finding.
+
+- The GitHub Action passes the `base` input to `check` as `--base`, so the
+  `file-growth` gate runs in a `check` step.
+
+- `cargo fallow boundaries` has item rules
+  (`[[workspace.metadata.fallow.boundaries.items]]`) and glob re-export rules
+  (`[[workspace.metadata.fallow.boundaries.reexports]]`). An item rule keeps
+  the code of some packages from a workspace item, with the path resolved
+  through `use`, aliases and re-exports. `allow-via` keeps a use through a
+  named module allowed. A glob re-export rule finds a `pub use <path>::*`
+  that reads a denied crate or module. The findings have the kinds
+  `item-path` and `glob-reexport`, and the summary counts the uses that do
+  not resolve in `unresolved`.
+
+- `cargo fallow api --base <REF>` reports the public API changes of each
+  published library between the merge base of the ref and HEAD: `added`,
+  `removed` and `changed` items, and `crate-added`, `crate-removed` and
+  `feature-removed`. The `api-removals` gate counts a removal when the
+  breaking part of the version did not change. The GitHub Action runs it with
+  `command: api` and the `base` input.
+
+- `[[workspace.metadata.fallow.boundaries.cfg]]` rules list `cfg` builds,
+  for example `builds = [["test"], ["test", "miri"]]`. For each build, the
+  rule reports a path from code that the build compiles to an item that the
+  build does not compile. The kind is `cfg-path`. An option that no build
+  names is unknown, and then the rule gives credit.
+
+- `cargo fallow deps` has the opt-in `feature-unification-drift` rule. For each
+  member that `unify-features` in `[workspace.metadata.fallow.deps]` names, it
+  compares the features that `cargo build -p <member>` and
+  `cargo build --workspace` turn on for each shared crate. Each finding names
+  the crate, the version and the features that only one build turns on.
+
+### Changed
+
+- The SARIF level of a finding now follows its severity: `error` gives
+  `error`, and `warn` gives `warning`. Before, an `error` finding was a
+  SARIF `warning` when its gate was not enforced. A gate flag no longer
+  changes the level. This is the same rule that fallow uses.
+- A `deps` warning, for example `unused-optional-dependency`, is now a SARIF
+  `warning`. Before, it was a SARIF `note`.
+- The `github-annotations` and `github-summary` formats and the GitHub Action
+  use the same level. A surviving mutant is now always an `error`.
+
+- With `code-duplication = "off"`, the `duplication-threshold` gate still
+  judges the percentage, and the output has no clone group. A workspace can
+  now gate the percentage without a warning for each clone group. Before, the
+  rule at `off` removed the gate too. A workspace that used `off` to drop the
+  gate must now remove `threshold` from `[workspace.metadata.fallow.dupes]`.
+
+### Fixed
+
+- `cargo fallow mutants` now gives `--locked`, `--offline` and `--frozen` to
+  each cargo call in the copies: the builds, the test lists, the doctests and
+  the `cargo metadata` calls. Before, only the first `cargo metadata` call got
+  the flag, so a build in a copy could use the network. With `--offline` or
+  `--frozen`, these calls and the test runs also get `CARGO_NET_OFFLINE=true`.
+
+- `cargo fallow visibility` no longer reports a type that the signature of an
+  item that stays `pub` names, for example the return type of a `#[napi] pub
+  fn`. Before, the `pub(crate)` change made rustc warn with
+  `private_interfaces`.
+- `cargo fallow visibility` gives credit to an intra-doc link in a doc
+  comment, a `#[doc]` attribute or an included documentation file. The link
+  is a use from the module of the documentation, so `fix` no longer breaks
+  `cargo doc`. The trace shows the use as `doc-link`.
+- `cargo fallow deps` counts an intra-doc link to a dependency as a use.
+
+- `cargo fallow visibility` no longer reports `unnecessary-public` for a
+  `#[cfg(test)] pub` item in a private module. There, `pub` already gives
+  crate visibility, and `clippy::redundant_pub_crate` rejects `pub(crate)`.
+  When only its own module uses the item, the check reports
+  `unnecessary-restricted-visibility`, so `fix` makes it private.
+- `cargo fallow visibility` no longer reports an item that a `use` with a
+  written visibility re-exports, for example `pub(crate) use self::item as
+  alias;`. rustc rejects the re-export of a private item.
+
+- `cargo fallow visibility` reads more forms of intra-doc links: a `Self::`
+  path (also in the documentation of a field or a variant), a turbofish such
+  as `Gen::<u8>::new`, an indented paragraph, and an included file with a
+  path from `env!("CARGO_MANIFEST_DIR")` or from more than one `concat!`
+  literal.
+- `cargo fallow visibility` no longer reports a type that macro tokens name
+  when the macro can write a `pub` item: the tokens hold `pub` or a `vis`
+  fragment.
+
+- `cargo fallow fix` leaves out an edit that adds a compiler warning, the same
+  as an edit that adds an error. Before, a workspace that builds with
+  `-D warnings` could break after `fix` exited 0. A new `dead_code` warning
+  does not count, because a `dead-public` edit shows the dead code on
+  purpose.
+
+- The GitHub Action fails the step when `base: auto` cannot read the base
+  commit and the command needs the base for a gate (`check`, `size` and
+  `mutants`). Before, the action wrote a notice and ran with no base, so the
+  growth gate passed without a check. A run with no pull request base and no
+  push stays a notice.
+
+- The description of the GitHub Action now has fewer than 125 characters, so
+  the GitHub Marketplace accepts the action.
+
+- The GitHub Action and the GitLab template no longer post a first pull
+  request comment or merge request note for a clean run. A clean run still
+  updates an old comment, and an unchanged comment gets no update.
+
+### Performance
+
+- `cargo fallow check` parses each file one time for the module graph and the
+  `files` check. Before, the `files` check read and parsed each file a second
+  time. On a large workspace, the run uses about 14% less CPU time. The output
+  does not change.
+
+- The bracket scan of intra-doc links is linear in the length of the text. A
+  text with many open brackets no longer takes seconds.
+
+- The memory of `cargo fallow visibility` now grows about linearly with the
+  source size. A field access, a method call or a name in macro tokens gave
+  one credit to each item with the name, so a generated file with many fields
+  of one name needed memory for each pair. Each name now keeps its items once.
+  On a generated 5 MB file, the peak memory goes from 8.9 GB to 1.5 GB, and
+  the time from 33 s to 1.5 s.
+
 ## [0.1.0] - 2026-11-04
 
 ### Added

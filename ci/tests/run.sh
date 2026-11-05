@@ -34,7 +34,8 @@ assert_equals() {
 # --- The stubs ---------------------------------------------------------------
 #
 # The cargo-fallow stub writes each argument list to $STUB_LOG on one line.
-# It prints a document for the format of the call and exits with $STUB_EXIT.
+# It prints a document for the format of the call, or $STUB_JSON for the
+# JSON run, and exits with $STUB_EXIT.
 # The curl stub writes each call to $CURL_LOG, prints $CURL_NOTES for a GET
 # and exits with $CURL_EXIT.
 
@@ -50,7 +51,7 @@ for arg in "$@"; do
   previous="$arg"
 done
 case "$format" in
-  json) printf '{"kind":"check","total_issues":2}\n' ;;
+  json) if [ -n "${STUB_JSON:-}" ]; then printf '%s\n' "$STUB_JSON"; else printf '{"kind":"check","total_issues":2}\n'; fi ;;
   codeclimate) printf '[{"check_name":"deps/unused-dependency"}]\n' ;;
   markdown) printf '## cargo fallow check\n\n2 findings\n' ;;
   *) printf 'cargo fallow check\n' ;;
@@ -247,6 +248,56 @@ run_comment GITLAB_TOKEN=secret COMMENT_KEY=deps CURL_NOTES='[{"id":5,"author":{
 log="$(cat "$CURL_LOG")"
 assert_contains "$log" "POST" "the note of another key stays"
 assert_contains "$log" '<!-- cargo-fallow-comment:deps -->' "the key names the marker"
+
+reset
+printf '## cargo fallow check\n' > "$OUT/report.md"
+printf '{"kind":"check","total_issues":0,"gate_outcomes":{"parse-error":{"status":"pass"}}}\n' > "$OUT/clean.json"
+run_comment GITLAB_TOKEN=secret RESULTS_FILE="$OUT/clean.json" EXIT_CODE=0
+log="$(cat "$CURL_LOG")"
+assert_not_contains "$log" "POST" "a clean run posts no first note"
+assert_contains "$(cat "$WORK/comment.log")" "The run is clean" "a clean run explains the skip"
+
+reset
+printf '## cargo fallow check\n' > "$OUT/report.md"
+printf '{"kind":"check","total_issues":0,"gate_outcomes":{"parse-error":{"status":"pass"}}}\n' > "$OUT/clean.json"
+run_comment GITLAB_TOKEN=secret RESULTS_FILE="$OUT/clean.json" EXIT_CODE=0 CURL_NOTES='[{"id":5,"author":{"id":42},"body":"<!-- cargo-fallow-comment:check -->\nold"}]'
+assert_contains "$(cat "$CURL_LOG")" "PUT https://gitlab.example/api/v4/projects/7/merge_requests/12/notes/5" "a clean run updates an old note"
+
+reset
+printf '## cargo fallow check\n' > "$OUT/report.md"
+printf '{"kind":"check","total_issues":0,"gate_outcomes":{"parse-error":{"status":"warn"}}}\n' > "$OUT/warn.json"
+run_comment GITLAB_TOKEN=secret RESULTS_FILE="$OUT/warn.json" EXIT_CODE=0
+assert_contains "$(cat "$CURL_LOG")" "POST" "a run with a warned gate is not clean"
+
+reset
+printf '## cargo fallow check\n' > "$OUT/report.md"
+printf '{"kind":"check","total_issues":0}\n' > "$OUT/clean.json"
+run_comment GITLAB_TOKEN=secret RESULTS_FILE="$OUT/clean.json" EXIT_CODE=1
+assert_contains "$(cat "$CURL_LOG")" "POST" "a run with exit code 1 is not clean"
+
+reset
+printf '## cargo fallow check\n' > "$OUT/report.md"
+run_comment GITLAB_TOKEN=secret CURL_NOTES='[{"id":5,"author":{"id":42},"body":"<!-- cargo-fallow-comment:check -->\n\n## cargo fallow check"}]'
+assert_not_contains "$(cat "$CURL_LOG")" "PUT" "an unchanged note gets no update"
+assert_contains "$(cat "$WORK/comment.log")" "is unchanged" "an unchanged note explains the skip"
+
+reset
+printf '## cargo fallow check\n' > "$OUT/report.md"
+printf '{"error":true,"message":"bad","code":"X"}\n' > "$OUT/error.json"
+run_comment GITLAB_TOKEN=secret RESULTS_FILE="$OUT/error.json" EXIT_CODE=0
+assert_contains "$(cat "$CURL_LOG")" "POST" "an error document is not clean"
+
+reset
+printf '## cargo fallow check\n' > "$OUT/report.md"
+printf '{"kind":"check","total_issues":2}\n' > "$OUT/issues.json"
+run_comment GITLAB_TOKEN=secret RESULTS_FILE="$OUT/issues.json" EXIT_CODE=0
+assert_contains "$(cat "$CURL_LOG")" "POST" "a run with issues and exit code 0 is not clean"
+
+reset
+printf '## cargo fallow check\n' > "$OUT/report.md"
+run_job CARGO_FALLOW_COMMENT=true CI_MERGE_REQUEST_IID=12 STUB_JSON='{"kind":"check","total_issues":0}' \
+  CI_API_V4_URL="https://gitlab.example/api/v4" CI_PROJECT_ID=7 GITLAB_TOKEN=secret
+assert_not_contains "$(cat "$CURL_LOG")" "POST" "run.sh gives the results to the note, so a clean job posts no note"
 
 reset
 printf '## cargo fallow check\n' > "$OUT/report.md"

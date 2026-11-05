@@ -14,7 +14,7 @@
 //! and character literals. `semantic` also blinds names, lifetimes and numbers.
 //! Keywords and punctuation are never blinded.
 
-use ra_ap_syntax::{NodeOrToken, SyntaxKind, SyntaxNode, WalkEvent};
+use ra_ap_syntax::{NodeOrToken, SyntaxKind, SyntaxNode, SyntaxToken, WalkEvent};
 use xxhash_rust::xxh3::xxh3_64;
 
 use crate::attrs::{AttrClass, attributes_of};
@@ -132,45 +132,50 @@ pub fn tokens(
     let mut tests: Vec<SyntaxNode> = Vec::new();
     let mut walk = root.preorder_with_tokens();
     while let Some(event) = walk.next() {
-        let element = match event {
-            WalkEvent::Enter(element) => element,
-            WalkEvent::Leave(NodeOrToken::Node(node)) => {
-                if tests.last() == Some(&node) {
-                    tests.pop();
-                }
-                continue;
-            }
-            WalkEvent::Leave(NodeOrToken::Token(_)) => continue,
-        };
-        match element {
-            NodeOrToken::Node(node) => {
-                if ignore_imports
-                    && matches!(node.kind(), SyntaxKind::USE | SyntaxKind::EXTERN_CRATE)
-                {
+        match event {
+            WalkEvent::Enter(NodeOrToken::Node(node)) => {
+                if ignore_imports && is_import(&node) {
                     walk.skip_subtree();
                 } else if is_test_item(&node) {
                     tests.push(node);
                 }
             }
-            NodeOrToken::Token(token) => {
-                if is_space_or_comment(token.kind()) {
-                    continue;
-                }
-                let range = token.text_range();
-                let (line, column) = index.position(range.start());
-                let (end_line, end_column) = index.position(range.end());
-                found.push(Token {
-                    hash: token_hash(mode, token.kind(), token.text()),
-                    line,
-                    column,
-                    end_line,
-                    end_column,
-                    test: !tests.is_empty(),
-                });
+            WalkEvent::Enter(NodeOrToken::Token(token)) => {
+                found.extend(token_at(&token, index, mode, !tests.is_empty()));
             }
+            WalkEvent::Leave(NodeOrToken::Node(node)) => {
+                if tests.last() == Some(&node) {
+                    tests.pop();
+                }
+            }
+            WalkEvent::Leave(NodeOrToken::Token(_)) => {}
         }
     }
     found
+}
+
+/// True for a `use` item or an `extern crate` item.
+fn is_import(node: &SyntaxNode) -> bool {
+    matches!(node.kind(), SyntaxKind::USE | SyntaxKind::EXTERN_CRATE)
+}
+
+/// The token for a lexical token, or `None` for a space or a comment. `test`
+/// is true inside a test item.
+fn token_at(token: &SyntaxToken, index: &LineIndex<'_>, mode: Mode, test: bool) -> Option<Token> {
+    if is_space_or_comment(token.kind()) {
+        return None;
+    }
+    let range = token.text_range();
+    let (line, column) = index.position(range.start());
+    let (end_line, end_column) = index.position(range.end());
+    Some(Token {
+        hash: token_hash(mode, token.kind(), token.text()),
+        line,
+        column,
+        end_line,
+        end_column,
+        test,
+    })
 }
 
 #[cfg(test)]

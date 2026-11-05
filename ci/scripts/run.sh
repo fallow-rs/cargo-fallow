@@ -100,6 +100,7 @@ if [ "$CARGO_FALLOW_COMMENT" = "true" ]; then
       echo "WARNING: The markdown run failed with exit code ${markdown_status}, so the job does not change the merge request note."
     else
       REPORT_FILE="$CARGO_FALLOW_REPORT_FILE" COMMENT_KEY="$CARGO_FALLOW_COMMENT_KEY" \
+        RESULTS_FILE="$CARGO_FALLOW_RESULTS_FILE" EXIT_CODE="$status" \
         bash "$SCRIPT_DIR/comment.sh" || echo "WARNING: The merge request note failed."
     fi
   fi

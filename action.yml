@@ -56,7 +56,7 @@ inputs:
     required: false
     default: ''
   comment:
-    description: 'Post or update one sticky pull request comment with the gates and the findings. Needs `permissions: pull-requests: write`. A pull request from a fork posts no comment.'
+    description: 'Post or update one sticky pull request comment with the gates and the findings. A clean run posts no first comment. Needs `permissions: pull-requests: write`. A pull request from a fork posts no comment.'
     required: false
     default: 'false'
   comment-key:

@@ -663,46 +663,20 @@ pub fn section(
     scope: &Scope,
     coverage: Option<&Coverage>,
 ) -> Result<Section, CliError> {
-    let mut findings = Vec::new();
-    let (mut count, mut suppressed, mut without_coverage) = (0, 0, 0);
+    let mut tally = Tally::default();
     for file in loaded
         .files
         .iter()
         .filter(|file| !matches_prefix(&file.path, &settings.exclude))
     {
-        count += file.functions.len();
-        let scores = coverage.map(|coverage| coverage.scores(file, settings.cyclomatic_policy));
-        for (index, function) in file.functions.iter().enumerate() {
-            let measured = scores.as_ref().map(|scores| Measured {
-                score: scores[index],
-                scored: crap::scored(function, file),
-            });
-            if measured.is_some_and(|measured| measured.scored && measured.score.is_none()) {
-                without_coverage += 1;
-            }
-            let Some(finding) = finding(&file.path, function, settings, measured) else {
-                continue;
-            };
-            if !scope.keeps(&file.path) {
-                continue;
-            }
-            let kind = if finding.exceeded.only_crap() {
-                crap::RULE
-            } else {
-                SUPPRESS_KIND
-            };
-            if scope.hides(
-                "complexity",
-                kind,
-                &file.path,
-                Some(&(function.attr_line.saturating_sub(1)..=function.line)),
-            ) {
-                suppressed += 1;
-                continue;
-            }
-            findings.push(finding);
-        }
+        tally.add_file(file, settings, scope, coverage);
     }
+    let Tally {
+        mut findings,
+        functions,
+        suppressed,
+        without_coverage,
+    } = tally;
     findings.sort_by(|a, b| {
         (b.severity, b.cognitive.max(b.cyclomatic), &a.path, a.line).cmp(&(
             a.severity,
@@ -713,7 +687,7 @@ pub fn section(
     });
     let summary = Summary {
         files: loaded.files.len(),
-        functions: count,
+        functions,
         max_cyclomatic: settings.max_cyclomatic,
         max_cognitive: settings.max_cognitive,
         suppressed,
@@ -741,6 +715,65 @@ pub fn section(
         findings,
         gates: report.gate_outcomes,
     })
+}
+
+/// The findings of `section`, with the counts of its summary.
+#[derive(Default)]
+struct Tally {
+    findings: Vec<Finding>,
+    functions: usize,
+    suppressed: usize,
+    without_coverage: usize,
+}
+
+impl Tally {
+    /// Measures each function of one file.
+    fn add_file(
+        &mut self,
+        file: &source::File,
+        settings: &config::Complexity,
+        scope: &Scope,
+        coverage: Option<&Coverage>,
+    ) {
+        self.functions += file.functions.len();
+        let scores = coverage.map(|coverage| coverage.scores(file, settings.cyclomatic_policy));
+        for (index, function) in file.functions.iter().enumerate() {
+            let measured = scores.as_ref().map(|scores| Measured {
+                score: scores[index],
+                scored: crap::scored(function, file),
+            });
+            if measured.is_some_and(|measured| measured.scored && measured.score.is_none()) {
+                self.without_coverage += 1;
+            }
+            let Some(finding) = finding(&file.path, function, settings, measured) else {
+                continue;
+            };
+            if !scope.keeps(&file.path) {
+                continue;
+            }
+            if hidden(scope, &file.path, function, &finding) {
+                self.suppressed += 1;
+                continue;
+            }
+            self.findings.push(finding);
+        }
+    }
+}
+
+/// True when a suppression comment or the rules hide the finding of
+/// `function`.
+fn hidden(scope: &Scope, path: &str, function: &Function, finding: &Finding) -> bool {
+    let kind = if finding.exceeded.only_crap() {
+        crap::RULE
+    } else {
+        SUPPRESS_KIND
+    };
+    scope.hides(
+        "complexity",
+        kind,
+        path,
+        Some(&(function.attr_line.saturating_sub(1)..=function.line)),
+    )
 }
 
 /// The CodeClimate severity of a band, the same as in fallow.

@@ -3,7 +3,8 @@
 # Run the static checks of cargo-fallow on a Rust workspace. The job writes a
 # GitLab code quality report, so the merge request widget shows the findings.
 # With CARGO_FALLOW_COMMENT it also posts one merge request note with the
-# markdown report, and updates that note on the next run.
+# markdown report, and updates that note on the next run. A clean run posts
+# no first note.
 #
 # Usage: add to your .gitlab-ci.yml:
 #
@@ -52,7 +53,8 @@
     # CARGO_FALLOW_AUTO_CHANGED_SINCE is "true".
     CARGO_FALLOW_CHANGED_SINCE: ""
     CARGO_FALLOW_AUTO_CHANGED_SINCE: "true"
-    # "true" posts one merge request note. It needs GITLAB_TOKEN with the api
+    # "true" posts one merge request note, but a clean run posts no first
+    # note. It needs GITLAB_TOKEN with the api
     # scope, as a masked CI/CD variable: CI_JOB_TOKEN cannot write notes.
     CARGO_FALLOW_COMMENT: "false"
     # The marker of the note. Give each job with a note its own key.

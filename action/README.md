@@ -108,7 +108,7 @@ does not fail on them:
 | `auto-changed-since` | `false` | On a pull request, pass the base commit of the pull request as `--changed-since` when `changed-since` is empty. |
 | `baseline` | empty | A baseline file from `--save-baseline`, relative to `working-directory`. The action passes it as `--baseline`. |
 | `save-baseline` | empty | Write the findings of the run to this file (`--save-baseline`). The run then exits 0. |
-| `comment` | `false` | Post one sticky comment on the pull request, or update it. See [Pull request comment](#pull-request-comment). |
+| `comment` | `false` | Post one sticky comment on the pull request, or update it. A clean run posts no first comment. See [Pull request comment](#pull-request-comment). |
 | `comment-key` | empty | The key of the sticky comment. Use letters, digits, `.`, `-` and `_`. When empty, the action uses the command name. Give each call its own key when two calls run the same command. |
 | `artifacts-dir` | empty | The folder for the report files. When empty, the action makes a new folder in `RUNNER_TEMP` for each call. |
 | `github-token` | `github.token` | The token for the code scanning check, the SARIF upload and the pull request comment. |
@@ -159,6 +159,12 @@ comment has the same text as the job summary, with the gates and the findings.
 The comment starts with a hidden marker that contains the `comment-key`. On the
 next run of the job, the action finds the comment from this marker and updates
 it. The action does not add a second comment.
+
+A clean run has no issue, exit code `0` and no gate that fails or warns. A
+clean run posts no first comment, so a clean pull request gets no comment and
+no notification. When a comment of an earlier run exists, a clean run updates
+it, so the comment does not keep old findings. When the text of the comment
+does not change, the action does not update it.
 
 ```yaml
     permissions:

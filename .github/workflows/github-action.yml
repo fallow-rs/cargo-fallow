@@ -58,7 +58,8 @@ jobs:
       contents: read
       # The sarif: true step checks code scanning and uploads when it can.
       security-events: write
-      # The comment step posts one sticky comment on the pull request.
+      # The comment step posts one sticky comment on the pull request when
+      # the run is not clean.
       pull-requests: write
     strategy:
       fail-fast: false
@@ -136,12 +137,20 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          ISSUES: ${{ steps.comment.outputs.issues }}
+          EXIT_CODE: ${{ steps.comment.outputs.exit-code }}
+          GATES_WARNED: ${{ steps.comment.outputs.gates-warned }}
         run: |
           count="$(gh api --paginate "repos/${GH_REPO}/issues/${PR_NUMBER}/comments" \
             | jq '[.[] | select(.body | startswith("<!-- cargo-fallow-comment:self-test-pr -->"))] | length' \
             | jq -s 'add')"
           echo "Sticky comments: ${count}"
-          [ "$count" = "1" ] || { echo "::error::expected one sticky comment, got ${count}"; exit 1; }
+          # A clean run posts no first comment, but it updates an old comment.
+          if [ "$ISSUES" = "0" ] && [ "$EXIT_CODE" = "0" ] && [ -z "$GATES_WARNED" ]; then
+            [ "$count" -le 1 ] || { echo "::error::expected at most one sticky comment, got ${count}"; exit 1; }
+          else
+            [ "$count" = "1" ] || { echo "::error::expected one sticky comment, got ${count}"; exit 1; }
+          fi
 
       - name: complexity (report only, with SARIF)
         id: complexity

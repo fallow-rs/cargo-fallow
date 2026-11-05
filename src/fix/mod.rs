@@ -215,26 +215,9 @@ pub fn run(args: &FixArgs) -> Result<u8, CliError> {
         .collect();
     let mut skipped = plan.skipped;
     if !args.dry_run && !fixes.is_empty() {
-        let Applied { kept, left_out } = apply_all(args, &workspace, &plan, progress)?;
-        for fix in &mut fixes {
-            let applied = match fix {
-                Fix::Dependency(_) => true,
-                Fix::Visibility(edit) => {
-                    if let Some(other) = left_out
-                        .iter()
-                        .find(|other| visibility::same_place(edit, other))
-                    {
-                        edit.skip_reason = other.skip_reason;
-                        edit.diagnostic.clone_from(&other.diagnostic);
-                    }
-                    kept.iter().any(|other| visibility::same_place(edit, other))
-                }
-            };
-            if applied {
-                fix.mark_applied();
-            }
-        }
-        skipped += plan.visibility.len() - kept.len();
+        let applied = apply_all(args, &workspace, &plan, progress)?;
+        mark(&mut fixes, &applied);
+        skipped += plan.visibility.len() - applied.kept.len();
     }
     let total_fixed = fixes.iter().filter(|fix| fix.applied()).count();
     let report = FixReport {
@@ -254,6 +237,33 @@ pub fn run(args: &FixArgs) -> Result<u8, CliError> {
     };
     render::write_stdout(text.trim_end()).map_err(|err| CliError::output(&err))?;
     Ok(EXIT_OK)
+}
+
+/// Marks each written edit as applied, and gives each left-out edit its
+/// reason.
+fn mark(fixes: &mut [Fix], applied: &Applied) {
+    for fix in fixes {
+        let written = match fix {
+            Fix::Dependency(_) => true,
+            Fix::Visibility(edit) => {
+                if let Some(other) = applied
+                    .left_out
+                    .iter()
+                    .find(|other| visibility::same_place(edit, other))
+                {
+                    edit.skip_reason = other.skip_reason;
+                    edit.diagnostic.clone_from(&other.diagnostic);
+                }
+                applied
+                    .kept
+                    .iter()
+                    .any(|other| visibility::same_place(edit, other))
+            }
+        };
+        if written {
+            fix.mark_applied();
+        }
+    }
 }
 
 /// Runs the selected checks on one module graph and plans their edits.
@@ -401,19 +411,7 @@ fn apply_all(
             lock.restore();
             return Ok(Applied { kept, left_out });
         }
-        let mut planned = Vec::new();
-        for (path, edits) in deps::by_manifest(&plan.deps) {
-            planned.push(
-                edited(root, path, |text| deps::apply(text, &edits))
-                    .inspect_err(|_| lock.restore())?,
-            );
-        }
-        for (path, edits) in visibility::by_file(&kept) {
-            planned.push(
-                edited(root, path, |text| visibility::apply(text, &edits))
-                    .inspect_err(|_| lock.restore())?,
-            );
-        }
+        let planned = planned_files(root, &plan.deps, &kept).inspect_err(|_| lock.restore())?;
         progress.step("Writing the edits");
         let mut compiler = None;
         let mut warned: Vec<check::Diagnostic> = Vec::new();
@@ -428,27 +426,8 @@ fn apply_all(
             }
             if let Some(all_features) = all_features {
                 progress.step("Checking that the workspace builds after the edits");
-                let after = workspace::cargo_check(manifest, root, &flags, all_features).map_err(
-                    |message| {
-                        let text = format!(
-                            "the workspace does not build after the edits: {}",
-                            first_lines(&message)
-                        );
-                        compiler = Some(message);
-                        text
-                    },
-                )?;
-                warned = check::new_warnings(&known, &after)
-                    .into_iter()
-                    .cloned()
-                    .collect();
-                if !warned.is_empty() {
-                    let lines: Vec<String> = warned.iter().map(check::Diagnostic::line).collect();
-                    return Err(format!(
-                        "the edits add compiler warnings: {}",
-                        first_lines(&lines.join("\n"))
-                    ));
-                }
+                let checked = workspace::cargo_check(manifest, root, &flags, all_features);
+                judge(checked, &known, &mut compiler, &mut warned)?;
             }
             Ok(())
         });
@@ -482,6 +461,53 @@ fn apply_all(
     }
     lock.restore();
     Err(failed("the workspace does not build after the edits"))
+}
+
+/// The bytes of each file after the edits of one round.
+fn planned_files(
+    root: &Path,
+    deps: &[deps::Edit],
+    kept: &[visibility::Edit],
+) -> Result<Vec<Planned>, CliError> {
+    let mut planned = Vec::new();
+    for (path, edits) in deps::by_manifest(deps) {
+        planned.push(edited(root, path, |text| deps::apply(text, &edits))?);
+    }
+    for (path, edits) in visibility::by_file(kept) {
+        planned.push(edited(root, path, |text| visibility::apply(text, &edits))?);
+    }
+    Ok(planned)
+}
+
+/// Judges the check after the edits of one round. A failed build keeps its
+/// compiler errors in `compiler`, and new warnings stay in `warned`, so
+/// [`leave_out`] can read them. Either one fails the round.
+fn judge(
+    checked: Result<Vec<check::Diagnostic>, String>,
+    known: &[check::Diagnostic],
+    compiler: &mut Option<String>,
+    warned: &mut Vec<check::Diagnostic>,
+) -> Result<(), String> {
+    let after = checked.map_err(|message| {
+        let text = format!(
+            "the workspace does not build after the edits: {}",
+            first_lines(&message)
+        );
+        *compiler = Some(message);
+        text
+    })?;
+    *warned = check::new_warnings(known, &after)
+        .into_iter()
+        .cloned()
+        .collect();
+    if warned.is_empty() {
+        return Ok(());
+    }
+    let lines: Vec<String> = warned.iter().map(check::Diagnostic::line).collect();
+    Err(format!(
+        "the edits add compiler warnings: {}",
+        first_lines(&lines.join("\n"))
+    ))
 }
 
 /// The `skip_reason` of an edit that a compiler error left out.

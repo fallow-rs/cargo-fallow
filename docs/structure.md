@@ -68,6 +68,7 @@ max-function-lines = 60
 [workspace.metadata.fallow.complexity]
 max-cyclomatic = 20
 max-cognitive = 15
+cyclomatic-policy = "standard"  # or "flat-match"
 
 [workspace.metadata.fallow.dupes]
 mode = "mild"             # strict, mild, weak or semantic
@@ -96,6 +97,18 @@ unit is a `fn` with a body, or a closure. To suppress a complexity finding,
 put `// fallow-ignore-next-line complexity` above the function. To suppress a
 clone, put `// fallow-ignore-next-line code-duplication` above the clone. See
 [Suppressions](adoption.md#suppressions).
+
+`cyclomatic-policy` sets how the `max-cyclomatic` limit counts. The default,
+`standard`, adds 1 for each `match` arm whose pattern is not `_`. With
+`flat-match`, a flat `match` adds at most 1. A `match` is flat when no arm
+has a guard and no arm has a decision, for example a lookup table. A nested
+`match` in an arm is a decision, so the outer `match` is not flat. A closure
+in an arm has its own count, so it does not change this. When the policy
+changes the count of a finding, `cyclomatic` holds the policy count and
+`standard_cyclomatic` holds the standard count. The human line and the
+message show `(standard N)`. The severity band reads the policy count. The
+health score of `check` and the hotspots keep the standard count. fallow for
+JavaScript has the same key, `health.cyclomaticPolicy`, with other values.
 
 The complexity counts have these known differences from other tools:
 

@@ -8,7 +8,9 @@
 //!
 //! Cyclomatic complexity starts at 1. These add 1 each: `if` and `else if`,
 //! `while`, `for`, `loop`, `let ... else`, a `match` arm whose pattern is not
-//! `_`, a match guard, `&&` and `||`.
+//! `_`, a match guard, `&&` and `||`. With `cyclomatic-policy = "flat-match"`,
+//! the limit reads a count where a flat `match` adds 1: a `match` with no
+//! guard and no decision in an arm.
 //!
 //! Cognitive complexity follows the SonarSource rules:
 //!
@@ -37,7 +39,7 @@ use crate::render::Progress;
 use crate::scope::Scope;
 use crate::section::{Section, to_value};
 use crate::structure::ComplexityArgs;
-use crate::structure::config::{self, matches_prefix};
+use crate::structure::config::{self, CyclomaticPolicy, matches_prefix};
 use crate::structure::report::{Action, Report, count_gate, gates_text, plural, shared_actions};
 use crate::structure::sarif;
 use crate::structure::source::{self, LineIndex, Loaded, Needs, Skipped, is_space_or_comment};
@@ -79,8 +81,12 @@ pub struct Function {
     pub attr_line: u32,
     /// The last line.
     pub end_line: u32,
-    /// The cyclomatic complexity.
+    /// The standard cyclomatic complexity. The health score and the hotspots
+    /// read this count.
     pub cyclomatic: u32,
+    /// The cyclomatic increments of the flat `match` arms after the first arm
+    /// of each flat `match`. The `flat-match` policy leaves them out.
+    pub flat_match_arms: u32,
     /// The cognitive complexity.
     pub cognitive: u32,
     /// The number of parameters, with `self`.
@@ -91,6 +97,14 @@ impl Function {
     /// The number of lines from the first line to the last line.
     pub const fn line_count(&self) -> u32 {
         self.end_line.saturating_sub(self.start_line) + 1
+    }
+
+    /// The cyclomatic complexity that the `max-cyclomatic` limit reads.
+    pub const fn gate_cyclomatic(&self, policy: CyclomaticPolicy) -> u32 {
+        match policy {
+            CyclomaticPolicy::Standard => self.cyclomatic,
+            CyclomaticPolicy::FlatMatch => self.cyclomatic.saturating_sub(self.flat_match_arms),
+        }
     }
 }
 
@@ -109,6 +123,7 @@ pub fn functions(root: &SyntaxNode, index: &LineIndex<'_>) -> Vec<Function> {
 /// The counts of the unit that the walk is in.
 struct Frame {
     cyclomatic: u32,
+    flat_match_arms: u32,
     cognitive: u32,
     last_logical: Option<ast::LogicOp>,
 }
@@ -205,6 +220,7 @@ impl Walker<'_, '_> {
             attr_line: self.index.position(node.text_range().start()).0,
             end_line: self.index.end_line(node.text_range().end()),
             cyclomatic: frame.cyclomatic,
+            flat_match_arms: frame.flat_match_arms,
             cognitive: frame.cognitive,
             params: u32::try_from(params).unwrap_or(u32::MAX),
         });
@@ -230,18 +246,7 @@ impl Walker<'_, '_> {
                     self.inside(&child, frame, level);
                 }
             }
-            SyntaxKind::MATCH_EXPR => {
-                frame.cognitive += 1 + nesting;
-                for child in node.children() {
-                    if child.kind() == SyntaxKind::MATCH_ARM_LIST {
-                        for arm in child.children() {
-                            self.match_arm(&arm, frame, nesting + 1);
-                        }
-                    } else {
-                        self.inside(&child, frame, nesting);
-                    }
-                }
-            }
+            SyntaxKind::MATCH_EXPR => self.match_expr(node, frame, nesting),
             SyntaxKind::LET_ELSE => {
                 frame.cyclomatic += 1;
                 frame.cognitive += 1 + nesting;
@@ -293,17 +298,38 @@ impl Walker<'_, '_> {
         }
     }
 
-    fn match_arm(&mut self, arm: &SyntaxNode, frame: &mut Frame, nesting: u32) {
-        let Some(parsed) = ast::MatchArm::cast(arm.clone()) else {
-            return;
-        };
-        if !matches!(parsed.pat(), Some(ast::Pat::WildcardPat(_))) {
-            frame.cyclomatic += 1;
+    fn match_expr(&mut self, node: &SyntaxNode, frame: &mut Frame, nesting: u32) {
+        frame.cognitive += 1 + nesting;
+        for child in node.children() {
+            if child.kind() != SyntaxKind::MATCH_ARM_LIST {
+                self.inside(&child, frame, nesting);
+                continue;
+            }
+            let before = frame.cyclomatic;
+            let mut arms = 0;
+            for arm in child.children() {
+                arms += self.match_arm(&arm, frame, nesting + 1);
+            }
+            // A flat `match` adds only its arms: no guard and no decision in
+            // an arm body. A nested flat `match` makes the outer one not flat.
+            if frame.cyclomatic - before == arms {
+                frame.flat_match_arms += arms.saturating_sub(1);
+            }
         }
+    }
+
+    /// Walks one arm. Returns 1 when the arm pattern adds 1, else 0.
+    fn match_arm(&mut self, arm: &SyntaxNode, frame: &mut Frame, nesting: u32) -> u32 {
+        let Some(parsed) = ast::MatchArm::cast(arm.clone()) else {
+            return 0;
+        };
+        let counted = u32::from(!matches!(parsed.pat(), Some(ast::Pat::WildcardPat(_))));
+        frame.cyclomatic += counted;
         if parsed.guard().is_some() {
             frame.cyclomatic += 1;
         }
         self.children(arm, frame, nesting);
+        counted
     }
 
     fn binary(&mut self, node: &SyntaxNode, frame: &mut Frame, nesting: u32) {
@@ -327,6 +353,7 @@ impl Frame {
     const fn new() -> Self {
         Self {
             cyclomatic: 1,
+            flat_match_arms: 0,
             cognitive: 0,
             last_logical: None,
         }
@@ -440,8 +467,13 @@ pub struct Finding {
     pub line: u32,
     /// The column of the name.
     pub col: u32,
-    /// The cyclomatic complexity.
+    /// The cyclomatic complexity that the limit reads. With
+    /// `cyclomatic-policy = "flat-match"`, a flat `match` adds 1.
     pub cyclomatic: u32,
+    /// The standard cyclomatic complexity, when the policy changed the value
+    /// of `cyclomatic`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub standard_cyclomatic: Option<u32>,
     /// The cognitive complexity.
     pub cognitive: u32,
     /// The lines of the function.
@@ -615,8 +647,11 @@ fn shared_findings(report: &Report<Summary, Finding>) -> Vec<shared::Finding> {
                 rule: RULE,
                 severity: shared::Severity::Error,
                 message: format!(
-                    "`{}` has cyclomatic complexity {} and cognitive complexity {}.",
-                    finding.name, finding.cyclomatic, finding.cognitive
+                    "`{}` has cyclomatic complexity {}{} and cognitive complexity {}.",
+                    finding.name,
+                    finding.cyclomatic,
+                    standard_note(finding),
+                    finding.cognitive
                 ),
                 location: Location::at(finding.path.clone(), finding.line, finding.col),
                 identity: &[&finding.path, &finding.name, &index],
@@ -629,7 +664,8 @@ fn shared_findings(report: &Report<Summary, Finding>) -> Vec<shared::Finding> {
 }
 
 fn finding(path: &str, function: &Function, settings: &config::Complexity) -> Option<Finding> {
-    let over_cyclomatic = function.cyclomatic > settings.max_cyclomatic;
+    let cyclomatic = function.gate_cyclomatic(settings.cyclomatic_policy);
+    let over_cyclomatic = cyclomatic > settings.max_cyclomatic;
     let over_cognitive = function.cognitive > settings.max_cognitive;
     let exceeded = match (over_cyclomatic, over_cognitive) {
         (true, true) => Exceeded::Both,
@@ -642,23 +678,31 @@ fn finding(path: &str, function: &Function, settings: &config::Complexity) -> Op
         name: function.name.clone(),
         line: function.line,
         col: function.column,
-        cyclomatic: function.cyclomatic,
+        cyclomatic,
+        standard_cyclomatic: (cyclomatic != function.cyclomatic).then_some(function.cyclomatic),
         cognitive: function.cognitive,
         line_count: function.line_count(),
         param_count: function.params,
         exceeded,
-        severity: severity(function.cyclomatic, function.cognitive),
+        severity: severity(cyclomatic, function.cognitive),
         actions: vec![
             Action::manual(
                 "refactor-function",
                 format!(
-                    "Split `{}` into smaller functions (cyclomatic {}, cognitive {})",
-                    function.name, function.cyclomatic, function.cognitive
+                    "Split `{}` into smaller functions (cyclomatic {cyclomatic}, cognitive {})",
+                    function.name, function.cognitive
                 ),
             ),
             Action::suppress(SUPPRESS_COMMENT, "above-function-declaration"),
         ],
     })
+}
+
+/// ` (standard N)` when the policy changed the cyclomatic count, else empty.
+fn standard_note(finding: &Finding) -> String {
+    finding
+        .standard_cyclomatic
+        .map_or_else(String::new, |standard| format!(" (standard {standard})"))
 }
 
 fn human(report: &Report<Summary, Finding>) -> String {
@@ -678,11 +722,12 @@ fn human(report: &Report<Summary, Finding>) -> String {
     for finding in &report.findings {
         let _ = writeln!(
             text,
-            "  {}:{} {} cyclomatic {} cognitive {} ({}, {} lines)",
+            "  {}:{} {} cyclomatic {}{} cognitive {} ({}, {} lines)",
             finding.path,
             finding.line,
             finding.name,
             finding.cyclomatic,
+            standard_note(finding),
             finding.cognitive,
             severity_label(finding.severity),
             finding.line_count,
@@ -744,6 +789,53 @@ mod tests {
             " else if a {}".repeat(1400)
         );
         assert_eq!(one(&branches).0, 1402);
+    }
+
+    /// The `(standard, flat-match)` cyclomatic counts of one function.
+    fn policies(source: &str) -> (u32, u32) {
+        with_parsed(source, Edition::Edition2024, |file, text| {
+            functions(file.syntax(), &LineIndex::new(text))
+                .first()
+                .map(|f| {
+                    (
+                        f.gate_cyclomatic(CyclomaticPolicy::Standard),
+                        f.gate_cyclomatic(CyclomaticPolicy::FlatMatch),
+                    )
+                })
+        })
+        .ok()
+        .flatten()
+        .unwrap_or_default()
+    }
+
+    #[test]
+    fn flat_match_counts_a_table_as_one_decision() {
+        let table =
+            "fn f(c: char) -> u8 { match c { 'a' => 1, 'b' | 'c' => 2, 'd' => 3, _ => 0 } }";
+        assert_eq!(policies(table), (4, 2));
+    }
+
+    #[test]
+    fn flat_match_keeps_a_guard_and_a_decision_in_an_arm() {
+        let guard = "fn f(n: i32) -> i8 { match n { 0 => 0, 1 => 1, x if x > 1 => 1, _ => -1 } }";
+        assert_eq!(policies(guard), (5, 5));
+        let branch = "fn f(n: u8, b: bool) -> u8 { match n { 0 => 0, 1 => b as u8, 2 => if b { 1 } else { 2 }, _ => 3 } }";
+        assert_eq!(policies(branch), (5, 5));
+        let logic =
+            "fn f(n: u8, a: bool, b: bool) -> bool { match n { 0 => a && b, 1 => a, _ => b } }";
+        assert_eq!(policies(logic), (4, 4));
+    }
+
+    #[test]
+    fn a_flat_match_in_an_arm_makes_only_the_inner_match_flat() {
+        let nested = "fn f(a: u8, b: u8) -> u8 { match a { 0 => match b { 0 => 1, 1 => 2, _ => 3 }, 1 => 4, _ => 5 } }";
+        assert_eq!(policies(nested), (5, 4));
+    }
+
+    #[test]
+    fn a_closure_in_an_arm_has_its_own_count() {
+        let closure = "fn f(n: u8) -> fn(bool) -> u8 { match n { 0 => |b| if b { 1 } else { 2 }, 1 => |_| 3, _ => |_| 4 } }";
+        assert_eq!(policies(closure), (3, 2));
     }
 
     #[test]
@@ -859,6 +951,7 @@ mod tests {
             attr_line: 1,
             end_line: 3,
             cyclomatic: 20,
+            flat_match_arms: 0,
             cognitive: 15,
             params: 0,
         };

@@ -35,8 +35,8 @@ need and where the code is hard to change. It uses the syntax of the code and
 ## Prerequisites
 
 ```bash
-cargo install cargo-fallow
 cargo fallow --version
+cargo install cargo-fallow   # only when the user agrees: it uses the network
 ```
 
 ## Agent rules
@@ -54,7 +54,9 @@ cargo fallow --version
 5. Each finding has `id`, `check`, `rule`, `severity`, `location` and
    `actions`. Use the `actions` array. Do not invent a fix.
 6. Always run `cargo fallow fix --dry-run --format json --quiet` before a
-   fix. Apply the approved edits with `cargo fallow fix --yes`.
+   fix, and show the edits to the user. Apply them with
+   `cargo fallow fix --yes` only after the user agrees. `-p <NAME>` limits
+   the edits to one package. Run `cargo check` after the edits.
 7. All output paths are relative to the workspace root.
 8. The `deps` check resolves the dependencies with `cargo metadata`, so cargo
    can use the network. Use `--offline` when the network is not allowed.
@@ -85,8 +87,8 @@ cargo fallow --version
 | Explain a rule | `cargo fallow explain <rule> --format json` |
 | Preview the fixes | `cargo fallow fix --dry-run --format json --quiet` |
 | Apply the fixes | `cargo fallow fix --yes --format json --quiet` |
-| Start on an existing workspace | `cargo fallow init --format json --quiet` |
-| Save a baseline | `cargo fallow check --save-baseline fallow-baseline.json --quiet` |
+| Preview a starting configuration | `cargo fallow init --format json --quiet` |
+| Save a baseline | `cargo fallow check --save-baseline fallow-baseline.json --format json --quiet` |
 | Mutation testing of a change | `cargo fallow mutants --in-diff main --format json --quiet` |
 | Gate status | `cargo fallow hooks status --format json` |
 | The JSON Schema | `cargo fallow schema` |
@@ -94,7 +96,8 @@ cargo fallow --version
 ## The commit gate
 
 `cargo fallow hooks install --target agent` installs a gate for Claude Code
-and Codex. Before each `git commit` and `git push`, the gate runs `check` on
+and Codex. Install it only when the user asks, and run it with `--dry-run`
+first: it writes `.claude/` and `.codex/` files. Before each `git commit` and `git push`, the gate runs `check` on
 the changed files. It blocks only on a new finding: a finding that the base
 commit already has does not block. An error of the tool does not block.
 
@@ -106,8 +109,9 @@ When the gate blocks a command:
    `.fallow/cargo-gate-report.json`.
 3. Fix each finding in the code that you changed. Use
    `cargo fallow explain <rule>` and the `actions` of the finding.
-4. For a fixable finding, run `cargo fallow fix --dry-run --format json
-   --quiet`, then `cargo fallow fix --yes`.
+4. For a fixable finding, run
+   `cargo fallow fix --dry-run --format json --quiet`, and apply the edits
+   as agent rule 6 says.
 5. Run the commit or the push again.
 
 Do not skip the gate with `--no-verify`, and do not remove the gate, unless
@@ -115,10 +119,15 @@ the user tells you to.
 
 ## Baselines and suppressions
 
+- `cargo fallow init --write` adds the configuration tables to the root
+  `Cargo.toml` and writes a baseline. Run it only when the user asks.
 - `--save-baseline <PATH>` writes the ids of the current findings.
   `--baseline <PATH>` leaves them out. The `baseline` key of
   `[workspace.metadata.fallow]` applies the file on each run.
 - `// fallow-ignore-next-line <kind>` hides the findings of the next line.
   `// fallow-ignore-file <kind>` in the first ten lines hides the findings of
-  the file. Add a suppression only when the user agrees, and give the reason
+  the file. In a `Cargo.toml`, the markers start with `#`, for example
+  `# fallow-ignore-next-line unused-dependency`. A kind is a check, a rule or
+  an alias. A marker that hides no finding gives a `stale-suppression`
+  warning. Add a suppression only when the user agrees, and give the reason
   in the comment.

@@ -28,7 +28,9 @@ The key of an item is each path that another crate can write:
 - the members of a public trait;
 - each `#[macro_export]` macro, at the crate root.
 
-A `#[doc(hidden)]` item and the items below it are not API. One key can hold
+A `#[doc(hidden)]` item, `pub use` or `impl` block, and the items below
+it, are not API. A glob re-export that points back to a module on the way,
+for example `pub use super::*`, adds no path, so a removal counts one time. One key can hold
 more than one item, for example one item for each `cfg` variant. The command
 reports `removed` only when no item with the key is left.
 
@@ -43,7 +45,10 @@ reports `removed` only when no item with the key is left.
 
 The header of an item is its signature with the `cfg` and `derive`
 attributes, without the body, the doc comments and the layout. A body change
-is no API change.
+is no API change. These changes are no change either, because no caller sees
+them: the name of a parameter, the name of a generic parameter or a
+lifetime, the module part of a path (`std::vec::Vec<u8>` and `Vec<u8>`), and
+the order of the names in `#[derive(..)]`.
 
 A member below a key that is a type alias at HEAD gives no `removed`
 finding. The members of the alias target can still exist, and the command
@@ -53,8 +58,8 @@ does not follow the alias.
 
 The `api-removals` gate counts each `removed`, `crate-removed` and
 `feature-removed` finding of a library when the breaking part of its version
-did not change. The breaking part is the major version from 1.0, and the
-minor version before 1.0. Thus a removal in `0.3.1 -> 0.3.2` counts, and a
+did not change. The breaking part is the same as for Cargo: the major version
+from 1.0, the minor version from 0.1, and the patch version for 0.0.x. Thus a removal in `0.3.1 -> 0.3.2` counts, and a
 removal in `0.3.1 -> 0.4.0` does not count. Each such finding has
 `breaking: true`. Only `--fail-on-issues` enforces the gate. A `changed`
 finding does not count.
@@ -75,6 +80,10 @@ summary has `base`, `merge_base`, `crates`, `added`, `removed` and `changed`.
 - The rules are `api-removal`, `api-change` and `api-addition`. See
   `cargo fallow explain api-removal`.
 
+`-p <name>` keeps the findings of the packages that it names. The command
+does not take `--baseline`, `--save-baseline` or `--changed-since`. A rule
+that `[workspace.metadata.fallow.rules]` sets to `off` gives no finding.
+
 ## Errors
 
 - A ref that git does not know exits 2.
@@ -85,4 +94,8 @@ summary has `base`, `merge_base`, `crates`, `added`, `removed` and `changed`.
 
 The command does not judge a type change behind a re-export, an added or a
 removed trait implementation, an auto trait, the meaning of a bound,
-`#[non_exhaustive]` or the MSRV. It is not a full semver check.
+`#[non_exhaustive]` or the MSRV. It is not a full semver check. A change of
+the type of a tuple field and a trait method that loses its default body give
+no finding. `git archive` follows `export-ignore` in `.gitattributes`, so a
+file with that attribute is missing from the base tree, and its items show
+as `added`.

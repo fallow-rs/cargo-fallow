@@ -162,6 +162,7 @@ impl<'g> Walker<'g> {
             entries,
             seen: &mut seen,
             modules: FxHashSet::default(),
+            stack: Vec::new(),
         };
         self.module(root, &name, 0, &mut walk);
         // A `#[macro_export]` macro is at the crate root.
@@ -172,53 +173,70 @@ impl<'g> Walker<'g> {
         }
     }
 
-    /// Adds the public items of `module` below `prefix`.
+    /// Adds the public items of `module` below `prefix`. A module that is
+    /// already on the walk stack, for example through `pub use super::*`,
+    /// adds nothing: its paths only repeat paths that the walk has.
     fn module(&self, module: ModuleId, prefix: &str, depth: usize, walk: &mut Walk<'_>) {
-        if depth > MAX_DEPTH || !walk.modules.insert((module, prefix.to_owned())) {
+        if depth > MAX_DEPTH
+            || walk.stack.contains(&module)
+            || !walk.modules.insert((module, prefix.to_owned()))
+        {
             return;
         }
+        walk.stack.push(module);
         for &item in self.declared.get(&module).into_iter().flatten() {
             let entry = &self.graph.items[item];
-            if entry.vis != Vis::Public
-                || matches!(entry.kind, ItemKind::Use | ItemKind::Impl | ItemKind::Macro)
-            {
-                continue;
+            let skipped = matches!(entry.kind, ItemKind::Use | ItemKind::Impl | ItemKind::Macro);
+            if entry.vis == Vis::Public && !skipped {
+                self.item(&format!("{prefix}::{}", entry.name), item, depth, walk);
             }
-            self.item(&format!("{prefix}::{}", entry.name), item, depth, walk);
         }
         for &index in self.imports.get(&module).into_iter().flatten() {
-            let import = &self.graph.imports[index];
-            if import.vis != Vis::Public {
-                continue;
-            }
-            match &import.binding {
-                Binding::Name(name) => {
-                    let key = format!("{prefix}::{name}");
-                    let (items, modules) = self.resolver.import_items(index);
-                    for item in items {
-                        self.item(&key, item, depth, walk);
-                    }
-                    for module in modules {
-                        match self.graph.modules[module].item {
-                            // A module with a `mod` item is in `items` too.
-                            Some(_) => {}
-                            // A crate root: `pub use other_crate as name`.
-                            None => self.module(module, &key, depth + 1, walk),
-                        }
-                    }
-                }
-                Binding::Glob => {
-                    let (modules, enums) = self.resolver.glob_sources(index);
-                    for source in modules {
-                        self.module(source, prefix, depth + 1, walk);
-                    }
-                    for item in enums {
-                        self.members(prefix, item, walk);
-                    }
-                }
-                Binding::Underscore => {}
-            }
+            self.import(index, prefix, depth, walk);
         }
+        walk.stack.pop();
+    }
+
+    /// Adds the paths of one `pub use` below `prefix`.
+    fn import(&self, index: usize, prefix: &str, depth: usize, walk: &mut Walk<'_>) {
+        let import = &self.graph.imports[index];
+        let file = &self.graph.paths[import.file as usize];
+        if import.vis != Vis::Public || self.hidden_line(file, import.line) {
+            return;
+        }
+        match &import.binding {
+            Binding::Name(name) => {
+                let key = format!("{prefix}::{name}");
+                let (items, modules) = self.resolver.import_items(index);
+                for item in items {
+                    self.item(&key, item, depth, walk);
+                }
+                // A module with a `mod` item is in `items` too. A crate root
+                // has none: `pub use other_crate as name`.
+                for module in modules {
+                    if self.graph.modules[module].item.is_none() {
+                        self.module(module, &key, depth + 1, walk);
+                    }
+                }
+            }
+            Binding::Glob => {
+                let (modules, enums) = self.resolver.glob_sources(index);
+                for source in modules {
+                    self.module(source, prefix, depth + 1, walk);
+                }
+                for item in enums {
+                    self.members(prefix, item, walk);
+                }
+            }
+            Binding::Underscore => {}
+        }
+    }
+
+    /// True when a `#[doc(hidden)]` `use` item or `impl` block covers the line.
+    fn hidden_line(&self, file: &str, line: u32) -> bool {
+        self.facts
+            .get(file)
+            .is_some_and(|facts| facts.hidden_lines.contains(&line))
     }
 
     /// Adds `item` at `key`, with its members, and walks it when it is a
@@ -244,7 +262,8 @@ impl<'g> Walker<'g> {
         let trait_like = entry.kind == ItemKind::Trait;
         let mut members: Vec<ItemId> = self.children.get(&item).cloned().unwrap_or_default();
         for &block in self.impls.get(&item).into_iter().flatten() {
-            if !self.fact(block).hidden {
+            let entry = &self.graph.items[block];
+            if !self.hidden_line(&entry.file, entry.line) {
                 members.extend(self.children.get(&block).into_iter().flatten().copied());
             }
         }
@@ -274,7 +293,7 @@ impl<'g> Walker<'g> {
         let entry = &self.graph.items[item];
         self.facts
             .get(&entry.file)
-            .and_then(|facts| facts.get(&(entry.line, entry.name.clone())))
+            .and_then(|facts| facts.items.get(&(entry.line, entry.name.clone())))
             .cloned()
             .unwrap_or_default()
     }
@@ -285,15 +304,19 @@ struct Walk<'a> {
     entries: &'a mut BTreeMap<String, Vec<Entry>>,
     seen: &'a mut FxHashSet<(String, ItemId)>,
     modules: FxHashSet<(ModuleId, String)>,
+    /// The modules that the walk is in now.
+    stack: Vec<ModuleId>,
 }
 
-/// Parses each file with a public item of a published library.
+/// Parses each file with a public item. A published library can re-export
+/// an item of a crate that is not published, so each crate counts.
 fn read_facts(workspace: &Workspace, graph: &Graph) -> FxHashMap<String, Facts> {
     let mut files: BTreeMap<&str, crate::parse::Edition> = BTreeMap::new();
     for item in &graph.items {
-        let krate = &graph.crates[item.krate];
-        if krate.published && item.vis == Vis::Public {
-            files.entry(item.file.as_str()).or_insert(krate.edition);
+        if item.vis == Vis::Public {
+            files
+                .entry(item.file.as_str())
+                .or_insert(graph.crates[item.krate].edition);
         }
     }
     let root = workspace.root.as_std_path();

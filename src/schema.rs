@@ -17,7 +17,7 @@ const SCHEMA_ID: &str =
 
 /// The JSON documents, keyed by the name of their definition: the `kind` of a
 /// report, or a name for a document with no `kind`.
-const DOCUMENTS: [&str; 19] = [
+const DOCUMENTS: [&str; 20] = [
     "check",
     "deps",
     "fix",
@@ -30,6 +30,7 @@ const DOCUMENTS: [&str; 19] = [
     "size",
     "complexity",
     "dupes",
+    "api",
     "mutants",
     "mutants-inspect",
     "baseline",
@@ -179,6 +180,7 @@ fn subschema(generator: &mut SchemaGenerator, name: &str) -> Schema {
         "size" => structure::<size::Summary, size::Finding>(generator),
         "complexity" => structure::<complexity::Summary, complexity::Finding>(generator),
         "dupes" => structure::<dupes::Summary, dupes::CloneGroup>(generator),
+        "api" => structure::<crate::api::Summary, crate::api::Finding>(generator),
         "mutants" => generator.subschema_for::<crate::mutation::report::Report>(),
         "mutants-inspect" => generator.subschema_for::<crate::mutation::report::InspectReport>(),
         "baseline" => generator.subschema_for::<crate::baseline::File>(),

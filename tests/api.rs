@@ -7,6 +7,7 @@
     reason = "a test fails loudly when its setup does not work"
 )]
 
+use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
@@ -258,8 +259,8 @@ fn api_reports_the_changes_of_each_published_library() {
         .and_then(|all| all.iter().find(|f| f["path"] == "demo::reshaped"))
         .expect("the reshaped finding");
     assert_eq!(reshaped["item_kind"], "function");
-    assert_eq!(reshaped["before"], "pub fn reshaped ( a : u8 ) -> u8");
-    assert_eq!(reshaped["after"], "pub fn reshaped ( a : u16 ) -> u8");
+    assert_eq!(reshaped["before"], "pub fn reshaped ( u8 ) -> u8");
+    assert_eq!(reshaped["after"], "pub fn reshaped ( u16 ) -> u8");
     assert_eq!(reshaped["file"], "demo/src/lib.rs");
     assert_eq!(reshaped["version_base"], "0.3.1");
     assert_eq!(reshaped["version_head"], "0.3.2");
@@ -366,4 +367,66 @@ fn sarif_has_no_added_result_and_a_removed_item_points_to_its_module() {
     assert_eq!(location, "legacy/Cargo.toml");
     let (_, human) = repo.run(&["api", "--base", "main"]);
     assert!(human.contains("3 added"), "{human}");
+}
+
+#[test]
+fn a_glob_cycle_a_hidden_reexport_and_a_rename_give_no_extra_finding() {
+    let repo = Repo::new("0.3.2");
+    let lib = repo.root().join("demo/src/lib.rs");
+    let head = fs::read_to_string(&lib).expect("read lib.rs");
+    // The base of this branch is the HEAD of the fixture.
+    repo.git(&["checkout", "-q", "-b", "second"]);
+    let base = format!(
+        "{head}pub mod cycle {{\n    pub use super::*;\n    pub fn inner<T>(value: T) -> T {{\n        value\n    }}\n}}\n#[doc(hidden)]\npub use inner::Moved as HiddenMoved;\n"
+    );
+    fs::write(&lib, &base).expect("write lib.rs");
+    repo.git(&["commit", "-q", "-am", "base 2"]);
+    repo.git(&["checkout", "-q", "-b", "third"]);
+    let renamed = base
+        .replace(
+            "pub fn inner<T>(value: T) -> T",
+            "pub fn inner<U>(other: U) -> U",
+        )
+        .replace("pub fn fresh() {}\n", "")
+        .replace("#[doc(hidden)]\npub use inner::Moved as HiddenMoved;\n", "");
+    fs::write(&lib, renamed).expect("write lib.rs");
+    repo.git(&["commit", "-q", "-am", "head 2"]);
+    let (_, report) = repo.json(&["api", "--base", "second"]);
+    // Only `fresh` is gone. A glob that points back up the walk adds no path,
+    // so the removal counts one time.
+    assert_eq!(
+        changes(&report),
+        [entry("demo", "removed", "demo::fresh")],
+        "{report:#}"
+    );
+}
+
+#[test]
+fn a_baseline_flag_is_an_error() {
+    let repo = Repo::new("0.3.2");
+    let (code, report) = repo.json(&["api", "--base", "main", "--save-baseline", "b.json"]);
+    assert_eq!(code, 2, "{report:#}");
+    assert_eq!(report["code"], "CARGO_FALLOW_INVALID_ARGUMENT");
+}
+
+#[test]
+fn a_rule_set_to_off_removes_its_findings() {
+    let repo = Repo::new("0.3.2");
+    let manifest = repo.root().join("Cargo.toml");
+    let text = fs::read_to_string(&manifest).expect("read the manifest");
+    fs::write(
+        &manifest,
+        format!("{text}\n[workspace.metadata.fallow.rules]\napi-addition = \"off\"\napi-change = \"off\"\n"),
+    )
+    .expect("write the manifest");
+    let (_, report) = repo.json(&["api", "--base", "main"]);
+    let kinds: BTreeSet<String> = changes(&report)
+        .into_iter()
+        .map(|(_, change, _)| change)
+        .collect();
+    assert!(
+        !kinds.contains("added") && !kinds.contains("changed"),
+        "{report:#}"
+    );
+    assert!(kinds.contains("removed"), "{report:#}");
 }

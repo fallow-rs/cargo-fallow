@@ -176,6 +176,7 @@ pub fn run(args: &ApiArgs) -> Result<Section, CliError> {
     let progress = Progress::new(args.common.quiet);
     progress.step("Reading cargo metadata");
     let cargo_flags = args.common.cargo.flags();
+    refuse_baseline(&args.common.scope)?;
     let head = workspace::load(args.common.manifest_path.as_deref(), &cargo_flags)?;
     let root = head.root.as_std_path();
     let merge_base = crate::structure::git::merge_base(root, &args.base)?;
@@ -186,17 +187,27 @@ pub fn run(args: &ApiArgs) -> Result<Section, CliError> {
     progress.step("Reading the API of the published libraries");
     let before = surface::surface(&base);
     let after = surface::surface(&head);
+    // `-p` keeps the findings of the packages that it names: a finding
+    // belongs to its package, also when the item comes from another crate.
+    let manifests: BTreeMap<&String, &String> = before
+        .crates
+        .iter()
+        .chain(after.crates.iter())
+        .map(|(name, api)| (name, &api.manifest))
+        .collect();
+    let kept: BTreeSet<&String> = manifests
+        .iter()
+        .filter(|(_, manifest)| scope.keeps(manifest))
+        .map(|(name, _)| *name)
+        .collect();
+    let rules = scope.rules();
     let mut findings = compare(&before, &after);
-    findings.retain(|finding| scope.keeps(&finding.file));
+    findings
+        .retain(|finding| kept.contains(&finding.krate) && !rules.is_off(&[finding.change.rule()]));
     let summary = Summary {
         base: args.base.clone(),
         merge_base,
-        crates: before
-            .crates
-            .keys()
-            .chain(after.crates.keys())
-            .collect::<BTreeSet<_>>()
-            .len(),
+        crates: kept.len(),
         added: findings.iter().filter(|f| f.change.is_addition()).count(),
         removed: findings.iter().filter(|f| f.change.is_removal()).count(),
         changed: findings
@@ -205,6 +216,20 @@ pub fn run(args: &ApiArgs) -> Result<Section, CliError> {
             .count(),
     };
     scope.annotate(section(summary, findings, args.fail_on_issues, &scope)?)
+}
+
+/// Stops a run with a flag that judges one tree: `--baseline`,
+/// `--save-baseline` or `--changed-since`. An API change is a change between
+/// two trees, and `--base` names the other tree.
+fn refuse_baseline(scope: &crate::scope::ScopeArgs) -> Result<(), CliError> {
+    if scope.baseline.is_none() && scope.save_baseline.is_none() && scope.changed_since.is_none() {
+        return Ok(());
+    }
+    Err(CliError::new(
+        crate::error::ErrorCode::InvalidArgument,
+        "`api` does not take `--baseline`, `--save-baseline` or `--changed-since`",
+    )
+    .with_help("`--base` names the tree to compare with. To accept a removal, bump the version or keep the item."))
 }
 
 fn section(
@@ -274,13 +299,21 @@ impl Versions {
     }
 }
 
-fn breaking_part(version: &str) -> (u64, u64) {
+/// The part of a version that a breaking change must bump, as Cargo reads
+/// it: the major version from 1.0, the minor version from 0.1, else the patch
+/// version.
+fn breaking_part(version: &str) -> (u64, u64, u64) {
     let mut parts = version
         .split(['.', '-', '+'])
         .map(|part| part.parse::<u64>().unwrap_or(0));
     let major = parts.next().unwrap_or(0);
     let minor = parts.next().unwrap_or(0);
-    if major > 0 { (major, 0) } else { (0, minor) }
+    let patch = parts.next().unwrap_or(0);
+    match (major, minor) {
+        (0, 0) => (0, 0, patch),
+        (0, _) => (0, minor, 0),
+        _ => (major, 0, 0),
+    }
 }
 
 fn compare_crate(
@@ -454,12 +487,21 @@ fn shared_findings(report: &Report<Summary, Finding>) -> Vec<shared::Finding> {
                     "`{}` of `{}` changed from `{before}` to `{after}`.",
                     finding.path, finding.krate
                 ),
-                _ => format!(
-                    "`{}` of `{}` is {}.",
-                    finding.path,
-                    finding.krate,
-                    finding.change.as_str().replace('-', " ")
-                ),
+                _ => match finding.change {
+                    Change::CrateRemoved => {
+                        format!("`{}` is no longer a published library.", finding.krate)
+                    }
+                    Change::FeatureRemoved => {
+                        format!(
+                            "The feature `{}` of `{}` is gone.",
+                            finding.path, finding.krate
+                        )
+                    }
+                    _ => format!(
+                        "The public path `{}` of `{}` is gone.",
+                        finding.path, finding.krate
+                    ),
+                },
             };
             shared::Finding::new(Draft {
                 check: "api",
@@ -508,6 +550,7 @@ fn human(report: &Report<Summary, Finding>) -> String {
         for finding in findings {
             let detail = match (&finding.before, &finding.after) {
                 (Some(before), Some(after)) => format!(": {before} -> {after}"),
+                (Some(before), None) => format!(": {before}"),
                 _ => String::new(),
             };
             let _ = writeln!(
@@ -587,5 +630,6 @@ mod tests {
         assert_ne!(breaking_part("2.0.0"), breaking_part("1.9.9"));
         assert_eq!(breaking_part("0.3.1"), breaking_part("0.3.9-rc.1"));
         assert_ne!(breaking_part("0.4.0"), breaking_part("0.3.9"));
+        assert_ne!(breaking_part("0.0.2"), breaking_part("0.0.1"));
     }
 }

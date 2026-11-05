@@ -18,9 +18,11 @@ The action is defined in `action.yml` at the root of this repository.
 - `mutants` also needs `cargo-nextest` and the `llvm-tools` component.
 - When you use `base` with `size`, `api` or `mutants`, the checkout needs the
   history of the base ref. Set `fetch-depth: 0` on the checkout step.
-- `api` needs `base`. The comment shows the `api-removals` gate, one count line
-  and at most 20 rows of `crate | change | path | before -> after`. An added
-  item has no row.
+- `api` needs `base`. When `base: auto` finds no commit, for example on the
+  first push of a branch, the `api` step fails. The comment shows the
+  `api-removals` gate, one count line and at most 20 rows of
+  `crate | change | path | before -> after`, also with a larger
+  `max-annotations`. An added item has no row.
 - `sarif: true` needs `permissions: security-events: write`. A private or an
   internal repository also needs GitHub Advanced Security.
 

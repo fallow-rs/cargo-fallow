@@ -108,7 +108,7 @@ does not fail on them:
 | `auto-changed-since` | `false` | On a pull request, pass the base commit of the pull request as `--changed-since` when `changed-since` is empty. |
 | `baseline` | empty | A baseline file from `--save-baseline`, relative to `working-directory`. The action passes it as `--baseline`. |
 | `save-baseline` | empty | Write the findings of the run to this file (`--save-baseline`). The run then exits 0. |
-| `comment` | `false` | Post one sticky comment on the pull request, or update it. See [Pull request comment](#pull-request-comment). |
+| `comment` | `false` | Post one sticky comment on the pull request, or update it. A clean run posts no first comment. See [Pull request comment](#pull-request-comment). |
 | `comment-key` | empty | The key of the sticky comment. Use letters, digits, `.`, `-` and `_`. When empty, the action uses the command name. Give each call its own key when two calls run the same command. |
 | `artifacts-dir` | empty | The folder for the report files. When empty, the action makes a new folder in `RUNNER_TEMP` for each call. |
 | `github-token` | `github.token` | The token for the code scanning check, the SARIF upload and the pull request comment. |

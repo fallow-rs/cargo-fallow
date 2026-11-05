@@ -30,7 +30,7 @@ the vendored scripts.
 | `CARGO_FALLOW_FAIL_ON_ISSUES` | `true` | Fail the job when an enforced gate fails. |
 | `CARGO_FALLOW_CHANGED_SINCE` | empty | A ref for `--changed-since`. |
 | `CARGO_FALLOW_AUTO_CHANGED_SINCE` | `true` | In a merge request pipeline without `CARGO_FALLOW_CHANGED_SINCE`, give `--changed-since` the merge request base. The code quality report always has the full scope: GitLab compares it with the report of the target branch. |
-| `CARGO_FALLOW_COMMENT` | `false` | Post or update one merge request note. |
+| `CARGO_FALLOW_COMMENT` | `false` | Post or update one merge request note. A clean run posts no first note. |
 | `CARGO_FALLOW_COMMENT_KEY` | the command | The marker of the note. Give each job with a note its own key. |
 | `CARGO_FALLOW_INSTALL` | `cargo` | `cargo` runs `cargo install cargo-fallow`. `path` uses the `cargo-fallow` on the `PATH`. |
 | `CARGO_FALLOW_VERSION` | empty | The crates.io version for `cargo`. Empty means the newest version. Pin it: the cache then keeps the binary, and the next job does not build it. |

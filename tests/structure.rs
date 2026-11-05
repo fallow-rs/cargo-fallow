@@ -449,6 +449,74 @@ fn size_without_a_base_lists_hotspots_and_skips_the_growth_gate() {
     assert_eq!(report["code"], "CARGO_FALLOW_INVALID_ARGUMENT");
 }
 
+/// `check` gives `--base` and `--staged` to the size check, so the
+/// `file-growth` gate runs and `--fail-on-issues` enforces it.
+#[test]
+fn check_runs_the_growth_gate_with_a_base_or_the_staged_files() {
+    let fixture = Fixture::new();
+    fixture.git(&["init", "--quiet", "--initial-branch", "main"]);
+    fixture.git(&["add", "--all"]);
+    fixture.git(&["commit", "--quiet", "-m", "base"]);
+    fixture.git(&["checkout", "--quiet", "-b", "topic"]);
+    fixture.write("crates/app/src/big.rs", &"// x\n".repeat(41));
+    fixture.git(&["add", "--all"]);
+    let only = ["check", "--only", "size", "--fail-on-issues"];
+    let (code, report) = fixture.json(&[&only[..], &["--staged"]].concat());
+    assert_eq!(code, 1, "{report:#}");
+    assert_eq!(
+        report["gate_outcomes"]["file-growth"]["status"], "fail",
+        "{report:#}"
+    );
+    fixture.git(&["commit", "--quiet", "-m", "grow"]);
+    let (code, report) = fixture.json(&[&only[..], &["--base", "main"]].concat());
+    assert_eq!(code, 1, "{report:#}");
+    assert_eq!(
+        report["gate_outcomes"]["file-growth"]["status"], "fail",
+        "{report:#}"
+    );
+    let (code, report) = fixture.json(&[&only[..], &["--base", "no-such-ref"]].concat());
+    assert_eq!(code, 2, "{report:#}");
+    let (code, report) = fixture.json(&["check", "--only", "size"]);
+    assert_eq!(code, 0, "{report:#}");
+    assert_eq!(
+        report["gate_outcomes"]["file-growth"]["status"], "skipped",
+        "{report:#}"
+    );
+    // Without the size check, the flag has no effect, so it is an error.
+    let (code, report) = fixture.json(&["check", "--only", "parse", "--base", "main"]);
+    assert_eq!(code, 2, "{report:#}");
+    assert_eq!(
+        report["code"], "CARGO_FALLOW_INVALID_ARGUMENT",
+        "{report:#}"
+    );
+    // A baseline from another base is not stale.
+    let baseline = fixture.root().join("growth-baseline.json");
+    let path = baseline.to_str().expect("UTF-8");
+    let save = [
+        "check",
+        "--only",
+        "size",
+        "--base",
+        "main",
+        "--save-baseline",
+        path,
+    ];
+    let (code, _) = fixture.json(&save);
+    assert_eq!(code, 0);
+    let (code, report) = fixture.json(&[
+        "check",
+        "--only",
+        "size",
+        "--base",
+        "HEAD",
+        "--baseline",
+        path,
+        "--fail-on-stale-baseline",
+        "--fail-on-issues",
+    ]);
+    assert_eq!(code, 0, "{report:#}");
+}
+
 #[test]
 fn size_against_a_base_fails_a_grown_large_file_and_a_new_large_file() {
     let fixture = Fixture::new();

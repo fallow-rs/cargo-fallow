@@ -122,8 +122,12 @@ fn the_gate_block_does_not_repeat_the_files_of_the_findings() {
 fn the_size_hint_names_a_command_that_check_accepts() {
     let dir = workspace(false);
     let (_, text) = run(dir.path(), &["check", "--quiet"]);
-    assert!(!text.contains("Add `--base <ref>`"), "{text}");
-    assert!(text.contains("cargo fallow size --base <ref>"), "{text}");
+    assert!(
+        text.contains(
+            "Add `--base <ref>` or `--staged` to `cargo fallow size` or `cargo fallow check`"
+        ),
+        "{text}"
+    );
 }
 
 #[test]

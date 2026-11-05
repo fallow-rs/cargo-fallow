@@ -213,6 +213,8 @@ fn run_check(
         skip: Vec::new(),
         fail_on_issues: false,
         fail_on_parse_error: false,
+        base: None,
+        staged: false,
         health: crate::hotspots::HealthArgs::default(),
         coverage: crate::structure::crap::CoverageArgs::default(),
         cargo_flags: args.cargo.flags(),

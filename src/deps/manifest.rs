@@ -83,49 +83,59 @@ pub fn entries(text: &str) -> Vec<Entry> {
             continue;
         }
         if let Some(header) = trimmed.strip_prefix('[') {
-            table = Table::Other;
-            if header.starts_with('[') {
-                continue;
-            }
-            let Some(name) = header.rfind(']').map(|end| &header[..end]) else {
-                continue;
-            };
-            let parts = split_dotted(name);
-            if let Some((section, platform, key)) = dependency_table(&parts) {
-                table = match key {
-                    Some(key) => Table::Dep(push(&mut found, section, platform, key, line)),
-                    None => Table::Deps(section, platform),
-                };
-            }
+            table = header_table(header, &mut found, line);
             continue;
         }
         let Some((key, value)) = trimmed.split_once('=') else {
             continue;
         };
         depth = bracket_balance(value);
-        let parts = split_dotted(key);
-        let value = value.trim();
-        match &table {
-            Table::Deps(section, platform) => {
-                let inherits = match parts.as_slice() {
-                    [_] => inline_inherits(value),
-                    [_, field] => field == "workspace" && value == "true",
-                    _ => false,
-                };
-                if let Some(first) = parts.into_iter().next() {
-                    let index = push(&mut found, *section, platform.clone(), first, line);
-                    found[index].inherits |= inherits;
-                }
-            }
-            Table::Dep(index) => {
-                if parts == ["workspace"] && value == "true" {
-                    found[*index].inherits = true;
-                }
-            }
-            Table::Other => {}
-        }
+        record_key(&table, key, value.trim(), &mut found, line);
     }
     found
+}
+
+/// The table that a header line opens. The text starts after the first `[`.
+/// A `[dependencies.<key>]` header adds its entry to `found`.
+fn header_table(header: &str, found: &mut Vec<Entry>, line: u32) -> Table {
+    if header.starts_with('[') {
+        return Table::Other;
+    }
+    let Some(name) = header.rfind(']').map(|end| &header[..end]) else {
+        return Table::Other;
+    };
+    let parts = split_dotted(name);
+    match dependency_table(&parts) {
+        Some((section, platform, Some(key))) => {
+            Table::Dep(push(found, section, platform, key, line))
+        }
+        Some((section, platform, None)) => Table::Deps(section, platform),
+        None => Table::Other,
+    }
+}
+
+/// Records one `key = value` line of the current table.
+fn record_key(table: &Table, key: &str, value: &str, found: &mut Vec<Entry>, line: u32) {
+    let parts = split_dotted(key);
+    match table {
+        Table::Deps(section, platform) => {
+            let inherits = match parts.as_slice() {
+                [_] => inline_inherits(value),
+                [_, field] => field == "workspace" && value == "true",
+                _ => false,
+            };
+            if let Some(first) = parts.into_iter().next() {
+                let index = push(found, *section, platform.clone(), first, line);
+                found[index].inherits |= inherits;
+            }
+        }
+        Table::Dep(index) => {
+            if parts == ["workspace"] && value == "true" {
+                found[*index].inherits = true;
+            }
+        }
+        Table::Other => {}
+    }
 }
 
 /// True when an inline table has `workspace = true`.

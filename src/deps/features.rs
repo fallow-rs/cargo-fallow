@@ -228,34 +228,37 @@ impl<'a> Scan<'a> {
             return;
         };
         for entry in entries {
-            let Ok(entry) = entry else {
-                self.incomplete = true;
-                continue;
-            };
-            let path = entry.path();
-            let Ok(meta) = fs::metadata(&path) else {
-                // A broken symlink holds no text.
-                if fs::symlink_metadata(&path).is_err() {
-                    self.incomplete = true;
-                }
-                continue;
-            };
-            if meta.is_dir() {
-                let skipped = path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(|name| SKIPPED_FOLDERS.contains(&name));
-                if !skipped {
-                    self.folder(&path);
-                }
-            } else if meta.is_file()
-                && path.file_name().is_some_and(|name| name != "Cargo.lock")
-                && self.inside_roots(&path)
-            {
-                // A FIFO, a socket or a device holds no source, and a read of
-                // it can block or never end.
-                self.file(&path);
+            match entry {
+                Ok(entry) => self.scan_entry(&entry.path()),
+                Err(_) => self.incomplete = true,
             }
+        }
+    }
+
+    /// Scans one entry of a folder: a subfolder or a regular file.
+    fn scan_entry(&mut self, path: &Path) {
+        let Ok(meta) = fs::metadata(path) else {
+            // A broken symlink holds no text.
+            if fs::symlink_metadata(path).is_err() {
+                self.incomplete = true;
+            }
+            return;
+        };
+        if meta.is_dir() {
+            let skipped = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| SKIPPED_FOLDERS.contains(&name));
+            if !skipped {
+                self.folder(path);
+            }
+        } else if meta.is_file()
+            && path.file_name().is_some_and(|name| name != "Cargo.lock")
+            && self.inside_roots(path)
+        {
+            // A FIFO, a socket or a device holds no source, and a read of
+            // it can block or never end.
+            self.file(path);
         }
     }
 
@@ -348,32 +351,37 @@ impl<'a> Scan<'a> {
             }
         }
         for (at, _) in text.match_indices(FEATURE_VARIABLE) {
-            let rest = &text[at + FEATURE_VARIABLE.len()..];
-            let Some(rest) = rest.strip_prefix('_') else {
-                self.generic_read = true;
-                continue;
-            };
-            let name: String = rest
-                .chars()
-                .take_while(|ch| {
-                    !ch.is_lowercase() && (ch.is_alphanumeric() || matches!(ch, '_' | '.' | '+'))
-                })
-                .collect();
-            if name.is_empty() {
-                self.generic_read = true;
-                continue;
+            self.variable(&text[at + FEATURE_VARIABLE.len()..]);
+        }
+    }
+
+    /// Credits the feature of one `CARGO_FEATURE_` variable. The text starts
+    /// after the prefix. A read without a name is a generic read.
+    fn variable(&mut self, rest: &str) {
+        let Some(rest) = rest.strip_prefix('_') else {
+            self.generic_read = true;
+            return;
+        };
+        let name: String = rest
+            .chars()
+            .take_while(|ch| {
+                !ch.is_lowercase() && (ch.is_alphanumeric() || matches!(ch, '_' | '.' | '+'))
+            })
+            .collect();
+        if name.is_empty() {
+            self.generic_read = true;
+            return;
+        }
+        // A `.` or `+` at the end can end a sentence, not the name.
+        let mut name = name.as_str();
+        loop {
+            if let Some(feature) = self.variables.get(name) {
+                self.credited.insert((*feature).to_owned());
+                break;
             }
-            // A `.` or `+` at the end can end a sentence, not the name.
-            let mut name = name.as_str();
-            loop {
-                if let Some(feature) = self.variables.get(name) {
-                    self.credited.insert((*feature).to_owned());
-                    break;
-                }
-                match name.strip_suffix(['.', '+']) {
-                    Some(shorter) if !shorter.is_empty() => name = shorter,
-                    _ => break,
-                }
+            match name.strip_suffix(['.', '+']) {
+                Some(shorter) if !shorter.is_empty() => name = shorter,
+                _ => break,
             }
         }
     }
@@ -485,25 +493,35 @@ fn enabled_by_members<'a>(metadata: &'a Metadata, package: &Package) -> BTreeSet
                 enabled.extend(dependency.features.iter().map(String::as_str));
             }
         }
-        for value in member.features.values().flatten() {
-            if own && !value.contains(['/', ':']) {
-                enabled.insert(value.as_str());
-                continue;
-            }
-            let Some((key, feature)) = value.split_once('/') else {
-                continue;
-            };
-            let key = key.trim_end_matches('?');
-            let names_package = member.dependencies.iter().any(|dependency| {
-                dependency.name == package.name.as_str()
-                    && dependency.rename.as_deref().unwrap_or(&dependency.name) == key
-            });
-            if names_package {
-                enabled.insert(feature);
-            }
-        }
+        enabled.extend(
+            member
+                .features
+                .values()
+                .flatten()
+                .filter_map(|value| enabled_by_value(member, package, own, value)),
+        );
     }
     enabled
+}
+
+/// The feature of `package` that one feature value of `member` turns on.
+/// `own` is true when `member` is `package`.
+fn enabled_by_value<'a>(
+    member: &Package,
+    package: &Package,
+    own: bool,
+    value: &'a str,
+) -> Option<&'a str> {
+    if own && !value.contains(['/', ':']) {
+        return Some(value);
+    }
+    let (key, feature) = value.split_once('/')?;
+    let key = key.trim_end_matches('?');
+    let names_package = member.dependencies.iter().any(|dependency| {
+        dependency.name == package.name.as_str()
+            && dependency.rename.as_deref().unwrap_or(&dependency.name) == key
+    });
+    names_package.then_some(feature)
 }
 
 /// The one-based line of the key `name` in the `[features]` table.

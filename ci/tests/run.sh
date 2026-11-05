@@ -356,4 +356,7 @@ if [ "$FAILED" -gt 0 ]; then
   printf '  %s\n' "${FAILURES[@]}"
   exit 1
 fi
-[ "$CRLF_FAILED" -eq 0 ] || exit 1
+if [ "$CRLF_FAILED" -ne 0 ]; then
+  echo "The run with CRLF jq output failed."
+  exit 1
+fi

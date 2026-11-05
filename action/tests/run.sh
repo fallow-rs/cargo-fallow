@@ -651,18 +651,20 @@ assert_contains "$OUT" "pull request from a fork" "a fork pull request explains 
 # --- annotate.sh, summary.sh and gate.sh -------------------------------------
 
 echo "annotate.sh, summary.sh and gate.sh"
-OUT="$(ACTION_JQ_DIR="$JQ_DIR" SARIF_FILE="$FIXTURES/complexity.sarif" MAX_ANNOTATIONS=2 bash "$SCRIPTS/annotate.sh" 2>&1)"
+OUT="$(PATH="$BASE_PATH" ACTION_JQ_DIR="$JQ_DIR" SARIF_FILE="$FIXTURES/complexity.sarif" MAX_ANNOTATIONS=2 bash "$SCRIPTS/annotate.sh" 2>&1)"
 assert_equals "$(printf '%s\n' "$OUT" | grep -c '^::warning file=')" "2" "annotate: the cap limits the annotations"
 assert_contains "$OUT" "::notice::cargo-fallow wrote 2 of 3 findings as annotations, errors first." "annotate: the cap gives a notice"
-OUT="$(ACTION_JQ_DIR="$JQ_DIR" SARIF_FILE="" MAX_ANNOTATIONS=2 bash "$SCRIPTS/annotate.sh" 2>&1)"
+assert_not_contains "$OUT" $'\r' "annotate: no line keeps a CR"
+OUT="$(PATH="$BASE_PATH" ACTION_JQ_DIR="$JQ_DIR" SARIF_FILE="" MAX_ANNOTATIONS=2 bash "$SCRIPTS/annotate.sh" 2>&1)"
 assert_contains "$OUT" "No SARIF log, so no annotations." "annotate: no SARIF log"
-OUT="$(ACTION_JQ_DIR="$JQ_DIR" SARIF_FILE="$FIXTURES/complexity.sarif" MAX_ANNOTATIONS=x bash "$SCRIPTS/annotate.sh" 2>&1)"
+OUT="$(PATH="$BASE_PATH" ACTION_JQ_DIR="$JQ_DIR" SARIF_FILE="$FIXTURES/complexity.sarif" MAX_ANNOTATIONS=x bash "$SCRIPTS/annotate.sh" 2>&1)"
 assert_contains "$OUT" "Invalid 'max-annotations' input" "annotate: a bad cap fails"
 
-OUT="$(ACTION_JQ_DIR="$JQ_DIR" RESULTS_FILE="$FIXTURES/error.json" SARIF_FILE="" FALLOW_COMMAND=check EXIT_CODE=2 MAX_FINDINGS=50 \
+OUT="$(PATH="$BASE_PATH" ACTION_JQ_DIR="$JQ_DIR" RESULTS_FILE="$FIXTURES/error.json" SARIF_FILE="" FALLOW_COMMAND=check EXIT_CODE=2 MAX_FINDINGS=50 \
   GITHUB_STEP_SUMMARY=/dev/stdout bash "$SCRIPTS/summary.sh" 2>&1)"
 assert_contains "$OUT" "### cargo fallow check" "summary: an error document with no SARIF log"
-OUT="$(ACTION_JQ_DIR="$JQ_DIR" RESULTS_FILE="$FIXTURES/dupes-missing.json" FALLOW_COMMAND=dupes EXIT_CODE=2 MAX_FINDINGS=50 \
+assert_not_contains "$OUT" $'\r' "summary: no line keeps a CR"
+OUT="$(PATH="$BASE_PATH" ACTION_JQ_DIR="$JQ_DIR" RESULTS_FILE="$FIXTURES/dupes-missing.json" FALLOW_COMMAND=dupes EXIT_CODE=2 MAX_FINDINGS=50 \
   bash "$SCRIPTS/summary.sh" 2>&1)"
 assert_contains "$OUT" "No JSON report, so no job summary." "summary: no report file"
 
@@ -853,4 +855,7 @@ if [ "$FAILED" -gt 0 ]; then
   printf '  %s\n' "${FAILURES[@]}"
   exit 1
 fi
-[ "$CRLF_FAILED" -eq 0 ] || exit 1
+if [ "$CRLF_FAILED" -ne 0 ]; then
+  echo "The run with CRLF jq output failed."
+  exit 1
+fi

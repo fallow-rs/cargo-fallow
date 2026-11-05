@@ -197,6 +197,9 @@ pub struct Item {
     pub test_only: bool,
     /// True when a `cfg` attribute is on the item or on its file.
     pub under_cfg: bool,
+    /// The `cfg` conditions on the item and on each enclosing node of its
+    /// file. The conditions of the module declarations are on the `mod` items.
+    pub cfg: Vec<String>,
     /// The root facts.
     pub flags: ItemFlags,
 }
@@ -222,6 +225,9 @@ pub struct Import {
     pub file: FileId,
     /// The one-based line of the `use` item.
     pub line: u32,
+    /// The `cfg` conditions on the `use` item and on each enclosing node of
+    /// its file.
+    pub cfg: Vec<String>,
 }
 
 /// One reference.
@@ -247,6 +253,8 @@ pub struct Ref {
     pub file: FileId,
     /// The one-based line of the code, or zero when the place is not known.
     pub line: u32,
+    /// The `cfg` conditions on each enclosing node of the code in its file.
+    pub cfg: Vec<String>,
 }
 
 /// The workspace module graph.
@@ -275,6 +283,9 @@ pub struct Graph {
     /// The parsed files with a generator header or an `@generated` comment in
     /// the first lines. A generator writes their code, so no check reports it.
     pub generated_files: BTreeSet<String>,
+    /// The modules with a macro call or an `include!` call at the level of
+    /// the items. Such a module can have items that the graph does not see.
+    pub macro_modules: BTreeSet<ModuleId>,
 }
 
 /// The parsed files of one crate.
@@ -591,11 +602,16 @@ fn add_files(
                 child_module,
                 test_only: raw.test_only || module_is_test(graph, module),
                 under_cfg: raw.under_cfg || file.under_cfg,
+                cfg: raw.cfg.clone(),
                 flags: raw.flags,
             });
         }
         for (raw, id) in file.facts.items.iter().zip(&ids) {
             graph.items[*id].parent = raw.parent.map(|parent| ids[parent]);
+        }
+        for path in item_macro_paths(&base, &file.facts) {
+            let module = module_id(graph, &mut by_path, &path);
+            graph.macro_modules.insert(module);
         }
         for raw in file.facts.uses {
             let mut path = base.clone();
@@ -627,9 +643,32 @@ fn add_files(
                 under_cfg: raw.under_cfg || file.cfg_off,
                 file: file_id,
                 line: raw.line,
+                cfg: raw.cfg,
             });
         }
     }
+}
+
+/// The module paths of the macro calls and the `include!` calls at the level
+/// of the items of one file.
+fn item_macro_paths(base: &[String], facts: &FileFacts) -> Vec<Vec<String>> {
+    facts
+        .refs
+        .iter()
+        .filter(|raw| raw.owner.is_none() && matches!(raw.kind, RefKind::Macro(_)))
+        .chain(
+            facts
+                .code_includes
+                .iter()
+                .map(|include| &include.site)
+                .filter(|site| site.owner.is_none()),
+        )
+        .map(|raw| {
+            let mut path = base.to_vec();
+            path.extend(raw.inline.iter().cloned());
+            path
+        })
+        .collect()
 }
 
 /// The references of one file, with the references of the files that it
@@ -680,6 +719,7 @@ fn import_of(
         item: raw.item.map(|index| ids[index]),
         file,
         line: raw.line,
+        cfg: raw.cfg,
     }
 }
 
@@ -789,9 +829,15 @@ fn included_code(
             continue;
         };
         let site = include.site;
-        let at_site = |inline: Vec<String>, kind: RefKind, origin: Origin, test_only: bool| {
+        let at_site = |inline: Vec<String>,
+                       kind: RefKind,
+                       origin: Origin,
+                       test_only: bool,
+                       cfg: Vec<String>| {
             let mut full = site.inline.clone();
             full.extend(inline);
+            let mut conditions = site.cfg.clone();
+            conditions.extend(cfg);
             RawRef {
                 inline: full,
                 owner: site.owner,
@@ -800,6 +846,7 @@ fn included_code(
                 test_only: test_only || site.test_only,
                 under_cfg: site.under_cfg,
                 line: site.line,
+                cfg: conditions,
             }
         };
         for import in facts.uses {
@@ -807,10 +854,22 @@ fn included_code(
                 segments: import.path,
                 global: import.global,
             };
-            refs.push(at_site(import.inline, kind, Origin::Body, false));
+            refs.push(at_site(
+                import.inline,
+                kind,
+                Origin::Body,
+                false,
+                import.cfg,
+            ));
         }
         for raw in facts.refs {
-            refs.push(at_site(raw.inline, raw.kind, raw.origin, raw.test_only));
+            refs.push(at_site(
+                raw.inline,
+                raw.kind,
+                raw.origin,
+                raw.test_only,
+                raw.cfg,
+            ));
         }
         let nested = facts
             .code_includes
@@ -822,6 +881,7 @@ fn included_code(
                     nested.site.kind,
                     nested.site.origin,
                     nested.site.test_only,
+                    nested.site.cfg,
                 ),
             })
             .collect();

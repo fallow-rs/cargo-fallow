@@ -189,7 +189,7 @@ pub const RULES: &[Explanation] = &[
         rule: "boundaries",
         check: "boundaries",
         severity: "error",
-        meaning: "A rule of [workspace.metadata.fallow.boundaries] found a violation. The finding has the name of the rule. The kind is crate-dependency, source-pattern, module-path, item-path or glob-reexport.",
+        meaning: "A rule of [workspace.metadata.fallow.boundaries] found a violation. The finding has the name of the rule. The kind is crate-dependency, source-pattern, module-path, item-path, glob-reexport or cfg-path.",
         example: "A source rule `no-exit` that denies `std::process::exit` in crates/core, and a call in crates/core/src/run.rs.",
         fix: "Move the code or the dependency, or change the rule.",
         docs: "https://github.com/fallow-rs/cargo-fallow/blob/main/docs/structure.md",
@@ -237,6 +237,15 @@ pub const RULES: &[Explanation] = &[
         meaning: "A `pub use <path>::*` in a package re-exports a crate or a module that a re-export rule denies. An alias of the crate does not hide it.",
         example: "A rule `from = [\"app-api\"]`, `deny = [\"app_types\"]`, and `pub use app_types::*;` in app-api.",
         fix: "Re-export the items by name, or change the rule.",
+        docs: "https://github.com/fallow-rs/cargo-fallow/blob/main/docs/structure.md",
+    },
+    Explanation {
+        rule: "cfg-path",
+        check: "boundaries",
+        severity: "error",
+        meaning: "Code that a build of a cfg rule compiles uses an item that the same build does not compile. The finding has the name of the rule.",
+        example: "A rule with the builds [\"test\"] and [\"test\", \"miri\"], and `crate::tests::f()` in `#[cfg(test)]` code, where `mod tests` has `#[cfg(all(test, not(miri)))]`.",
+        fix: "Put the same cfg on the code, or compile the item in the build.",
         docs: "https://github.com/fallow-rs/cargo-fallow/blob/main/docs/structure.md",
     },
     Explanation {
@@ -506,7 +515,8 @@ mod tests {
             | B::SourcePattern
             | B::ModulePath
             | B::ItemPath
-            | B::GlobReexport => B::ALL.len(),
+            | B::GlobReexport
+            | B::CfgPath => B::ALL.len(),
         };
         deps + kind + size + boundary
     }

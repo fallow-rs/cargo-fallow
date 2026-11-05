@@ -74,6 +74,8 @@ pub struct Credit {
     pub under_cfg: bool,
     /// The code that gives the credit.
     pub source: Source,
+    /// True when the path can also resolve to a name outside the workspace.
+    pub outside: bool,
 }
 
 /// The result of one path for a rule that names items: what the path names,
@@ -186,6 +188,7 @@ impl<'g> Resolver<'g> {
                 test_only: false,
                 under_cfg: false,
                 source: Source::Import(index),
+                outside: false,
             };
             if import.binding == Binding::Glob {
                 let (targets, class, modules) = self.resolve_path(
@@ -220,6 +223,7 @@ impl<'g> Resolver<'g> {
                 test_only: reference.test_only,
                 under_cfg: reference.under_cfg,
                 source: Source::Ref(index),
+                outside: false,
             };
             self.credit_ref(&mut credits, base, &reference.kind);
         }
@@ -841,6 +845,10 @@ fn push_targets(
     through: &[ItemId],
     graph: &Graph,
 ) {
+    let base = Credit {
+        outside: targets.contains(&Target::Outside),
+        ..base
+    };
     for target in targets {
         let item = match target {
             Target::Item(item) => Some(*item),

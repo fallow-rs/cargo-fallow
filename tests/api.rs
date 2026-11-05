@@ -430,3 +430,111 @@ fn a_rule_set_to_off_removes_its_findings() {
     );
     assert!(kinds.contains("removed"), "{report:#}");
 }
+
+/// With `public-crates`, `api` reads only the libraries that the list names,
+/// so the removals of the unlisted `demo` give no finding. These are
+/// the libraries that `visibility` treats as an external API. A library
+/// with `publish = false` in the list counts too.
+#[test]
+fn public_crates_selects_the_libraries_of_api() {
+    let repo = Repo::new("0.3.2");
+    let manifest = repo.root().join("Cargo.toml");
+    let text = fs::read_to_string(&manifest).expect("read the manifest");
+    let with = |list: &str| {
+        fs::write(
+            &manifest,
+            format!("{text}\n[workspace.metadata.fallow.visibility]\npublic-crates = [{list}]\n"),
+        )
+        .expect("write the manifest");
+    };
+    with("\"fresh\", \"internal\"");
+    let (code, report) = repo.json(&["api", "--base", "main", "--fail-on-issues"]);
+    assert_eq!(code, 0, "{report:#}");
+    assert_eq!(
+        changes(&report),
+        [entry("fresh", "crate-added", "fresh")],
+        "{report:#}"
+    );
+    assert_eq!(report["summary"]["crates"], 2, "{report:#}");
+    with("\"nothing-*\"");
+    let (code, report) = repo.json(&["api", "--base", "main"]);
+    assert_eq!(code, 2, "{report:#}");
+    assert_eq!(report["code"], "CARGO_FALLOW_INVALID_CONFIG", "{report:#}");
+}
+
+/// A library that a change deletes together with its name in
+/// `public-crates` still gives `crate-removed`: the list of the base adds its
+/// names.
+#[test]
+fn a_library_removed_with_its_public_crates_name_is_crate_removed() {
+    let dir = tempfile::tempdir().expect("create a temporary directory");
+    let repo = Repo { dir };
+    let root = repo.root().to_path_buf();
+    let write_root = |members: &str, list: &str| {
+        fs::write(
+            root.join("Cargo.toml"),
+            format!(
+                "[workspace]\nmembers = [{members}]\nresolver = \"3\"\n\n[workspace.metadata.fallow.visibility]\npublic-crates = [{list}]\n"
+            ),
+        )
+        .expect("write the root manifest");
+    };
+    write_root("\"a\", \"b\"", "\"a\", \"b\"");
+    package(&root, "a", "0.1.0", "", "", "pub fn a() {}\n");
+    package(&root, "b", "0.1.0", "", "", "pub fn b() {}\n");
+    repo.git(&["init", "-q"]);
+    repo.git(&["add", "-A"]);
+    repo.git(&["commit", "-q", "-m", "base"]);
+    repo.git(&["checkout", "-q", "-b", "feature"]);
+    fs::remove_dir_all(root.join("b")).expect("remove b");
+    write_root("\"a\"", "\"a\"");
+    repo.git(&["add", "-A"]);
+    repo.git(&["commit", "-q", "-m", "head"]);
+    let (code, report) = repo.json(&["api", "--base", "main"]);
+    assert_eq!(code, 0, "{report:#}");
+    assert_eq!(
+        changes(&report),
+        [entry("b", "crate-removed", "b")],
+        "{report:#}"
+    );
+}
+
+/// `exclude-crates` adds a library without `public-crates`, as for
+/// `visibility`. `--public-crate` replaces the list, and `--all-published`
+/// reads each library that a registry can publish.
+#[test]
+fn the_flags_and_exclude_crates_select_the_libraries() {
+    let repo = Repo::new("0.3.2");
+    let manifest = repo.root().join("Cargo.toml");
+    let text = fs::read_to_string(&manifest).expect("read the manifest");
+    fs::write(
+        &manifest,
+        format!(
+            "{text}\n[workspace.metadata.fallow.visibility]\nexclude-crates = [\"internal\"]\n"
+        ),
+    )
+    .expect("write the manifest");
+    let crates = |args: &[&str]| -> Value {
+        let mut all = vec!["api", "--base", "main"];
+        all.extend_from_slice(args);
+        let (code, report) = repo.json(&all);
+        assert_eq!(code, 0, "{report:#}");
+        report["summary"]["crates"].clone()
+    };
+    assert_eq!(crates(&[]), 4);
+    assert_eq!(crates(&["--all-published"]), 3);
+    assert_eq!(
+        crates(&["--public-crate", "fresh"]),
+        2,
+        "fresh and the excluded internal"
+    );
+    let (code, _) = repo.json(&[
+        "api",
+        "--base",
+        "main",
+        "--public-crate",
+        "fresh",
+        "--all-published",
+    ]);
+    assert_eq!(code, 2);
+}

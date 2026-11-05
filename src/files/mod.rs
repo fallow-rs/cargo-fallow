@@ -283,6 +283,7 @@ fn reach(
         .map(|target| TargetRoot {
             path: target.src_path.clone(),
             edition: parse_edition(&target.edition),
+            test_only: false,
         })
         .collect();
     let mut skipped = BTreeMap::new();
@@ -613,6 +614,7 @@ mod tests {
             path_attr: None,
             under_cfg: false,
             cfg_off: false,
+            test_only: false,
         });
         let reached = reach(dir.path(), &workspace, &Packages::new(&workspace), scans);
         assert!(
@@ -634,6 +636,7 @@ mod tests {
                 path_attr: None,
                 under_cfg: false,
                 cfg_off: false,
+                test_only: false,
             }],
             ..Scan::default()
         };

@@ -684,6 +684,7 @@ fn target_roots(member: &Member) -> Vec<TargetRoot> {
         .map(|target| TargetRoot {
             path: target.src_path.clone(),
             edition: parse_edition(&target.edition),
+            test_only: false,
         })
         .collect()
 }

@@ -66,7 +66,7 @@ const KINDS: &[(&str, &[&str])] = &[
     ),
     ("boundaries", &[]),
     ("size", &["grown-file", "new-large-file"]),
-    ("complexity", &[]),
+    ("complexity", &["complexity-crap"]),
     ("dupes", &["code-duplication"]),
 ];
 

@@ -249,6 +249,15 @@ pub const RULES: &[Explanation] = &[
         docs: "https://github.com/fallow-rs/cargo-fallow/blob/main/docs/structure.md",
     },
     Explanation {
+        rule: "complexity-crap",
+        check: "complexity",
+        severity: "error",
+        meaning: "With `--coverage <LCOV>`, a function with a CRAP score at or over the limit: CRAP = CC^2 * (1 - cov)^3 + CC.",
+        example: "A `fn` with cyclomatic complexity 6 and no line coverage has CRAP 42, with a limit of 30.",
+        fix: "Add tests for the function, or split it. Or put `// fallow-ignore-next-line complexity-crap` above it.",
+        docs: "https://github.com/fallow-rs/cargo-fallow/blob/main/docs/structure.md",
+    },
+    Explanation {
         rule: "code-duplication",
         check: "dupes",
         severity: "error",
@@ -389,6 +398,7 @@ mod tests {
                 crate::files::RULE,
                 crate::gates::RustGateName::ParseError.as_str(),
                 crate::structure::complexity::RULE,
+                crate::structure::crap::RULE,
                 crate::structure::dupes::DUPES_RULE,
                 crate::render::mutants::SURVIVING_RULE,
                 crate::suppress::STALE_RULE,

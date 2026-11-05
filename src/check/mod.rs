@@ -32,7 +32,7 @@ use crate::section::Section;
 use crate::structure::complexity::Function;
 use crate::structure::config::{self, matches_prefix};
 use crate::structure::source::{self, Loaded, Needs};
-use crate::structure::{boundaries, complexity, dupes, size};
+use crate::structure::{boundaries, complexity, crap, dupes, size};
 use crate::workspace::{self, Workspace};
 use crate::{deps, files, visibility};
 
@@ -111,6 +111,8 @@ pub struct Options {
     pub scope: crate::scope::ScopeArgs,
     /// The flags of the file scores, the hotspots and the trend.
     pub health: crate::hotspots::HealthArgs,
+    /// The LCOV flags of the CRAP score.
+    pub coverage: crate::structure::crap::CoverageArgs,
 }
 
 impl Options {
@@ -141,24 +143,47 @@ struct SourceSettings {
     size: Option<config::Size>,
     complexity: Option<config::Complexity>,
     dupes: Option<config::Duplication>,
+    /// The LCOV data of `--coverage`.
+    coverage: Option<crap::Lcov>,
 }
 
 impl SourceSettings {
     /// The tables of the checks in `runs`.
     fn read(workspace: &Workspace, runs: &impl Fn(CheckName) -> bool) -> Result<Self, CliError> {
+        let complexity: Option<config::Complexity> = runs(CheckName::Complexity)
+            .then(|| config::section(workspace, "complexity"))
+            .transpose()?;
+        if let Some(complexity) = &complexity {
+            complexity.validate()?;
+        }
         Ok(Self {
             scores: false,
+            coverage: None,
             size: runs(CheckName::Size)
                 .then(|| config::section(workspace, "size"))
                 .transpose()?,
-            complexity: runs(CheckName::Complexity)
-                .then(|| config::section(workspace, "complexity"))
-                .transpose()?,
+            complexity,
             dupes: runs(CheckName::Dupes)
                 .then(|| config::section(workspace, "dupes"))
                 .transpose()?,
         })
     }
+}
+
+/// Reads the LCOV file of `--coverage`. The flag needs the complexity check.
+fn read_coverage(
+    options: &Options,
+    workspace: &Workspace,
+    complexity: bool,
+) -> Result<Option<crap::Lcov>, CliError> {
+    if options.coverage.path.is_some() && !complexity {
+        return Err(CliError::new(
+            ErrorCode::InvalidArgument,
+            "`--coverage` needs the complexity check",
+        )
+        .with_help("Add `complexity` to `--only`, or remove it from `--skip`."));
+    }
+    crap::read(&options.coverage, workspace)
 }
 
 /// What the graph thread gives back.
@@ -219,6 +244,7 @@ pub fn execute(options: &Options) -> Result<report::CheckReport, CliError> {
     };
     let settings = SourceSettings {
         scores: options.health.needs_functions(),
+        coverage: read_coverage(options, &workspace, runs(CheckName::Complexity))?,
         ..SourceSettings::read(&workspace, &runs)?
     };
 
@@ -594,7 +620,18 @@ fn source_checks(
     }
     if let Some(complexity) = &settings.complexity {
         progress.step("Measuring the complexity");
-        part.complexity = Some(complexity::section(&loaded, complexity, enforced, scope)?);
+        let coverage = settings
+            .coverage
+            .as_ref()
+            .map(|lcov| crap::join(lcov, &loaded, workspace.root.as_std_path()))
+            .transpose()?;
+        part.complexity = Some(complexity::section(
+            &loaded,
+            complexity,
+            enforced,
+            scope,
+            coverage.as_ref(),
+        )?);
     }
     if let Some(dupes) = &settings.dupes {
         let gates = dupes::Enforce {

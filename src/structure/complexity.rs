@@ -38,6 +38,7 @@ use crate::scope::Scope;
 use crate::section::{Section, to_value};
 use crate::structure::ComplexityArgs;
 use crate::structure::config::{self, matches_prefix};
+use crate::structure::crap::{self, Coverage, CoverageSource, CrapFields, Score};
 use crate::structure::report::{Action, Report, count_gate, gates_text, plural, shared_actions};
 use crate::structure::sarif;
 use crate::structure::source::{self, LineIndex, Loaded, Needs, Skipped, is_space_or_comment};
@@ -50,6 +51,8 @@ pub const RULE: &str = "complexity";
 const SUPPRESS_KIND: &str = "complexity";
 /// The suppression comment.
 const SUPPRESS_COMMENT: &str = "// fallow-ignore-next-line complexity";
+/// The suppression comment of a finding that only the CRAP limit gives.
+const CRAP_SUPPRESS_COMMENT: &str = "// fallow-ignore-next-line complexity-crap";
 /// The `high` band of cognitive complexity.
 const COGNITIVE_HIGH: u32 = 25;
 /// The `critical` band of cognitive complexity.
@@ -85,6 +88,13 @@ pub struct Function {
     pub cognitive: u32,
     /// The number of parameters, with `self`.
     pub params: u32,
+    /// True for a test unit: a `#[test]` function, or a unit in a
+    /// `#[cfg(test)]` module or item. A unit in a test-only file is not
+    /// marked here; [`crate::structure::source::File::test_only`] marks it.
+    pub test: bool,
+    /// True when a `cfg` attribute in the body can leave code out of a
+    /// build. The LCOV data then does not show each counted branch.
+    pub cfg_code: bool,
 }
 
 impl Function {
@@ -100,6 +110,7 @@ pub fn functions(root: &SyntaxNode, index: &LineIndex<'_>) -> Vec<Function> {
         index,
         owners: Vec::new(),
         found: Vec::new(),
+        in_test: false,
     };
     walker.outside(root);
     walker.found.sort_by_key(|found| (found.line, found.column));
@@ -111,6 +122,7 @@ struct Frame {
     cyclomatic: u32,
     cognitive: u32,
     last_logical: Option<ast::LogicOp>,
+    cfg_code: bool,
 }
 
 struct Walker<'a, 'b> {
@@ -118,11 +130,17 @@ struct Walker<'a, 'b> {
     /// The `impl` and trait names around the walk.
     owners: Vec<String>,
     found: Vec<Function>,
+    /// True inside a test function or a `#[cfg(test)]` item.
+    in_test: bool,
 }
 
 impl Walker<'_, '_> {
     /// Walks code outside a unit: items, `impl` blocks and initializers.
     fn outside(&mut self, node: &SyntaxNode) {
+        let was_test = self.in_test;
+        if is_item(node.kind()) {
+            self.in_test |= crate::attrs::attributes_of(node) == crate::attrs::AttrClass::Test;
+        }
         match node.kind() {
             SyntaxKind::FN => self.function(node),
             SyntaxKind::CLOSURE_EXPR => self.closure(node),
@@ -139,6 +157,7 @@ impl Walker<'_, '_> {
                 }
             }
         }
+        self.in_test = was_test;
     }
 
     fn function(&mut self, node: &SyntaxNode) {
@@ -207,6 +226,8 @@ impl Walker<'_, '_> {
             cyclomatic: frame.cyclomatic,
             cognitive: frame.cognitive,
             params: u32::try_from(params).unwrap_or(u32::MAX),
+            test: self.in_test,
+            cfg_code: frame.cfg_code,
         });
     }
 
@@ -248,6 +269,12 @@ impl Walker<'_, '_> {
                 self.children(node, frame, nesting + 1);
             }
             SyntaxKind::BIN_EXPR => self.binary(node, frame, nesting),
+            SyntaxKind::ATTR => {
+                frame.cfg_code |= ast::Attr::cast(node.clone()).is_some_and(|attr| {
+                    crate::attrs::classify(&crate::attrs::attr_body(&attr))
+                        == crate::attrs::AttrClass::Cfg
+                });
+            }
             SyntaxKind::BREAK_EXPR | SyntaxKind::CONTINUE_EXPR => {
                 if node
                     .children()
@@ -329,8 +356,17 @@ impl Frame {
             cyclomatic: 1,
             cognitive: 0,
             last_logical: None,
+            cfg_code: false,
         }
     }
+}
+
+/// True for an item that can carry a test attribute.
+const fn is_item(kind: SyntaxKind) -> bool {
+    matches!(
+        kind,
+        SyntaxKind::FN | SyntaxKind::MODULE | SyntaxKind::IMPL | SyntaxKind::TRAIT
+    )
 }
 
 fn logical_op(node: &SyntaxNode) -> Option<ast::LogicOp> {
@@ -424,8 +460,45 @@ pub enum Exceeded {
     Cyclomatic,
     /// Only the cognitive limit.
     Cognitive,
-    /// Both limits.
+    /// The cyclomatic and the cognitive limits.
     Both,
+    /// Only the CRAP limit.
+    Crap,
+    /// The cyclomatic and the CRAP limits.
+    CyclomaticCrap,
+    /// The cognitive and the CRAP limits.
+    CognitiveCrap,
+    /// The cyclomatic, the cognitive and the CRAP limits.
+    All,
+}
+
+impl Exceeded {
+    /// The value for the limits that a function went over, or `None`.
+    const fn of(cyclomatic: bool, cognitive: bool, crap: bool) -> Option<Self> {
+        Some(match (cyclomatic, cognitive, crap) {
+            (true, true, true) => Self::All,
+            (true, true, false) => Self::Both,
+            (true, false, true) => Self::CyclomaticCrap,
+            (false, true, true) => Self::CognitiveCrap,
+            (true, false, false) => Self::Cyclomatic,
+            (false, true, false) => Self::Cognitive,
+            (false, false, true) => Self::Crap,
+            (false, false, false) => return None,
+        })
+    }
+
+    /// True when only the CRAP limit gives the finding.
+    const fn only_crap(self) -> bool {
+        matches!(self, Self::Crap)
+    }
+
+    /// True when the CRAP limit is part of the finding.
+    const fn includes_crap(self) -> bool {
+        matches!(
+            self,
+            Self::Crap | Self::CyclomaticCrap | Self::CognitiveCrap | Self::All
+        )
+    }
 }
 
 /// One function over a limit.
@@ -452,8 +525,32 @@ pub struct Finding {
     pub exceeded: Exceeded,
     /// The severity band.
     pub severity: Severity,
+    /// The CRAP fields. Only with `--coverage`, and not for a test unit.
+    #[serde(flatten)]
+    pub coverage: Option<CrapFields>,
     /// The next steps.
     pub actions: Vec<Action>,
+}
+
+impl Finding {
+    /// The rule of the finding: `complexity-crap` when only the CRAP limit
+    /// gives it, else `complexity`.
+    const fn rule(&self) -> &'static str {
+        if self.exceeded.only_crap() {
+            crap::RULE
+        } else {
+            RULE
+        }
+    }
+
+    /// The names that a rule level can use for the finding.
+    fn level_names(&self) -> Vec<&'static str> {
+        if self.exceeded.only_crap() {
+            vec![crap::RULE, RULE]
+        } else {
+            vec![RULE]
+        }
+    }
 }
 
 /// The summary of a complexity run.
@@ -475,6 +572,17 @@ pub struct Summary {
     pub generated_files: usize,
     /// The files that a declaration reached but that did not parse.
     pub skipped_files: Vec<Skipped>,
+    /// The CRAP limit. Only with `--coverage`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_crap: Option<f64>,
+    /// The units with no CRAP score: a unit with no `DA` line in the LCOV
+    /// file, or with a `cfg` attribute in its body. Only with `--coverage`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub functions_without_coverage: Option<usize>,
+    /// The files with stale coverage data: the file is gone, or a `DA` line
+    /// is after the end of the file. Only with `--coverage`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stale_files: Option<Vec<String>>,
 }
 
 pub fn run(args: &ComplexityArgs) -> Result<Section, CliError> {
@@ -491,6 +599,8 @@ pub fn run(args: &ComplexityArgs) -> Result<Section, CliError> {
     if let Some(value) = args.max_cognitive {
         settings.max_cognitive = value;
     }
+    settings.validate()?;
+    let lcov = crap::read(&args.coverage, &workspace)?;
     progress.step("Measuring the complexity");
     let loaded = source::load(
         &workspace,
@@ -503,40 +613,59 @@ pub fn run(args: &ComplexityArgs) -> Result<Section, CliError> {
     // with no change of the code.
     let scope = Scope::load(&workspace, &args.common.scope)?
         .narrowed(args.max_cyclomatic.is_some() || args.max_cognitive.is_some());
+    let coverage = lcov
+        .map(|lcov| crap::join(&lcov, &loaded, workspace.root.as_std_path()))
+        .transpose()?;
     scope.annotate(section(
         &loaded,
         &settings,
         args.fail_on_complexity,
         &scope,
+        coverage.as_ref(),
     )?)
 }
 
 /// Measures each function of `loaded`. `enforced` is true when a function over
-/// a limit fails the run.
+/// a limit fails the run. With `coverage`, each function also gets a CRAP
+/// score.
 pub fn section(
     loaded: &Loaded,
     settings: &config::Complexity,
     enforced: bool,
     scope: &Scope,
+    coverage: Option<&Coverage>,
 ) -> Result<Section, CliError> {
     let mut findings = Vec::new();
-    let (mut count, mut suppressed) = (0, 0);
+    let (mut count, mut suppressed, mut without_coverage) = (0, 0, 0);
     for file in loaded
         .files
         .iter()
         .filter(|file| !matches_prefix(&file.path, &settings.exclude))
     {
         count += file.functions.len();
-        for function in &file.functions {
-            let Some(finding) = finding(&file.path, function, settings) else {
+        let scores = coverage.map(|coverage| coverage.scores(file));
+        for (index, function) in file.functions.iter().enumerate() {
+            let measured = scores.as_ref().map(|scores| Measured {
+                score: scores[index],
+                scored: crap::scored(function, file),
+            });
+            if measured.is_some_and(|measured| measured.scored && measured.score.is_none()) {
+                without_coverage += 1;
+            }
+            let Some(finding) = finding(&file.path, function, settings, measured) else {
                 continue;
             };
             if !scope.keeps(&file.path) {
                 continue;
             }
+            let kind = if finding.exceeded.only_crap() {
+                crap::RULE
+            } else {
+                SUPPRESS_KIND
+            };
             if scope.hides(
                 "complexity",
-                SUPPRESS_KIND,
+                kind,
                 &file.path,
                 Some(&(function.attr_line.saturating_sub(1)..=function.line)),
             ) {
@@ -562,21 +691,21 @@ pub fn section(
         suppressed,
         generated_files: loaded.files.iter().filter(|file| file.skip_metrics).count(),
         skipped_files: loaded.skipped_files(),
+        max_crap: coverage.map(|_| settings.max_crap),
+        functions_without_coverage: coverage.map(|_| without_coverage),
+        stale_files: coverage.map(|coverage| coverage.stale_files.clone()),
     };
     let mut report = Report::new("complexity", summary, findings);
     let mut findings = shared_findings(&report);
     report.retain_baseline(scope, &mut findings);
-    report.gate_outcomes.insert(
-        Gate::HealthFindings,
-        count_gate(
-            if scope.rules().counts(&[RULE], true) {
-                report.findings.len()
-            } else {
-                0
-            },
-            enforced,
-        ),
-    );
+    let counted = report
+        .findings
+        .iter()
+        .filter(|finding| scope.rules().counts(&finding.level_names(), true))
+        .count();
+    report
+        .gate_outcomes
+        .insert(Gate::HealthFindings, count_gate(counted, enforced));
     Ok(Section {
         human: human(&report),
         json: to_value(&report)?,
@@ -612,12 +741,9 @@ fn shared_findings(report: &Report<Summary, Finding>) -> Vec<shared::Finding> {
             let index = index.to_string();
             shared::Finding::new(Draft {
                 check: "complexity",
-                rule: RULE,
+                rule: finding.rule(),
                 severity: shared::Severity::Error,
-                message: format!(
-                    "`{}` has cyclomatic complexity {} and cognitive complexity {}.",
-                    finding.name, finding.cyclomatic, finding.cognitive
-                ),
+                message: message(finding),
                 location: Location::at(finding.path.clone(), finding.line, finding.col),
                 identity: &[&finding.path, &finding.name, &index],
                 category: Category::Complexity,
@@ -628,15 +754,71 @@ fn shared_findings(report: &Report<Summary, Finding>) -> Vec<shared::Finding> {
         .collect()
 }
 
-fn finding(path: &str, function: &Function, settings: &config::Complexity) -> Option<Finding> {
-    let over_cyclomatic = function.cyclomatic > settings.max_cyclomatic;
-    let over_cognitive = function.cognitive > settings.max_cognitive;
-    let exceeded = match (over_cyclomatic, over_cognitive) {
-        (true, true) => Exceeded::Both,
-        (true, false) => Exceeded::Cyclomatic,
-        (false, true) => Exceeded::Cognitive,
-        (false, false) => return None,
+/// The coverage result of one unit in a run with `--coverage`.
+#[derive(Debug, Clone, Copy)]
+struct Measured {
+    /// The score, or `None` for a unit with no data or a test unit.
+    score: Option<Score>,
+    /// False for a test unit, which has no score.
+    scored: bool,
+}
+
+fn message(finding: &Finding) -> String {
+    let crap = finding
+        .coverage
+        .and_then(|fields| fields.crap)
+        .filter(|_| finding.exceeded.includes_crap());
+    let coverage = finding
+        .coverage
+        .and_then(|fields| fields.coverage_pct)
+        .unwrap_or_default();
+    match crap {
+        Some(crap) if finding.exceeded.only_crap() => format!(
+            "`{}` has a CRAP score of {crap:.1}, with cyclomatic complexity {} and {coverage:.1}% line coverage.",
+            finding.name, finding.cyclomatic
+        ),
+        Some(crap) => format!(
+            "`{}` has cyclomatic complexity {} and cognitive complexity {}, and a CRAP score of {crap:.1} with {coverage:.1}% line coverage.",
+            finding.name, finding.cyclomatic, finding.cognitive
+        ),
+        None => format!(
+            "`{}` has cyclomatic complexity {} and cognitive complexity {}.",
+            finding.name, finding.cyclomatic, finding.cognitive
+        ),
+    }
+}
+
+fn finding(
+    path: &str,
+    function: &Function,
+    settings: &config::Complexity,
+    measured: Option<Measured>,
+) -> Option<Finding> {
+    let score = measured.and_then(|measured| measured.score);
+    let over_crap =
+        settings.max_crap > 0.0 && score.is_some_and(|score| score.crap >= settings.max_crap);
+    let exceeded = Exceeded::of(
+        function.cyclomatic > settings.max_cyclomatic,
+        function.cognitive > settings.max_cognitive,
+        over_crap,
+    )?;
+    let mut actions = Vec::new();
+    if !exceeded.only_crap() {
+        actions.push(refactor(function));
+    }
+    if let Some(score) = score.filter(|_| exceeded.includes_crap()) {
+        actions.extend(coverage_action(function, score, settings.max_crap));
+        if actions.is_empty() {
+            actions.push(refactor(function));
+        }
+    }
+    let comment = if exceeded.only_crap() {
+        CRAP_SUPPRESS_COMMENT
+    } else {
+        SUPPRESS_COMMENT
     };
+    actions.push(Action::suppress(comment, "above-function-declaration"));
+    let scored = measured.filter(|measured| measured.scored);
     Some(Finding {
         path: path.to_owned(),
         name: function.name.clone(),
@@ -648,23 +830,56 @@ fn finding(path: &str, function: &Function, settings: &config::Complexity) -> Op
         param_count: function.params,
         exceeded,
         severity: severity(function.cyclomatic, function.cognitive),
-        actions: vec![
-            Action::manual(
-                "refactor-function",
-                format!(
-                    "Split `{}` into smaller functions (cyclomatic {}, cognitive {})",
-                    function.name, function.cyclomatic, function.cognitive
-                ),
+        coverage: scored.map(|_| CrapFields {
+            crap: score.map(|score| score.crap),
+            coverage_pct: score.map(|score| score.coverage_pct),
+            coverage_source: CoverageSource::Lcov,
+        }),
+        actions,
+    })
+}
+
+fn refactor(function: &Function) -> Action {
+    Action::manual(
+        "refactor-function",
+        format!(
+            "Split `{}` into smaller functions (cyclomatic {}, cognitive {})",
+            function.name, function.cyclomatic, function.cognitive
+        ),
+    )
+}
+
+/// The test step of a CRAP finding, the same as in fallow: `add-tests` for a
+/// unit with no coverage, else `increase-coverage`. With full coverage the
+/// score is the cyclomatic complexity, so no test step helps when that value
+/// is at the limit.
+fn coverage_action(function: &Function, score: Score, max_crap: f64) -> Option<Action> {
+    if f64::from(function.cyclomatic) >= max_crap {
+        return None;
+    }
+    Some(if score.coverage_pct > 0.0 {
+        Action::manual(
+            "increase-coverage",
+            format!(
+                "Increase the test coverage of `{}` (CRAP {:.1}, {:.1}% line coverage)",
+                function.name, score.crap, score.coverage_pct
             ),
-            Action::suppress(SUPPRESS_COMMENT, "above-function-declaration"),
-        ],
+        )
+    } else {
+        Action::manual(
+            "add-tests",
+            format!(
+                "Add tests for `{}` to lower its CRAP score of {:.1}",
+                function.name, score.crap
+            ),
+        )
     })
 }
 
 fn human(report: &Report<Summary, Finding>) -> String {
     let summary = &report.summary;
     let mut text = format!(
-        "cargo fallow complexity: {} {}, {} {}, limits cyclomatic {} and cognitive {}\n",
+        "cargo fallow complexity: {} {}, {} {}, limits cyclomatic {} and cognitive {}",
         summary.files,
         plural(summary.files, "file", "files"),
         summary.functions,
@@ -672,13 +887,22 @@ fn human(report: &Report<Summary, Finding>) -> String {
         summary.max_cyclomatic,
         summary.max_cognitive,
     );
+    if let Some(max_crap) = summary.max_crap {
+        let _ = write!(text, ", CRAP {max_crap:.1}");
+    }
+    text.push('\n');
     if report.findings.is_empty() {
         text.push_str("No function is over a limit\n");
     }
     for finding in &report.findings {
+        let fields = finding.coverage.unwrap_or(CrapFields::NONE);
+        let crap = match (fields.crap, fields.coverage_pct) {
+            (Some(crap), Some(coverage)) => format!(" crap {crap:.1} coverage {coverage:.1}%"),
+            _ => String::new(),
+        };
         let _ = writeln!(
             text,
-            "  {}:{} {} cyclomatic {} cognitive {} ({}, {} lines)",
+            "  {}:{} {} cyclomatic {} cognitive {}{crap} ({}, {} lines)",
             finding.path,
             finding.line,
             finding.name,
@@ -690,6 +914,19 @@ fn human(report: &Report<Summary, Finding>) -> String {
     }
     for file in &summary.skipped_files {
         let _ = writeln!(text, "  skipped {}: {}", file.path, file.reason);
+    }
+    if let Some(without) = summary
+        .functions_without_coverage
+        .filter(|count| *count > 0)
+    {
+        let _ = writeln!(
+            text,
+            "  {without} {} with no coverage data, so with no CRAP score",
+            plural(without, "function", "functions")
+        );
+    }
+    for path in summary.stale_files.iter().flatten() {
+        let _ = writeln!(text, "  stale coverage data: {path}");
     }
     text.push_str(&gates_text(&report.gate_outcomes));
     text
@@ -704,10 +941,17 @@ const fn severity_label(severity: Severity) -> &'static str {
 }
 
 fn sarif_log(findings: &[shared::Finding], report: &Report<Summary, Finding>) -> serde_json::Value {
-    let rules = BTreeMap::from([(
-        "complexity".to_owned(),
-        "A function is over the cyclomatic or the cognitive complexity limit.".to_owned(),
-    )]);
+    let rules = BTreeMap::from([
+        (
+            RULE.to_owned(),
+            "A function is over the cyclomatic or the cognitive complexity limit.".to_owned(),
+        ),
+        (
+            crap::RULE.to_owned(),
+            "A function is at or over the CRAP limit: high complexity with low test coverage."
+                .to_owned(),
+        ),
+    ]);
     sarif::log(&rules, findings, &report.gate_outcomes)
 }
 
@@ -861,13 +1105,15 @@ mod tests {
             cyclomatic: 20,
             cognitive: 15,
             params: 0,
+            test: false,
+            cfg_code: false,
         };
-        assert!(finding("a.rs", &function, &settings).is_none());
+        assert!(finding("a.rs", &function, &settings, None).is_none());
         let over = Function {
             cognitive: 16,
             ..function
         };
-        let found = finding("a.rs", &over, &settings);
+        let found = finding("a.rs", &over, &settings, None);
         assert_eq!(
             found.as_ref().map(|f| f.exceeded),
             Some(Exceeded::Cognitive)

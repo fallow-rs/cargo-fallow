@@ -860,6 +860,7 @@ impl<'a> Walker<'a> {
             path_attr: module.attrs().find_map(|attr| path_attribute(&attr)),
             under_cfg,
             cfg_off: self.cfg_off(),
+            test_only: false,
         });
     }
 

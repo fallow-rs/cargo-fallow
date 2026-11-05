@@ -44,6 +44,7 @@ separate commands.
 | `--min-commits <N>` | The least number of commits in the window for a hotspot. The default is 3. |
 | `--save-snapshot [PATH]` | Save a health snapshot. See [Snapshots and trend](#snapshots-and-trend). |
 | `--trend`, `--trend-from <PATH>` | Add `health_trend`: the change against a snapshot. |
+| `--coverage <LCOV>`, `--coverage-root <PATH>` | Give each function a CRAP score from an LCOV file. Needs the complexity check. See [CRAP score](structure.md#crap-score). |
 
 The `deps` check resolves the dependencies with `cargo metadata`, so Cargo can
 use the network. The run does not change `Cargo.lock`. For a run without

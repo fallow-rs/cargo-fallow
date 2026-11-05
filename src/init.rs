@@ -214,6 +214,7 @@ fn run_check(
         fail_on_issues: false,
         fail_on_parse_error: false,
         health: crate::hotspots::HealthArgs::default(),
+        coverage: crate::structure::crap::CoverageArgs::default(),
         cargo_flags: args.cargo.flags(),
         scope: crate::scope::ScopeArgs {
             save_baseline: Some(save_to.to_path_buf()),

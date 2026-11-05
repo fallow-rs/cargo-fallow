@@ -13,9 +13,9 @@ use ra_ap_syntax::ast::{self, HasAttrs, HasModuleItem, HasName};
 use ra_ap_syntax::{AstNode, SyntaxKind, TextSize};
 use serde::Serialize;
 
-use crate::attrs::{path_attribute, plain_name};
+use crate::attrs::{AttrClass, attributes_of, path_attribute, plain_name};
 use crate::gates::parse_edition;
-use crate::modules::{ModuleDecl, SkippedFile, TargetRoot, walk};
+use crate::modules::{ModuleDecl, SkippedFile, TargetRoot, Visit, walk};
 use crate::parse::{ParseOutcome, with_parsed};
 use crate::structure::complexity::{Function, functions};
 use crate::structure::config::Mode;
@@ -42,6 +42,9 @@ pub struct File {
     /// True when the first lines hold a generator header or an `@generated`
     /// comment. The size, complexity and duplication checks skip such a file.
     pub skip_metrics: bool,
+    /// True when the file exists only in a test build: a file of a test
+    /// target, or a file below a `#[cfg(test)]` module declaration.
+    pub test_only: bool,
     /// The functions, when the load asked for them.
     pub functions: Vec<Function>,
     /// The tokens, when the load asked for them.
@@ -67,23 +70,18 @@ pub fn load(workspace: &Workspace, needs: Needs) -> Loaded {
         .map(|target| TargetRoot {
             path: target.src_path.clone(),
             edition: parse_edition(&target.edition),
+            test_only: target.kind.iter().any(|kind| kind == "test"),
         })
         .collect();
-    let walked = walk(root, &roots, |visit| {
-        load_file(root, &visit.path, visit.edition, needs)
-    });
+    let walked = walk(root, &roots, |visit| load_file(root, visit, needs));
     Loaded {
         files: walked.files,
         skipped: walked.skipped,
     }
 }
 
-fn load_file(
-    root: &Path,
-    path: &str,
-    edition: crate::parse::Edition,
-    needs: Needs,
-) -> Result<(File, Vec<ModuleDecl>), String> {
+fn load_file(root: &Path, visit: &Visit, needs: Needs) -> Result<(File, Vec<ModuleDecl>), String> {
+    let (path, edition) = (visit.path.as_str(), visit.edition);
     let source = fs::read_to_string(root.join(path))
         .map_err(|err| format!("cannot read the file: {err}"))?;
     let lines = count_lines(&source);
@@ -108,6 +106,7 @@ fn load_file(
             path: path.to_owned(),
             lines,
             skip_metrics,
+            test_only: visit.test_only,
             functions,
             tokens,
         },
@@ -284,13 +283,16 @@ impl<'a> LineIndex<'a> {
 /// The `mod name;` declarations of a file, also in inline modules.
 fn declarations(file: &ast::SourceFile) -> Vec<ModuleDecl> {
     let mut found = Vec::new();
-    collect_declarations(file.items(), &mut Vec::new(), &mut found);
+    collect_declarations(file.items(), &mut Vec::new(), false, &mut found);
     found
 }
 
+/// Collects the `mod name;` declarations. `test_only` is true inside an
+/// inline module that exists only in a test build.
 fn collect_declarations(
     items: impl Iterator<Item = ast::Item>,
     inline: &mut Vec<String>,
+    test_only: bool,
     found: &mut Vec<ModuleDecl>,
 ) {
     for item in items {
@@ -301,9 +303,10 @@ fn collect_declarations(
             continue;
         };
         let name = plain_name(&name);
+        let test_only = test_only || attributes_of(module.syntax()) == AttrClass::Test;
         if let Some(list) = module.item_list() {
             inline.push(name);
-            collect_declarations(list.items(), inline, found);
+            collect_declarations(list.items(), inline, test_only, found);
             inline.pop();
             continue;
         }
@@ -313,6 +316,7 @@ fn collect_declarations(
             path_attr: module.attrs().find_map(|attr| path_attribute(&attr)),
             under_cfg: false,
             cfg_off: false,
+            test_only,
         });
     }
 }

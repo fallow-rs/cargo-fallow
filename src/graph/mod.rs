@@ -429,6 +429,7 @@ fn parse_target(root: &Path, target: &Target, want_scan: bool) -> CrateFiles {
     let roots = [TargetRoot {
         path: target.src_path.clone(),
         edition,
+        test_only: false,
     }];
     let walked = walk(root, &roots, |visit| {
         let source = fs::read_to_string(root.join(&visit.path))

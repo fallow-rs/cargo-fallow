@@ -215,7 +215,7 @@ fn an_unknown_config_key_is_an_error_for_its_check_only() {
     let manifest = fs::read_to_string(fixture.manifest()).expect("read the manifest");
     fixture.write(
         "Cargo.toml",
-        &manifest.replace("max-cyclomatic = 5", "max-cyclomatic = 5\nmax-crap = 1"),
+        &manifest.replace("max-cyclomatic = 5", "max-cyclomatic = 5\nmax-halstead = 1"),
     );
     let (code, report) = fixture.json(&["complexity"]);
     assert_eq!(code, 2);

@@ -573,6 +573,8 @@ struct CheckArgs {
     cargo: CargoArgs,
     #[command(flatten)]
     health: crate::hotspots::HealthArgs,
+    #[command(flatten)]
+    coverage: crate::structure::crap::CoverageArgs,
 }
 
 /// The flags that the command gives to each of its cargo calls.
@@ -618,6 +620,7 @@ impl From<CheckArgs> for crate::check::Options {
             cargo_flags: args.cargo.flags(),
             scope: args.scope,
             health: args.health,
+            coverage: args.coverage,
         }
     }
 }

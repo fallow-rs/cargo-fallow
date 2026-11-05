@@ -9,6 +9,7 @@
 pub mod boundaries;
 pub mod complexity;
 pub mod config;
+pub mod crap;
 pub mod dupes;
 mod git;
 pub mod report;
@@ -112,6 +113,8 @@ pub struct ComplexityArgs {
         overrides_with = "fail_on_complexity"
     )]
     fail_on_complexity: bool,
+    #[command(flatten)]
+    coverage: crap::CoverageArgs,
 }
 
 /// The flags of `dupes`.

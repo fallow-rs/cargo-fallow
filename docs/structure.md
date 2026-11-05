@@ -24,7 +24,7 @@ because that flag asks for the growth gate.
 | --- | --- | --- | --- |
 | `cargo fallow boundaries` | Violations of the crate, source and module rules | `--fail-on-issues` or `--fail-on-violations` | `boundary-violations` |
 | `cargo fallow size` | Files and functions over the line limits, and growth of a large file | `--fail-on-issues` or `--fail-on-growth`. The gate needs `--base <REF>` or `--staged` | `file-growth` |
-| `cargo fallow complexity` | Functions over the cyclomatic or the cognitive limit | `--fail-on-issues` or `--fail-on-complexity` | `health-findings` |
+| `cargo fallow complexity` | Functions over the cyclomatic or the cognitive limit. With `--coverage <LCOV>`, also functions at or over the CRAP limit | `--fail-on-issues` or `--fail-on-complexity` | `health-findings` |
 | `cargo fallow dupes` | Clone groups on normalized token streams | `--fail-on-issues` or `--fail-on-clones`, and `--threshold <PERCENT>` | `duplication-findings`, `duplication-threshold` |
 
 You configure the checks in the root `Cargo.toml`, with one table for each
@@ -68,6 +68,7 @@ max-function-lines = 60
 [workspace.metadata.fallow.complexity]
 max-cyclomatic = 20
 max-cognitive = 15
+max-crap = 30.0           # only with --coverage; 0 turns the CRAP check off
 
 [workspace.metadata.fallow.dupes]
 mode = "mild"             # strict, mild, weak or semantic
@@ -110,6 +111,52 @@ The complexity counts have these known differences from other tools:
   change of the operator adds 1 more. Thus `a && (b && c)` adds 1, and `a && (b || c)` adds 2. A
   sequence ends at an operand with no logical operator in it, so
   `(a && b) || (c && d)` adds 3. fallow for JavaScript uses the same model.
+
+## CRAP score
+
+`complexity --coverage <LCOV>` and `check --coverage <LCOV>` read an LCOV
+file and give each function a CRAP score (change risk anti-pattern). The
+score is high for a function with high complexity and low test coverage. The
+formula is the same as in fallow for JavaScript:
+
+```text
+CRAP = CC^2 * (1 - cov)^3 + CC
+```
+
+`CC` is the cyclomatic complexity. `cov` is the share of the `DA` lines in
+the span of the function that have a count above 0. The lines inside a
+closure or an inner `fn` belong to that unit, not to the parent. Make the
+LCOV file with `cargo llvm-cov`:
+
+```bash
+cargo llvm-cov --lcov --output-path lcov.info
+cargo fallow complexity --coverage lcov.info
+```
+
+- A function with a score at or over `max-crap` (default 30) is a finding
+  with the rule `complexity-crap`. The value 0 turns the CRAP check off.
+- The finding has the fields `crap`, `coverage_pct` and
+  `coverage_source: "lcov"`. `exceeded` is `crap`, `cyclomatic_crap`,
+  `cognitive_crap` or `all` when the CRAP limit is part of the finding.
+- A function with no `DA` line gets `crap: null` and no CRAP finding. The
+  summary counts it in `functions_without_coverage`.
+- A function with a `cfg` attribute in its body, for example on a block or a
+  statement, also gets `crap: null`. The build can leave the code out, and
+  then the LCOV file has no line for a branch that the complexity counts.
+- Test units get no score: `#[test]` functions, the code in a `#[cfg(test)]`
+  module and the files of a test target, for example `tests/`.
+- An `SF` path must be a source file of the workspace. When the LCOV file
+  comes from another machine, give its workspace root with
+  `--coverage-root <PATH>`. When no `SF` path matches, the run exits 2.
+- A file that is gone, or a `DA` line after the end of a file, gives a
+  warning. The summary lists these files in `stale_files`.
+- The gate stays `health-findings`. Without `--coverage`, the report has no
+  CRAP field and no CRAP finding.
+- To suppress a CRAP finding, put
+  `// fallow-ignore-next-line complexity-crap` above the function.
+
+The score uses line coverage only. It does not use branch coverage or an
+estimate of the coverage.
 
 The summary of `size`, `complexity` and `dupes` has a `skipped_files` list.
 It gives the `path` and a `reason` for each skipped file. These limits put a

@@ -432,7 +432,7 @@ fn human(report: &Report<Summary, Finding>) -> String {
             }
         }
         None => text.push_str(
-            "Growth rule: not run. Run `cargo fallow size --base <ref>` or `cargo fallow size --staged`.\n",
+            "Growth rule: not run. Add `--base <ref>` or `--staged` to `cargo fallow size` or `cargo fallow check`.\n",
         ),
     }
     hotspots(

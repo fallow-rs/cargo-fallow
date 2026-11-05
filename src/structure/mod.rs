@@ -11,7 +11,7 @@ pub mod complexity;
 pub mod config;
 pub mod crap;
 pub mod dupes;
-mod git;
+pub mod git;
 pub mod report;
 pub mod sarif;
 pub mod size;

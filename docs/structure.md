@@ -23,7 +23,7 @@ because that flag asks for the growth gate.
 | Command | Reports | Gate flag | Gate |
 | --- | --- | --- | --- |
 | `cargo fallow boundaries` | Violations of the crate, source, module, item and glob re-export rules | `--fail-on-issues` or `--fail-on-violations` | `boundary-violations` |
-| `cargo fallow size` | Files and functions over the line limits, and growth of a large file | `--fail-on-issues` or `--fail-on-growth`. The gate needs `--base <REF>` or `--staged` | `file-growth` |
+| `cargo fallow size` | Files and functions over the line limits, and growth of a large file | `--fail-on-issues` or `--fail-on-growth`. The gate needs `--base <REF>` or `--staged`, also in `cargo fallow check` | `file-growth` |
 | `cargo fallow complexity` | Functions over the cyclomatic or the cognitive limit. With `--coverage <LCOV>`, also functions at or over the CRAP limit | `--fail-on-issues` or `--fail-on-complexity` | `health-findings` |
 | `cargo fallow dupes` | Clone groups on normalized token streams | `--fail-on-issues` or `--fail-on-clones`, and `--threshold <PERCENT>` | `duplication-findings`, `duplication-threshold` |
 
@@ -116,7 +116,12 @@ a macro call as tokens.
 When the table sets `threshold`, the report shows the
 `duplication-threshold` gate. As with the other gates, this gate fails the
 run only when you give a flag. The flag is `--threshold` for `dupes`, or
-`--fail-on-issues` for `check`.
+`--fail-on-issues` for `check`. The gate does not follow the level of the
+`code-duplication` rule. To gate the percentage only, set
+`code-duplication = "off"`: the report then has no clone group, and the gate
+and the health penalty still use the percentage of the whole workspace. The
+compact and annotation formats show findings only, so read the gate in the
+human, markdown or JSON output.
 
 `cargo fallow dupes --trace <FINGERPRINT>` shows the instances of one clone
 group. See [Trace](trace.md).

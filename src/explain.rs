@@ -281,7 +281,7 @@ pub const RULES: &[Explanation] = &[
         severity: "error",
         meaning: "A group of two or more copies of the same normalized token sequence.",
         example: "The same 60-token loop in src/a.rs and src/b.rs.",
-        fix: "Move the code to one function, or put `// fallow-ignore-next-line code-duplication` above a copy.",
+        fix: "Move the code to one function, or put `// fallow-ignore-next-line code-duplication` above a copy. To gate only the percentage, set the rule to `off` and keep `threshold`.",
         docs: "https://github.com/fallow-rs/cargo-fallow/blob/main/docs/structure.md",
     },
     Explanation {

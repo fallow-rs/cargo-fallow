@@ -449,6 +449,74 @@ fn size_without_a_base_lists_hotspots_and_skips_the_growth_gate() {
     assert_eq!(report["code"], "CARGO_FALLOW_INVALID_ARGUMENT");
 }
 
+/// `check` gives `--base` and `--staged` to the size check, so the
+/// `file-growth` gate runs and `--fail-on-issues` enforces it.
+#[test]
+fn check_runs_the_growth_gate_with_a_base_or_the_staged_files() {
+    let fixture = Fixture::new();
+    fixture.git(&["init", "--quiet", "--initial-branch", "main"]);
+    fixture.git(&["add", "--all"]);
+    fixture.git(&["commit", "--quiet", "-m", "base"]);
+    fixture.git(&["checkout", "--quiet", "-b", "topic"]);
+    fixture.write("crates/app/src/big.rs", &"// x\n".repeat(41));
+    fixture.git(&["add", "--all"]);
+    let only = ["check", "--only", "size", "--fail-on-issues"];
+    let (code, report) = fixture.json(&[&only[..], &["--staged"]].concat());
+    assert_eq!(code, 1, "{report:#}");
+    assert_eq!(
+        report["gate_outcomes"]["file-growth"]["status"], "fail",
+        "{report:#}"
+    );
+    fixture.git(&["commit", "--quiet", "-m", "grow"]);
+    let (code, report) = fixture.json(&[&only[..], &["--base", "main"]].concat());
+    assert_eq!(code, 1, "{report:#}");
+    assert_eq!(
+        report["gate_outcomes"]["file-growth"]["status"], "fail",
+        "{report:#}"
+    );
+    let (code, report) = fixture.json(&[&only[..], &["--base", "no-such-ref"]].concat());
+    assert_eq!(code, 2, "{report:#}");
+    let (code, report) = fixture.json(&["check", "--only", "size"]);
+    assert_eq!(code, 0, "{report:#}");
+    assert_eq!(
+        report["gate_outcomes"]["file-growth"]["status"], "skipped",
+        "{report:#}"
+    );
+    // Without the size check, the flag has no effect, so it is an error.
+    let (code, report) = fixture.json(&["check", "--only", "parse", "--base", "main"]);
+    assert_eq!(code, 2, "{report:#}");
+    assert_eq!(
+        report["code"], "CARGO_FALLOW_INVALID_ARGUMENT",
+        "{report:#}"
+    );
+    // A baseline from another base is not stale.
+    let baseline = fixture.root().join("growth-baseline.json");
+    let path = baseline.to_str().expect("UTF-8");
+    let save = [
+        "check",
+        "--only",
+        "size",
+        "--base",
+        "main",
+        "--save-baseline",
+        path,
+    ];
+    let (code, _) = fixture.json(&save);
+    assert_eq!(code, 0);
+    let (code, report) = fixture.json(&[
+        "check",
+        "--only",
+        "size",
+        "--base",
+        "HEAD",
+        "--baseline",
+        path,
+        "--fail-on-stale-baseline",
+        "--fail-on-issues",
+    ]);
+    assert_eq!(code, 0, "{report:#}");
+}
+
 #[test]
 fn size_against_a_base_fails_a_grown_large_file_and_a_new_large_file() {
     let fixture = Fixture::new();
@@ -1900,14 +1968,36 @@ fn a_warn_rule_is_a_sarif_warning_also_with_an_enforced_gate() {
     );
 }
 
+/// An `off` rule hides each clone group, and the percentage gate still runs,
+/// so a workspace can gate the percentage without a finding for each group.
 #[test]
-fn an_off_duplication_rule_has_no_threshold_gate() {
+fn an_off_duplication_rule_keeps_the_threshold_gate_and_hides_the_groups() {
     let fixture = Fixture::new();
+    let manifest = fs::read_to_string(fixture.manifest()).expect("read the manifest");
+    fixture.write(
+        "Cargo.toml",
+        &format!("{manifest}\n[workspace.metadata.fallow.dupes]\nmin-tokens = 30\nthreshold = 1\n"),
+    );
     fixture.rules("code-duplication = \"off\"");
-    let (code, report) = fixture.json(&["dupes", "--min-tokens", "30", "--threshold", "1"]);
-    assert_eq!(code, 0, "{report:#}");
-    assert!(
-        report["gate_outcomes"]["duplication-threshold"].is_null(),
+    let (code, report) = fixture.json(&["dupes", "--threshold", "1"]);
+    assert_eq!(code, 1, "{report:#}");
+    assert_eq!(
+        report["gate_outcomes"]["duplication-threshold"]["status"], "fail",
         "{report:#}"
     );
+    assert_eq!(
+        report["findings"].as_array().map(Vec::len),
+        Some(0),
+        "{report:#}"
+    );
+    let (code, report) = fixture.json(&["dupes", "--threshold", "99"]);
+    assert_eq!(code, 0, "{report:#}");
+    let compact = fixture.run(&["dupes", "--quiet", "--format", "compact"]);
+    assert_eq!(compact.stdout.trim(), "", "{}", compact.stdout);
+    let (code, report) = fixture.json(&["check", "--only", "dupes", "--fail-on-issues"]);
+    assert_eq!(
+        report["gate_outcomes"]["duplication-threshold"]["status"], "fail",
+        "{report:#}"
+    );
+    assert_eq!(code, 1, "{report:#}");
 }

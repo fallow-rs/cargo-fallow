@@ -94,7 +94,9 @@ chmod +x "$BIN/cargo-fallow" "$BIN/curl"
 BASE_PATH="$BIN:/usr/bin:/bin"
 if [ -n "${CI_TEST_JQ_CRLF:-}" ]; then
   # jq on Windows ends each output line with CRLF. In this run, each script
-  # gets such a jq, and each assertion must still pass.
+  # gets such a jq, and each assertion must still pass. The awk program is
+  # literal text.
+  # shellcheck disable=SC2016
   printf '#!/usr/bin/env bash\nset -o pipefail\n"%s" "$@" | awk '"'"'{ printf "%%s\\r\\n", $0 }'"'"'\n' \
     "$(command -v jq)" > "$BIN/jq"
   chmod +x "$BIN/jq"

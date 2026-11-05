@@ -62,13 +62,53 @@ impl From<KindName> for FindingKind {
     }
 }
 
-/// The `exclude-crates` list of the table, or `None` when the table is not
-/// valid. The `deps` check reads it for the `unused-feature` rule: an
-/// excluded library has users outside the workspace.
-pub fn exclude_crates(workspace: &Workspace) -> Option<Vec<String>> {
+/// The `exclude-crates` list and the `public-crates` patterns of the table,
+/// or `None` when the table is not valid. The `deps` check reads them for the
+/// `unused-feature` rule: such a library has users outside the workspace.
+pub fn api_crates(workspace: &Workspace) -> Option<(Vec<String>, Vec<String>)> {
     crate::structure::config::section::<Config>(workspace, KEY)
         .ok()
-        .map(|config| config.exclude_crates)
+        .map(|config| {
+            (
+                config.exclude_crates,
+                config.public_crates.unwrap_or_default(),
+            )
+        })
+}
+
+/// Fails when a `public-crates` pattern matches no library of the workspace.
+/// A typo would make each library internal without notice.
+fn check_public(workspace: &Workspace, patterns: &[String]) -> Result<(), CliError> {
+    for pattern in patterns {
+        let matched = workspace.members.iter().any(|member| {
+            member
+                .targets
+                .iter()
+                .filter(|target| {
+                    target
+                        .kind
+                        .iter()
+                        .any(|kind| kind == "proc-macro" || kind.ends_with("lib"))
+                })
+                .any(|target| {
+                    crate::visibility::name_matches(
+                        pattern,
+                        &crate::graph::crate_name(&target.name),
+                    ) || crate::visibility::name_matches(pattern, &member.name)
+                })
+        });
+        if !matched {
+            return Err(CliError::new(
+                ErrorCode::InvalidConfig,
+                format!("the public crate `{pattern}` matches no library of the workspace"),
+            )
+            .with_help(
+                "Write the crate name or the package name of a workspace library in \
+                 `--public-crate` or `public-crates`.",
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// The options of the run: the flags, with the table for each option that no
@@ -99,6 +139,9 @@ pub fn resolve(
     }
     if options.public.is_none() {
         options.public = config.public_crates;
+    }
+    if let Some(patterns) = &options.public {
+        check_public(workspace, patterns)?;
     }
     options.uniform_fields |= config.uniform_fields;
     if options.kinds.is_empty() {

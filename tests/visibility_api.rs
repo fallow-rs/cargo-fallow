@@ -167,7 +167,7 @@ fn public_crates_mark_each_other_library_as_internal() {
 #[test]
 fn the_public_crate_flag_and_a_glob_work_as_the_key() {
     let dir = published(ROOT);
-    let (found, _) = findings(&dir, &["--public-crate", "ba*"]);
+    let (found, _) = findings(&dir, &["--public-crate", "bas*"]);
     assert_eq!(found, set(&["dead-public unused_mid"]));
 }
 
@@ -181,4 +181,38 @@ fn an_empty_public_crates_list_makes_each_library_internal() {
         found,
         set(&["dead-public unused_base", "dead-public unused_mid"])
     );
+}
+
+/// The flag replaces the list of the key.
+#[test]
+fn the_public_crate_flag_replaces_the_key() {
+    let root =
+        format!("{ROOT}\n[workspace.metadata.fallow.visibility]\npublic-crates = [\"mid\"]\n");
+    let dir = published(&root);
+    let (found, _) = findings(&dir, &["--public-crate", "base"]);
+    assert_eq!(found, set(&["dead-public unused_mid"]));
+}
+
+/// A pattern that matches no library is an error, so a typo does not make
+/// each library internal without notice.
+#[test]
+fn a_public_crate_that_matches_no_library_is_an_error() {
+    let dir = published(ROOT);
+    let output = Command::cargo_bin("cargo-fallow")
+        .expect("find the binary")
+        .args([
+            "visibility",
+            "--format",
+            "json",
+            "--quiet",
+            "--public-crate",
+            "bsae",
+            "--manifest-path",
+        ])
+        .arg(dir.path().join("Cargo.toml"))
+        .output()
+        .expect("run the binary");
+    assert_eq!(output.status.code(), Some(2));
+    let error: Value = serde_json::from_slice(&output.stdout).expect("the output is JSON");
+    assert_eq!(error["code"], "CARGO_FALLOW_INVALID_CONFIG", "{error}");
 }

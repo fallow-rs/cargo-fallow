@@ -99,10 +99,14 @@ fn a_reexport_in_a_generated_file_still_holds_back_its_target() {
 #[test]
 fn a_public_crate_pattern_matches_with_globs() {
     assert!(super::name_matches("base", "base"));
-    assert!(super::name_matches("ba*", "base"));
+    assert!(super::name_matches("bas*", "base"));
     assert!(super::name_matches("*-api", "fallow-api"));
     assert!(super::name_matches("f*l*w", "fallow"));
     assert!(super::name_matches("*", "anything"));
     assert!(!super::name_matches("base", "based"));
     assert!(!super::name_matches("a*a", "a"));
+    assert!(super::name_matches("a*b*c", "a-x-b-y-c"));
+    assert!(!super::name_matches("xy*yx", "xyx"));
+    assert!(super::name_matches("**", ""));
+    assert!(!super::name_matches("", "a"));
 }

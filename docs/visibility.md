@@ -14,7 +14,12 @@ is internal, also when a registry can publish it. Use this when a workspace
 publishes internal crates only because a published facade crate depends on
 them. An empty `public-crates = []` makes each library internal. A name is a
 crate name or a package name, and `*` matches any text, for example
-`"my-api-*"`. fallow for TypeScript has the same option as `publicPackages`.
+`"my-api-*"`. The match is exact, so `my_api` and `my-api` differ: use the
+form of the crate name or of the package name. A pattern that matches no
+library is an error with the code `CARGO_FALLOW_INVALID_CONFIG`. The flag
+replaces the list of the key. `check`, `fix` and the `unused-feature` rule of
+`deps` read the key. fallow for TypeScript has the same option as
+`publicPackages`.
 
 The exported items of these libraries are an external API. They are entry
 points: they get no `dead-public` or `unnecessary-public` finding, `fix` does

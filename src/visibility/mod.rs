@@ -1,9 +1,11 @@
 //! The visibility check on the module graph.
 //!
 //! The model is the closed-world model of hawk: the workspace is the only user
-//! of its libraries. Two kinds of library are an exception: a library that a
-//! registry can publish, and a library that `exclude-crates` names. Their
-//! exported items are an external API, so they are entry points.
+//! of its libraries. Two kinds of library are an exception: a library that
+//! `exclude-crates` names, and a public library. A public library is a
+//! library that `public-crates` names, or without `public-crates` a library
+//! that a registry can publish. Their exported items are an external API, so
+//! they are entry points.
 //!
 //! - `dead_public`: a `pub` item that the library exports, and that no
 //!   production root and no test, bench, example or doctest reaches.
@@ -170,7 +172,7 @@ pub fn is_api(krate: &crate::graph::Crate, exclude: &[String], public: Option<&[
 }
 
 /// True when `name` matches `pattern`. A `*` in the pattern matches any text.
-fn name_matches(pattern: &str, name: &str) -> bool {
+pub fn name_matches(pattern: &str, name: &str) -> bool {
     let mut parts = pattern.split('*');
     let first = parts.next().unwrap_or_default();
     let Some(mut rest) = name.strip_prefix(first) else {

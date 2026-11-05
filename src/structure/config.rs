@@ -200,6 +200,8 @@ pub struct Complexity {
     /// With `--coverage`, a function with a CRAP score at or over this value
     /// is a finding. The value 0 turns the CRAP check off.
     pub max_crap: f64,
+    /// How the `max-cyclomatic` limit counts the cyclomatic complexity.
+    pub cyclomatic_policy: CyclomaticPolicy,
     /// The folders and files that the check skips.
     pub exclude: Vec<String>,
 }
@@ -210,6 +212,7 @@ impl Default for Complexity {
             max_cyclomatic: 20,
             max_cognitive: 15,
             max_crap: 30.0,
+            cyclomatic_policy: CyclomaticPolicy::Standard,
             exclude: Vec::new(),
         }
     }
@@ -230,6 +233,19 @@ impl Complexity {
         )
         .with_help("Set `max-crap` to a number, for example 30. The value 0 turns the CRAP check off."))
     }
+}
+
+/// How the `max-cyclomatic` limit counts the cyclomatic complexity. The health
+/// score always uses the standard count.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CyclomaticPolicy {
+    /// Each decision adds 1: each `match` arm whose pattern is not `_` too.
+    #[default]
+    Standard,
+    /// A flat `match` adds at most 1. A `match` is flat when no arm has a
+    /// guard and no arm has a decision, also no nested `match`.
+    FlatMatch,
 }
 
 /// The token normalization of the clone search.

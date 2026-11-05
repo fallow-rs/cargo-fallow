@@ -22,6 +22,7 @@ use serde::Serialize;
 use crate::error::{CliError, ErrorCode};
 use crate::render;
 use crate::structure::complexity::Function;
+use crate::structure::config::CyclomaticPolicy;
 use crate::structure::source::{File, Loaded};
 use crate::workspace::Workspace;
 
@@ -247,7 +248,7 @@ impl Coverage {
     /// The score of each function of `file`, in the same order. A test unit,
     /// a unit with a `cfg` attribute in its body and a unit with no `DA` line
     /// get `None`.
-    pub fn scores(&self, file: &File) -> Vec<Option<Score>> {
+    pub fn scores(&self, file: &File, policy: CyclomaticPolicy) -> Vec<Option<Score>> {
         // The lines of a stale file do not match the code, so no unit of the
         // file gets a score.
         let stale = self.stale_files.binary_search(&file.path).is_ok();
@@ -267,7 +268,7 @@ impl Coverage {
                     .fold((0_u32, 0_u32), |(total, hit), &count| {
                         (total + 1, hit + u32::from(count > 0))
                     });
-                (total > 0).then(|| score(function.cyclomatic, hit, total))
+                (total > 0).then(|| score(function.gate_cyclomatic(policy), hit, total))
             })
             .collect()
     }
@@ -376,7 +377,8 @@ mod tests {
         let inner: Vec<u32> = own_lines(&file.functions, 1).collect();
         assert_eq!(inner, [2, 3, 4]);
         // Only line 3 is covered: the closure has coverage, `outer` has none.
-        let scores = coverage(&[(1, 0), (2, 0), (3, 4), (4, 0), (5, 0), (6, 0)]).scores(&file);
+        let scores = coverage(&[(1, 0), (2, 0), (3, 4), (4, 0), (5, 0), (6, 0)])
+            .scores(&file, CyclomaticPolicy::Standard);
         assert_eq!(scores[0].map(|s| s.coverage_pct), Some(0.0));
         assert_eq!(scores[1].map(|s| s.coverage_pct), Some(33.3));
     }
@@ -384,7 +386,7 @@ mod tests {
     #[test]
     fn a_one_line_closure_does_not_take_the_line_of_its_parent() {
         let file = file("fn outer(v: &[u8]) -> usize { v.iter().filter(|x| **x > 0).count() }\n");
-        let scores = coverage(&[(1, 2)]).scores(&file);
+        let scores = coverage(&[(1, 2)]).scores(&file, CyclomaticPolicy::Standard);
         assert!(
             scores
                 .iter()
@@ -396,7 +398,8 @@ mod tests {
     #[test]
     fn a_generic_function_and_a_unit_with_no_data() {
         let source = "fn generic<T: Into<u8>>(t: T) -> u8 {\n    t.into()\n}\nfn other() {\n}\n";
-        let scores = coverage(&[(1, 1), (2, 0), (3, 1)]).scores(&file(source));
+        let scores =
+            coverage(&[(1, 1), (2, 0), (3, 1)]).scores(&file(source), CyclomaticPolicy::Standard);
         assert_eq!(scores[0].map(|s| s.coverage_pct), Some(66.7));
         assert_eq!(scores[1], None);
     }
@@ -407,7 +410,8 @@ mod tests {
         let file = file(source);
         let flags: Vec<bool> = file.functions.iter().map(|f| f.cfg_code).collect();
         assert_eq!(flags, [true, false]);
-        let scores = coverage(&[(1, 0), (4, 0), (6, 0), (8, 0)]).scores(&file);
+        let scores =
+            coverage(&[(1, 0), (4, 0), (6, 0), (8, 0)]).scores(&file, CyclomaticPolicy::Standard);
         assert_eq!(scores[0], None);
         assert!(scores[1].is_some());
     }
@@ -425,7 +429,8 @@ mod tests {
         let file = file(source);
         let tests: Vec<bool> = file.functions.iter().map(|f| f.test).collect();
         assert_eq!(tests, [true, true, true, false]);
-        let scores = coverage(&[(3, 1), (5, 1), (8, 1), (9, 1)]).scores(&file);
+        let scores =
+            coverage(&[(3, 1), (5, 1), (8, 1), (9, 1)]).scores(&file, CyclomaticPolicy::Standard);
         assert_eq!(scores.iter().filter(|s| s.is_some()).count(), 1);
     }
 

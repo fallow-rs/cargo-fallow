@@ -428,6 +428,7 @@ fn visibility_flags(options: &Options, enforced: bool) -> VisibilityOptions {
         quiet: options.quiet,
         production: Vec::new(),
         exclude: Vec::new(),
+        public: None,
         uniform_fields: false,
         kinds: Vec::new(),
         fail_on_issues: enforced,
@@ -527,7 +528,7 @@ fn graph_sections(inputs: &GraphInputs<'_>, module_graph: &Graph) -> Result<Grap
     if let Some(options) = visibility_options {
         progress.step("Checking the visibility");
         let report = visibility::fast_report(module_graph, options, workspace, scope);
-        part.public_items = Some(public_items(module_graph, &options.exclude));
+        part.public_items = Some(public_items(module_graph, options));
         part.dead_public = Some(report.summary.dead_public);
         // A scope, a baseline or a kind filter hides findings, so the ratio
         // would read too low. The file scores then have no ratio.
@@ -535,7 +536,7 @@ fn graph_sections(inputs: &GraphInputs<'_>, module_graph: &Graph) -> Result<Grap
             && !scope.has_baseline()
             && (options.kinds.is_empty()
                 || options.kinds.contains(&visibility::FindingKind::DeadPublic));
-        part.dead_counts = all_dead.then(|| dead_counts(module_graph, &options.exclude, &report));
+        part.dead_counts = all_dead.then(|| dead_counts(module_graph, options, &report));
         part.visibility = Some(report.section()?);
     }
     Ok(part)
@@ -545,12 +546,12 @@ fn graph_sections(inputs: &GraphInputs<'_>, module_graph: &Graph) -> Result<Grap
 /// file scores.
 fn dead_counts(
     module_graph: &Graph,
-    exclude: &[String],
+    options: &VisibilityOptions,
     report: &visibility::report::VisibilityReport,
 ) -> crate::hotspots::DeadCounts {
     let mut counts = crate::hotspots::DeadCounts::new();
     for item in &module_graph.items {
-        if item.vis == Vis::Public && !is_api(&module_graph.crates[item.krate], exclude) {
+        if item.vis == Vis::Public && !is_api(&module_graph.crates[item.krate], options) {
             counts.entry(item.file.clone()).or_default().0 += 1;
         }
     }
@@ -563,19 +564,18 @@ fn dead_counts(
 }
 
 /// The `pub` items of the crates whose public items are not an external API.
-fn public_items(module_graph: &Graph, exclude: &[String]) -> usize {
+fn public_items(module_graph: &Graph, options: &VisibilityOptions) -> usize {
     module_graph
         .items
         .iter()
         .filter(|item| item.vis == Vis::Public)
-        .filter(|item| !is_api(&module_graph.crates[item.krate], exclude))
+        .filter(|item| !is_api(&module_graph.crates[item.krate], options))
         .count()
 }
 
-/// True when the public items of the crate are an external API: `exclude`
-/// names it, or it is a library that a registry can publish.
-fn is_api(krate: &graph::Crate, exclude: &[String]) -> bool {
-    exclude.contains(&krate.name) || (krate.published && krate.kind.is_library())
+/// True when the public items of the crate are an external API.
+fn is_api(krate: &graph::Crate, options: &VisibilityOptions) -> bool {
+    visibility::is_api(krate, &options.exclude, options.public.as_deref())
 }
 
 /// Walks the source once and runs `size`, `complexity` and `dupes` on it.

@@ -817,7 +817,16 @@
           "type": "integer",
           "format": "uint32",
           "minimum": 0,
-          "description": "The cyclomatic complexity."
+          "description": "The cyclomatic complexity that the limit reads. With\n`cyclomatic-policy = \"flat-match\"`, a flat `match` adds 1."
+        },
+        "standard_cyclomatic": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The standard cyclomatic complexity, when the policy changed the value\nof `cyclomatic`."
         },
         "cognitive": {
           "type": "integer",

@@ -68,6 +68,7 @@ max-function-lines = 60
 [workspace.metadata.fallow.complexity]
 max-cyclomatic = 20
 max-cognitive = 15
+cyclomatic-policy = "standard"  # or "flat-match"
 max-crap = 30.0           # only with --coverage; 0 turns the CRAP check off
 
 [workspace.metadata.fallow.dupes]
@@ -98,6 +99,18 @@ put `// fallow-ignore-next-line complexity` above the function. To suppress a
 clone, put `// fallow-ignore-next-line code-duplication` above the clone. See
 [Suppressions](adoption.md#suppressions).
 
+`cyclomatic-policy` sets how the `max-cyclomatic` limit counts. The default,
+`standard`, adds 1 for each `match` arm whose pattern is not `_`. With
+`flat-match`, a flat `match` adds at most 1. A `match` is flat when no arm
+has a guard and no arm has a decision, for example a lookup table. A nested
+`match` in an arm is a decision, so the outer `match` is not flat. A closure
+in an arm has its own count, so it does not change this. When the policy
+changes the count of a finding, `cyclomatic` holds the policy count and
+`standard_cyclomatic` holds the standard count. The human line and the
+message show `(standard N)`. The severity band reads the policy count. The
+health score of `check` and the hotspots keep the standard count. fallow for
+JavaScript has the same key, `health.cyclomaticPolicy`, with other values.
+
 The complexity counts have these known differences from other tools:
 
 - Code in a macro call adds nothing. The parser keeps the arguments of a macro
@@ -123,7 +136,8 @@ formula is the same as in fallow for JavaScript:
 CRAP = CC^2 * (1 - cov)^3 + CC
 ```
 
-`CC` is the cyclomatic complexity. `cov` is the share of the `DA` lines in
+`CC` is the cyclomatic complexity that the limit reads, so it follows
+`cyclomatic-policy`. `cov` is the share of the `DA` lines in
 the span of the function that have a count above 0. The lines inside a
 closure or an inner `fn` belong to that unit, not to the parent. Make the
 LCOV file with `cargo llvm-cov`:

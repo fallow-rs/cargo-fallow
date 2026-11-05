@@ -217,8 +217,13 @@ pub enum SourceScope {
 pub struct AllowedFile {
     /// The file, relative to the workspace root.
     pub path: String,
-    /// The most matches of all patterns of the rule in the file.
+    /// The most matches of all patterns of the rule in the file. A file
+    /// with fewer matches is a finding, so the count stays exact.
     pub max: u32,
+    /// The patterns that the file must contain, with the matching and the
+    /// scope of the rule.
+    #[serde(default)]
+    pub require: Vec<String>,
 }
 
 /// How a source pattern matches.

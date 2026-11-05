@@ -81,18 +81,22 @@ pub enum Kind {
     /// Code that a `cfg` build compiles uses an item that the build does not
     /// compile.
     CfgPath,
+    /// An `allow` entry of a source rule does not fit its file: the file has
+    /// fewer matches than `max`, or it lacks a `require` pattern.
+    AllowEntry,
 }
 
 impl Kind {
     /// Each kind.
     #[cfg(test)]
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::CrateDependency,
         Self::SourcePattern,
         Self::ModulePath,
         Self::ItemPath,
         Self::GlobReexport,
         Self::CfgPath,
+        Self::AllowEntry,
     ];
 
     /// The kind in the report.
@@ -104,6 +108,7 @@ impl Kind {
             Self::ItemPath => "item-path",
             Self::GlobReexport => "glob-reexport",
             Self::CfgPath => "cfg-path",
+            Self::AllowEntry => "allow-entry",
         }
     }
 }
@@ -577,8 +582,10 @@ fn source_rule(
             continue;
         };
         judged += 1;
-        let max = allowed.get(path.as_str()).copied();
-        found.extend(sources::judge(workspace, rule, path, &code, &patterns, max));
+        let allow = allowed.get(path.as_str()).copied();
+        found.extend(sources::judge(
+            workspace, rule, path, &code, &patterns, allow,
+        ));
     }
     Ok((found, judged))
 }
@@ -1103,6 +1110,10 @@ fn sarif_log(report: &Report<Summary, Finding>, findings: &[shared::Finding]) ->
                 }
                 Kind::CfgPath => {
                     "Code that a cfg build compiles uses an item that the build does not compile."
+                }
+                Kind::AllowEntry => {
+                    "An allow entry of a source rule does not fit its file: fewer matches than \
+                     max, or a missing required pattern."
                 }
             };
             (finding.rule.clone(), text.to_owned())

@@ -360,7 +360,8 @@ fn an_edited_script_is_not_replaced_without_force() {
     let dir = repo();
     install(dir.path());
     let script = dir.path().join(SCRIPT);
-    let edited = fs::read_to_string(&script).expect("read") + "# my change\n";
+    let mut edited = fs::read_to_string(&script).expect("read");
+    edited.push_str("# my change\n");
     fs::write(&script, &edited).expect("write");
     let output = cargo_fallow(dir.path(), &["hooks", "install", "--target", "agent"]);
     assert_eq!(output.status.code(), Some(2), "{output:?}");

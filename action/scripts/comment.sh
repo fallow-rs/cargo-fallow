@@ -80,7 +80,7 @@ comments="$(gh api --paginate "repos/${GH_REPO}/issues/${PR_NUMBER}/comments")" 
 # ends each line with CRLF, so `tr` removes the CR.
 match="$(printf '%s' "$comments" | jq -r --arg marker "$MARKER" --arg author "$COMMENT_AUTHOR" \
   --rawfile body "$BODY" \
-  'def norm: gsub("\r\n"; "\n") | sub("\\s+$"; "");
+  'def norm: gsub("\r"; "") | sub("\\s+$"; "");
    .[] | select(.user.login == $author and ((.body // "") | startswith($marker)))
    | "\(.id) \((.body | norm) == ($body | norm))"' | tr -d '\r' | head -n 1)"
 existing="${match%% *}"

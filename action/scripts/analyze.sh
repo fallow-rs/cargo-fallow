@@ -344,4 +344,5 @@ else
   output sarif ""
 fi
 output path-prefix "$PREFIX"
-jq -r -f "${ACTION_JQ_DIR}/gates.jq" "$RESULTS" >> "$GITHUB_OUTPUT"
+# jq on Windows ends each line with CRLF. An output value must not keep the CR.
+jq -r -f "${ACTION_JQ_DIR}/gates.jq" "$RESULTS" | tr -d '\r' >> "$GITHUB_OUTPUT"

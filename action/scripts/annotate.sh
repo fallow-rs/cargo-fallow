@@ -19,9 +19,11 @@ if [ -z "$SARIF_FILE" ] || [ ! -f "$SARIF_FILE" ]; then
   exit 0
 fi
 
-total="$(jq '[.runs[]?.results[]?] | length' "$SARIF_FILE")"
+# jq on Windows ends each line with CRLF, so `tr` removes the CR.
+total="$(jq '[.runs[]?.results[]?] | length' "$SARIF_FILE" | tr -d '\r')"
 # analyze.sh wrote the prefix into the SARIF paths, so this step adds none.
-jq -r --arg max "$MAX_ANNOTATIONS" --arg prefix "" -f "${ACTION_JQ_DIR}/annotations.jq" "$SARIF_FILE"
+jq -r --arg max "$MAX_ANNOTATIONS" --arg prefix "" -f "${ACTION_JQ_DIR}/annotations.jq" "$SARIF_FILE" \
+  | tr -d '\r'
 if [ "$total" -gt "$MAX_ANNOTATIONS" ]; then
   echo "::notice::cargo-fallow wrote ${MAX_ANNOTATIONS} of ${total} findings as annotations, errors first. The job summary and the report files hold all of them."
 fi

@@ -60,7 +60,8 @@ api() {
 
 # The user of the token. Only a note of this user with the marker is the note
 # of the job: another user can write the marker in a note of their own.
-me="$(api --retry 3 "${CI_API_V4_URL}/user" | jq -r '.id // empty')" || api_warning read
+# jq on Windows ends each line with CRLF, so `tr` removes the CR.
+me="$(api --retry 3 "${CI_API_V4_URL}/user" | jq -r '.id // empty' | tr -d '\r')" || api_warning read
 [ -n "$me" ] || api_warning read
 
 # One line `<id> <same>` for the note of the job, or nothing. `same` is true
@@ -71,10 +72,10 @@ page=1
 while [ -z "$match" ]; do
   notes="$(api --retry 3 "${NOTES}?per_page=100&page=${page}")" || api_warning read
   match="$(printf '%s' "$notes" | jq -r --arg marker "$MARKER" --argjson me "$me" --rawfile body "$BODY" \
-    'def norm: gsub("\r\n"; "\n") | sub("\\s+$"; "");
+    'def norm: gsub("\r"; "") | sub("\\s+$"; "");
      [.[] | select((.system | not) and .author.id == $me and ((.body // "") | startswith($marker)))
        | "\(.id) \((.body | norm) == ($body | norm))"] | first // empty' | tr -d '\r')" || api_warning read
-  [ "$(printf '%s' "$notes" | jq 'length')" -lt 100 ] && break
+  [ "$(printf '%s' "$notes" | jq 'length' | tr -d '\r')" -lt 100 ] && break
   page=$((page + 1))
 done
 existing="${match%% *}"

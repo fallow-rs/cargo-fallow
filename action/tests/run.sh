@@ -46,7 +46,15 @@ line_count() {
 # A PATH with jq and the base tools, without cargo, cargo-fallow and gh.
 TOOLS="$WORK/tools"
 mkdir -p "$TOOLS"
-ln -s "$(command -v jq)" "$TOOLS/jq"
+if [ -n "${ACTION_TEST_JQ_CRLF:-}" ]; then
+  # jq on Windows ends each output line with CRLF. In this run, each script
+  # gets such a jq, and each assertion must still pass.
+  printf '#!/usr/bin/env bash\nset -o pipefail\n"%s" "$@" | awk '"'"'{ printf "%%s\\r\\n", $0 }'"'"'\n' \
+    "$(command -v jq)" > "$TOOLS/jq"
+  chmod +x "$TOOLS/jq"
+else
+  ln -s "$(command -v jq)" "$TOOLS/jq"
+fi
 # install.sh checks the release signature with node.
 if command -v node > /dev/null 2>&1; then ln -s "$(command -v node)" "$TOOLS/node"; fi
 BASE_PATH="$TOOLS:/usr/bin:/bin"
@@ -832,8 +840,17 @@ run_analyze INPUT_COMMAND=mutants STUB_JSON="$FIXTURES/mutants.json" INPUT_CHANG
 assert_equals "$(call_args 1)" "mutants --fail-on-issues --format json " "scope: mutants ignores changed-since"
 assert_contains "$OUT" "The mutants run ignores them" "scope: mutants explains the ignored input"
 
+# A second run gives each script a jq that writes CRLF, as jq on Windows does.
+CRLF_FAILED=0
+if [ -z "${ACTION_TEST_JQ_CRLF:-}" ]; then
+  echo
+  echo "Again with CRLF jq output:"
+  ACTION_TEST_JQ_CRLF=1 bash "$0" || CRLF_FAILED=1
+fi
+
 echo "${PASSED} passed, ${FAILED} failed"
 if [ "$FAILED" -gt 0 ]; then
   printf '  %s\n' "${FAILURES[@]}"
   exit 1
 fi
+[ "$CRLF_FAILED" -eq 0 ] || exit 1

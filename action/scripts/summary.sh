@@ -28,4 +28,4 @@ jq -r \
   --arg max "$MAX_FINDINGS" \
   --arg prefix "" \
   "${sarif_args[@]}" \
-  -f "${ACTION_JQ_DIR}/summary.jq" "$RESULTS_FILE" >> "$GITHUB_STEP_SUMMARY"
+  -f "${ACTION_JQ_DIR}/summary.jq" "$RESULTS_FILE" | tr -d '\r' >> "$GITHUB_STEP_SUMMARY"

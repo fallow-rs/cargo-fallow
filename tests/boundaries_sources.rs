@@ -326,8 +326,11 @@ fn an_allowed_file_without_a_required_pattern_is_a_finding() {
     .expect("write parse.rs");
     let (_, report) = boundaries(&dir);
     assert_eq!(
-        kinds(&report).len(),
-        2,
+        kinds(&report),
+        [
+            "source-pattern src/other.rs:3",
+            "allow-entry src/parse.rs:1"
+        ],
         "test code does not count: {report:#}"
     );
     fs::write(&parse, format!("{text}pub fn parse_bounded(_: u8) {{}}\n")).expect("write parse.rs");
@@ -337,4 +340,25 @@ fn an_allowed_file_without_a_required_pattern_is_a_finding() {
         ["source-pattern src/other.rs:3"],
         "{report:#}"
     );
+}
+
+/// One rule with a `source-pattern` and an `allow-entry` finding gets the
+/// SARIF text of the source pattern, whatever the order of the files.
+#[test]
+fn the_sarif_text_of_a_rule_with_two_kinds_is_the_source_pattern_text() {
+    // The `allow-entry` finding of `src/parse.rs` is the last finding.
+    let rule = "exclude = [\"tests\"]\nallow = [{ path = \"src/parse.rs\", max = 9 }]\n";
+    let dir = workspace(rule, 1);
+    let output = Command::cargo_bin("cargo-fallow")
+        .expect("the binary exists")
+        .current_dir(dir.path())
+        .args(["fallow", "boundaries", "--format", "sarif", "--quiet"])
+        .output()
+        .expect("run the binary");
+    let sarif: Value = serde_json::from_slice(&output.stdout).expect("SARIF is JSON");
+    let text = sarif["runs"][0]["tool"]["driver"]["rules"][0]["shortDescription"]["text"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    assert!(text.contains("denies"), "{sarif:#}");
 }

@@ -100,7 +100,12 @@ a macro call as tokens.
 When the table sets `threshold`, the report shows the
 `duplication-threshold` gate. As with the other gates, this gate fails the
 run only when you give a flag. The flag is `--threshold` for `dupes`, or
-`--fail-on-issues` for `check`.
+`--fail-on-issues` for `check`. The gate does not follow the level of the
+`code-duplication` rule. To gate the percentage only, set
+`code-duplication = "off"`: the report then has no clone group, and the gate
+and the health penalty still use the percentage of the whole workspace. The
+compact and annotation formats show findings only, so read the gate in the
+human, markdown or JSON output.
 
 `cargo fallow dupes --trace <FINGERPRINT>` shows the instances of one clone
 group. See [Trace](trace.md).

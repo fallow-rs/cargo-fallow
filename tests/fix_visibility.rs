@@ -7,7 +7,6 @@
     reason = "a test fails loudly when its setup does not work"
 )]
 
-use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
 
@@ -382,6 +381,7 @@ fn a_configured_baseline_that_is_missing_does_not_stop_fix() {
 /// `(pattern, lint, message)` when the library file holds the pattern.
 #[cfg(unix)]
 fn warning_cargo(dir: &TempDir, warnings: &[(&str, &str, &str)]) -> String {
+    use std::fmt::Write as _;
     use std::os::unix::fs::PermissionsExt as _;
 
     let real = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());

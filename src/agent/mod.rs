@@ -60,8 +60,9 @@ pub enum Command {
 /// The flags of `agent install` and `agent uninstall`.
 #[derive(Debug, Clone, Args)]
 pub struct InstallArgs {
-    /// Only this harness. The default is each harness whose folder exists,
-    /// else Claude Code.
+    /// Only this harness: `claude` (`.claude/`) or `codex` (`.codex/` and
+    /// `.agents/skills/`). The default is each harness whose `.claude/` or
+    /// `.codex/` folder exists, else Claude Code. `AGENTS.md` is shared.
     #[arg(long, value_enum, value_name = "HARNESS")]
     pub harness: Option<Harness>,
     /// Leave out these parts. The flag takes a list with commas and can
@@ -143,12 +144,21 @@ pub struct AgentStatus {
     pub kind: &'static str,
     /// The version of cargo-fallow.
     pub version: &'static str,
-    /// True when `AGENTS.md` holds the current guide block.
-    pub guide: bool,
+    /// The state of the guide block in `AGENTS.md`.
+    pub guide: GuideStatus,
     /// The state of the skill of each harness.
     pub skills: Vec<SkillStatus>,
     /// The state of each hook surface, the same as `hooks status`.
     pub gate: crate::hooks::install::HooksStatus,
+}
+
+/// The state of the guide block.
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct GuideStatus {
+    /// The path, relative to the install root.
+    pub path: &'static str,
+    /// `current`, `outdated`, `edited` or `absent`.
+    pub state: &'static str,
 }
 
 /// The state of the skill of one harness.
@@ -173,12 +183,14 @@ fn skill_path(harness: Harness) -> String {
 /// The installed skill text: the skill with the marker and the checksum
 /// after the front matter.
 fn skill_text() -> String {
-    let marked = match SKILL.find("\n---\n") {
+    // A checkout with `core.autocrlf` can give the embedded file `\r\n` ends.
+    let skill = SKILL.replace("\r\n", "\n");
+    let marked = match skill.find("\n---\n") {
         Some(end) => {
-            let (head, body) = SKILL.split_at(end + "\n---\n".len());
+            let (head, body) = skill.split_at(end + "\n---\n".len());
             format!("{head}{SKILL_MARKER}\n{body}")
         }
-        None => format!("{SKILL_MARKER}\n{SKILL}"),
+        None => format!("{SKILL_MARKER}\n{skill}"),
     };
     files::with_checksum(&marked, SKILL_MARKER)
 }
@@ -196,13 +208,53 @@ pub fn run(command: &Command) -> u8 {
     })
 }
 
-/// Runs `agent install`.
+/// Runs `agent install`. A first pass writes nothing, so a refused file
+/// stops the command before any change.
 pub fn install(args: &InstallArgs) -> Result<u8, CliError> {
+    refuse_empty(args)?;
+    let checked = install_parts(args, true)?;
+    let report = if args.dry_run {
+        checked
+    } else {
+        install_parts(args, false)?
+    };
+    report.write(args.format)
+}
+
+/// Runs `agent uninstall`, with the same first pass as `install`.
+pub fn uninstall(args: &InstallArgs) -> Result<u8, CliError> {
+    refuse_empty(args)?;
+    let checked = uninstall_parts(args, true)?;
+    let report = if args.dry_run {
+        checked
+    } else {
+        uninstall_parts(args, false)?
+    };
+    report.write(args.format)
+}
+
+/// `--without` must leave a part.
+fn refuse_empty(args: &InstallArgs) -> Result<(), CliError> {
+    if [Part::Guide, Part::Skill, Part::Gate]
+        .iter()
+        .all(|part| args.without.contains(part))
+    {
+        return Err(CliError::new(
+            crate::error::ErrorCode::InvalidArgument,
+            "`--without` leaves no part",
+        )
+        .with_help("Remove one part from `--without`: guide, skill or gate."));
+    }
+    Ok(())
+}
+
+/// Installs the parts. `dry_run` writes nothing.
+fn install_parts(args: &InstallArgs, dry_run: bool) -> Result<AgentReport, CliError> {
     let root = hooks::install_root(args.manifest_path.as_deref())?;
     let harnesses = hooks::harnesses(&root.root, args.harness, false);
     let mut report = AgentReport::new("install", args.dry_run);
     if !args.without.contains(&Part::Guide) {
-        let outcome = guide::install(&root.root, args.dry_run).map_err(file_error)?;
+        let outcome = guide::install(&root.root, args.force, dry_run).map_err(file_error)?;
         report.push(&root.root, guide::FILE, outcome);
     }
     if !args.without.contains(&Part::Skill) {
@@ -210,25 +262,21 @@ pub fn install(args: &InstallArgs) -> Result<u8, CliError> {
         for &harness in &harnesses {
             let relative = skill_path(harness);
             let path = settings::safe_path(&root.root, &relative).map_err(file_error)?;
-            let outcome =
-                files::install_script(&path, &text, SKILL_MARKER, args.force, args.dry_run)
-                    .map_err(file_error)?;
+            let outcome = files::install_script(&path, &text, SKILL_MARKER, args.force, dry_run)
+                .map_err(file_error)?;
             report.push(&root.root, &relative, outcome);
         }
     }
     if !args.without.contains(&Part::Gate) {
-        report.files.extend(hooks::install_gate(
-            &root,
-            &harnesses,
-            args.force,
-            args.dry_run,
-        )?);
+        report
+            .files
+            .extend(hooks::install_gate(&root, &harnesses, args.force, dry_run)?);
     }
-    report.write(args.format)
+    Ok(report)
 }
 
-/// Runs `agent uninstall`.
-pub fn uninstall(args: &InstallArgs) -> Result<u8, CliError> {
+/// Removes the parts. `dry_run` writes nothing.
+fn uninstall_parts(args: &InstallArgs, dry_run: bool) -> Result<AgentReport, CliError> {
     let root = hooks::install_root(args.manifest_path.as_deref())?;
     let harnesses = match args.harness {
         Some(harness) => vec![harness],
@@ -236,17 +284,17 @@ pub fn uninstall(args: &InstallArgs) -> Result<u8, CliError> {
     };
     let mut report = AgentReport::new("uninstall", args.dry_run);
     if !args.without.contains(&Part::Guide) {
-        let outcome = guide::uninstall(&root.root, args.dry_run).map_err(file_error)?;
+        let outcome = guide::uninstall(&root.root, args.force, dry_run).map_err(file_error)?;
         report.push(&root.root, guide::FILE, outcome);
     }
     if !args.without.contains(&Part::Skill) {
         for &harness in &harnesses {
             let relative = skill_path(harness);
             let path = settings::safe_path(&root.root, &relative).map_err(file_error)?;
-            let outcome = files::remove_script(&path, SKILL_MARKER, args.force, args.dry_run)
+            let outcome = files::remove_script(&path, SKILL_MARKER, args.force, dry_run)
                 .map_err(file_error)?;
             if outcome == Outcome::Removed
-                && !args.dry_run
+                && !dry_run
                 && let Some(dir) = path.parent()
             {
                 // The folder stays when it holds another file.
@@ -261,13 +309,10 @@ pub fn uninstall(args: &InstallArgs) -> Result<u8, CliError> {
             .filter(|harness| root.root.join(harness.dir()).is_dir())
             .collect();
         report.files.extend(hooks::remove_gate(
-            &root.root,
-            &present,
-            args.force,
-            args.dry_run,
+            &root.root, &present, args.force, dry_run,
         )?);
     }
-    report.write(args.format)
+    Ok(report)
 }
 
 /// Runs `agent status`.
@@ -301,7 +346,10 @@ pub fn status(args: &StatusArgs) -> Result<u8, CliError> {
         schema_version: 1,
         kind: "agent-status",
         version: TOOL_VERSION,
-        guide: guide::installed(&root.root),
+        guide: GuideStatus {
+            path: guide::FILE,
+            state: guide::file_state(&root.root).as_str(),
+        },
         skills,
         gate: crate::hooks::install::status_report(&root.root),
     };
@@ -351,11 +399,7 @@ impl AgentReport {
 
 impl AgentStatus {
     fn human(&self) -> String {
-        let mut text = format!(
-            "guide  {}: {}\n",
-            if self.guide { "current" } else { "absent" },
-            guide::FILE
-        );
+        let mut text = format!("guide  {}: {}\n", self.guide.state, self.guide.path);
         for skill in &self.skills {
             let _ = writeln!(
                 text,

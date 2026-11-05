@@ -48,8 +48,9 @@ impl Outcome {
             (Self::Unchanged, _) => "Unchanged",
             (Self::Removed, false) => "Removed",
             (Self::Removed, true) => "Would remove",
-            (Self::Kept, _) => "Kept (not generated, use --force)",
-            (Self::NotPresent, _) => "Not present",
+            (Self::Kept, false) => "Kept (edited, use --force)",
+            (Self::Kept, true) => "Would keep (edited, use --force)",
+            (Self::NotPresent, _) => "Absent",
         }
     }
 }

@@ -249,14 +249,17 @@ pub fn uninstall(root: &Path, harness: Harness, dry_run: bool) -> Result<Outcome
         return Ok(Outcome::NotPresent);
     }
     let next = with_entries(map, entries);
-    if !dry_run {
-        if next.is_empty() {
+    if next.is_empty() {
+        if !dry_run {
             fs::remove_file(&path).map_err(|err| write_error(&path, &err))?;
-        } else {
-            write_object(&path, &next)?;
         }
+        return Ok(Outcome::Removed);
     }
-    Ok(Outcome::Removed)
+    if !dry_run {
+        write_object(&path, &next)?;
+    }
+    // The file stays with the other settings.
+    Ok(Outcome::Updated)
 }
 
 /// The path of `relative` under `root`, when no existing part of it is a
@@ -321,7 +324,7 @@ mod tests {
 
         assert_eq!(
             uninstall(root.path(), Harness::Claude, false),
-            Ok(Outcome::Removed)
+            Ok(Outcome::Updated)
         );
         assert_eq!(read(&path), other);
         assert!(!has_handler(root.path(), Harness::Claude));

@@ -116,7 +116,7 @@ fn install_writes_each_part_once_and_status_shows_them() {
     );
 
     let status = json(root, &["agent", "status", "--format", "json"]);
-    assert_eq!(status["guide"], true, "{status}");
+    assert_eq!(status["guide"]["state"], "current", "{status}");
     assert_eq!(status["skills"][0]["state"], "current", "{status}");
     assert_eq!(status["skills"][1]["state"], "current", "{status}");
     assert_eq!(
@@ -147,7 +147,7 @@ fn uninstall_keeps_an_edited_skill_and_the_other_block() {
         "{report}"
     );
     assert!(
-        outcomes.contains(&("AGENTS.md".to_owned(), "removed".to_owned())),
+        outcomes.contains(&("AGENTS.md".to_owned(), "updated".to_owned())),
         "{report}"
     );
     assert_eq!(fs::read_to_string(&skill).ok().as_deref(), Some(&*edited));
@@ -188,5 +188,52 @@ fn without_leaves_out_parts_and_init_agents_installs() {
     assert_eq!(report["kind"], "agent", "{report}");
     assert!(root.join(".codex/hooks/cargo-fallow-gate.sh").is_file());
     let output = run(root, &["init", "--agents", "--write"]);
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+}
+
+#[test]
+fn a_refused_file_stops_the_install_before_any_change() {
+    let dir = repo();
+    let root = dir.path();
+    write(
+        root,
+        ".codex/hooks/cargo-fallow-gate.sh",
+        "#!/bin/sh\nmine\n",
+    );
+    let before = fs::read_to_string(root.join("AGENTS.md")).expect("read");
+    let output = run(root, &["agent", "install"]);
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert_eq!(
+        fs::read_to_string(root.join("AGENTS.md")).ok(),
+        Some(before)
+    );
+    assert!(!root.join(".claude/skills").exists());
+    assert!(!root.join(".claude/settings.json").exists());
+}
+
+#[test]
+fn an_edited_guide_block_is_edited_and_stays() {
+    let dir = repo();
+    let root = dir.path();
+    json(root, &["agent", "install", "--format", "json"]);
+    let path = root.join("AGENTS.md");
+    let edited = fs::read_to_string(&path)
+        .expect("read")
+        .replace("## cargo-fallow", "## cargo-fallow (our notes)");
+    fs::write(&path, &edited).expect("write");
+    let status = json(root, &["agent", "status", "--format", "json"]);
+    assert_eq!(status["guide"]["state"], "edited", "{status}");
+    let report = json(root, &["agent", "install", "--format", "json"]);
+    assert_eq!(report["files"][0]["outcome"], "kept", "{report}");
+    assert_eq!(fs::read_to_string(&path).ok().as_deref(), Some(&*edited));
+}
+
+#[test]
+fn without_every_part_is_an_error() {
+    let dir = repo();
+    let output = run(
+        dir.path(),
+        &["agent", "install", "--without", "guide,skill,gate"],
+    );
     assert_eq!(output.status.code(), Some(2), "{output:?}");
 }

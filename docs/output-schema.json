@@ -162,8 +162,8 @@
           "description": "The version of cargo-fallow."
         },
         "guide": {
-          "type": "boolean",
-          "description": "True when `AGENTS.md` holds the current guide block."
+          "$ref": "#/$defs/GuideStatus",
+          "description": "The state of the guide block in `AGENTS.md`."
         },
         "skills": {
           "type": "array",
@@ -2943,6 +2943,24 @@
         "jobs"
       ],
       "description": "The guard part of the report."
+    },
+    "GuideStatus": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "The path, relative to the install root."
+        },
+        "state": {
+          "type": "string",
+          "description": "`current`, `outdated`, `edited` or `absent`."
+        }
+      },
+      "required": [
+        "path",
+        "state"
+      ],
+      "description": "The state of the guide block."
     },
     "Health": {
       "anyOf": [

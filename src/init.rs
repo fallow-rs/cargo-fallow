@@ -397,7 +397,7 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
-      - uses: fallow-rs/cargo-fallow@main
+      - uses: fallow-rs/cargo-fallow@v0
         with:
           command: check
 "

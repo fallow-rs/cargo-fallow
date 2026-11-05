@@ -125,7 +125,7 @@ fn print_changes_no_file_and_ci_gives_a_workflow() {
     let (code, workflow) = run(dir.path(), &["init", "--ci", "github"]);
     assert_eq!(code, 0);
     assert!(
-        workflow.contains("uses: fallow-rs/cargo-fallow@"),
+        workflow.contains("uses: fallow-rs/cargo-fallow@v0\n"),
         "{workflow}"
     );
 }

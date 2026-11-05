@@ -119,7 +119,9 @@ session and pull request that can merge to `main`, also auto-merge.
    When another commit landed on top of it, the release cannot start:
    - If the new commits add no fragment to `changelog.d/`, merge an empty
      commit with the same subject through a new pull request
-     (`git commit --allow-empty -S -s -m "chore: release vX.Y.Z"`).
+     (`git commit --allow-empty -S -s -m "chore: release vX.Y.Z"`). Use a
+     new branch name, for example `chore/release-vX.Y.Z-2`, because the
+     branch of the merged pull request is closed.
    - If they add a fragment, prepare the release commit again from step 1 on
      the new `main`. The new fragment goes into the `[X.Y.Z]` section.
 

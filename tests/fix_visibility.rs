@@ -408,6 +408,7 @@ fn warning_cargo(dir: &TempDir, warnings: &[(&str, &str, &str, u32)]) -> String 
 }
 
 /// The `skip_reason` of the edit of each item, in report order.
+#[cfg(unix)]
 fn skip_reasons(report: &Value) -> Vec<(String, String)> {
     report["fixes"]
         .as_array()

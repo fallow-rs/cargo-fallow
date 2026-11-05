@@ -81,18 +81,22 @@ pub enum Kind {
     /// Code that a `cfg` build compiles uses an item that the build does not
     /// compile.
     CfgPath,
+    /// An `allow` entry of a source rule does not fit its file: the file has
+    /// fewer matches than `max`, or it lacks a `require` pattern.
+    AllowEntry,
 }
 
 impl Kind {
     /// Each kind.
     #[cfg(test)]
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::CrateDependency,
         Self::SourcePattern,
         Self::ModulePath,
         Self::ItemPath,
         Self::GlobReexport,
         Self::CfgPath,
+        Self::AllowEntry,
     ];
 
     /// The kind in the report.
@@ -104,6 +108,7 @@ impl Kind {
             Self::ItemPath => "item-path",
             Self::GlobReexport => "glob-reexport",
             Self::CfgPath => "cfg-path",
+            Self::AllowEntry => "allow-entry",
         }
     }
 }
@@ -294,8 +299,11 @@ fn shared_findings(report: &Report<Summary, Finding>) -> Vec<shared::Finding> {
         .findings
         .iter()
         .map(|finding| {
+            // The kind keeps the count of an `allow-entry` finding apart, so
+            // it does not move the index of a source finding of its file.
             let key = (
                 finding.rule.as_str(),
+                finding.kind,
                 finding.path.as_str(),
                 finding.to.as_str(),
                 finding.pattern.as_deref().unwrap_or_default(),
@@ -310,13 +318,19 @@ fn shared_findings(report: &Report<Summary, Finding>) -> Vec<shared::Finding> {
         .map(|(finding, index)| {
             let index = index.to_string();
             let pattern = finding.pattern.as_deref().unwrap_or_default();
+            let entry = Kind::AllowEntry.as_str();
+            let identity: Vec<&str> = if finding.kind == Kind::AllowEntry {
+                vec![&finding.path, &finding.to, pattern, &index, entry]
+            } else {
+                vec![&finding.path, &finding.to, pattern, &index]
+            };
             shared::Finding::new(Draft {
                 check: "boundaries",
                 rule: &finding.rule,
                 severity: Severity::Error,
                 message: finding.message.clone(),
                 location: Location::at(finding.path.clone(), finding.line, finding.col),
-                identity: &[&finding.path, &finding.to, pattern, &index],
+                identity: &identity,
                 category: Category::BugRisk,
                 impact: Impact::Major,
             })
@@ -577,8 +591,10 @@ fn source_rule(
             continue;
         };
         judged += 1;
-        let max = allowed.get(path.as_str()).copied();
-        found.extend(sources::judge(workspace, rule, path, &code, &patterns, max));
+        let allow = allowed.get(path.as_str()).copied();
+        found.extend(sources::judge(
+            workspace, rule, path, &code, &patterns, allow,
+        ));
     }
     Ok((found, judged))
 }
@@ -1089,25 +1105,33 @@ fn human(report: &Report<Summary, Finding>) -> String {
 }
 
 fn sarif_log(report: &Report<Summary, Finding>, findings: &[shared::Finding]) -> serde_json::Value {
-    let rules: BTreeMap<String, String> = report
-        .findings
-        .iter()
-        .map(|finding| {
-            let text = match finding.kind {
-                Kind::CrateDependency => "A workspace crate depends on a crate that a rule denies.",
-                Kind::SourcePattern => "A file contains a pattern that a rule denies.",
-                Kind::ModulePath => "A module uses a module that a rule denies.",
-                Kind::ItemPath => "Code uses a workspace item that a rule denies.",
-                Kind::GlobReexport => {
-                    "A glob re-export reads a crate or a module that a rule denies."
-                }
-                Kind::CfgPath => {
-                    "Code that a cfg build compiles uses an item that the build does not compile."
-                }
-            };
-            (finding.rule.clone(), text.to_owned())
-        })
-        .collect();
+    // A source rule can give `source-pattern` and `allow-entry` findings. The
+    // rule text comes from a `source-pattern` finding when the rule has one,
+    // so it does not depend on the order of the findings.
+    let mut rules: BTreeMap<String, String> = BTreeMap::new();
+    for finding in &report.findings {
+        let text = match finding.kind {
+            Kind::CrateDependency => "A workspace crate depends on a crate that a rule denies.",
+            Kind::SourcePattern => "A file contains a pattern that a rule denies.",
+            Kind::ModulePath => "A module uses a module that a rule denies.",
+            Kind::ItemPath => "Code uses a workspace item that a rule denies.",
+            Kind::GlobReexport => "A glob re-export reads a crate or a module that a rule denies.",
+            Kind::CfgPath => {
+                "Code that a cfg build compiles uses an item that the build does not compile."
+            }
+            Kind::AllowEntry => {
+                "An allow entry of a source rule does not fit its file: fewer matches than \
+                     max, or a missing required pattern."
+            }
+        };
+        if finding.kind == Kind::AllowEntry {
+            rules
+                .entry(finding.rule.clone())
+                .or_insert_with(|| text.to_owned());
+        } else {
+            rules.insert(finding.rule.clone(), text.to_owned());
+        }
+    }
     sarif::log(&rules, findings, &report.gate_outcomes)
 }
 

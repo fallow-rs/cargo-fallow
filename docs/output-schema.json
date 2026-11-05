@@ -620,6 +620,11 @@
           "type": "string",
           "const": "cfg-path",
           "description": "Code that a `cfg` build compiles uses an item that the build does not\ncompile."
+        },
+        {
+          "type": "string",
+          "const": "allow-entry",
+          "description": "An `allow` entry of a source rule does not fit its file: the file has\nfewer matches than `max`, or it lacks a `require` pattern."
         }
       ],
       "description": "The kind of a boundary finding."

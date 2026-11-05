@@ -6,7 +6,9 @@
 //! - `allow` gives a file a count. The rule counts each place in the file
 //!   where a pattern matches, in file order. One place counts once, also when
 //!   two patterns match there. Each place after the first `max` places is a
-//!   finding.
+//!   finding. A file with fewer places than `max` is an `allow-entry`
+//!   finding, so the count stays exact. A `require` pattern that the file
+//!   does not contain is an `allow-entry` finding too.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -16,12 +18,13 @@ use std::path::Path;
 
 use ra_ap_syntax::{AstNode, WalkEvent};
 
-use super::{Finding, Lexed, invalid, line_col, source_finding};
+use super::{Finding, Kind, Lexed, invalid, lex, line_col, package_of, source_finding};
 use crate::attrs::{AttrClass, attributes_of};
 use crate::error::CliError;
 use crate::parse::{Edition, with_parsed};
 use crate::render::warn;
-use crate::structure::config::{Matching, SourceRule, SourceScope};
+use crate::structure::config::{AllowedFile, Matching, SourceRule, SourceScope};
+use crate::structure::report::Action;
 use crate::structure::source::{self, Needs};
 use crate::workspace::Workspace;
 
@@ -37,12 +40,12 @@ pub fn test_files(workspace: &Workspace) -> BTreeSet<String> {
         .collect()
 }
 
-/// The `allow` counts of the rule, by path. An entry must name a file that
-/// the rule reads, one time.
-pub fn allowed(
-    rule: &SourceRule,
+/// The `allow` entries of the rule, by path. An entry must name a file that
+/// the rule reads, one time, and a `require` pattern must not be empty.
+pub fn allowed<'r>(
+    rule: &'r SourceRule,
     files: &BTreeSet<String>,
-) -> Result<BTreeMap<String, u32>, CliError> {
+) -> Result<BTreeMap<String, &'r AllowedFile>, CliError> {
     let mut counts = BTreeMap::new();
     for entry in &rule.allow {
         let path = normalize(&entry.path);
@@ -52,7 +55,13 @@ pub fn allowed(
                 rule.rule, entry.path
             )));
         }
-        if counts.insert(path, entry.max).is_some() {
+        if let Some(pattern) = entry.require.iter().find(|pattern| lex(pattern).is_empty()) {
+            return Err(invalid(&format!(
+                "rule `{}` requires the empty pattern `{pattern}` in `{}`",
+                rule.rule, entry.path
+            )));
+        }
+        if counts.insert(path, entry).is_some() {
             return Err(invalid(&format!(
                 "rule `{}` allows `{}` more than one time",
                 rule.rule, entry.path
@@ -71,28 +80,33 @@ fn normalize(path: &str) -> String {
         .join("/")
 }
 
-/// The findings of one file. `max` is the `allow` count of the file.
+/// The offsets of the matches of one pattern outside the skipped test code.
+fn matches(code: &Code, tokens: Option<&Lexed>, pattern: &str, wanted: &[String]) -> Vec<usize> {
+    let offsets: Vec<usize> = match tokens {
+        Some(tokens) => tokens.find_all(wanted),
+        None => code.text.match_indices(pattern).map(|(at, _)| at).collect(),
+    };
+    offsets
+        .into_iter()
+        .filter(|&at| !code.in_test(at))
+        .collect()
+}
+
+/// The findings of one file. `allow` is the `allow` entry of the file.
 pub fn judge(
     workspace: &Workspace,
     rule: &SourceRule,
     path: &str,
     code: &Code,
     patterns: &[(String, Vec<String>)],
-    max: Option<u32>,
+    allow: Option<&AllowedFile>,
 ) -> Vec<Finding> {
     let tokens = (rule.matching == Matching::Tokens).then(|| Lexed::new(&code.text));
+    let max = allow.map(|entry| entry.max);
     let mut found = Vec::new();
     let mut places: BTreeMap<usize, &str> = BTreeMap::new();
     for (pattern, wanted) in patterns {
-        let offsets: Vec<usize> = match &tokens {
-            Some(tokens) => tokens.find_all(wanted),
-            None => code
-                .text
-                .match_indices(pattern.as_str())
-                .map(|(at, _)| at)
-                .collect(),
-        };
-        let mut offsets = offsets.into_iter().filter(|&at| !code.in_test(at));
+        let mut offsets = matches(code, tokens.as_ref(), pattern, wanted).into_iter();
         // A file outside `allow` gives one finding for each pattern: the first
         // match. A file in `allow` counts each place.
         if max.is_some() {
@@ -107,6 +121,17 @@ pub fn judge(
     let Some(max) = max else {
         return found;
     };
+    let count = places.len();
+    if let Some(entry) = allow {
+        found.extend(entry_findings(
+            workspace,
+            rule,
+            path,
+            entry,
+            count,
+            |pattern| !matches(code, tokens.as_ref(), pattern, &lex(pattern)).is_empty(),
+        ));
+    }
     let skip = usize::try_from(max).unwrap_or(usize::MAX);
     for (index, (at, pattern)) in places.into_iter().enumerate().skip(skip) {
         let (line, col) = line_col(&code.text, at);
@@ -121,6 +146,80 @@ pub fn judge(
         found.push(finding);
     }
     found
+}
+
+/// The `allow-entry` findings of one allowed file: a count under `max`, and
+/// each `require` pattern that `contains` does not find.
+fn entry_findings(
+    workspace: &Workspace,
+    rule: &SourceRule,
+    path: &str,
+    entry: &AllowedFile,
+    count: usize,
+    contains: impl Fn(&str) -> bool,
+) -> Vec<Finding> {
+    let mut found = Vec::new();
+    if count < usize::try_from(entry.max).unwrap_or(usize::MAX) {
+        found.push(entry_finding(
+            workspace,
+            rule,
+            path,
+            None,
+            format!(
+                "{path} has {count} {} of the rule `{}`, fewer than its `max = {}`",
+                if count == 1 { "match" } else { "matches" },
+                rule.rule,
+                entry.max
+            ),
+            Action::manual(
+                "lower-max",
+                format!(
+                    "Set `max = {count}` for `{path}` in the rule, so a new match fails the rule"
+                ),
+            ),
+        ));
+    }
+    for pattern in entry.require.iter().filter(|pattern| !contains(pattern)) {
+        found.push(entry_finding(
+            workspace,
+            rule,
+            path,
+            Some(pattern),
+            format!(
+                "{path} does not contain {pattern}, which the rule `{}` requires",
+                rule.rule
+            ),
+            Action::manual(
+                "add-required",
+                format!("Use `{pattern}` in `{path}`, or remove the entry of the file"),
+            ),
+        ));
+    }
+    found
+}
+
+fn entry_finding(
+    workspace: &Workspace,
+    rule: &SourceRule,
+    path: &str,
+    pattern: Option<&str>,
+    message: String,
+    action: Action,
+) -> Finding {
+    Finding {
+        rule: rule.rule.clone(),
+        kind: Kind::AllowEntry,
+        from: package_of(workspace, path),
+        to: rule.owner.clone().unwrap_or_default(),
+        path: path.to_owned(),
+        line: 1,
+        col: 1,
+        pattern: pattern.map(str::to_owned),
+        dependency_kinds: Vec::new(),
+        origin: None,
+        message,
+        actions: vec![action],
+    }
 }
 
 /// The editions that a parse tries, newest first.

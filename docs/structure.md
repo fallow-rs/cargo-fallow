@@ -54,14 +54,15 @@ deny = ["process_group(0)", "libc::waitid"]
 owner = "app-process"
 
 # `scope = "production"` skips test code. A file in `allow` passes up to `max`
-# matches of all patterns of the rule. Each match over `max` is a finding.
+# matches of all patterns of the rule. Each match over `max` is a finding, and
+# so is a file with fewer matches. A file must contain each `require` pattern.
 [[workspace.metadata.fallow.boundaries.sources]]
 rule = "parse-through-parse-bounded"
 paths = ["crates"]
 deny = ["Parser::new("]
 scope = "production"
 allow = [
-    { path = "crates/extract/src/parse.rs", max = 2 },
+    { path = "crates/extract/src/parse.rs", max = 2, require = ["parse_bounded("] },
 ]
 
 # A module of `from` must not use a module of `deny`. The rule reads `use`
@@ -123,8 +124,13 @@ does not parse gets a warning, and the rule does not judge it. `allow` lists
 files, each with a `max` count. The rule counts each match of each pattern in
 such a file, in file order. A place where two patterns match counts one time.
 Each match after the first `max` matches is a finding, so `max = 0` reports
-each match. An `allow` path must name a file that the rule reads, one time.
-Else the table is not valid. A file that the source walk does not reach, and
+each match. A file with fewer matches than `max` is an `allow-entry` finding
+at line 1, so the list stays exact and a later new match does not pass
+without a decision. `require` lists the patterns that an allowed file must
+contain, with the `match` and the `scope` of the rule. Each missing pattern
+is an `allow-entry` finding. An `allow` path must name a file that the rule
+reads, one time, and a `require` pattern must not be empty. Else the table is
+not valid. A file that the source walk does not reach, and
 the bench and example targets, count as production code.
 
 With `production = true`, or with `cargo fallow dupes --production`, the

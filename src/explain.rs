@@ -198,7 +198,7 @@ pub const RULES: &[Explanation] = &[
         rule: "boundaries",
         check: "boundaries",
         severity: "error",
-        meaning: "A rule of [workspace.metadata.fallow.boundaries] found a violation. The finding has the name of the rule. The kind is crate-dependency, source-pattern, module-path, item-path, glob-reexport or cfg-path.",
+        meaning: "A rule of [workspace.metadata.fallow.boundaries] found a violation. The finding has the name of the rule. The kind is crate-dependency, source-pattern, module-path, item-path, glob-reexport, cfg-path or allow-entry.",
         example: "A source rule `no-exit` that denies `std::process::exit` in crates/core, and a call in crates/core/src/run.rs.",
         fix: "Move the code or the dependency, or change the rule.",
         docs: "https://github.com/fallow-rs/cargo-fallow/blob/main/docs/structure.md",
@@ -255,6 +255,15 @@ pub const RULES: &[Explanation] = &[
         meaning: "Code that a build of a cfg rule compiles uses an item that the same build does not compile. The finding has the name of the rule.",
         example: "A rule with the builds [\"test\"] and [\"test\", \"miri\"], and `crate::tests::f()` in `#[cfg(test)]` code, where `mod tests` has `#[cfg(all(test, not(miri)))]`.",
         fix: "Put the same cfg on the code, or compile the item in the build.",
+        docs: "https://github.com/fallow-rs/cargo-fallow/blob/main/docs/structure.md",
+    },
+    Explanation {
+        rule: "allow-entry",
+        check: "boundaries",
+        severity: "error",
+        meaning: "An `allow` entry of a source rule does not fit its file: the file has fewer matches than `max`, or it does not contain a pattern of `require`. The finding has the name of the rule.",
+        example: "`allow = [{ path = \"src/parse.rs\", max = 3 }]`, and src/parse.rs has 2 matches.",
+        fix: "Set `max` to the count of the file, or use the required pattern in the file.",
         docs: "https://github.com/fallow-rs/cargo-fallow/blob/main/docs/structure.md",
     },
     Explanation {
@@ -526,7 +535,8 @@ mod tests {
             | B::ModulePath
             | B::ItemPath
             | B::GlobReexport
-            | B::CfgPath => B::ALL.len(),
+            | B::CfgPath
+            | B::AllowEntry => B::ALL.len(),
         };
         deps + kind + size + boundary
     }

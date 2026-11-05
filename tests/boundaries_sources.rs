@@ -245,3 +245,118 @@ fn an_allowed_file_must_be_read_by_the_rule_and_listed_one_time() {
         "{report:#}"
     );
 }
+
+/// The `kind` and the `path:line` of each finding.
+fn kinds(report: &Value) -> Vec<String> {
+    report["findings"]
+        .as_array()
+        .expect("the report has findings")
+        .iter()
+        .map(|finding| {
+            format!(
+                "{} {}:{}",
+                finding["kind"].as_str().unwrap_or_default(),
+                finding["path"].as_str().unwrap_or_default(),
+                finding["line"]
+            )
+        })
+        .collect()
+}
+
+/// An `allow` entry with more room than the file uses is a finding, so the
+/// list stays exact and a new match does not pass without a decision.
+#[test]
+fn an_allowed_file_with_fewer_matches_than_its_count_is_a_finding() {
+    let rule = "scope = \"production\"\nallow = [{ path = \"src/parse.rs\", max = 3 }]\n";
+    let (code, report) = boundaries(&workspace(rule, 2));
+    assert_eq!(code, 0, "{report}");
+    assert_eq!(
+        kinds(&report),
+        [
+            "source-pattern src/other.rs:3",
+            "allow-entry src/parse.rs:1"
+        ],
+        "{report:#}"
+    );
+    let message = report["findings"][1]["message"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        message.contains("2 matches") && message.contains("`max = 3`"),
+        "{message}"
+    );
+    let dir = workspace(rule, 2);
+    let output = Command::cargo_bin("cargo-fallow")
+        .expect("the binary exists")
+        .current_dir(dir.path())
+        .args(["fallow", "boundaries", "--quiet", "--fail-on-issues"])
+        .output()
+        .expect("run the binary");
+    let code = output.status.code();
+    assert_eq!(code, Some(1));
+}
+
+/// `require` lists the patterns that an allowed file must contain. A missing
+/// pattern is a finding. Test code does not count in the production scope.
+#[test]
+fn an_allowed_file_without_a_required_pattern_is_a_finding() {
+    let rule = "scope = \"production\"\nallow = [{ path = \"src/parse.rs\", max = 2, require = [\"parse_bounded(\"] }]\n";
+    let dir = workspace(rule, 2);
+    let (_, report) = boundaries(&dir);
+    assert_eq!(
+        kinds(&report),
+        [
+            "source-pattern src/other.rs:3",
+            "allow-entry src/parse.rs:1"
+        ],
+        "{report:#}"
+    );
+    let message = report["findings"][1]["message"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(message.contains("parse_bounded("), "{message}");
+    let parse = dir.path().join("src/parse.rs");
+    let text = fs::read_to_string(&parse).expect("read parse.rs");
+    fs::write(
+        &parse,
+        format!("{text}#[cfg(test)]\nfn t() {{ parse_bounded(1); }}\n"),
+    )
+    .expect("write parse.rs");
+    let (_, report) = boundaries(&dir);
+    assert_eq!(
+        kinds(&report),
+        [
+            "source-pattern src/other.rs:3",
+            "allow-entry src/parse.rs:1"
+        ],
+        "test code does not count: {report:#}"
+    );
+    fs::write(&parse, format!("{text}pub fn parse_bounded(_: u8) {{}}\n")).expect("write parse.rs");
+    let (_, report) = boundaries(&dir);
+    assert_eq!(
+        kinds(&report),
+        ["source-pattern src/other.rs:3"],
+        "{report:#}"
+    );
+}
+
+/// One rule with a `source-pattern` and an `allow-entry` finding gets the
+/// SARIF text of the source pattern, whatever the order of the files.
+#[test]
+fn the_sarif_text_of_a_rule_with_two_kinds_is_the_source_pattern_text() {
+    // The `allow-entry` finding of `src/parse.rs` is the last finding.
+    let rule = "exclude = [\"tests\"]\nallow = [{ path = \"src/parse.rs\", max = 9 }]\n";
+    let dir = workspace(rule, 1);
+    let output = Command::cargo_bin("cargo-fallow")
+        .expect("the binary exists")
+        .current_dir(dir.path())
+        .args(["fallow", "boundaries", "--format", "sarif", "--quiet"])
+        .output()
+        .expect("run the binary");
+    let sarif: Value = serde_json::from_slice(&output.stdout).expect("SARIF is JSON");
+    let text = sarif["runs"][0]["tool"]["driver"]["rules"][0]["shortDescription"]["text"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    assert!(text.contains("denies"), "{sarif:#}");
+}

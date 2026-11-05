@@ -76,6 +76,15 @@ cargo deny check
 The Quality gates section in `CONTRIBUTING.md` lists every gate.
 `hk run pre-commit --all` and `hk run pre-push --all` run the hook gates.
 
+## Write for the reader
+
+Write code comments, docs, commit messages, PR text, and changelog entries
+for a reader who did not see the session. Do not put the conversation, the
+prompt, discarded attempts, or the edit history into them. Describe the code
+as it is now. For a regression, state what breaks without the code, and link
+the issue. `scripts/check-comment-quality.mjs` blocks narration and history
+comments in the pre-commit hook, the JS Lint CI job, and Claude edits.
+
 ## Skills
 
 `.agents/skills/` holds the source of each skill. `.claude/skills/` holds

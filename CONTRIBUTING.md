@@ -64,7 +64,7 @@ hooks.
 | Typos | `typos` | pre-commit | `ci.yml` |
 | Hidden unicode | `python3 scripts/scan-hidden-unicode.py --mode committed` | pre-commit | `ci.yml` |
 | Conflict markers | `sh scripts/check-conflict-markers.sh` | pre-commit | `ci.yml` |
-| Narrator comments | `node scripts/check-comment-quality.mjs --all` | pre-commit | `ci.yml` |
+| Narration and history comments | `node scripts/check-comment-quality.mjs --all` | pre-commit, Claude hooks | `ci.yml` |
 | File size | `node scripts/check-file-size.mjs --staged` | pre-commit | `ci.yml`, with `--base origin/main` |
 | JS lint | `npm run lint:js` | pre-commit | `ci.yml` |
 | JS format | `npm run fmt:js:check` | pre-commit | `ci.yml` |

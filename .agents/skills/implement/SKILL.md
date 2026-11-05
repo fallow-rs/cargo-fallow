@@ -54,7 +54,8 @@ Deliver the change through the lifecycle of this repository:
 
 - Each pull request of the objective is merged to `main`, and CI on the
   merged commit is green.
-- Pinned auto-merge was armed before each CI wait.
+- Pinned auto-merge was armed before each CI wait. In a T3 Code thread,
+  each merge was by hand at a wake (see `ship`).
 - Each follow-up is fixed in a pull request or filed as an issue in
   `fallow-rs/cargo-fallow`. A note in an ignored file, in `/tmp` or in the
   chat does not track a follow-up.

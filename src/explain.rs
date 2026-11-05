@@ -141,6 +141,15 @@ pub const RULES: &[Explanation] = &[
         docs: "https://github.com/fallow-rs/cargo-fallow/blob/main/docs/dependencies.md",
     },
     Explanation {
+        rule: "feature-unification-drift",
+        check: "deps",
+        severity: "error",
+        meaning: "A crate that `cargo build -p <member>` and `cargo build --workspace` compile with different features, for a member in `unify-features`. A switch between the two commands compiles the crate and its dependents again.",
+        example: "`other` turns on `serde/derive`, and `cargo build -p app` builds `serde` without it.",
+        fix: "Add a feature-only entry with the features of the workspace build to the [dependencies] of the member.",
+        docs: "https://github.com/fallow-rs/cargo-fallow/blob/main/docs/dependencies.md",
+    },
+    Explanation {
         rule: "redundant-ignore",
         check: "deps",
         severity: "warn",
@@ -445,7 +454,8 @@ mod tests {
             | D::UnusedOptionalDependency
             | D::FeatureOnlyDependency
             | D::RedundantIgnore
-            | D::UnusedFeature => crate::deps::report::Rule::ALL.len(),
+            | D::UnusedFeature
+            | D::FeatureUnificationDrift => crate::deps::report::Rule::ALL.len(),
         };
         let kind = match kind {
             V::DeadPublic | V::UnnecessaryPublic | V::UnnecessaryRestricted => V::ALL.len(),

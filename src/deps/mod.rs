@@ -22,6 +22,7 @@
 //! warning, not an error.
 
 mod analyze;
+pub mod drift;
 mod features;
 pub mod manifest;
 pub mod report;
@@ -73,14 +74,36 @@ pub fn run(options: &Options) -> Result<crate::section::Section, CliError> {
     let module_graph = graph::build(&workspace, &Production::default());
     let scope = Scope::load(&workspace, &options.scope)?;
     progress.step("Checking the dependencies");
-    let report = report(
+    let drift = feature_drift(
+        &workspace,
+        &metadata,
+        options.manifest_path.as_deref(),
+        &options.cargo_flags,
+    )?;
+    let report = report_with(
         &workspace,
         &metadata,
         &module_graph,
         options.fail_on_issues,
         &scope,
+        &drift,
     );
     scope.annotate(section(&report)?)
+}
+
+/// Runs the `feature-unification-drift` rule for the members that
+/// `unify-features` names. An invalid list is an error.
+pub fn feature_drift(
+    workspace: &workspace::Workspace,
+    metadata: &cargo_metadata::Metadata,
+    manifest_path: Option<&std::path::Path>,
+    cargo_flags: &[String],
+) -> Result<drift::Drift, CliError> {
+    let members = drift::members(workspace, &metadata.workspace_metadata)?;
+    let root = workspace.root.as_std_path();
+    Ok(drift::check(workspace, &members, |scope| {
+        workspace::cargo_tree(manifest_path, root, cargo_flags, scope)
+    }))
 }
 
 /// Checks the dependencies of a resolved workspace. The graph can have any
@@ -94,7 +117,28 @@ pub fn report(
     enforced: bool,
     scope: &Scope,
 ) -> DepsReport {
+    report_with(
+        workspace,
+        metadata,
+        module_graph,
+        enforced,
+        scope,
+        &drift::Drift::default(),
+    )
+}
+
+/// [`report`] with the findings of the `feature-unification-drift` rule.
+pub fn report_with(
+    workspace: &workspace::Workspace,
+    metadata: &cargo_metadata::Metadata,
+    module_graph: &graph::Graph,
+    enforced: bool,
+    scope: &Scope,
+    drift: &drift::Drift,
+) -> DepsReport {
     let mut analysis = analyze::analyze(workspace, metadata, module_graph);
+    analysis.findings.extend(drift.findings.iter().cloned());
+    analysis.skipped.extend(drift.skipped.iter().cloned());
     analysis
         .findings
         .retain(|finding| scope.keeps(&finding.manifest_path));

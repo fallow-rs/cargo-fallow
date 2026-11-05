@@ -35,12 +35,15 @@ pub enum Rule {
     RedundantIgnore,
     /// A feature that turns on nothing, and that no code and no member names.
     UnusedFeature,
+    /// A crate that the build of a member and the workspace build compile
+    /// with different features.
+    FeatureUnificationDrift,
 }
 
 impl Rule {
     /// Each rule.
     #[cfg(test)]
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::UnusedDependency,
         Self::UnusedDevDependency,
         Self::UnusedBuildDependency,
@@ -50,6 +53,7 @@ impl Rule {
         Self::FeatureOnlyDependency,
         Self::RedundantIgnore,
         Self::UnusedFeature,
+        Self::FeatureUnificationDrift,
     ];
 
     /// The wire name.
@@ -64,6 +68,7 @@ impl Rule {
             Self::FeatureOnlyDependency => "feature-only-dependency",
             Self::RedundantIgnore => "redundant-ignore",
             Self::UnusedFeature => "unused-feature",
+            Self::FeatureUnificationDrift => "feature-unification-drift",
         }
     }
 
@@ -74,7 +79,8 @@ impl Rule {
             | Self::UnusedDevDependency
             | Self::UnusedBuildDependency
             | Self::UnusedWorkspaceDependency
-            | Self::MisplacedDependency => Severity::Error,
+            | Self::MisplacedDependency
+            | Self::FeatureUnificationDrift => Severity::Error,
             Self::UnusedOptionalDependency
             | Self::FeatureOnlyDependency
             | Self::RedundantIgnore
@@ -107,6 +113,9 @@ impl Rule {
             Self::RedundantIgnore => "An ignore entry that hides no finding.",
             Self::UnusedFeature => {
                 "A feature that turns on nothing, and that no code and no member names."
+            }
+            Self::FeatureUnificationDrift => {
+                "A crate that `cargo build -p <member>` and `cargo build --workspace` compile with different features."
             }
         }
     }
@@ -167,6 +176,15 @@ pub struct Finding {
     /// another dependency can need. It is not part of the report.
     #[serde(skip)]
     pub manual: Option<&'static str>,
+    /// The version of the crate, for a `feature-unification-drift` finding.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// The features of the crate that only the workspace build turns on.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub workspace_only_features: Vec<String>,
+    /// The features of the crate that only the build of the member turns on.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub member_only_features: Vec<String>,
     /// The next steps. `cargo fallow fix` applies a step with `auto_fixable`.
     pub actions: Vec<Action>,
 }
@@ -289,6 +307,9 @@ mod tests {
             used_by: Vec::new(),
             in_dev: false,
             manual: None,
+            version: None,
+            workspace_only_features: Vec::new(),
+            member_only_features: Vec::new(),
             actions: Vec::new(),
         }
     }

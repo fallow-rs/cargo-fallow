@@ -1190,6 +1190,27 @@
           },
           "description": "The parts of the package that use the dependency. Only a\n`misplaced-dependency` finding has them."
         },
+        "version": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The version of the crate, for a `feature-unification-drift` finding."
+        },
+        "workspace_only_features": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The features of the crate that only the workspace build turns on."
+        },
+        "member_only_features": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The features of the crate that only the build of the member turns on."
+        },
         "actions": {
           "type": "array",
           "items": {
@@ -4463,6 +4484,11 @@
           "type": "string",
           "const": "unused-feature",
           "description": "A feature that turns on nothing, and that no code and no member names."
+        },
+        {
+          "type": "string",
+          "const": "feature-unification-drift",
+          "description": "A crate that the build of a member and the workspace build compile\nwith different features."
         }
       ],
       "description": "The rule of a finding."

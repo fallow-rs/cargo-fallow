@@ -423,6 +423,48 @@ pub fn cargo_check(
     })
 }
 
+/// Runs `cargo tree` with the scope arguments, for example `--workspace`, and
+/// the arguments of the `feature-unification-drift` rule. Returns the output,
+/// or the first error line of cargo.
+pub fn cargo_tree(
+    manifest_path: Option<&Path>,
+    root: &Path,
+    flags: &[String],
+    scope: &[&str],
+) -> Result<String, String> {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the workspace loader is the one module that spawns cargo: `cargo tree` for the feature drift rule"
+    )]
+    let mut command = std::process::Command::new(cargo);
+    if manifest_path.is_none() {
+        command.current_dir(root);
+    }
+    command
+        .arg("tree")
+        .args(scope)
+        .args(crate::deps::drift::TREE_ARGS)
+        .args(flags);
+    if let Some(path) = manifest_path {
+        command.arg("--manifest-path").arg(path);
+    }
+    let output = command
+        .output()
+        .map_err(|err| format!("cannot run `cargo tree`: {err}"))?;
+    if output.status.success() {
+        return Ok(String::from_utf8_lossy(&output.stdout).into_owned());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Err(stderr
+        .lines()
+        .find(|line| line.starts_with("error"))
+        .map_or_else(
+            || format!("`cargo tree` failed with {}", output.status),
+            str::to_owned,
+        ))
+}
+
 /// The longest time that one `rustfmt` run can take.
 const RUSTFMT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 

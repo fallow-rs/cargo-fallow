@@ -53,6 +53,7 @@ dependency that Cargo cannot get. In that case the run fails with exit code 2.
 | `feature-only-dependency` | warn | No code uses the dependency, and a feature sets its features (`dep/feature`). |
 | `redundant-ignore` | warn | An ignore entry hides no finding. |
 | `unused-feature` | warn | A feature with an empty list in a `publish = false` package, that no other feature, no member, no target and no file names. See [Unused features](#unused-features). |
+| `feature-unification-drift` | error | A crate that `cargo build -p <member>` and `cargo build --workspace` compile with different features, for a member in `unify-features`. See [Feature drift](#feature-drift). |
 
 Each finding has the fields `package`, `manifest_path`, `line`, `section`,
 `platform`, `dependency` (the key in `Cargo.toml`), `package_name` (for a
@@ -112,6 +113,38 @@ The command also reads `ignored` in `[package.metadata.cargo-shear]` and
 `[workspace.metadata.cargo-shear]`. Thus a workspace can move from cargo-shear
 with no change to its `ignored` lists. The `redundant-ignore` rule checks only the
 cargo-fallow lists.
+
+## Feature drift
+
+Cargo resolves features for each build. When one member turns on a feature
+of a crate that another member also uses, `cargo build -p <member>` and
+`cargo build --workspace` compile two variants of that crate and of each crate
+that depends on it. A switch between the two commands then compiles the crates
+again.
+
+The `feature-unification-drift` rule finds these crates. It is opt-in: name
+the members to compare in `unify-features`.
+
+```toml
+[workspace.metadata.fallow.deps]
+unify-features = ["my-cli"]
+```
+
+For each named member, the command runs `cargo tree -p <member>` and once
+`cargo tree --workspace`, with the normal and the build edges. Each crate that
+both builds compile with different features is a finding on the manifest of
+the member. The finding has `version`, `workspace_only_features` and
+`member_only_features`. The fix is a feature-only entry in the
+`[dependencies]` of the member with the workspace-only features, so `fix`
+does not change it. Features that a dev-dependency adds for `cargo test` are
+out of scope, and so are the dependencies of another platform: `cargo tree`
+reads the host platform. When the member declares the crate in
+`[dependencies]` or `[build-dependencies]`, the finding has the line of that
+entry, so a `# fallow-ignore-next-line feature-unification-drift` comment
+can name one crate. A crate that the member does not declare has no line;
+only a `# fallow-ignore-file` comment hides it. A name that is no workspace member exits 2 with
+`CARGO_FALLOW_INVALID_CONFIG`. When `cargo tree` fails, for example offline
+with a missing crate, the member is in `skipped` with the reason.
 
 ## Unused features
 

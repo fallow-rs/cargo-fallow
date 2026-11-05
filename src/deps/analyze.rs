@@ -574,6 +574,9 @@ fn finding(
         used_by: Vec::new(),
         in_dev: false,
         manual: None,
+        version: None,
+        workspace_only_features: Vec::new(),
+        member_only_features: Vec::new(),
         actions: Vec::new(),
     }
 }
@@ -652,6 +655,11 @@ fn actions(finding: &Finding) -> Vec<Action> {
         Rule::RedundantIgnore => (
             "remove-ignore",
             format!("Remove `{key}` from `ignored` in [{}].", finding.section),
+        ),
+        // The drift module writes its own action.
+        Rule::FeatureUnificationDrift => (
+            "pin-features",
+            format!("Pin the features of `{key}` in the manifest of the member."),
         ),
         Rule::UnusedDependency
         | Rule::UnusedDevDependency

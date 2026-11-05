@@ -252,6 +252,24 @@ struct SourcePart {
     metrics: Metrics,
 }
 
+/// The findings of the `feature-unification-drift` rule, when `deps` runs.
+fn check_drift(
+    options: &Options,
+    workspace: &Workspace,
+    metadata: Option<&cargo_metadata::Metadata>,
+) -> Result<Option<deps::drift::Drift>, CliError> {
+    metadata
+        .map(|resolved| {
+            deps::feature_drift(
+                workspace,
+                resolved,
+                options.manifest_path.as_deref(),
+                &options.cargo_flags,
+            )
+        })
+        .transpose()
+}
+
 /// Loads the workspace. `deps` needs the resolve of `cargo metadata`.
 fn load_workspace(
     options: &Options,
@@ -316,9 +334,11 @@ pub fn execute(options: &Options) -> Result<report::CheckReport, CliError> {
     ]
     .into_iter()
     .any(runs);
+    let drift = check_drift(options, &workspace, metadata.as_ref())?;
     let inputs = GraphInputs {
         workspace: &workspace,
         metadata: metadata.as_ref(),
+        drift: drift.as_ref(),
         visibility: visibility_options.as_ref(),
         files: runs(CheckName::Files),
         enforced,
@@ -504,6 +524,8 @@ struct GraphInputs<'a> {
     workspace: &'a Workspace,
     /// The resolve, when `deps` runs.
     metadata: Option<&'a cargo_metadata::Metadata>,
+    /// The findings of the `feature-unification-drift` rule, when `deps` runs.
+    drift: Option<&'a deps::drift::Drift>,
     /// The options, when `visibility` runs.
     visibility: Option<&'a VisibilityOptions>,
     /// True when `files` runs. It then reads the scans of the graph parse.
@@ -552,6 +574,7 @@ fn graph_sections(inputs: &GraphInputs<'_>, module_graph: &Graph) -> Result<Grap
     let GraphInputs {
         workspace,
         metadata,
+        drift,
         visibility: visibility_options,
         enforced,
         scope,
@@ -561,7 +584,9 @@ fn graph_sections(inputs: &GraphInputs<'_>, module_graph: &Graph) -> Result<Grap
     let mut part = GraphPart::default();
     if let Some(metadata) = metadata {
         progress.step("Checking the dependencies");
-        let report = deps::report(workspace, metadata, module_graph, enforced, scope);
+        let none = deps::drift::Drift::default();
+        let drift = drift.unwrap_or(&none);
+        let report = deps::report_with(workspace, metadata, module_graph, enforced, scope, drift);
         part.unused_deps = Some(
             report
                 .findings

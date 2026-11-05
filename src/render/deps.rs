@@ -12,7 +12,7 @@ use crate::deps::report::{DepsReport, Finding, Rule, Severity};
 use crate::gates::RustGateName;
 
 /// The sections of the human form, in output order.
-const SECTIONS: [(&str, &[Rule]); 4] = [
+const SECTIONS: [(&str, &[Rule]); 5] = [
     (
         "Unused dependencies",
         &[
@@ -32,6 +32,10 @@ const SECTIONS: [(&str, &[Rule]); 4] = [
         ],
     ),
     ("Redundant ignore entries", &[Rule::RedundantIgnore]),
+    (
+        "Feature sets that differ from the workspace build",
+        &[Rule::FeatureUnificationDrift],
+    ),
 ];
 
 /// The report for a person: the findings by section and manifest, then the gate.
@@ -104,6 +108,24 @@ fn detail(row: &Finding) -> String {
             text.push_str(", no code uses it, a feature sets its features");
         }
         Rule::UnusedFeature => text.push_str(", turns on nothing, no code names it"),
+        Rule::FeatureUnificationDrift => {
+            let version = row.version.as_deref().unwrap_or_default();
+            let _ = write!(text, " {version}");
+            if !row.workspace_only_features.is_empty() {
+                let _ = write!(
+                    text,
+                    ", only the workspace build turns on {}",
+                    row.workspace_only_features.join(", ")
+                );
+            }
+            if !row.member_only_features.is_empty() {
+                let _ = write!(
+                    text,
+                    ", only the member build turns on {}",
+                    row.member_only_features.join(", ")
+                );
+            }
+        }
         _ => {}
     }
     text
@@ -139,6 +161,20 @@ pub fn findings(report: &DepsReport) -> Vec<crate::finding::Finding> {
     report.findings.iter().map(shared_finding).collect()
 }
 
+/// The parts of the finding id. A drift finding adds the version, because
+/// two versions of one crate can drift for one member.
+fn identity<'a>(finding: &'a Finding, package: &'a str, platform: &'a str) -> Vec<&'a str> {
+    let mut parts = vec![
+        finding.manifest_path.as_str(),
+        package,
+        finding.section.as_str(),
+        platform,
+        finding.dependency.as_str(),
+    ];
+    parts.extend(finding.version.as_deref());
+    parts
+}
+
 /// One finding in the shared shape.
 pub fn shared_finding(finding: &Finding) -> crate::finding::Finding {
     use crate::finding::{Action, Category, Draft, Finding as Shared, Impact, Location};
@@ -159,13 +195,7 @@ pub fn shared_finding(finding: &Finding) -> crate::finding::Finding {
             column: None,
             end_line: None,
         },
-        identity: &[
-            &finding.manifest_path,
-            package,
-            &finding.section,
-            platform,
-            &finding.dependency,
-        ],
+        identity: &identity(finding, package, platform),
         category: Category::BugRisk,
         impact,
     })

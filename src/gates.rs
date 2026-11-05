@@ -20,6 +20,9 @@ use crate::workspace::{self, Workspace};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum RustGateName {
+    /// `api --base`: a published library removed an item, a crate or a
+    /// feature, and the breaking part of its version did not change.
+    ApiRemovals,
     /// `boundaries`: a rule found a violation.
     BoundaryViolations,
     /// `dupes`: the run found a clone group.
@@ -46,7 +49,8 @@ pub enum RustGateName {
 
 impl RustGateName {
     /// Every gate name, in wire order.
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
+        Self::ApiRemovals,
         Self::BoundaryViolations,
         Self::DuplicationFindings,
         Self::DuplicationThreshold,
@@ -63,6 +67,7 @@ impl RustGateName {
     /// The wire spelling of the name.
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::ApiRemovals => "api-removals",
             Self::BoundaryViolations => "boundary-violations",
             Self::DuplicationFindings => "duplication-findings",
             Self::DuplicationThreshold => "duplication-threshold",
@@ -80,6 +85,9 @@ impl RustGateName {
     /// One sentence that tells what a failure of the gate means.
     pub const fn description(self) -> &'static str {
         match self {
+            Self::ApiRemovals => {
+                "A published library removed an item, a crate or a feature with no breaking version bump."
+            }
             Self::BoundaryViolations => "A boundary rule found a violation.",
             Self::DuplicationFindings => "The run found a clone group.",
             Self::DuplicationThreshold => {

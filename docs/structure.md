@@ -22,7 +22,7 @@ because that flag asks for the growth gate.
 
 | Command | Reports | Gate flag | Gate |
 | --- | --- | --- | --- |
-| `cargo fallow boundaries` | Violations of the crate, source and module rules | `--fail-on-issues` or `--fail-on-violations` | `boundary-violations` |
+| `cargo fallow boundaries` | Violations of the crate, source, module, item and glob re-export rules | `--fail-on-issues` or `--fail-on-violations` | `boundary-violations` |
 | `cargo fallow size` | Files and functions over the line limits, and growth of a large file | `--fail-on-issues` or `--fail-on-growth`. The gate needs `--base <REF>` or `--staged` | `file-growth` |
 | `cargo fallow complexity` | Functions over the cyclomatic or the cognitive limit | `--fail-on-issues` or `--fail-on-complexity` | `health-findings` |
 | `cargo fallow dupes` | Clone groups on normalized token streams | `--fail-on-issues` or `--fail-on-clones`, and `--threshold <PERCENT>` | `duplication-findings`, `duplication-threshold` |
@@ -61,6 +61,22 @@ package = "app-cli"
 from = ["crate::render"]
 deny = ["crate::engine"]
 
+# The code of a package of `from` must not use an item of `deny`. A path in
+# `deny` starts with the crate name. A module or a type includes its items.
+# A use through a module of `allow-via` stays allowed.
+[[workspace.metadata.fallow.boundaries.items]]
+rule = "cli-runs-dead-code-through-the-session"
+from = ["app-cli"]
+deny = ["app_engine::dead_code::analyze"]
+allow-via = ["app_engine::session"]
+
+# A `pub use <path>::*` in a package of `from` must not read a crate or a
+# module of `deny`.
+[[workspace.metadata.fallow.boundaries.reexports]]
+rule = "no-glob-reexport-of-types"
+from = ["app-api"]
+deny = ["app_types"]
+
 [workspace.metadata.fallow.size]
 max-file-lines = 2000     # a file over this must not grow
 max-function-lines = 60
@@ -91,6 +107,43 @@ file must not be over the limit. The rule does not check test files, files in
 test and snapshot folders, or files with a generator header or an
 `@generated` comment. `--base <REF>` compares HEAD with the merge base.
 `--staged` compares the index with HEAD.
+
+## Item rules and glob re-export rules
+
+An item rule (`kind: "item-path"`) and a glob re-export rule
+(`kind: "glob-reexport"`) work on the workspace module graph. The graph
+resolves a path through `use`, aliases such as `use app_engine as engine`,
+re-exports and glob imports.
+
+- An item rule reads each import and each path in the code of the packages
+  of `from`, also in test code. A finding needs a path that resolves to its
+  end. A path with a first name that is not in scope, for example a generic
+  `T::new()`, gives no finding. A method call and a field access give no
+  finding either, because the syntax does not show the type.
+- The summary counts these uses in `unresolved` when the last name is the
+  name of a denied item or of a member of a denied type. The items of a
+  denied module or crate do not count here. A high count tells you that the rule cannot see
+  some uses.
+- A path in the documentation or in an attribute does not count. A path in
+  the tokens of a macro counts when it resolves. The finding then has
+  `origin: "macro"`, and its line is the line of the macro.
+- `allow-via` lists modules or items. A use whose path goes through one of
+  them stays allowed. A name that an import through `allow-via` brings in
+  also stays allowed, for example `use app_engine::session::analyze;`
+  followed by `analyze()`.
+- A `deny` or `allow-via` path starts with the name of a library crate of
+  the workspace. A path to a crate outside the workspace or to a macro is an
+  error with the code `CARGO_FALLOW_INVALID_CONFIG`. For items outside the
+  workspace, use a source rule. A path that names no item, for example
+  after the code removed the item, gives a warning.
+- An import with a finding gives one finding. The uses of its name give no
+  second finding.
+- A glob re-export rule reads each `pub use <path>::*` in the packages of
+  `from`. It matches the module that the glob path resolves to, so
+  `use app_types as t; pub use t::extract::*;` matches `deny = ["app_types"]`.
+
+The rules do not check that code uses an item ("must use" rules), and they
+do not infer types.
 
 `complexity` and `dupes` use the same models as fallow for JavaScript. A
 unit is a `fn` with a body, or a closure. To suppress a complexity finding,

@@ -55,7 +55,7 @@ compile the workspace first.
 | Which `.rs` files does no target compile? | [`.rs` files outside the module tree of each target](docs/unused-files.md) | `cargo fallow files` |
 | What is copied? | [Clone groups](docs/structure.md) on normalized token streams, in four modes from `strict` to `semantic` | `cargo fallow dupes` |
 | Where is the code hard to change? | [Functions over the cyclomatic or the cognitive limit](docs/structure.md), and a [0 to 100 health score](docs/check.md#health-score) | `cargo fallow complexity` |
-| Do crates and modules follow your dependency rules? | [Crate, module and source rules](docs/structure.md) in `Cargo.toml` | `cargo fallow boundaries` |
+| Do crates and modules follow your dependency rules? | [Crate, module, source, item and glob re-export rules](docs/structure.md#item-rules-and-glob-re-export-rules) in `Cargo.toml` | `cargo fallow boundaries` |
 | Do large files grow? | [Line limits for files and functions](docs/structure.md), and a growth gate against a base ref | `cargo fallow size` |
 | Do the tests detect a code change? | [Mutation testing](docs/mutation-testing.md) with test selection from a coverage map (opt-in, runs the tests) | `cargo fallow mutants` |
 

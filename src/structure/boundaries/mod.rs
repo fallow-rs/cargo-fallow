@@ -13,6 +13,10 @@
 //! - A module rule names modules of one package that must not use other
 //!   modules of that package. It reads each `use` item and each path in the
 //!   code that starts with `crate`, `self` or `super`.
+//! - An item rule and a glob re-export rule work on the module graph. See
+//!   [`items`].
+
+mod items;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -47,7 +51,7 @@ use crate::workspace::{self, LinkKind, Member, Workspace};
 const ANY: &str = "*";
 
 /// Replaces each `{name}` in a message template with its value.
-fn fill(template: &str, values: &[(&str, &str)]) -> String {
+pub(super) fn fill(template: &str, values: &[(&str, &str)]) -> String {
     values
         .iter()
         .fold(template.to_owned(), |text, (name, value)| {
@@ -66,12 +70,22 @@ pub enum Kind {
     SourcePattern,
     /// A module uses a denied module.
     ModulePath,
+    /// Code uses a denied workspace item, with the path resolved.
+    ItemPath,
+    /// A `pub use <path>::*` re-exports a denied crate or module.
+    GlobReexport,
 }
 
 impl Kind {
     /// Each kind.
     #[cfg(test)]
-    pub const ALL: [Self; 3] = [Self::CrateDependency, Self::SourcePattern, Self::ModulePath];
+    pub const ALL: [Self; 5] = [
+        Self::CrateDependency,
+        Self::SourcePattern,
+        Self::ModulePath,
+        Self::ItemPath,
+        Self::GlobReexport,
+    ];
 
     /// The kind in the report.
     pub const fn as_str(self) -> &'static str {
@@ -79,6 +93,8 @@ impl Kind {
             Self::CrateDependency => "crate-dependency",
             Self::SourcePattern => "source-pattern",
             Self::ModulePath => "module-path",
+            Self::ItemPath => "item-path",
+            Self::GlobReexport => "glob-reexport",
         }
     }
 }
@@ -107,6 +123,10 @@ pub struct Finding {
     /// The `Cargo.toml` sections of the dependency, for a crate rule.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub dependency_kinds: Vec<&'static str>,
+    /// Where the path of an item rule is: `code`, or `macro` for the tokens
+    /// of a macro.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin: Option<&'static str>,
     /// The message.
     pub message: String,
     /// The next steps.
@@ -123,6 +143,14 @@ pub struct Summary {
     pub source_rules: usize,
     /// The module rules.
     pub module_rules: usize,
+    /// The item rules.
+    pub item_rules: usize,
+    /// The glob re-export rules.
+    pub reexport_rules: usize,
+    /// The uses that the item rules cannot resolve and that name a denied
+    /// item: a path that does not resolve to its end, a method call or a
+    /// field access. They give no finding.
+    pub unresolved: usize,
     /// The dependency edges between workspace packages.
     pub workspace_edges: usize,
     /// The files that the source rules read.
@@ -170,6 +198,8 @@ pub fn section(
     for rule in &settings.modules {
         findings.extend(module_rule(workspace, rule)?);
     }
+    let resolved = items::check(workspace, &settings.items, &settings.reexports, &resolver)?;
+    findings.extend(resolved.findings);
     findings.retain(|finding| scope.keeps(&finding.path));
     findings.sort_by(|a, b| {
         (&a.rule, &a.path, a.line, a.col, &a.to, &a.pattern)
@@ -179,6 +209,9 @@ pub fn section(
         crate_rules: settings.crates.len(),
         source_rules: settings.sources.len(),
         module_rules: settings.modules.len(),
+        item_rules: settings.items.len(),
+        reexport_rules: settings.reexports.len(),
+        unresolved: resolved.unresolved,
         workspace_edges: edges.len(),
         source_files,
     };
@@ -269,7 +302,7 @@ fn shared_findings(report: &Report<Summary, Finding>) -> Vec<shared::Finding> {
 }
 
 /// The names of packages and groups.
-struct Names<'a> {
+pub(super) struct Names<'a> {
     members: BTreeSet<&'a str>,
     groups: &'a BTreeMap<String, Vec<String>>,
 }
@@ -298,7 +331,11 @@ impl<'a> Names<'a> {
 
     /// The package names that `values` names. An unknown package name gives a
     /// warning, because a rule can name a package that a later change adds.
-    fn expand(&self, rule: &str, values: &[String]) -> Result<BTreeSet<String>, CliError> {
+    pub(super) fn expand(
+        &self,
+        rule: &str,
+        values: &[String],
+    ) -> Result<BTreeSet<String>, CliError> {
         let mut names = BTreeSet::new();
         for value in values {
             if value == ANY {
@@ -323,7 +360,7 @@ impl<'a> Names<'a> {
     }
 }
 
-fn invalid(message: &str) -> CliError {
+pub(super) fn invalid(message: &str) -> CliError {
     CliError::new(
         ErrorCode::InvalidConfig,
         format!("`[workspace.metadata.fallow.boundaries]` is not valid: {message}"),
@@ -426,6 +463,7 @@ fn crate_rule(
                 col: 1,
                 pattern: None,
                 dependency_kinds: found.iter().map(|edge| kind_name(edge.kind)).collect(),
+                origin: None,
                 message,
                 actions: vec![Action::manual(
                     "remove-dependency",
@@ -564,6 +602,7 @@ fn source_finding(
         col,
         pattern: Some(pattern.to_owned()),
         dependency_kinds: Vec::new(),
+        origin: None,
         message,
         actions: vec![Action::manual(
             "move-code",
@@ -763,6 +802,7 @@ fn module_rule(workspace: &Workspace, rule: &ModuleRule) -> Result<Vec<Finding>,
                     col: item.col,
                     pattern: None,
                     dependency_kinds: Vec::new(),
+                    origin: None,
                     message,
                     actions: vec![Action::manual(
                         "move-code",
@@ -949,7 +989,11 @@ fn absolute(module: &[String], path: &[String]) -> Option<Vec<String>> {
 
 fn human(report: &Report<Summary, Finding>) -> String {
     let summary = &report.summary;
-    let rules = summary.crate_rules + summary.source_rules + summary.module_rules;
+    let rules = summary.crate_rules
+        + summary.source_rules
+        + summary.module_rules
+        + summary.item_rules
+        + summary.reexport_rules;
     let mut text = format!(
         "cargo fallow boundaries: {rules} {}, {} workspace {}, {} source {}\n",
         plural(rules, "rule", "rules"),
@@ -970,6 +1014,14 @@ fn human(report: &Report<Summary, Finding>) -> String {
             finding.rule, finding.message, finding.path, finding.line
         );
     }
+    if summary.unresolved > 0 {
+        let _ = writeln!(
+            text,
+            "  {} {} that the item rules cannot resolve, with the name of a denied item",
+            summary.unresolved,
+            plural(summary.unresolved, "use", "uses")
+        );
+    }
     text.push_str(&gates_text(&report.gate_outcomes));
     text
 }
@@ -983,6 +1035,10 @@ fn sarif_log(report: &Report<Summary, Finding>, findings: &[shared::Finding]) ->
                 Kind::CrateDependency => "A workspace crate depends on a crate that a rule denies.",
                 Kind::SourcePattern => "A file contains a pattern that a rule denies.",
                 Kind::ModulePath => "A module uses a module that a rule denies.",
+                Kind::ItemPath => "Code uses a workspace item that a rule denies.",
+                Kind::GlobReexport => {
+                    "A glob re-export reads a crate or a module that a rule denies."
+                }
             };
             (finding.rule.clone(), text.to_owned())
         })

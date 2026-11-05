@@ -73,6 +73,47 @@ pub struct Boundaries {
     pub sources: Vec<SourceRule>,
     /// The rules on paths between the modules of one package.
     pub modules: Vec<ModuleRule>,
+    /// The rules on the items that code may use, with resolved paths.
+    pub items: Vec<ItemRule>,
+    /// The rules on `pub use <path>::*` re-exports.
+    pub reexports: Vec<ReexportRule>,
+}
+
+/// A rule on the workspace items that the code of some packages must not use.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct ItemRule {
+    /// The rule name in the findings.
+    pub rule: String,
+    /// The packages that the rule checks: names, `@group` or `*`.
+    pub from: Vec<String>,
+    /// The items that they must not use, as `crate_name::module::item`. A
+    /// module or a type includes its items.
+    pub deny: Vec<String>,
+    /// The modules or items that a use can go through to stay allowed, for
+    /// example a session module that re-exports a denied function.
+    #[serde(default)]
+    pub allow_via: Vec<String>,
+    /// The message, with `{from}` and `{to}` as placeholders.
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
+/// A rule on the glob re-exports of some packages.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct ReexportRule {
+    /// The rule name in the findings.
+    pub rule: String,
+    /// The packages that the rule checks: names, `@group` or `*`.
+    pub from: Vec<String>,
+    /// The crates or modules that a `pub use <path>::*` must not read, as
+    /// `crate_name` or `crate_name::module`. A module includes its child
+    /// modules.
+    pub deny: Vec<String>,
+    /// The message, with `{from}` and `{to}` as placeholders.
+    #[serde(default)]
+    pub message: Option<String>,
 }
 
 /// The section of `Cargo.toml` that a crate rule checks.

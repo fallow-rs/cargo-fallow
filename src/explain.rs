@@ -222,6 +222,24 @@ pub const RULES: &[Explanation] = &[
         docs: "https://github.com/fallow-rs/cargo-fallow/blob/main/docs/structure.md",
     },
     Explanation {
+        rule: "item-path",
+        check: "boundaries",
+        severity: "error",
+        meaning: "Code of a package uses a workspace item that an item rule denies. The path resolves through `use`, aliases and re-exports. A path that does not resolve gives no finding. The finding has the name of the rule.",
+        example: "A rule `from = [\"app-cli\"]`, `deny = [\"engine::dead_code::analyze\"]`, and `use engine::dead_code::analyze as run;` in app-cli.",
+        fix: "Use the item through a module of `allow-via`, move the code, or change the rule.",
+        docs: "https://github.com/fallow-rs/cargo-fallow/blob/main/docs/structure.md",
+    },
+    Explanation {
+        rule: "glob-reexport",
+        check: "boundaries",
+        severity: "error",
+        meaning: "A `pub use <path>::*` in a package re-exports a crate or a module that a re-export rule denies. An alias of the crate does not hide it.",
+        example: "A rule `from = [\"app-api\"]`, `deny = [\"app_types\"]`, and `pub use app_types::*;` in app-api.",
+        fix: "Re-export the items by name, or change the rule.",
+        docs: "https://github.com/fallow-rs/cargo-fallow/blob/main/docs/structure.md",
+    },
+    Explanation {
         rule: "grown-file",
         check: "size",
         severity: "error",
@@ -444,7 +462,11 @@ mod tests {
             S::GrownFile | S::NewLargeFile => S::ALL.len(),
         };
         let boundary = match boundary {
-            B::CrateDependency | B::SourcePattern | B::ModulePath => B::ALL.len(),
+            B::CrateDependency
+            | B::SourcePattern
+            | B::ModulePath
+            | B::ItemPath
+            | B::GlobReexport => B::ALL.len(),
         };
         deps + kind + size + boundary
     }

@@ -32,7 +32,7 @@ use crate::section::Section;
 use crate::structure::complexity::Function;
 use crate::structure::config::{self, matches_prefix};
 use crate::structure::source::{self, Loaded, Needs};
-use crate::structure::{boundaries, complexity, dupes, size};
+use crate::structure::{boundaries, complexity, crap, dupes, size};
 use crate::workspace::{self, Workspace};
 use crate::{deps, files, visibility};
 
@@ -111,6 +111,8 @@ pub struct Options {
     pub scope: crate::scope::ScopeArgs,
     /// The flags of the file scores, the hotspots and the trend.
     pub health: crate::hotspots::HealthArgs,
+    /// The LCOV flags of the CRAP score.
+    pub coverage: crate::structure::crap::CoverageArgs,
 }
 
 impl Options {
@@ -141,24 +143,47 @@ struct SourceSettings {
     size: Option<config::Size>,
     complexity: Option<config::Complexity>,
     dupes: Option<config::Duplication>,
+    /// The LCOV data of `--coverage`.
+    coverage: Option<crap::Lcov>,
 }
 
 impl SourceSettings {
     /// The tables of the checks in `runs`.
     fn read(workspace: &Workspace, runs: &impl Fn(CheckName) -> bool) -> Result<Self, CliError> {
+        let complexity: Option<config::Complexity> = runs(CheckName::Complexity)
+            .then(|| config::section(workspace, "complexity"))
+            .transpose()?;
+        if let Some(complexity) = &complexity {
+            complexity.validate()?;
+        }
         Ok(Self {
             scores: false,
+            coverage: None,
             size: runs(CheckName::Size)
                 .then(|| config::section(workspace, "size"))
                 .transpose()?,
-            complexity: runs(CheckName::Complexity)
-                .then(|| config::section(workspace, "complexity"))
-                .transpose()?,
+            complexity,
             dupes: runs(CheckName::Dupes)
                 .then(|| config::section(workspace, "dupes"))
                 .transpose()?,
         })
     }
+}
+
+/// Reads the LCOV file of `--coverage`. The flag needs the complexity check.
+fn read_coverage(
+    options: &Options,
+    workspace: &Workspace,
+    complexity: bool,
+) -> Result<Option<crap::Lcov>, CliError> {
+    if options.coverage.path.is_some() && !complexity {
+        return Err(CliError::new(
+            ErrorCode::InvalidArgument,
+            "`--coverage` needs the complexity check",
+        )
+        .with_help("Add `complexity` to `--only`, or remove it from `--skip`."));
+    }
+    crap::read(&options.coverage, workspace)
 }
 
 /// What the graph thread gives back.
@@ -219,6 +244,7 @@ pub fn execute(options: &Options) -> Result<report::CheckReport, CliError> {
     };
     let settings = SourceSettings {
         scores: options.health.needs_functions(),
+        coverage: read_coverage(options, &workspace, runs(CheckName::Complexity))?,
         ..SourceSettings::read(&workspace, &runs)?
     };
 
@@ -402,6 +428,7 @@ fn visibility_flags(options: &Options, enforced: bool) -> VisibilityOptions {
         quiet: options.quiet,
         production: Vec::new(),
         exclude: Vec::new(),
+        public: None,
         uniform_fields: false,
         kinds: Vec::new(),
         fail_on_issues: enforced,
@@ -501,7 +528,7 @@ fn graph_sections(inputs: &GraphInputs<'_>, module_graph: &Graph) -> Result<Grap
     if let Some(options) = visibility_options {
         progress.step("Checking the visibility");
         let report = visibility::fast_report(module_graph, options, workspace, scope);
-        part.public_items = Some(public_items(module_graph, &options.exclude));
+        part.public_items = Some(public_items(module_graph, options));
         part.dead_public = Some(report.summary.dead_public);
         // A scope, a baseline or a kind filter hides findings, so the ratio
         // would read too low. The file scores then have no ratio.
@@ -509,7 +536,7 @@ fn graph_sections(inputs: &GraphInputs<'_>, module_graph: &Graph) -> Result<Grap
             && !scope.has_baseline()
             && (options.kinds.is_empty()
                 || options.kinds.contains(&visibility::FindingKind::DeadPublic));
-        part.dead_counts = all_dead.then(|| dead_counts(module_graph, &options.exclude, &report));
+        part.dead_counts = all_dead.then(|| dead_counts(module_graph, options, &report));
         part.visibility = Some(report.section()?);
     }
     Ok(part)
@@ -519,12 +546,12 @@ fn graph_sections(inputs: &GraphInputs<'_>, module_graph: &Graph) -> Result<Grap
 /// file scores.
 fn dead_counts(
     module_graph: &Graph,
-    exclude: &[String],
+    options: &VisibilityOptions,
     report: &visibility::report::VisibilityReport,
 ) -> crate::hotspots::DeadCounts {
     let mut counts = crate::hotspots::DeadCounts::new();
     for item in &module_graph.items {
-        if item.vis == Vis::Public && !is_api(&module_graph.crates[item.krate], exclude) {
+        if item.vis == Vis::Public && !is_api(&module_graph.crates[item.krate], options) {
             counts.entry(item.file.clone()).or_default().0 += 1;
         }
     }
@@ -537,19 +564,18 @@ fn dead_counts(
 }
 
 /// The `pub` items of the crates whose public items are not an external API.
-fn public_items(module_graph: &Graph, exclude: &[String]) -> usize {
+fn public_items(module_graph: &Graph, options: &VisibilityOptions) -> usize {
     module_graph
         .items
         .iter()
         .filter(|item| item.vis == Vis::Public)
-        .filter(|item| !is_api(&module_graph.crates[item.krate], exclude))
+        .filter(|item| !is_api(&module_graph.crates[item.krate], options))
         .count()
 }
 
-/// True when the public items of the crate are an external API: `exclude`
-/// names it, or it is a library that a registry can publish.
-fn is_api(krate: &graph::Crate, exclude: &[String]) -> bool {
-    exclude.contains(&krate.name) || (krate.published && krate.kind.is_library())
+/// True when the public items of the crate are an external API.
+fn is_api(krate: &graph::Crate, options: &VisibilityOptions) -> bool {
+    visibility::is_api(krate, &options.exclude, options.public.as_deref())
 }
 
 /// Walks the source once and runs `size`, `complexity` and `dupes` on it.
@@ -594,7 +620,18 @@ fn source_checks(
     }
     if let Some(complexity) = &settings.complexity {
         progress.step("Measuring the complexity");
-        part.complexity = Some(complexity::section(&loaded, complexity, enforced, scope)?);
+        let coverage = settings
+            .coverage
+            .as_ref()
+            .map(|lcov| crap::join(lcov, &loaded, workspace.root.as_std_path()))
+            .transpose()?;
+        part.complexity = Some(complexity::section(
+            &loaded,
+            complexity,
+            enforced,
+            scope,
+            coverage.as_ref(),
+        )?);
     }
     if let Some(dupes) = &settings.dupes {
         let gates = dupes::Enforce {

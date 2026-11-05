@@ -49,6 +49,9 @@ reasons other than a use that the check does not report the item:
 `module-with-reexports`, `macro-export`, `attribute-macro`, `allow-dead-code`,
 `external-symbol`, `trait-impl`, `trait-item`, `proc-macro`, `test-function`,
 `derive`, `main-function`, `generated-file` and `opaque-include`.
+`published-crate` names a library whose exported items are an external API:
+a library that a registry can publish, or with `public-crates` a library
+that the list names.
 
 For `deps --trace <DEPENDENCY>`, give the key in `Cargo.toml` or the package
 name. The JSON document has the `kind` `deps-trace`. `declarations` lists each

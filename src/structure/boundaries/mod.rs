@@ -748,6 +748,7 @@ fn module_rule(workspace: &Workspace, rule: &ModuleRule) -> Result<Vec<Finding>,
         let roots = [TargetRoot {
             path: target.src_path.clone(),
             edition,
+            test_only: false,
         }];
         let walked = walk(root, &roots, |visit| {
             let text = fs::read_to_string(root.join(&visit.path))
@@ -887,6 +888,7 @@ impl PathScan<'_> {
                     .find_map(|attr| crate::attrs::path_attribute(&attr)),
                 under_cfg: false,
                 cfg_off: false,
+                test_only: false,
             });
             return;
         };

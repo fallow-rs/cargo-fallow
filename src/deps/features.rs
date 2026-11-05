@@ -69,9 +69,10 @@ impl FeatureRule {
     /// Finds the candidates and scans the repository for their names. An
     /// invalid visibility table gives no candidate.
     pub fn new(workspace: &crate::workspace::Workspace, metadata: &Metadata) -> Self {
-        let Some(excluded) = crate::visibility::config::exclude_crates(workspace) else {
+        let Some((exclude, public)) = crate::visibility::config::api_crates(workspace) else {
             return Self::default();
         };
+        let excluded = Excluded { exclude, public };
         let candidates: BTreeMap<String, Vec<String>> = metadata
             .workspace_packages()
             .into_iter()
@@ -131,7 +132,7 @@ impl FeatureRule {
 
 /// The features of `package` that only the scan can still credit: an empty
 /// list, not `default`, and no feature, member or target names it.
-fn candidates_of(metadata: &Metadata, package: &Package, excluded: &[String]) -> Vec<String> {
+fn candidates_of(metadata: &Metadata, package: &Package, excluded: &Excluded) -> Vec<String> {
     // Users outside the workspace can turn on the features of a published
     // package, with a dependency entry or with `cargo install --features`.
     if crate::workspace::is_published(package) || is_excluded(package, excluded) {
@@ -444,9 +445,25 @@ fn is_library(target: &cargo_metadata::Target) -> bool {
 }
 
 /// True when `exclude-crates` names the library of the package.
-fn is_excluded(package: &Package, excluded: &[String]) -> bool {
+/// The libraries that the visibility table makes an external API.
+struct Excluded {
+    /// The `exclude-crates` crate names.
+    exclude: Vec<String>,
+    /// The `public-crates` patterns.
+    public: Vec<String>,
+}
+
+/// True when the visibility table makes a library of the package an external
+/// API: `exclude-crates` or `public-crates` names it.
+fn is_excluded(package: &Package, excluded: &Excluded) -> bool {
     package.targets.iter().any(|target| {
-        is_library(target) && excluded.contains(&crate::graph::crate_name(&target.name))
+        let name = crate::graph::crate_name(&target.name);
+        is_library(target)
+            && (excluded.exclude.contains(&name)
+                || excluded.public.iter().any(|pattern| {
+                    crate::visibility::name_matches(pattern, &name)
+                        || crate::visibility::name_matches(pattern, &package.name)
+                }))
     })
 }
 

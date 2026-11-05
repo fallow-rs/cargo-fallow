@@ -235,6 +235,20 @@ fn an_excluded_library_gets_no_finding() {
     assert_eq!(unused_features(&report), BTreeSet::new(), "{report:#}");
 }
 
+/// A library that `public-crates` names has users outside the workspace too.
+#[test]
+fn a_public_library_gets_no_finding() {
+    let dir = workspace(
+        "\n[workspace.metadata.fallow.visibility]\npublic-crates = [\"alp*\"]\n",
+        &[(
+            "alpha/Cargo.toml",
+            &manifest("alpha", "[features]\nfor_users = []\n"),
+        )],
+    );
+    let (_, report) = run(&dir, &[]);
+    assert_eq!(unused_features(&report), BTreeSet::new(), "{report:#}");
+}
+
 #[test]
 fn an_ignore_entry_hides_the_finding() {
     // The package metadata names each string as a use, so the test puts the

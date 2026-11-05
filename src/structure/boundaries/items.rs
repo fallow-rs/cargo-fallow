@@ -137,9 +137,6 @@ impl Context<'_> {
                 continue;
             }
             let resolved = self.resolver.resolve_import(index);
-            let Binding::Name(name) = &import.binding else {
-                continue;
-            };
             if self.goes_via(&resolved, &via) {
                 settled.insert(index);
                 continue;

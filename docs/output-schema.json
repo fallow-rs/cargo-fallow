@@ -283,6 +283,13 @@
           },
           "description": "The `Cargo.toml` sections of the dependency, for a crate rule."
         },
+        "origin": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Where the path of an item rule is: `code`, or `macro` for the tokens\nof a macro."
+        },
         "message": {
           "type": "string",
           "description": "The message."
@@ -324,6 +331,16 @@
           "type": "string",
           "const": "module-path",
           "description": "A module uses a denied module."
+        },
+        {
+          "type": "string",
+          "const": "item-path",
+          "description": "Code uses a denied workspace item, with the path resolved."
+        },
+        {
+          "type": "string",
+          "const": "glob-reexport",
+          "description": "A `pub use <path>::*` re-exports a denied crate or module."
         }
       ],
       "description": "The kind of a boundary finding."
@@ -349,6 +366,24 @@
           "minimum": 0,
           "description": "The module rules."
         },
+        "item_rules": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The item rules."
+        },
+        "reexport_rules": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The glob re-export rules."
+        },
+        "unresolved": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The uses that the item rules cannot resolve and that name a denied\nitem: a path that does not resolve to its end, a method call or a\nfield access. They give no finding."
+        },
         "workspace_edges": {
           "type": "integer",
           "format": "uint",
@@ -366,6 +401,9 @@
         "crate_rules",
         "source_rules",
         "module_rules",
+        "item_rules",
+        "reexport_rules",
+        "unresolved",
         "workspace_edges",
         "source_files"
       ],
@@ -854,6 +892,26 @@
           "$ref": "#/$defs/ComplexitySeverity",
           "description": "The severity band."
         },
+        "crap": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double",
+          "description": "The CRAP score: `CC^2 * (1 - cov)^3 + CC`, rounded to 1 decimal. It is\n`null` for a unit with no score: no `DA` line, or a `cfg` attribute in\nthe body."
+        },
+        "coverage_pct": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double",
+          "description": "The line coverage of the function in percent, from 0 to 100. It is\n`null` when `crap` is `null`."
+        },
+        "coverage_source": {
+          "$ref": "#/$defs/CoverageSource",
+          "description": "The source of the coverage."
+        },
         "actions": {
           "type": "array",
           "items": {
@@ -942,6 +1000,33 @@
             "$ref": "#/$defs/Skipped"
           },
           "description": "The files that a declaration reached but that did not parse."
+        },
+        "max_crap": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double",
+          "description": "The CRAP limit. Only with `--coverage`."
+        },
+        "functions_without_coverage": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0,
+          "description": "The units with no CRAP score: a unit with no `DA` line in the LCOV\nfile, or with a `cfg` attribute in its body. Only with `--coverage`."
+        },
+        "stale_files": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "The files with stale coverage data: the file is gone, or a `DA` line\nis after the end of the file. Only with `--coverage`."
         }
       },
       "required": [
@@ -954,6 +1039,16 @@
         "skipped_files"
       ],
       "description": "The summary of a complexity run."
+    },
+    "CoverageSource": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "lcov",
+          "description": "The `DA` lines of an LCOV file."
+        }
+      ],
+      "description": "The source of the coverage of a score."
     },
     "CoverageState": {
       "oneOf": [
@@ -1462,6 +1557,10 @@
           "minimum": 0,
           "description": "The smallest clone, in lines."
         },
+        "production": {
+          "type": "boolean",
+          "description": "True when the check leaves out test code."
+        },
         "stats": {
           "$ref": "#/$defs/Stats",
           "description": "The counts."
@@ -1491,6 +1590,7 @@
         "mode",
         "min_tokens",
         "min_lines",
+        "production",
         "stats",
         "generated_files",
         "clone_families",
@@ -1612,7 +1712,27 @@
         {
           "type": "string",
           "const": "both",
-          "description": "Both limits."
+          "description": "The cyclomatic and the cognitive limits."
+        },
+        {
+          "type": "string",
+          "const": "crap",
+          "description": "Only the CRAP limit."
+        },
+        {
+          "type": "string",
+          "const": "cyclomatic_crap",
+          "description": "The cyclomatic and the CRAP limits."
+        },
+        {
+          "type": "string",
+          "const": "cognitive_crap",
+          "description": "The cognitive and the CRAP limits."
+        },
+        {
+          "type": "string",
+          "const": "all",
+          "description": "The cyclomatic, the cognitive and the CRAP limits."
         }
       ],
       "description": "The limits that a function went over."

@@ -8,6 +8,19 @@ libraries, with two exceptions:
   manifest. Users outside the workspace can use its exported items.
 - A library in `--exclude-crate` or `exclude-crates`.
 
+When `--public-crate` or `public-crates` names libraries, only those
+libraries and the excluded libraries are an external API. Each other library
+is internal, also when a registry can publish it. Use this when a workspace
+publishes internal crates only because a published facade crate depends on
+them. An empty `public-crates = []` makes each library internal. A name is a
+crate name or a package name, and `*` matches any text, for example
+`"my-api-*"`. The match is exact, so `my_api` and `my-api` differ: use the
+form of the crate name or of the package name. A pattern that matches no
+library is an error with the code `CARGO_FALLOW_INVALID_CONFIG`. The flag
+replaces the list of the key. `check`, `fix` and the `unused-feature` rule of
+`deps` read the key. fallow for TypeScript has the same option as
+`publicPackages`.
+
 The exported items of these libraries are an external API. They are entry
 points: they get no `dead-public` or `unnecessary-public` finding, `fix` does
 not narrow them, and each item that they use is live. The `pub(crate)`,
@@ -41,6 +54,7 @@ cargo fallow visibility --precise
 | --- | --- |
 | `--production <PACKAGE:BIN>` | A production binary. The flag can repeat. Without the flag, each binary is a production binary. Tests, benches, examples and doctests are roots of a different kind. An item that only these roots use has `test_only: true`. |
 | `--exclude-crate <CRATE>` | A library whose public items are an external API. The flag can repeat. |
+| `--public-crate <CRATE>` | A library whose exported items are an external API. Each other library is internal. The flag can repeat. |
 | `--uniform-fields` | When all fields of a struct have the same written visibility, the command changes them as a group. |
 | `--kind <KIND>` | Report only this kind: `dead-public`, `unnecessary-public` or `unnecessary-restricted-visibility`. The flag can repeat. |
 | `--fail-on-issues` | Exit 1 when the run has a finding. |
@@ -61,6 +75,7 @@ code `CARGO_FALLOW_INVALID_CONFIG`.
 [workspace.metadata.fallow.visibility]
 production = ["my-cli:my-cli"]
 exclude-crates = ["my_api"]
+public-crates = ["my-api", "my-types"]
 uniform-fields = true
 kinds = ["dead-public", "unnecessary-public"]
 ```

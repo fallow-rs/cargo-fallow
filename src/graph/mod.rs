@@ -331,19 +331,8 @@ fn build_inner(workspace: &Workspace, production: &Production, scan: bool) -> (G
     let parsed = parse_all(root, &targets, scan);
     let mut graph = Graph::default();
     let mut scans = FileScans::default();
-    let libs: BTreeMap<&str, CrateId> = targets
-        .iter()
-        .enumerate()
-        .filter(|(_, (_, target))| CrateKind::of(target).is_library())
-        .map(|(id, (member, _))| (member.name.as_str(), id))
-        .collect();
-    // A workspace crate links only to workspace libraries. A consumer crate
-    // links to both.
-    let own_libs: BTreeMap<&str, CrateId> = libs
-        .iter()
-        .filter(|(_, id)| !targets[**id].0.consumer)
-        .map(|(name, id)| (*name, *id))
-        .collect();
+    let libs = libraries(&targets, true);
+    let own_libs = libraries(&targets, false);
     for (id, ((member, target), mut files)) in targets.iter().zip(parsed).enumerate() {
         let libs = if member.consumer { &libs } else { &own_libs };
         let kind = CrateKind::of(target);
@@ -353,14 +342,7 @@ fn build_inner(workspace: &Workspace, production: &Production, scan: bool) -> (G
                 scans.entry((file.path.clone(), edition)).or_insert(found);
             }
         }
-        // A consumer binary, for example a fuzz target, is a real user.
-        let production = kind == CrateKind::Bin
-            && (production.bins.is_empty()
-                || member.consumer
-                || production
-                    .bins
-                    .iter()
-                    .any(|(package, bin)| *package == member.name && *bin == target.name));
+        let production = is_production(production, member, target, kind);
         let lib = libs
             .get(member.name.as_str())
             .copied()
@@ -411,6 +393,37 @@ fn build_inner(workspace: &Workspace, production: &Production, scan: bool) -> (G
         );
     }
     (graph, scans)
+}
+
+/// The library of each package, by package name. A workspace crate links
+/// only to workspace libraries, so `consumers` is false for it. A consumer
+/// crate links to both.
+fn libraries<'w>(targets: &[(&'w Member, &Target)], consumers: bool) -> BTreeMap<&'w str, CrateId> {
+    targets
+        .iter()
+        .enumerate()
+        .filter(|(_, (member, target))| {
+            CrateKind::of(target).is_library() && (consumers || !member.consumer)
+        })
+        .map(|(id, (member, _))| (member.name.as_str(), id))
+        .collect()
+}
+
+/// True for a production binary. A consumer binary, for example a fuzz
+/// target, is a real user, so it is one too.
+fn is_production(
+    production: &Production,
+    member: &Member,
+    target: &Target,
+    kind: CrateKind,
+) -> bool {
+    kind == CrateKind::Bin
+        && (production.bins.is_empty()
+            || member.consumer
+            || production
+                .bins
+                .iter()
+                .any(|(package, bin)| *package == member.name && *bin == target.name))
 }
 
 /// Parses the files of each target. The targets run on parallel threads.

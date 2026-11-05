@@ -7,11 +7,11 @@
 //! and is no member. The members of each consumer join the module graph of
 //! the check, so their code counts as a use. They get no finding.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::cli::VisibilityOptions;
 use crate::error::{CliError, ErrorCode};
-use crate::workspace::{self, Workspace};
+use crate::workspace::{self, Member, Workspace};
 
 /// The consumer manifest without a `consumers` key.
 const FUZZ: &str = "fuzz/Cargo.toml";
@@ -40,51 +40,10 @@ pub fn extend(
     let mut manifests = Vec::new();
     for name in names {
         let manifest = workspace.root.join(&name).into_std_path_buf();
-        if workspace
-            .members
-            .iter()
-            .any(|member| member.manifest_path == name)
-        {
+        let Some(members) = load(workspace, &name, &manifest, explicit, options)? else {
             continue;
-        }
-        // Most workspaces have no `fuzz/`, so the default is silent then.
-        if !explicit && !manifest.is_file() {
-            continue;
-        }
-        let members = if manifest.is_file() {
-            workspace::consumer_members(&workspace.root, &manifest, &options.cargo_flags)
-        } else {
-            Err(CliError::new(
-                ErrorCode::InvalidConfig,
-                format!("the consumer manifest `{name}` does not exist"),
-            ))
         };
-        let members = match members {
-            Ok(members) => members,
-            Err(err) if explicit => return Err(invalid(&name, &err)),
-            Err(err) => {
-                crate::render::warn(&format!(
-                    "`{name}` does not load, so its uses do not count: {}",
-                    err.message
-                ));
-                continue;
-            }
-        };
-        for member in members {
-            if extended
-                .members
-                .iter()
-                .any(|known| known.name == member.name)
-            {
-                crate::render::warn(&format!(
-                    "the consumer package `{}` of `{name}` has the name of another package, so \
-                     its uses do not count",
-                    member.name
-                ));
-                continue;
-            }
-            extended.members.push(member);
-        }
+        add(&mut extended, members, &name);
         manifests.push(manifest);
     }
     if manifests.is_empty() {
@@ -99,6 +58,65 @@ pub fn extend(
         workspace: extended,
         manifests,
     }))
+}
+
+/// The members of one consumer workspace, or `None` when the run skips it: a
+/// manifest of the workspace itself, or a `fuzz/` default that does not
+/// exist or does not load. A listed consumer that does not load is an error.
+fn load(
+    workspace: &Workspace,
+    name: &str,
+    manifest: &Path,
+    explicit: bool,
+    options: &VisibilityOptions,
+) -> Result<Option<Vec<Member>>, CliError> {
+    let member = workspace
+        .members
+        .iter()
+        .any(|member| member.manifest_path == name);
+    // Most workspaces have no `fuzz/`, so the default is silent then.
+    if member || (!explicit && !manifest.is_file()) {
+        return Ok(None);
+    }
+    let members = if manifest.is_file() {
+        workspace::consumer_members(&workspace.root, manifest, &options.cargo_flags)
+    } else {
+        Err(CliError::new(
+            ErrorCode::InvalidConfig,
+            format!("the consumer manifest `{name}` does not exist"),
+        ))
+    };
+    match members {
+        Ok(members) => Ok(Some(members)),
+        Err(err) if explicit => Err(invalid(name, &err)),
+        Err(err) => {
+            crate::render::warn(&format!(
+                "`{name}` does not load, so its uses do not count: {}",
+                err.message
+            ));
+            Ok(None)
+        }
+    }
+}
+
+/// Adds the consumer members. A package with the name of a package that the
+/// workspace already has gets a warning and stays out.
+fn add(extended: &mut Workspace, members: Vec<Member>, name: &str) {
+    for member in members {
+        if extended
+            .members
+            .iter()
+            .any(|known| known.name == member.name)
+        {
+            crate::render::warn(&format!(
+                "the consumer package `{}` of `{name}` has the name of another package, so its \
+                 uses do not count",
+                member.name
+            ));
+            continue;
+        }
+        extended.members.push(member);
+    }
 }
 
 fn invalid(name: &str, err: &CliError) -> CliError {

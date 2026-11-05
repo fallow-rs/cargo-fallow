@@ -53,6 +53,17 @@ paths = ["crates/cli/src"]
 deny = ["process_group(0)", "libc::waitid"]
 owner = "app-process"
 
+# `scope = "production"` skips test code. A file in `allow` passes up to `max`
+# matches of all patterns of the rule. Each match over `max` is a finding.
+[[workspace.metadata.fallow.boundaries.sources]]
+rule = "parse-through-parse-bounded"
+paths = ["crates"]
+deny = ["Parser::new("]
+scope = "production"
+allow = [
+    { path = "crates/extract/src/parse.rs", max = 2 },
+]
+
 # A module of `from` must not use a module of `deny`. The rule reads `use`
 # items and paths that start with `crate`, `self` or `super`.
 [[workspace.metadata.fallow.boundaries.modules]]
@@ -79,13 +90,27 @@ threshold = 0.0           # 0 means no limit
 production = false        # true leaves out test code
 ```
 
+A source rule gives one finding for each pattern in a file: the first match
+outside the code that `scope` skips.
+`scope` sets the code that the rule reads. The default, `all`, reads all of
+each file. With `production`, the rule skips the files of test targets, the
+files below a test module declaration, and the items with a test attribute,
+for example `#[cfg(test)] mod tests` or `#[test]`. A file that a test module
+and other code both reach is production code. With `production`, a file that
+does not parse gets a warning, and the rule does not judge it. `allow` lists
+files, each with a `max` count. The rule counts each match of each pattern in
+such a file, in file order. A place where two patterns match counts one time.
+Each match after the first `max` matches is a finding, so `max = 0` reports
+each match. An `allow` path must name a file that the rule reads, one time.
+Else the table is not valid. A file that the source walk does not reach, and
+the bench and example targets, count as production code.
+
 With `production = true`, or with `cargo fallow dupes --production`, the
 clone search leaves out test code. Test code is a test target, a file below
 a test module declaration, and an item with a test attribute, for example
 `#[cfg(test)] mod tests` or `#[test]`. Bench and example targets stay in the
-search. The line counts
-and the duplication percentage then count only production code, so the
-`threshold` judges production code. `--no-production` keeps test code also
+search. The line counts and the duplication percentage then count only
+production code, so the `threshold` judges production code. `--no-production` keeps test code also
 when the table sets `production = true`. A clone never spans a test item that
 the search leaves out. A file that production code and test code both reach
 counts as production code. The summary has `production: true`. This is the

@@ -9,7 +9,8 @@
 //!   for example process-tree calls outside the package that owns them. A
 //!   pattern matches a token sequence, so whitespace and comments do not count,
 //!   and a pattern in a string or a comment does not match. With
-//!   `match = "text"`, a pattern matches the plain text instead.
+//!   `match = "text"`, a pattern matches the plain text instead. `scope` and
+//!   `allow` are in [`sources`].
 //! - A module rule names modules of one package that must not use other
 //!   modules of that package. It reads each `use` item and each path in the
 //!   code that starts with `crate`, `self` or `super`.
@@ -35,8 +36,10 @@ use crate::rules::Level;
 use crate::scope::Scope;
 use crate::section::{Section, to_value};
 use crate::structure::BoundariesArgs;
+mod sources;
+
 use crate::structure::config::{
-    self, CrateRule, DependencyKind, Matching, ModuleRule, SourceRule, matches_prefix,
+    self, CrateRule, DependencyKind, ModuleRule, SourceRule, SourceScope, matches_prefix,
 };
 use crate::structure::report::{Action, Report, count_gate, gates_text, plural, shared_actions};
 use crate::structure::sarif;
@@ -162,8 +165,9 @@ pub fn section(
         findings.extend(crate_rule(workspace, &edges, rule, &resolver)?);
     }
     let mut source_files = 0;
+    let mut tests = None;
     for rule in &settings.sources {
-        let (found, read) = source_rule(workspace, rule)?;
+        let (found, read) = source_rule(workspace, rule, &mut tests)?;
         findings.extend(found);
         source_files += read;
     }
@@ -471,9 +475,12 @@ fn declares_dependency(line: &str, key: &str) -> bool {
     name == key && line.len() > name.len()
 }
 
+/// Runs one source rule. `tests` holds the test files of the workspace after
+/// the first rule with `scope = "production"`.
 fn source_rule(
     workspace: &Workspace,
     rule: &SourceRule,
+    tests: &mut Option<BTreeSet<String>>,
 ) -> Result<(Vec<Finding>, usize), CliError> {
     let patterns: Vec<(String, Vec<String>)> = rule
         .deny
@@ -500,29 +507,22 @@ fn source_rule(
         rust_files(root, &absolute, &mut files);
     }
     files.retain(|path: &String| !matches_prefix(path, &rule.exclude));
+    if rule.scope == SourceScope::Production {
+        let tests = tests.get_or_insert_with(|| sources::test_files(workspace));
+        files.retain(|path| !tests.contains(path));
+    }
+    let allowed = sources::allowed(rule, &files)?;
     let mut found = Vec::new();
+    let mut judged = 0;
     for path in &files {
-        let Ok(text) = fs::read_to_string(root.join(path)) else {
-            warn(&format!(
-                "cannot read `{path}`, so the rule `{}` does not judge it",
-                rule.rule
-            ));
+        let Some(code) = sources::read(root, path, rule) else {
             continue;
         };
-        let tokens = (rule.matching == Matching::Tokens).then(|| Lexed::new(&text));
-        for (pattern, wanted) in &patterns {
-            let offset = match &tokens {
-                Some(tokens) => tokens.find(wanted),
-                None => text.find(pattern.as_str()),
-            };
-            let Some(offset) = offset else {
-                continue;
-            };
-            let (line, col) = line_col(&text, offset);
-            found.push(source_finding(workspace, rule, path, pattern, line, col));
-        }
+        judged += 1;
+        let max = allowed.get(path.as_str()).copied();
+        found.extend(sources::judge(workspace, rule, path, &code, &patterns, max));
     }
-    Ok((found, files.len()))
+    Ok((found, judged))
 }
 
 fn source_finding(
@@ -652,16 +652,23 @@ impl Lexed {
     }
 
     /// The offset of the first place of `wanted`.
+    #[cfg(test)]
     fn find(&self, wanted: &[String]) -> Option<usize> {
+        self.find_all(wanted).into_iter().next()
+    }
+
+    /// The offset of each place of `wanted`, in order.
+    fn find_all(&self, wanted: &[String]) -> Vec<usize> {
         self.tokens
             .windows(wanted.len())
-            .find(|window| {
+            .filter(|window| {
                 window
                     .iter()
                     .zip(wanted)
                     .all(|((text, _), want)| text == want)
             })
             .map(|window| window[0].1)
+            .collect()
     }
 }
 

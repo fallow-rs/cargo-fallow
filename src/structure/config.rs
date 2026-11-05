@@ -132,6 +132,34 @@ pub struct SourceRule {
     /// The message, with `{path}`, `{pattern}` and `{owner}` as placeholders.
     #[serde(default)]
     pub message: Option<String>,
+    /// The code that the rule reads. The default is `all`.
+    #[serde(default)]
+    pub scope: SourceScope,
+    /// The files that can hold matches, each up to its count.
+    #[serde(default)]
+    pub allow: Vec<AllowedFile>,
+}
+
+/// The code that a source rule reads.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SourceScope {
+    /// All the code of each file.
+    #[default]
+    All,
+    /// Production code only: the rule skips the files of test targets, the
+    /// files below a test module and the items with a test attribute.
+    Production,
+}
+
+/// A file that a source rule allows, up to `max` matches.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AllowedFile {
+    /// The file, relative to the workspace root.
+    pub path: String,
+    /// The most matches of all patterns of the rule in the file.
+    pub max: u32,
 }
 
 /// How a source pattern matches.

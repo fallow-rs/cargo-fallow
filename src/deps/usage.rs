@@ -5,7 +5,7 @@ use std::fs;
 use std::path::Path;
 
 use crate::graph::extract::{Origin, RefKind};
-use crate::graph::{CrateKind, Graph, ModuleId};
+use crate::graph::{CrateKind, Graph, ModuleId, Ref};
 
 /// The part of a package that uses a name. The labels are the names in the
 /// `used_by` list of a finding.
@@ -193,38 +193,80 @@ pub fn sites(graph: &Graph, package: &str, names: &[String], include: bool) -> V
         if krate.package != package {
             continue;
         }
-        let test = reference.test_only || is_test_module(graph, reference.module);
-        let Some(context) = context_of(krate.kind, test, reference.origin == Origin::Doc) else {
+        let Some(context) = ref_context(graph, krate.kind, reference) else {
             continue;
         };
-        let (name, via) = match &reference.kind {
-            RefKind::Path { segments, .. } | RefKind::RecordField { segments, .. } => {
-                let Some(name) = segments.first().and_then(|first| wanted(first)) else {
-                    continue;
-                };
-                let via = match reference.origin {
-                    Origin::Body | Origin::Signature => "path",
-                    Origin::Macro | Origin::PublicMacro => "macro-tokens",
-                    Origin::Attr => "attribute",
-                    Origin::Doc => "doc-code",
-                    Origin::DocLink => "doc-link",
-                };
-                (name, via)
-            }
-            RefKind::Macro(name) if include && name == "include" => (name.clone(), "include"),
-            _ => continue,
-        };
-        found.push(Site {
-            file: path_of(reference.file),
-            line: (reference.line > 0).then_some(reference.line),
-            context,
-            via,
-            name,
-        });
+        if let Some((name, via)) = ref_site(reference, include, &wanted) {
+            found.push(Site {
+                file: path_of(reference.file),
+                line: (reference.line > 0).then_some(reference.line),
+                context,
+                via,
+                name,
+            });
+        }
     }
     found.sort();
     found.dedup();
     found
+}
+
+/// The usage context of a reference, or `None` when no rule counts it.
+fn ref_context(graph: &Graph, kind: CrateKind, reference: &Ref) -> Option<Context> {
+    let test = reference.test_only || is_test_module(graph, reference.module);
+    context_of(kind, test, reference.origin == Origin::Doc)
+}
+
+/// The wanted crate name of a reference and the way the reference names it.
+/// With `include` true, an `include!` call is a site too.
+fn ref_site(
+    reference: &Ref,
+    include: bool,
+    wanted: &impl Fn(&str) -> Option<String>,
+) -> Option<(String, &'static str)> {
+    match &reference.kind {
+        RefKind::Path { segments, .. } | RefKind::RecordField { segments, .. } => {
+            let name = segments.first().and_then(|first| wanted(first))?;
+            Some((name, via_of(reference.origin)))
+        }
+        RefKind::Macro(name) if include && name == "include" => Some((name.clone(), "include")),
+        _ => None,
+    }
+}
+
+/// The name of the way that a path of `origin` names a crate.
+const fn via_of(origin: Origin) -> &'static str {
+    match origin {
+        Origin::Body | Origin::Signature => "path",
+        Origin::Macro | Origin::PublicMacro => "macro-tokens",
+        Origin::Attr => "attribute",
+        Origin::Doc => "doc-code",
+        Origin::DocLink => "doc-link",
+    }
+}
+
+/// Adds the use of one reference to the usage of `package`.
+fn add_ref(
+    usage: &mut BTreeMap<String, PackageUsage>,
+    package: &str,
+    reference: &Ref,
+    context: Context,
+) {
+    match &reference.kind {
+        RefKind::Path { segments, .. } | RefKind::RecordField { segments, .. } => {
+            if let Some(first) = segments.first() {
+                add(usage, package, first, context);
+            }
+        }
+        RefKind::Macro(name) if name == "include" => {
+            usage
+                .entry(package.to_owned())
+                .or_default()
+                .included
+                .insert(context);
+        }
+        RefKind::Macro(_) | RefKind::Method(_) | RefKind::Field(_) | RefKind::Member(_) => {}
+    }
 }
 
 /// The usage of each package, keyed by package name. `root` is the
@@ -249,24 +291,8 @@ pub fn collect(graph: &Graph, root: &Path) -> BTreeMap<String, PackageUsage> {
     }
     for reference in &graph.refs {
         let krate = &graph.crates[reference.krate];
-        let test = reference.test_only || is_test_module(graph, reference.module);
-        let Some(context) = context_of(krate.kind, test, reference.origin == Origin::Doc) else {
-            continue;
-        };
-        match &reference.kind {
-            RefKind::Path { segments, .. } | RefKind::RecordField { segments, .. } => {
-                if let Some(first) = segments.first() {
-                    add(&mut usage, &krate.package, first, context);
-                }
-            }
-            RefKind::Macro(name) if name == "include" => {
-                usage
-                    .entry(krate.package.clone())
-                    .or_default()
-                    .included
-                    .insert(context);
-            }
-            RefKind::Macro(_) | RefKind::Method(_) | RefKind::Field(_) | RefKind::Member(_) => {}
+        if let Some(context) = ref_context(graph, krate.kind, reference) {
+            add_ref(&mut usage, &krate.package, reference, context);
         }
     }
     usage

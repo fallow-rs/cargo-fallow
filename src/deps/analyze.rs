@@ -161,6 +161,25 @@ pub fn analyze(workspace: &Workspace, metadata: &Metadata, graph: &Graph) -> Ana
             ));
         }
     }
+    root_findings(
+        &mut analysis,
+        workspace,
+        &member_keys,
+        &kept_inherited,
+        &mut workspace_ignores,
+    );
+    analysis
+}
+
+/// Adds the findings of the workspace dependency table and of the workspace
+/// ignore list.
+fn root_findings(
+    analysis: &mut Analysis,
+    workspace: &Workspace,
+    member_keys: &BTreeSet<String>,
+    kept_inherited: &BTreeSet<String>,
+    workspace_ignores: &mut IgnoreList,
+) {
     let root_manifest = workspace.root.join("Cargo.toml");
     if let Ok(text) = fs::read_to_string(&root_manifest) {
         let root_path = workspace::relative_path(&workspace.root, &root_manifest);
@@ -196,7 +215,6 @@ pub fn analyze(workspace: &Workspace, metadata: &Metadata, graph: &Graph) -> Ana
             ));
         }
     }
-    analysis
 }
 
 /// Adds the findings of one package that no ignore list hides, with their
@@ -358,6 +376,26 @@ fn manifest_dir(manifest_path: &str) -> &str {
         .unwrap_or(manifest_path)
 }
 
+/// The manifest section of a dependency kind.
+fn section_of(kind: DependencyKind) -> Section {
+    match kind {
+        DependencyKind::Development => Section::Dev,
+        DependencyKind::Build => Section::Build,
+        _ => Section::Normal,
+    }
+}
+
+/// Why `fix` leaves the entry of a finding, if it leaves the entry.
+fn manual_reason(package: &Package, entry: &Declared<'_>, rule: Rule) -> Option<&'static str> {
+    if !entry.dependency.features.is_empty() {
+        Some(MANUAL_FEATURES)
+    } else if rule == Rule::MisplacedDependency && feature_configures(package, &entry.key) {
+        Some(MANUAL_FEATURE_NAMES)
+    } else {
+        None
+    }
+}
+
 /// The findings of one package, before the ignore lists. The manifest path,
 /// the line and the actions come later.
 fn package_findings(metadata: &Metadata, package: &Package, used: &PackageUsage) -> Vec<Finding> {
@@ -370,11 +408,7 @@ fn package_findings(metadata: &Metadata, package: &Package, used: &PackageUsage)
                 .rename
                 .clone()
                 .unwrap_or_else(|| dependency.name.clone()),
-            section: match dependency.kind {
-                DependencyKind::Development => Section::Dev,
-                DependencyKind::Build => Section::Build,
-                _ => Section::Normal,
-            },
+            section: section_of(dependency.kind),
             platform: dependency.target.as_ref().map(ToString::to_string),
         })
         .collect();
@@ -426,13 +460,7 @@ fn package_findings(metadata: &Metadata, package: &Package, used: &PackageUsage)
             (entry.dependency.name != entry.key).then(|| entry.dependency.name.clone());
         found.optional = entry.dependency.optional;
         found.used_by = used_by;
-        found.manual = if !entry.dependency.features.is_empty() {
-            Some(MANUAL_FEATURES)
-        } else if rule == Rule::MisplacedDependency && feature_configures(package, &entry.key) {
-            Some(MANUAL_FEATURE_NAMES)
-        } else {
-            None
-        };
+        found.manual = manual_reason(package, entry, rule);
         // Only a dev entry with the same key, on each platform of the normal
         // entry, makes the normal entry a plain removal.
         found.in_dev = declared.iter().any(|other| {

@@ -53,6 +53,9 @@ cargo fallow fix --yes --only visibility   # only the visibility edits
   the command changes nothing and exits 2. Make the build pass, or use
   `--dry-run` and make the edits by hand. After the edits, the command runs
   the same check again.
+- The command also checks each consumer workspace of the visibility table,
+  for example `fuzz/` (see [Consumer workspaces](visibility.md#consumer-workspaces)).
+  A consumer that does not build before the edits gets no check.
 - The command compares the compiler warnings before and after the edits. An
   edit that adds a warning breaks a workspace that builds with `-D warnings`,
   so a new warning fails the check, the same as an error. A new `dead_code`

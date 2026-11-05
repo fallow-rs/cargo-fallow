@@ -6,6 +6,7 @@
 //! exclude-crates = ["my_api"]
 //! public-crates = ["my_api", "my_types"]
 //! uniform-fields = true
+//! consumers = ["fuzz/Cargo.toml"]
 //! kinds = ["dead-public", "unnecessary-public"]
 //! ```
 //!
@@ -34,6 +35,8 @@ struct Config {
     /// The libraries whose exported items are an external API. Each other
     /// library is internal.
     public_crates: Option<Vec<String>>,
+    /// The manifests of the separate workspaces whose code counts as a use.
+    consumers: Option<Vec<String>>,
     /// True when the fields of one struct change visibility as a group.
     uniform_fields: bool,
     /// The finding kinds to report.
@@ -144,6 +147,9 @@ pub fn resolve(
         check_public(workspace, patterns)?;
     }
     options.uniform_fields |= config.uniform_fields;
+    if options.consumers.is_none() {
+        options.consumers = config.consumers;
+    }
     if options.kinds.is_empty() {
         options.kinds = config.kinds.into_iter().map(FindingKind::from).collect();
     }

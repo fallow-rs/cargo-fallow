@@ -19,6 +19,7 @@
 //! access, or a name in macro tokens, in an attribute or in a doc code block.
 
 pub mod config;
+pub mod consumers;
 pub mod precise;
 pub mod report;
 pub mod trace;
@@ -261,6 +262,12 @@ pub fn analyze(graph: &Graph, options: &Options) -> Analysis {
         opaque: Vec::new(),
     };
     hold_opaque(graph, options, &mut analysis);
+    // A crate of a consumer workspace is not part of the workspace, so it
+    // gets no finding.
+    let own = |finding: &Finding| !graph.crates[graph.items[finding.item].krate].consumer;
+    analysis.findings.retain(own);
+    analysis.undecided.retain(own);
+    analysis.opaque.retain(own);
     analysis
 }
 

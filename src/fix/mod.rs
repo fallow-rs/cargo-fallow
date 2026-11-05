@@ -179,6 +179,8 @@ pub struct FixReport {
 struct Plan {
     deps: Vec<deps::Edit>,
     visibility: Vec<visibility::Edit>,
+    /// The manifests of the consumer workspaces. The guard checks them too.
+    consumers: Vec<PathBuf>,
     skipped: usize,
     skipped_packages: Vec<crate::deps::report::SkippedPackage>,
 }
@@ -291,6 +293,7 @@ fn plan(
     let mut planned = Plan {
         deps: Vec::new(),
         visibility: Vec::new(),
+        consumers: Vec::new(),
         skipped: 0,
         skipped_packages: Vec::new(),
     };
@@ -307,7 +310,17 @@ fn plan(
             .collect();
     }
     if let Some(options) = &options {
-        let (edits, skipped) = plan_visibility(workspace, &module_graph, options, &scope, progress);
+        // The code of a consumer workspace counts as a use, so the visibility
+        // check reads a graph with its crates.
+        let extended = crate::visibility::consumers::extend(workspace, options)?;
+        let own = extended
+            .as_ref()
+            .map(|extended| crate::graph::build(&extended.workspace, &production));
+        let module_graph = own.as_ref().unwrap_or(&module_graph);
+        planned.consumers = extended
+            .map(|extended| extended.manifests)
+            .unwrap_or_default();
+        let (edits, skipped) = plan_visibility(workspace, module_graph, options, &scope, progress);
         planned.visibility = edits;
         planned.skipped += skipped;
     }
@@ -329,12 +342,13 @@ fn visibility_options(
             exclude: Vec::new(),
             public: None,
             uniform_fields: false,
+            consumers: None,
             kinds: Vec::new(),
             fail_on_issues: false,
             scope: crate::scope::ScopeArgs::default(),
             precise: None,
-            // The workspace is already loaded, so no call reads this field.
-            cargo_flags: Vec::new(),
+            // The `cargo metadata` call of a consumer workspace reads them.
+            cargo_flags: args.cargo_flags(true),
             trace: None,
         },
     )
@@ -393,13 +407,14 @@ fn apply_all(
     // `cargo check` can write `Cargo.lock`, so a failed run writes back its
     // old bytes too.
     let lock = LockFile::read(root);
-    let (all_features, known) = if compiles {
+    let (all_features, known, consumers) = if compiles {
         progress.step("Checking that the workspace builds before the edits");
-        let (all, warnings) =
-            baseline(manifest, root, &args.cargo_flags(true)).inspect_err(|_| lock.restore())?;
-        (Some(all), warnings)
+        let (all, warnings, consumers) =
+            baseline(manifest, &plan.consumers, root, &args.cargo_flags(true))
+                .inspect_err(|_| lock.restore())?;
+        (Some(all), warnings, consumers)
     } else {
-        (None, Vec::new())
+        (None, Vec::new(), Vec::new())
     };
     let formatted = formatted_files(workspace, &plan.visibility);
     let mut kept = plan.visibility.clone();
@@ -426,7 +441,7 @@ fn apply_all(
             }
             if let Some(all_features) = all_features {
                 progress.step("Checking that the workspace builds after the edits");
-                let checked = workspace::cargo_check(manifest, root, &flags, all_features);
+                let checked = check_all(manifest, &consumers, root, &flags, all_features);
                 judge(checked, &known, &mut compiler, &mut warned)?;
             }
             Ok(())
@@ -625,19 +640,63 @@ fn first_lines(message: &str) -> String {
         .join("\n")
 }
 
-/// Checks that the workspace builds before the edits, with all features when
-/// it can, as the analysis reads it. Returns true for an all-features build,
-/// and the warnings of the build.
-fn baseline(
+/// Runs `cargo check` on the workspace and on each consumer workspace, and
+/// joins their messages.
+fn check_all(
     manifest: Option<&Path>,
+    consumers: &[PathBuf],
     root: &Path,
     flags: &[String],
-) -> Result<(bool, Vec<check::Diagnostic>), CliError> {
+    all_features: bool,
+) -> Result<Vec<check::Diagnostic>, String> {
+    let mut all = workspace::cargo_check(manifest, root, flags, all_features)?;
+    for consumer in consumers {
+        all.extend(workspace::cargo_check(Some(consumer), root, flags, false)?);
+    }
+    Ok(all)
+}
+
+/// The consumer workspaces that build before the edits, and their warnings.
+/// The guard cannot judge a consumer that does not build, so it leaves it
+/// out.
+fn consumer_baseline(
+    consumers: &[PathBuf],
+    root: &Path,
+    flags: &[String],
+) -> (Vec<check::Diagnostic>, Vec<PathBuf>) {
+    let mut warnings = Vec::new();
+    let mut kept = Vec::new();
+    for consumer in consumers {
+        if let Ok(found) = workspace::cargo_check(Some(consumer), root, flags, false) {
+            warnings.extend(found);
+            kept.push(consumer.clone());
+        }
+    }
+    (warnings, kept)
+}
+
+/// The result of the check before the edits: true for an all-features
+/// build, the warnings, and the consumer workspaces that build.
+type Baseline = (bool, Vec<check::Diagnostic>, Vec<PathBuf>);
+
+/// Checks that the workspace builds before the edits, with all features when
+/// it can, as the analysis reads it. Checks each consumer workspace too.
+fn baseline(
+    manifest: Option<&Path>,
+    consumers: &[PathBuf],
+    root: &Path,
+    flags: &[String],
+) -> Result<Baseline, CliError> {
+    let (consumer_warnings, kept) = consumer_baseline(consumers, root, flags);
+    let with_consumers = |all: bool, mut warnings: Vec<check::Diagnostic>| {
+        warnings.extend(consumer_warnings.iter().cloned());
+        (all, warnings, kept.clone())
+    };
     if let Ok(warnings) = workspace::cargo_check(manifest, root, flags, true) {
-        return Ok((true, warnings));
+        return Ok(with_consumers(true, warnings));
     }
     workspace::cargo_check(manifest, root, flags, false)
-        .map(|warnings| (false, warnings))
+        .map(|warnings| with_consumers(false, warnings))
         .map_err(|message| {
             failed(&format!(
                 "the workspace does not build before the edits, so `fix` cannot judge them: \

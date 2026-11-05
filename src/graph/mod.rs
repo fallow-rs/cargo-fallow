@@ -128,6 +128,9 @@ pub struct Crate {
     pub features: Vec<String>,
     /// True when a registry can publish the package.
     pub published: bool,
+    /// True for a crate of a consumer workspace: its code counts as a use,
+    /// and it gets no finding.
+    pub consumer: bool,
     /// The features that the target needs.
     pub required_features: Vec<String>,
     /// The names that the code blocks of the documentation can use. rustdoc
@@ -377,6 +380,7 @@ fn build_inner(workspace: &Workspace, production: &Production, scan: bool) -> (G
             externs,
             features: member.features.clone(),
             published: member.published,
+            consumer: member.consumer,
             required_features: target.required_features.clone(),
             doc_externs,
         });

@@ -77,8 +77,28 @@ production = ["my-cli:my-cli"]
 exclude-crates = ["my_api"]
 public-crates = ["my-api", "my-types"]
 uniform-fields = true
+consumers = ["fuzz/Cargo.toml"]
 kinds = ["dead-public", "unnecessary-public"]
 ```
+
+### Consumer workspaces
+
+`consumers` lists the `Cargo.toml` of each separate workspace whose code uses
+the items of the workspace, for example a cargo-fuzz workspace. Each path is
+relative to the workspace root. The command reads the members of each
+consumer workspace with `cargo metadata --no-deps`, and adds their crates to
+the module graph. A use in their code then counts, so the command does not
+narrow an item that a fuzz target calls. A consumer crate gets no finding.
+
+- Without the key, `fuzz/Cargo.toml` is a consumer when the file exists and
+  is no member of the workspace. When it does not load, the command
+  continues without it.
+- `consumers = []` turns off the `fuzz/` default.
+- A listed manifest that does not exist or does not load is an error with the
+  code `CARGO_FALLOW_INVALID_CONFIG`.
+- `cargo fallow fix` also runs `cargo check --workspace --all-targets
+  --manifest-path <consumer>` before and after the edits. See
+  [Fix](fix.md#fix).
 
 The command uses the syntax and the module graph of the workspace. It counts
 the items below as used and does not report them. For most of them, a use can

@@ -593,17 +593,6 @@ mod tests {
     }
 
     #[test]
-    fn each_ignore_list_of_a_manifest_gives_no_credit() {
-        for table in SKIPPED_TABLES {
-            let manifest = format!(
-                "[package]\nname = \"a\"\n\n[{table}]\nignored = [\"fast\"]\n\n[dependencies]\nb = \"1\"\n"
-            );
-            let kept = without_skipped_tables(&manifest, false);
-            assert!(!kept.contains("fast"), "{table}: {kept}");
-        }
-    }
-
-    #[test]
     fn the_line_of_a_feature_key_is_found_only_in_its_table() {
         let manifest = "[package]\nname = \"a\"\n\n[features] # the features\ndefault = []\n\"quoted\" = []\nplain = []\n\n[dependencies]\nplain = \"1\"\n";
         assert_eq!(feature_line(manifest, "plain"), Some(7));

@@ -265,13 +265,22 @@ fn an_ignore_entry_hides_the_finding() {
 }
 
 #[test]
-fn a_cargo_machete_ignore_entry_hides_the_finding() {
+fn a_name_in_the_cargo_machete_list_of_another_member_gives_no_credit() {
     let dir = workspace(
-        "\n[workspace.metadata.cargo-machete]\nignored = [\"kept\"]\n",
-        &[(
-            "app/Cargo.toml",
-            &manifest("app", "[features]\nkept = []\nloose = []\n"),
-        )],
+        "",
+        &[
+            (
+                "alpha/Cargo.toml",
+                &manifest(
+                    "alpha",
+                    "[package.metadata.cargo-machete]\nignored = [\"loose\"]\n",
+                ),
+            ),
+            (
+                "app/Cargo.toml",
+                &manifest("app", "[features]\nloose = []\n"),
+            ),
+        ],
     );
     let (_, report) = run(&dir, &[]);
     assert_eq!(

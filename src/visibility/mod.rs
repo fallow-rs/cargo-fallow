@@ -98,7 +98,8 @@ pub struct Finding {
     pub kind: FindingKind,
     /// The item.
     pub item: ItemId,
-    /// True when only test code reaches the item.
+    /// True when only test code reaches an item that also exists in other
+    /// builds. Such an item needs `#[cfg(test)]`, not a smaller keyword.
     pub test_only: bool,
 }
 
@@ -860,7 +861,11 @@ fn judge(
 ) -> Vec<Finding> {
     let mut findings = Vec::new();
     for item in 0..graph.items.len() {
-        let test_only = !facts.production.contains(&item) && facts.any.contains(&item);
+        // An item that exists only in test builds already has its `#[cfg(test)]`,
+        // so the keyword change is its step.
+        let test_only = !graph.items[item].test_only
+            && !facts.production.contains(&item)
+            && facts.any.contains(&item);
         findings.extend(
             public_kind(graph, surface, facts, required, item).map(|kind| Finding {
                 kind,

@@ -2445,7 +2445,7 @@
         },
         "test_only": {
           "type": "boolean",
-          "description": "True when only test code reaches the item."
+          "description": "True when only test code reaches an item that also exists in other\nbuilds. Such an item needs `#[cfg(test)]`, not a smaller keyword."
         },
         "actions": {
           "type": "array",

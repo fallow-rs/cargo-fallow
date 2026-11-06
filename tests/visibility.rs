@@ -1917,6 +1917,40 @@ fn a_test_helper_in_a_private_module_gets_no_pub_crate_change() {
     );
 }
 
+/// An item that exists only in test builds already has `#[cfg(test)]`, so its
+/// step is the keyword change, and `fix` can apply it.
+#[test]
+fn a_test_helper_gets_the_keyword_change_as_its_step() {
+    let dir = workspace(&[
+        (
+            "mid/src/lib.rs",
+            "mod protocol;\npub fn run() { protocol::send(); }\n",
+        ),
+        (
+            "mid/src/protocol.rs",
+            "pub fn send() {}\n#[cfg(test)]\npub fn local() {}\n\
+             #[cfg(test)]\nmod tests { #[test] fn t() { super::local(); } }\n",
+        ),
+    ]);
+    let (_, text) = run(&dir, &["--format", "json"]);
+    let report: Value = serde_json::from_str(&text).expect("the output is JSON");
+    let row = report["findings"]
+        .as_array()
+        .and_then(|rows| rows.iter().find(|row| row["item"] == "protocol::local"))
+        .unwrap_or_else(|| panic!("a finding on protocol::local: {report:#}"));
+    assert_eq!(
+        row["kind"], "unnecessary-restricted-visibility",
+        "{report:#}"
+    );
+    assert_eq!(row["test_only"], false, "{report:#}");
+    let action = &row["actions"][0];
+    assert_eq!(action["type"], "change-visibility", "{report:#}");
+    assert_eq!(action["to"], "", "{report:#}");
+    assert_eq!(action["auto_fixable"], true, "{report:#}");
+    let step = action["description"].as_str().unwrap_or_default();
+    assert!(!step.contains("cfg(test)"), "{step}");
+}
+
 /// rustc rejects a `use` that re-exports an item with more visibility than
 /// the item has, so a re-exported item keeps its visibility.
 #[test]

@@ -529,6 +529,13 @@
           "line": 216,
           "verdict": "baseline"
         },
+        "20a306c8359dbe74": {
+          "check": "visibility",
+          "rule": "unnecessary-restricted-visibility",
+          "path": "crates/extract/src/tests/mod.rs",
+          "line": 45,
+          "verdict": "true-positive"
+        },
         "210070affc95688d": {
           "check": "visibility",
           "rule": "unnecessary-public",
@@ -1410,6 +1417,13 @@
           "path": "crates/core/src/scripts/shell_helpers.rs",
           "line": 59,
           "verdict": "baseline"
+        },
+        "603665fce9f7c0ef": {
+          "check": "visibility",
+          "rule": "unnecessary-restricted-visibility",
+          "path": "crates/extract/src/html.rs",
+          "line": 164,
+          "verdict": "true-positive"
         },
         "609c21fd38a5870a": {
           "check": "visibility",
@@ -3105,6 +3119,13 @@
           "line": 122,
           "verdict": "baseline"
         },
+        "d49a63525f37972f": {
+          "check": "visibility",
+          "rule": "unnecessary-restricted-visibility",
+          "path": "crates/lsp/src/session_store.rs",
+          "line": 216,
+          "verdict": "true-positive"
+        },
         "d6374cdd5f1b316c": {
           "check": "visibility",
           "rule": "unnecessary-restricted-visibility",
@@ -3195,6 +3216,13 @@
           "path": "crates/extract/src/visitor/visit_impl_signature.rs",
           "line": 630,
           "verdict": "baseline"
+        },
+        "db7e059e3a84ce74": {
+          "check": "visibility",
+          "rule": "unnecessary-restricted-visibility",
+          "path": "crates/extract/src/function_hash.rs",
+          "line": 27,
+          "verdict": "true-positive"
         },
         "dbbc3014f7323195": {
           "check": "visibility",
@@ -3665,6 +3693,13 @@
           "line": 254,
           "verdict": "baseline"
         },
+        "f83aff7adcff508e": {
+          "check": "visibility",
+          "rule": "unnecessary-restricted-visibility",
+          "path": "crates/extract/src/sfc_template/mod.rs",
+          "line": 63,
+          "verdict": "true-positive"
+        },
         "f8bf02f10b26c0a6": {
           "check": "visibility",
           "rule": "unnecessary-public",
@@ -3755,6 +3790,13 @@
           "path": "crates/output/src/feature_flags.rs",
           "line": 247,
           "verdict": "baseline"
+        },
+        "fe9bc5d580f81188": {
+          "check": "visibility",
+          "rule": "unnecessary-restricted-visibility",
+          "path": "crates/core/src/analyze/unused_files.rs",
+          "line": 10,
+          "verdict": "true-positive"
         },
         "fec82e55413bbe11": {
           "check": "visibility",

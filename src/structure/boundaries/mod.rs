@@ -24,6 +24,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
+use std::thread;
 
 use ra_ap_parser::LexedStr;
 use ra_ap_syntax::ast::{self, AstNode, HasName};
@@ -34,6 +35,7 @@ use crate::error::{CliError, ErrorCode};
 use crate::finding::{self as shared, Category, Draft, Impact, Location, Severity};
 use crate::gates::RustGateName as Gate;
 use crate::gates::parse_edition;
+use crate::graph::{self, Graph};
 use crate::modules::{ModuleDecl, TargetRoot, Walk, walk};
 use crate::parse::{Edition, with_parsed};
 use crate::render::{Progress, warn};
@@ -207,27 +209,119 @@ pub fn section(
     scope: &Scope,
     progress: Progress,
 ) -> Result<Section, CliError> {
-    let settings: config::Boundaries = config::section(workspace, "boundaries")?;
+    let settings = settings(workspace)?;
+    // The graph build runs on its own thread while the text rules read the
+    // source files. The rules on the graph run after the text rules, so their
+    // warnings come after the warnings of the text rules.
+    let (module_graph, text) = thread::scope(|threads| {
+        let graph_thread = needs_graph(&settings)
+            .then(|| threads.spawn(|| graph::build(workspace, &graph::Production::default())));
+        let text = text_part(workspace, &settings, progress);
+        let module_graph = graph_thread.map(|handle| {
+            handle
+                .join()
+                .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+        });
+        (module_graph, text)
+    });
+    let text = text?;
+    let graph = module_graph.map_or_else(
+        || Ok(GraphRules::default()),
+        |module_graph| graph_rules(workspace, &settings, &module_graph, progress),
+    );
+    finish(&settings, text, graph, enforced, scope)
+}
+
+/// The settings of the boundary rules.
+pub type Settings = config::Boundaries;
+
+/// The settings of the boundary rules, from `[workspace.metadata.fallow]`.
+pub fn settings(workspace: &Workspace) -> Result<Settings, CliError> {
+    config::section(workspace, "boundaries")
+}
+
+/// True when a rule reads the module graph: an item, re-export or cfg rule.
+pub fn needs_graph(settings: &config::Boundaries) -> bool {
+    !(settings.items.is_empty() && settings.reexports.is_empty() && settings.cfg.is_empty())
+}
+
+/// The result of the crate, source and module rules.
+#[derive(Debug)]
+pub struct TextPart {
+    edges: usize,
+    findings: Vec<Finding>,
+    source_files: usize,
+}
+
+/// Runs the crate, source and module rules.
+pub fn text_part(
+    workspace: &Workspace,
+    settings: &config::Boundaries,
+    progress: Progress,
+) -> Result<TextPart, CliError> {
     let resolver = Names::new(workspace, &settings.groups)?;
     let _phase = progress.phase("Checking the boundary rules");
     let edges = edges(workspace);
-    let mut findings = Vec::new();
-    for rule in &settings.crates {
-        findings.extend(crate_rule(workspace, &edges, rule, &resolver)?);
+    let (findings, source_files) = text_rules(workspace, settings, &edges, &resolver)?;
+    Ok(TextPart {
+        edges: edges.len(),
+        findings,
+        source_files,
+    })
+}
+
+/// The result of the item, re-export and cfg rules.
+#[derive(Debug, Default)]
+pub struct GraphRules {
+    findings: Vec<Finding>,
+    unresolved: usize,
+}
+
+/// Runs the item, re-export and cfg rules on `module_graph`. These rules do
+/// not read the production flag of a crate, so the production selection of
+/// the graph does not change the result.
+pub fn graph_rules(
+    workspace: &Workspace,
+    settings: &config::Boundaries,
+    module_graph: &Graph,
+    progress: Progress,
+) -> Result<GraphRules, CliError> {
+    let resolver = Names::new(workspace, &settings.groups)?;
+    let _phase = progress.phase("Checking the boundary rules on the module graph");
+    let resolved = items::check(
+        module_graph,
+        &settings.items,
+        &settings.reexports,
+        &resolver,
+    )?;
+    let mut findings = resolved.findings;
+    cfg::check_rules(&settings.cfg)?;
+    if !settings.cfg.is_empty() {
+        findings.extend(cfg::findings(workspace, module_graph, &settings.cfg));
     }
-    let mut source_files = 0;
-    let mut tests = None;
-    for rule in &settings.sources {
-        let (found, read) = source_rule(workspace, rule, &mut tests)?;
-        findings.extend(found);
-        source_files += read;
-    }
-    for rule in &settings.modules {
-        findings.extend(module_rule(workspace, rule)?);
-    }
-    let resolved = items::check(workspace, &settings.items, &settings.reexports, &resolver)?;
-    findings.extend(resolved.findings);
-    findings.extend(cfg::findings(workspace, &settings.cfg)?);
+    Ok(GraphRules {
+        findings,
+        unresolved: resolved.unresolved,
+    })
+}
+
+/// Joins the text rules and the rules on the module graph and writes the
+/// section. An error of the graph rules comes after the errors of the text
+/// rules.
+pub fn finish(
+    settings: &config::Boundaries,
+    text: TextPart,
+    graph: Result<GraphRules, CliError>,
+    enforced: bool,
+    scope: &Scope,
+) -> Result<Section, CliError> {
+    let TextPart {
+        edges,
+        mut findings,
+        source_files,
+    } = text;
+    let graph = graph?;
+    findings.extend(graph.findings);
     findings.retain(|finding| scope.keeps(&finding.path));
     findings.sort_by(|a, b| {
         (&a.rule, &a.path, a.line, a.col, &a.to, &a.pattern)
@@ -240,8 +334,8 @@ pub fn section(
         item_rules: settings.items.len(),
         reexport_rules: settings.reexports.len(),
         cfg_rules: settings.cfg.len(),
-        unresolved: resolved.unresolved,
-        workspace_edges: edges.len(),
+        unresolved: graph.unresolved,
+        workspace_edges: edges,
         source_files,
     };
     let mut report = Report::new("boundaries", summary, findings);
@@ -283,6 +377,31 @@ pub fn section(
         findings,
         gates: report.gate_outcomes,
     })
+}
+
+/// The findings of the crate, source and module rules, and the number of
+/// source files that the source rules judged.
+fn text_rules(
+    workspace: &Workspace,
+    settings: &config::Boundaries,
+    edges: &[Edge],
+    resolver: &Names<'_>,
+) -> Result<(Vec<Finding>, usize), CliError> {
+    let mut findings = Vec::new();
+    for rule in &settings.crates {
+        findings.extend(crate_rule(workspace, edges, rule, resolver)?);
+    }
+    let mut source_files = 0;
+    let mut tests = None;
+    for rule in &settings.sources {
+        let (found, read) = source_rule(workspace, rule, &mut tests)?;
+        findings.extend(found);
+        source_files += read;
+    }
+    for rule in &settings.modules {
+        findings.extend(module_rule(workspace, rule)?);
+    }
+    Ok((findings, source_files))
 }
 
 /// The names of a finding in `[workspace.metadata.fallow.rules]`: the rule
@@ -580,19 +699,9 @@ fn source_rule(
         files.retain(|path| !tests.contains(path));
     }
     let allowed = sources::allowed(rule, &files)?;
-    let mut found = Vec::new();
-    let mut judged = 0;
-    for path in &files {
-        let Some(code) = sources::read(root, path, rule) else {
-            continue;
-        };
-        judged += 1;
-        let allow = allowed.get(path.as_str()).copied();
-        found.extend(sources::judge(
-            workspace, rule, path, &code, &patterns, allow,
-        ));
-    }
-    Ok((found, judged))
+    Ok(sources::judge_files(
+        workspace, rule, &files, &patterns, &allowed,
+    ))
 }
 
 fn source_finding(

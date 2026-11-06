@@ -20,7 +20,7 @@ use crate::attrs::split_list;
 use crate::error::CliError;
 use crate::graph::extract::{Binding, Origin, RefKind, UNKNOWN_CFG};
 use crate::graph::resolve::{Class, Resolver, Source};
-use crate::graph::{CrateId, Graph, ItemId, ModuleId, Production};
+use crate::graph::{CrateId, Graph, ItemId, ModuleId};
 use crate::structure::config::CfgRule;
 use crate::structure::report::Action;
 use crate::workspace::Workspace;
@@ -104,8 +104,8 @@ fn is_option(text: &str) -> bool {
             || (value.len() >= 2 && value.starts_with('"') && value.ends_with('"')))
 }
 
-/// The findings of the `cfg` rules.
-pub fn findings(workspace: &Workspace, rules: &[CfgRule]) -> Result<Vec<Finding>, CliError> {
+/// Checks the build options of the `cfg` rules.
+pub fn check_rules(rules: &[CfgRule]) -> Result<(), CliError> {
     for rule in rules {
         if rule.builds.is_empty() || rule.builds.iter().any(Vec::is_empty) {
             return Err(invalid(&format!(
@@ -125,11 +125,13 @@ pub fn findings(workspace: &Workspace, rules: &[CfgRule]) -> Result<Vec<Finding>
             )));
         }
     }
-    if rules.is_empty() {
-        return Ok(Vec::new());
-    }
-    let graph = crate::graph::build(workspace, &Production::default());
-    let sites = sites(&graph);
+    Ok(())
+}
+
+/// The findings of the cfg rules on the module graph. `check_rules` must
+/// accept the rules first.
+pub fn findings(workspace: &Workspace, graph: &Graph, rules: &[CfgRule]) -> Vec<Finding> {
+    let sites = sites(graph);
     let mut found = Vec::new();
     for rule in rules {
         let named: BTreeSet<String> = rule.builds.iter().flatten().map(|o| option(o)).collect();
@@ -159,7 +161,7 @@ pub fn findings(workspace: &Workspace, rules: &[CfgRule]) -> Result<Vec<Finding>
             }
         }
     }
-    Ok(found)
+    found
 }
 
 /// One path of the code with exact targets.

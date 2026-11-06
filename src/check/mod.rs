@@ -239,6 +239,69 @@ struct GraphPart {
     public_items: Option<usize>,
     dead_public: Option<usize>,
     unused_deps: Option<usize>,
+    /// The boundary rules on the module graph, with `share_graph`. The result
+    /// stays apart, so an error keeps its place after the errors of the text
+    /// rules.
+    boundary_rules: Option<Result<boundaries::GraphRules, CliError>>,
+}
+
+/// What the boundary thread gives back.
+enum Boundaries {
+    /// The settings and the text rules. The graph thread runs the rules on the
+    /// module graph.
+    Text(Box<boundaries::Settings>, boundaries::TextPart),
+    /// The whole section.
+    Done(Section),
+}
+
+impl Boundaries {
+    /// The section, with the rules on the module graph from the graph thread.
+    fn finish(
+        self,
+        inputs: &GraphInputs<'_>,
+        graph_part: Option<&mut GraphPart>,
+    ) -> Result<Section, CliError> {
+        match self {
+            Self::Text(settings, text) => {
+                // `share_graph` makes the graph thread run these rules.
+                let graph = graph_part
+                    .and_then(|part| part.boundary_rules.take())
+                    .unwrap_or_else(|| {
+                        Err(CliError::new(
+                            ErrorCode::OutputFailed,
+                            "the boundary rules on the module graph did not run",
+                        ))
+                    });
+                boundaries::finish(&settings, text, graph, inputs.enforced, inputs.scope)
+            }
+            Self::Done(section) => Ok(section),
+        }
+    }
+}
+
+/// True when a boundary rule reads the module graph. An invalid table stops
+/// the run in the boundary thread, at the place of its error.
+fn shares_graph(workspace: &Workspace) -> bool {
+    boundaries::settings(workspace).is_ok_and(|table| boundaries::needs_graph(&table))
+}
+
+/// The work of the boundary thread. With `share_graph`, the graph thread runs
+/// the rules on the module graph, on its own graph. Without it, the boundary
+/// thread runs the whole section and builds a graph when a rule needs one.
+fn boundary_thread(
+    workspace: &Workspace,
+    enforced: bool,
+    scope: &Scope,
+    progress: Progress,
+    share_graph: bool,
+) -> Result<Boundaries, CliError> {
+    if share_graph {
+        let settings = boundaries::settings(workspace)?;
+        let text = boundaries::text_part(workspace, &settings, progress)?;
+        Ok(Boundaries::Text(Box::new(settings), text))
+    } else {
+        boundaries::section(workspace, enforced, scope, progress).map(Boundaries::Done)
+    }
 }
 
 /// What the source thread gives back.
@@ -341,6 +404,7 @@ pub fn execute(options: &Options) -> Result<report::CheckReport, CliError> {
         drift: drift.as_ref(),
         visibility: visibility_options.as_ref(),
         files: runs(CheckName::Files),
+        share_graph: needs_graph && runs(CheckName::Boundaries) && shares_graph(&workspace),
         enforced,
         scope: &scope,
         progress,
@@ -350,15 +414,22 @@ pub fn execute(options: &Options) -> Result<report::CheckReport, CliError> {
         let source_thread = needs_source.then(|| {
             threads.spawn(|| source_checks(&workspace, &settings, enforced, &scope, progress))
         });
-        let boundaries_thread = runs(CheckName::Boundaries)
-            .then(|| threads.spawn(|| boundaries::section(&workspace, enforced, &scope, progress)));
+        let boundaries_thread = runs(CheckName::Boundaries).then(|| {
+            threads.spawn(|| {
+                boundary_thread(&workspace, enforced, &scope, progress, inputs.share_graph)
+            })
+        });
         // With the graph, the files check reads the scans of the graph parse.
         let files_thread = (inputs.files && !needs_graph).then(|| {
             threads.spawn(|| files::section(&workspace, enforced, &scope, progress, None))
         });
         let mut graph_part = join(graph_thread)?;
         let source_part = join(source_thread)?;
-        let boundaries = join(boundaries_thread)?;
+        // The graph thread gives the result of the boundary rules on the
+        // module graph. The section joins it with the text rules.
+        let boundaries = join(boundaries_thread)?
+            .map(|part| part.finish(&inputs, graph_part.as_mut()))
+            .transpose()?;
         let files = take_files(graph_part.as_mut(), files_thread)?;
         Ok::<_, CliError>((graph_part, source_part, boundaries, files))
     })?;
@@ -531,13 +602,16 @@ struct GraphInputs<'a> {
     visibility: Option<&'a VisibilityOptions>,
     /// True when `files` runs. It then reads the scans of the graph parse.
     files: bool,
+    /// True when the graph thread runs the boundary rules on the module graph.
+    share_graph: bool,
     enforced: bool,
     scope: &'a Scope,
     progress: Progress,
 }
 
 /// Builds the module graph once and runs `deps`, `visibility` and `files` on
-/// its parse.
+/// its parse. With `share_graph`, it also runs the boundary rules on the
+/// module graph.
 fn graph_checks(inputs: &GraphInputs<'_>) -> Result<GraphPart, CliError> {
     let GraphInputs {
         workspace,
@@ -566,6 +640,12 @@ fn graph_checks(inputs: &GraphInputs<'_>) -> Result<GraphPart, CliError> {
             threads.spawn(|| files::section(workspace, enforced, scope, progress, Some(scans)))
         });
         let mut part = graph_sections(inputs, &module_graph)?;
+        // The boundary rules run after `visibility`, so their memory does not
+        // add to its peak.
+        part.boundary_rules = inputs.share_graph.then(|| {
+            let settings = boundaries::settings(workspace)?;
+            boundaries::graph_rules(workspace, &settings, &module_graph, progress)
+        });
         part.files = join(files_thread).transpose();
         Ok(part)
     })

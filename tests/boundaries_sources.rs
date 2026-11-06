@@ -191,6 +191,31 @@ fn a_crlf_file_in_production_scope_keeps_its_lines() {
     );
 }
 
+/// The rule reads its files on parallel threads. The warnings still come in
+/// the order of the paths.
+#[test]
+fn the_warnings_of_files_that_do_not_parse_keep_the_path_order() {
+    let dir = workspace("scope = \"production\"\n", 1);
+    let names: Vec<String> = (0..40)
+        .map(|index| format!("src/bad_{index:02}.rs"))
+        .collect();
+    for name in &names {
+        write(dir.path(), name, "fn parse( {\n");
+    }
+    let output = Command::cargo_bin("cargo-fallow")
+        .expect("the binary exists")
+        .current_dir(dir.path())
+        .args(["fallow", "boundaries", "--format", "json", "--quiet"])
+        .output()
+        .expect("run the binary");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let warned: Vec<&str> = stderr
+        .lines()
+        .filter_map(|line| line.split('`').nth(3))
+        .collect();
+    assert_eq!(warned, names, "{stderr}");
+}
+
 #[test]
 fn a_file_that_does_not_parse_in_production_scope_is_not_judged() {
     let dir = workspace("scope = \"production\"\n", 1);

@@ -25,7 +25,6 @@ use crate::render::warn;
 use crate::structure::boundaries::{Finding, Kind, Names, Origin as FindingOrigin, fill, invalid};
 use crate::structure::config::{ItemRule, ReexportRule};
 use crate::structure::report::Action;
-use crate::workspace::Workspace;
 
 /// The findings of the item rules and the glob re-export rules, and the
 /// count of the uses that did not resolve.
@@ -38,10 +37,9 @@ pub struct Outcome {
     pub unresolved: usize,
 }
 
-/// Checks the item rules and the glob re-export rules. The module graph is
-/// built only when a rule exists.
+/// Checks the item rules and the glob re-export rules on the module graph.
 pub fn check(
-    workspace: &Workspace,
+    module_graph: &Graph,
     items: &[ItemRule],
     reexports: &[ReexportRule],
     names: &Names<'_>,
@@ -49,12 +47,11 @@ pub fn check(
     if items.is_empty() && reexports.is_empty() {
         return Ok(Outcome::default());
     }
-    let module_graph = graph::build(workspace, &graph::Production::default());
-    let resolver = Resolver::new(&module_graph);
+    let resolver = Resolver::new(module_graph);
     let context = Context {
-        graph: &module_graph,
+        graph: module_graph,
         resolver: &resolver,
-        index: ImportIndex::new(&module_graph),
+        index: ImportIndex::new(module_graph),
     };
     let mut outcome = Outcome::default();
     for rule in items {

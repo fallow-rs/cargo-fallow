@@ -436,11 +436,15 @@ fn is_production(
                 .any(|(package, bin)| *package == member.name && *bin == target.name))
 }
 
+/// The most threads of one parse pool: the graph build, or the source rules
+/// of the boundary check.
+pub const MAX_WORKERS: usize = 8;
+
 /// Parses the files of each target. The targets run on parallel threads.
 fn parse_all(root: &Path, targets: &[(&Member, &Target)], scan: bool) -> Vec<CrateFiles> {
     let workers = thread::available_parallelism()
         .map_or(1, usize::from)
-        .clamp(1, 8);
+        .clamp(1, MAX_WORKERS);
     let next = std::sync::atomic::AtomicUsize::new(0);
     let results: std::sync::Mutex<Vec<Option<CrateFiles>>> = std::sync::Mutex::new(
         std::iter::repeat_with(|| None)

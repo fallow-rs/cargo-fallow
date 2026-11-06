@@ -15,6 +15,8 @@ use std::fmt::Write as _;
 use std::fs;
 use std::ops::Range;
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::thread;
 
 use ra_ap_syntax::{AstNode, WalkEvent};
 
@@ -93,7 +95,7 @@ fn matches(code: &Code, tokens: Option<&Lexed>, pattern: &str, wanted: &[String]
 }
 
 /// The findings of one file. `allow` is the `allow` entry of the file.
-pub fn judge(
+fn judge(
     workspace: &Workspace,
     rule: &SourceRule,
     path: &str,
@@ -244,19 +246,84 @@ impl Code {
     }
 }
 
-/// Reads one file for the rule. Returns `None` with a warning when the rule
-/// cannot judge the file: the file cannot be read, or the production scope
-/// needs a parse and the file does not parse.
-pub fn read(root: &Path, path: &str, rule: &SourceRule) -> Option<Code> {
+/// Judges each file of the rule and returns the findings and the number of
+/// judged files. The files are read and parsed on parallel threads. The
+/// findings and the warnings keep the order of `files`.
+pub fn judge_files(
+    workspace: &Workspace,
+    rule: &SourceRule,
+    files: &BTreeSet<String>,
+    patterns: &[(String, Vec<String>)],
+    allowed: &BTreeMap<String, &AllowedFile>,
+) -> (Vec<Finding>, usize) {
+    let root = workspace.root.as_std_path();
+    let files: Vec<&String> = files.iter().collect();
+    let judged = parallel_map(&files, |path| -> Result<Vec<Finding>, String> {
+        let code = read(root, path, rule)?;
+        let allow = allowed.get(path.as_str()).copied();
+        Ok(judge(workspace, rule, path, &code, patterns, allow))
+    });
+    let mut found = Vec::new();
+    let mut count = 0;
+    for result in judged {
+        match result {
+            Ok(findings) => {
+                count += 1;
+                found.extend(findings);
+            }
+            Err(message) => warn(&message),
+        }
+    }
+    (found, count)
+}
+
+/// Maps each item on parallel threads and keeps the order of `items`.
+fn parallel_map<T: Sync, R: Send>(items: &[T], map: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    let workers = thread::available_parallelism()
+        .map_or(1, usize::from)
+        .clamp(1, crate::graph::MAX_WORKERS)
+        .min(items.len().max(1));
+    let next = AtomicUsize::new(0);
+    let mut results: Vec<(usize, R)> = thread::scope(|scope| {
+        let handles: Vec<_> = std::iter::repeat_with(|| {
+            scope.spawn(|| {
+                let mut done = Vec::new();
+                loop {
+                    let index = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(item) = items.get(index) else {
+                        break done;
+                    };
+                    done.push((index, map(item)));
+                }
+            })
+        })
+        .take(workers)
+        .collect();
+        handles
+            .into_iter()
+            .flat_map(|handle| {
+                handle
+                    .join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+            })
+            .collect()
+    });
+    results.sort_by_key(|(index, _)| *index);
+    results.into_iter().map(|(_, result)| result).collect()
+}
+
+/// Reads one file for the rule. Returns the warning when the rule cannot
+/// judge the file: the file cannot be read, or the production scope needs a
+/// parse and the file does not parse.
+fn read(root: &Path, path: &str, rule: &SourceRule) -> Result<Code, String> {
     let Ok(text) = fs::read_to_string(root.join(path)) else {
-        warn(&format!(
+        return Err(format!(
             "cannot read `{path}`, so the rule `{}` does not judge it",
             rule.rule
         ));
-        return None;
     };
     if rule.scope == SourceScope::All {
-        return Some(Code {
+        return Ok(Code {
             text,
             tests: Vec::new(),
         });
@@ -272,17 +339,15 @@ pub fn read(root: &Path, path: &str, rule: &SourceRule) -> Option<Code> {
             break;
         }
     }
-    match parsed {
-        Ok((text, tests)) => Some(Code { text, tests }),
-        Err(outcome) => {
-            warn(&format!(
+    parsed
+        .map(|(text, tests)| Code { text, tests })
+        .map_err(|outcome| {
+            format!(
                 "the rule `{}` does not judge `{path}`: {}",
                 rule.rule,
                 source::parse_reason(outcome)
-            ));
-            None
-        }
-    }
+            )
+        })
 }
 
 /// The byte ranges of the outermost items with a test attribute.
@@ -322,6 +387,17 @@ mod tests {
             ranges("#[cfg(not(test))]\nfn a() {}\n"),
             Vec::<Range<usize>>::new()
         );
+    }
+
+    #[test]
+    fn the_parallel_map_keeps_the_order_of_the_items() {
+        let items: Vec<usize> = (0..1000).collect();
+        let mapped = parallel_map(&items, |item| item * 2);
+        assert_eq!(
+            mapped,
+            items.iter().map(|item| item * 2).collect::<Vec<_>>()
+        );
+        assert!(parallel_map(&[] as &[usize], |item| *item).is_empty());
     }
 
     #[test]

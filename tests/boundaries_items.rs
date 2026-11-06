@@ -417,3 +417,50 @@ fn a_glob_reexport_in_a_private_module_is_no_public_reexport() {
         .collect();
     assert_eq!(lines, [5], "{report:#}");
 }
+
+/// A cfg rule and a crate with a path that the Miri build does not compile.
+const CFG_RULE: &str = "
+[[workspace.metadata.fallow.boundaries.cfg]]
+rule = \"miri-build\"
+builds = [[\"test\"], [\"test\", \"miri\"]]
+";
+
+const MIRI_GAP: &str = "#[cfg(all(test, not(miri)))]
+mod helpers {
+    pub fn parse_ts() {}
+}
+#[cfg(test)]
+fn uses() {
+    crate::helpers::parse_ts();
+}
+";
+
+/// In `check`, the item, re-export and cfg rules read the module graph of the
+/// graph thread, which selects the production binaries of `visibility`. The
+/// section is the same as the section of `boundaries`, with and without a
+/// selection that leaves a binary out.
+#[test]
+fn the_boundary_section_of_check_is_the_section_of_boundaries() {
+    let selection = "\n[workspace.metadata.fallow.visibility]\nproduction = [\"cli:cli\"]\n";
+    for production in ["", selection] {
+        let demo = Demo::new(&format!("{RULES}{CFG_RULE}{production}"));
+        let root = demo.dir.path();
+        fs::write(root.join("cli/src/main.rs"), "fn main() {}\n").expect("write a binary");
+        fs::write(root.join("types/src/main.rs"), "fn main() {}\n").expect("write a binary");
+        let types = fs::read_to_string(root.join("types/src/lib.rs")).expect("read lib.rs");
+        fs::write(root.join("types/src/lib.rs"), format!("{types}{MIRI_GAP}"))
+            .expect("write lib.rs");
+        let (_, single) = demo.json(&["boundaries"]);
+        let (_, combined) = demo.json(&["check"]);
+        let rules: Vec<&str> = single["findings"]
+            .as_array()
+            .expect("the findings")
+            .iter()
+            .filter_map(|finding| finding["rule"].as_str())
+            .collect();
+        for rule in ["cli-runs-dead-code-through-the-session", "miri-build"] {
+            assert!(rules.contains(&rule), "{rule}: {single:#}");
+        }
+        assert_eq!(combined["sections"]["boundaries"], single, "{production}");
+    }
+}

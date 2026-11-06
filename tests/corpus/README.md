@@ -11,6 +11,23 @@ The file judges the checks in `checks`: `deps`, `files`, `visibility` and
 `complexity` and `dupes` findings are measurements, so the file does not
 judge them.
 
+## Two runs for each workspace
+
+Each corpus workspace publishes its libraries. In a default run, the API of
+a library that a registry can publish is an entry point, so the
+`unnecessary-public` and `dead-public` rules report almost nothing in it.
+`scripts/corpus-run.sh` therefore checks each workspace two times:
+
+| Run | Configuration | Result file | Verdicts |
+| --- | --- | --- | --- |
+| Default | The configuration of the workspace | `<workspace>.json` | `findings` |
+| Internal | `public-crates = []`, so each library is internal | `<workspace>.internal.json` | `internal` |
+
+For the internal run, the script adds the key in a new
+`[workspace.metadata.fallow.visibility]` table at the end of the root
+manifest, and restores the manifest after the run. It stops for a root
+manifest with no `[workspace]` table or with a `[workspace.metadata]` table.
+
 ## Verdicts
 
 | Verdict | Meaning |

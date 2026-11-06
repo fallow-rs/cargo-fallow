@@ -167,3 +167,60 @@ test("validate rejects an unknown verdict and a short commit", () => {
   const { code } = runCase(file, []);
   assert.equal(code, 2);
 });
+
+// Writes the verdict file, the default result and the internal result, and
+// runs the check.
+const runInternalCase = (verdicts, reported, internal, write = false) => {
+  const dir = mkdtempSync(join(tmpdir(), "corpus-check-"));
+  try {
+    const verdictsPath = join(dir, "verdicts.json");
+    writeFileSync(verdictsPath, JSON.stringify(verdicts));
+    writeFileSync(join(dir, "demo.json"), JSON.stringify(report(reported)));
+    if (internal !== null) {
+      writeFileSync(join(dir, "demo.internal.json"), JSON.stringify(report(internal)));
+    }
+    const lines = [];
+    const code = run({ verdictsPath, resultsDir: dir, write, log: (line) => lines.push(line) });
+    return { code, lines, saved: JSON.parse(readFileSync(verdictsPath, "utf8")) };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+};
+
+const withInternal = (findings, internal) => {
+  const file = verdictFile(findings);
+  file.workspaces.demo.internal = internal;
+  return file;
+};
+
+test("the internal run is judged against its own verdicts", () => {
+  const passed = runInternalCase(
+    withInternal({ a: baseline }, { b: baseline }),
+    [finding("a")],
+    [finding("b")],
+  );
+  assert.equal(passed.code, 0, passed.lines.join("\n"));
+  const failed = runInternalCase(withInternal({ a: baseline }, {}), [finding("a")], [finding("b")]);
+  assert.equal(failed.code, 1);
+  assert.ok(
+    failed.lines.some((line) => line.startsWith("error: demo (internal): new finding b")),
+    failed.lines.join("\n"),
+  );
+});
+
+test("a missing internal result fails when the file has internal verdicts", () => {
+  const { code } = runInternalCase(withInternal({ a: baseline }, {}), [finding("a")], null);
+  assert.equal(code, 2);
+});
+
+test("--write records the internal run in its own section", () => {
+  const { code, saved } = runInternalCase(
+    withInternal({ a: baseline }, { gone: baseline }),
+    [finding("a")],
+    [finding("b")],
+    true,
+  );
+  assert.equal(code, 0);
+  assert.deepEqual(Object.keys(saved.workspaces.demo.findings), ["a"]);
+  assert.deepEqual(Object.keys(saved.workspaces.demo.internal), ["b"]);
+});

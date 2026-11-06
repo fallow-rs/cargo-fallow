@@ -24,7 +24,22 @@ pub struct TokenPath {
     /// For a field name in a struct expression `Path { field: .. }`, the path
     /// of the struct.
     pub record: Option<Vec<String>>,
+    /// True for a chain after `#`. In `quote!` tokens, `#name` is a variable
+    /// of the code that builds the tokens, not a name in the output.
+    pub interpolated: bool,
+    /// True for a chain in the tokens of a nested call of an output macro,
+    /// for example `quote! { .. }` in the tokens of `vec![..]`.
+    pub quoted: bool,
 }
+
+/// The macros whose tokens are the output of a proc-macro. The output goes
+/// into the crate that calls the proc-macro.
+pub const OUTPUT_MACROS: &[&str] = &[
+    "quote",
+    "quote_spanned",
+    "parse_quote",
+    "parse_quote_spanned",
+];
 
 /// A token with only the facts that the scan needs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,6 +47,8 @@ enum Piece<'a> {
     Ident(&'a str),
     Colon,
     Dollar,
+    Pound,
+    Bang,
     Dot,
     Comma,
     OpenBrace,
@@ -89,6 +106,8 @@ fn piece(kind: SyntaxKind, text: &str) -> Piece<'_> {
         T![Self] => Piece::Ident("Self"),
         T![:] => Piece::Colon,
         T![$] => Piece::Dollar,
+        T![#] => Piece::Pound,
+        T![!] => Piece::Bang,
         T![.] => Piece::Dot,
         T![,] => Piece::Comma,
         T!['{'] => Piece::OpenBrace,
@@ -103,15 +122,49 @@ fn piece(kind: SyntaxKind, text: &str) -> Piece<'_> {
 /// does not count, but `$crate` does.
 fn chains(pieces: &[Piece<'_>]) -> Vec<TokenPath> {
     let mut records: FxHashMap<usize, Vec<String>> = FxHashMap::default();
+    let quoted = quoted_pieces(pieces);
     let mut paths = Vec::new();
     let mut index = 0;
     while index < pieces.len() {
         index = match chain_start(pieces, index) {
-            Some(first) => push_chain(pieces, index, first, &mut records, &mut paths),
+            Some(first) => {
+                let next = push_chain(pieces, index, first, &mut records, &mut paths);
+                if let Some(path) = paths.last_mut() {
+                    path.quoted = quoted[index];
+                }
+                next
+            }
             None => index + 1,
         };
     }
     paths
+}
+
+/// For each piece, true when it is in the tokens of a call of an output
+/// macro: a name of [`OUTPUT_MACROS`], then `!` and a group.
+fn quoted_pieces(pieces: &[Piece<'_>]) -> Vec<bool> {
+    let mut quoted = vec![false; pieces.len()];
+    for index in 0..pieces.len() {
+        let call = matches!(pieces[index], Piece::Ident(name) if OUTPUT_MACROS.contains(&name))
+            && pieces.get(index + 1) == Some(&Piece::Bang)
+            && matches!(pieces.get(index + 2), Some(Piece::Open | Piece::OpenBrace));
+        if !call {
+            continue;
+        }
+        let mut depth = 0_u32;
+        for (offset, piece) in pieces.iter().enumerate().skip(index + 2) {
+            match piece {
+                Piece::Open | Piece::OpenBrace => depth += 1,
+                Piece::Close | Piece::CloseBrace => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+            if depth == 0 {
+                break;
+            }
+            quoted[offset] = true;
+        }
+    }
+    quoted
 }
 
 /// Adds the chain that starts with `first` at `index` to `paths`, and returns
@@ -137,6 +190,8 @@ fn push_chain(
         global: chain_global(pieces, index),
         member: member && record.is_none(),
         record,
+        interpolated: index > 0 && pieces[index - 1] == Piece::Pound,
+        quoted: false,
     });
     next
 }
@@ -240,6 +295,8 @@ fn path_in_string(literal: &str) -> Option<TokenPath> {
         global: false,
         member: false,
         record: None,
+        interpolated: false,
+        quoted: false,
     })
 }
 
@@ -339,6 +396,53 @@ mod tests {
     fn macro_variables_do_not_count_but_dollar_crate_does() {
         let paths = paths_in_code("$x:expr => $crate::inner::run($x)", Edition::Edition2021);
         assert_eq!(names(&paths), ["expr", "crate::inner::run"]);
+    }
+
+    #[test]
+    fn quote_variables_are_marked() {
+        let paths = paths_in_code(
+            "#[inline] fn f() { #(#items),* a::b(#depth) }",
+            Edition::Edition2021,
+        );
+        let marks: Vec<(String, bool)> = paths
+            .iter()
+            .map(|path| (path.segments.join("::"), path.interpolated))
+            .collect();
+        assert_eq!(
+            marks,
+            [
+                ("inline".to_owned(), false),
+                ("f".to_owned(), false),
+                ("items".to_owned(), true),
+                ("a::b".to_owned(), false),
+                ("depth".to_owned(), true),
+            ]
+        );
+    }
+
+    #[test]
+    fn names_in_nested_output_macros_are_marked() {
+        let paths = paths_in_code(
+            "vec![a::x, quote! { b::y(c) }, d, syn::parse_quote!(e)]",
+            Edition::Edition2021,
+        );
+        let marks: Vec<(String, bool)> = paths
+            .iter()
+            .map(|path| (path.segments.join("::"), path.quoted))
+            .collect();
+        assert_eq!(
+            marks,
+            [
+                ("vec".to_owned(), false),
+                ("a::x".to_owned(), false),
+                ("quote".to_owned(), false),
+                ("b::y".to_owned(), true),
+                ("c".to_owned(), true),
+                ("d".to_owned(), false),
+                ("syn::parse_quote".to_owned(), false),
+                ("e".to_owned(), true),
+            ]
+        );
     }
 
     #[test]

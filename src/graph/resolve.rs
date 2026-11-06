@@ -5,14 +5,19 @@
 //! the last segment counts as a reference to each item with that name in the
 //! visible crates. A method call, a field access and a name in macro tokens
 //! work the same way, because the syntax does not show the type.
+//!
+//! A proc-macro writes its output tokens, for example the tokens of `quote!`,
+//! into the crate that calls the macro. A name in the output tokens of a
+//! proc-macro crate therefore counts in each crate that can call the macro,
+//! and in the crates that those crates can use.
 
 use std::cell::RefCell;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::graph::credits::{Credits, NameFilter, Site};
+use crate::graph::credits::{Credits, NameFilter, Scope, Site};
 use crate::graph::extract::{ALL_FIELDS, Binding, ItemKind, Origin, RefKind};
-use crate::graph::{CrateId, Extern, Graph, Item, ItemId, ModuleId};
+use crate::graph::{CrateId, CrateKind, Extern, Graph, Item, ItemId, ModuleId};
 use crate::parse::Edition;
 
 /// The names that resolve outside the workspace when no item has them.
@@ -103,6 +108,8 @@ pub struct Resolver<'g> {
     by_name: FxHashMap<&'g str, Vec<ItemId>>,
     named: FxHashMap<(ModuleId, &'g str), Vec<usize>>,
     globs: Vec<Vec<usize>>,
+    /// For each proc-macro crate, the crates where its output can be.
+    expansion: FxHashMap<CrateId, Expansion>,
     memo: RefCell<FxHashMap<usize, Vec<Target>>>,
     glob_memo: RefCell<FxHashMap<usize, Vec<Target>>>,
     lookup_memo: RefCell<Vec<FxHashMap<String, Vec<Target>>>>,
@@ -162,6 +169,72 @@ fn member_owner(parent: &Item) -> Option<&String> {
 /// The named imports by module and name, and the glob imports of each module.
 type ImportIndexes<'g> = (FxHashMap<(ModuleId, &'g str), Vec<usize>>, Vec<Vec<usize>>);
 
+/// The crate and the workspace crates that it depends on, also through
+/// other crates: a re-export can give a type of a deeper crate, and the code
+/// can call its methods.
+fn visible_crates(graph: &Graph, krate: CrateId, doc: bool) -> Vec<CrateId> {
+    let entry = &graph.crates[krate];
+    let externs = if doc {
+        &entry.doc_externs
+    } else {
+        &entry.externs
+    };
+    let mut crates: Vec<CrateId> = externs.iter().filter_map(|name| name.target).collect();
+    if !doc {
+        crates.push(krate);
+    }
+    let mut index = 0;
+    while let Some(&next) = crates.get(index) {
+        for name in &graph.crates[next].externs {
+            if let Some(target) = name.target
+                && !crates.contains(&target)
+            {
+                crates.push(target);
+            }
+        }
+        index += 1;
+    }
+    crates
+}
+
+/// The crates where the output of a proc-macro crate can be.
+#[derive(Debug, Default)]
+struct Expansion {
+    /// Each other crate that can call the macro, also through a re-export of
+    /// another crate.
+    callers: Vec<CrateId>,
+    /// The proc-macro crate, the callers and the crates that they can use.
+    crates: Vec<CrateId>,
+}
+
+/// The [`Expansion`] of each proc-macro crate.
+fn expansions(graph: &Graph) -> FxHashMap<CrateId, Expansion> {
+    let macros: Vec<CrateId> = (0..graph.crates.len())
+        .filter(|&krate| graph.crates[krate].kind == CrateKind::ProcMacro)
+        .collect();
+    if macros.is_empty() {
+        return FxHashMap::default();
+    }
+    let visible: Vec<Vec<CrateId>> = (0..graph.crates.len())
+        .map(|krate| visible_crates(graph, krate, false))
+        .collect();
+    macros
+        .into_iter()
+        .map(|proc_macro| {
+            let callers: Vec<CrateId> = (0..graph.crates.len())
+                .filter(|&krate| krate != proc_macro && visible[krate].contains(&proc_macro))
+                .collect();
+            let mut crates = visible[proc_macro].clone();
+            for &caller in &callers {
+                crates.extend(visible[caller].iter().copied());
+            }
+            crates.sort_unstable();
+            crates.dedup();
+            (proc_macro, Expansion { callers, crates })
+        })
+        .collect()
+}
+
 /// Indexes the imports of the graph by their binding.
 fn import_indexes(graph: &Graph) -> ImportIndexes<'_> {
     let mut named: FxHashMap<(ModuleId, &str), Vec<usize>> = FxHashMap::default();
@@ -191,6 +264,7 @@ impl<'g> Resolver<'g> {
             by_name,
             named,
             globs,
+            expansion: expansions(graph),
             memo: RefCell::new(FxHashMap::default()),
             glob_memo: RefCell::new(FxHashMap::default()),
             lookup_memo: RefCell::new(vec![FxHashMap::default(); graph.modules.len()]),
@@ -392,6 +466,9 @@ impl<'g> Resolver<'g> {
             Origin::Macro | Origin::PublicMacro | Origin::Attr | Origin::Doc
         );
         let doc = base.origin == Origin::Doc;
+        if segments.len() > 1 && self.in_proc_macro_tokens(base) {
+            self.credit_expansion_path(credits, base, segments, global);
+        }
         if untyped_origin && segments.len() == 1 {
             // A bare name cannot name a field or a method. A `Member`
             // reference covers the names that can.
@@ -433,6 +510,64 @@ impl<'g> Resolver<'g> {
         }
     }
 
+    /// The credits of a path in the macro tokens of a proc-macro crate. The
+    /// path resolves in the crate that calls the macro, so the resolver
+    /// resolves it from the root module of each caller. When it does not
+    /// resolve in each caller, for example because the output is in a module
+    /// with other imports, each name of the path can name an item: the type
+    /// and the function of `a::Thing::new`.
+    fn credit_expansion_path(
+        &self,
+        credits: &mut Credits,
+        base: Credit,
+        segments: &[String],
+        global: bool,
+    ) {
+        let Some(expansion) = self.expansion.get(&base.krate) else {
+            return;
+        };
+        let mut unresolved = expansion.callers.is_empty();
+        for &caller in &expansion.callers {
+            let root = self.graph.crates[caller].root_module;
+            let (targets, class, through) =
+                self.resolve_path(caller, root, segments, global, false);
+            if class != Class::Exact {
+                unresolved = true;
+                continue;
+            }
+            push_targets(
+                &mut credits.direct,
+                base,
+                Class::Untyped,
+                &targets,
+                &through,
+                self.graph,
+            );
+        }
+        if !unresolved {
+            return;
+        }
+        let Some((last, rest)) = segments.split_last() else {
+            return;
+        };
+        for segment in rest {
+            self.credit_names(
+                credits,
+                base,
+                segment,
+                Class::Untyped,
+                NameFilter::NotMember,
+            );
+        }
+        self.credit_names(
+            credits,
+            base,
+            last,
+            Class::Untyped,
+            NameFilter::PathEnd { single: false },
+        );
+    }
+
     /// The credits of a field in a struct expression or a struct pattern.
     fn credit_record_field(
         &self,
@@ -442,6 +577,13 @@ impl<'g> Resolver<'g> {
         global: bool,
         field: &str,
     ) {
+        if self.in_proc_macro_tokens(base) {
+            // The struct path resolves in the crate that calls the macro, so
+            // any field with the name in the crates of the output can be the
+            // one.
+            self.credit_names(credits, base, field, Class::Untyped, NameFilter::Field);
+            return;
+        }
         let doc = base.origin == Origin::Doc;
 
         let (targets, class, _) = self.resolve_path(base.krate, base.module, segments, global, doc);
@@ -541,9 +683,9 @@ impl<'g> Resolver<'g> {
         let Some(items) = self.by_name.get(name) else {
             return;
         };
-        let doc = base.origin == Origin::Doc;
-        let group = credits.group((filter, base.krate, doc), name, || {
-            let visible = self.visible_crates(base.krate, doc);
+        let scope = self.scope(base, class);
+        let group = credits.group((filter, base.krate, scope), name, || {
+            let visible = self.scope_crates(base.krate, scope);
             items
                 .iter()
                 .copied()
@@ -562,32 +704,41 @@ impl<'g> Resolver<'g> {
         });
     }
 
-    /// The crate and the workspace crates that it depends on, also through
-    /// other crates: a re-export can give a type of a deeper crate, and the
-    /// code can call its methods.
-    fn visible_crates(&self, krate: CrateId, doc: bool) -> Vec<CrateId> {
-        let entry = &self.graph.crates[krate];
-        let externs = if doc {
-            &entry.doc_externs
+    /// The crates where the items of a name credit from code in `krate` can
+    /// be.
+    fn scope_crates(&self, krate: CrateId, scope: Scope) -> Vec<CrateId> {
+        match scope {
+            Scope::Code => visible_crates(self.graph, krate, false),
+            Scope::Doc => visible_crates(self.graph, krate, true),
+            Scope::Expansion => self
+                .expansion
+                .get(&krate)
+                .map(|expansion| expansion.crates.clone())
+                .unwrap_or_default(),
+        }
+    }
+
+    /// The scope of a name credit. Only an untyped credit from the macro
+    /// tokens of a proc-macro crate gets the crates of the macro output.
+    fn scope(&self, base: Credit, class: Class) -> Scope {
+        if base.origin == Origin::Doc {
+            Scope::Doc
+        } else if class == Class::Untyped && self.in_proc_macro_tokens(base) {
+            Scope::Expansion
         } else {
-            &entry.externs
+            Scope::Code
+        }
+    }
+
+    /// True for a name in the output tokens of a proc-macro crate: the tokens
+    /// of an output macro such as `quote!`. The tokens of other macros, for
+    /// example `vec!`, and a `#name` variable are code of the proc-macro
+    /// crate itself.
+    fn in_proc_macro_tokens(&self, base: Credit) -> bool {
+        let Source::Ref(index) = base.source else {
+            return false;
         };
-        let mut crates: Vec<CrateId> = externs.iter().filter_map(|name| name.target).collect();
-        if !doc {
-            crates.push(krate);
-        }
-        let mut index = 0;
-        while let Some(&next) = crates.get(index) {
-            for name in &self.graph.crates[next].externs {
-                if let Some(target) = name.target
-                    && !crates.contains(&target)
-                {
-                    crates.push(target);
-                }
-            }
-            index += 1;
-        }
-        crates
+        self.graph.refs[index].output && self.expansion.contains_key(&base.krate)
     }
 
     fn externs(&self, krate: CrateId, doc: bool) -> &'g [Extern] {
@@ -669,7 +820,7 @@ impl<'g> Resolver<'g> {
 
     /// The types and modules called `name` in the visible crates.
     fn types_named(&self, krate: CrateId, name: &str, doc: bool) -> Vec<Target> {
-        let visible = self.visible_crates(krate, doc);
+        let visible = visible_crates(self.graph, krate, doc);
         self.by_name
             .get(name)
             .into_iter()

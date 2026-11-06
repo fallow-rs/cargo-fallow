@@ -2,7 +2,9 @@ name: Corpus
 
 # Run `cargo fallow check` on the corpus workspaces at their pinned commits,
 # and compare the findings with tests/corpus/verdicts.json. A finding without
-# a verdict fails the job, so a false positive cannot come back unseen.
+# a verdict fails the job, so a false positive cannot come back unseen. The
+# release gate (scripts/verify-release-ci.mjs) starts a run on each release
+# commit with workflow_dispatch.
 on:
   schedule:
     - cron: "41 4 * * 2"

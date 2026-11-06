@@ -18,6 +18,9 @@ files. A file that the command gets to is a used file:
 - a `mod name;` item, also in an inline module and in the tokens of a macro
   call such as `cfg_if!`,
 - a `#[path = "..."]` attribute or a `path` value in a `cfg_attr` attribute,
+  also on an inline module, where the value is the folder of the modules in
+  it. A `cfg_attr` condition that no build makes true, such as `any()`, adds
+  no file,
 - a literal `include!`, `include_str!` or `include_bytes!` call,
 - a Cargo target: a library, a binary, a test, a benchmark, an example or a
   build script.
@@ -48,7 +51,6 @@ file. The command does not report a file in these cases:
     path is not a source file,
   - a file that `include!` reads and that declares a module, includes a file
     or does not parse,
-  - a `path` attribute on an inline module,
   - a module in a function body or a block,
   - a module form in a macro that the command cannot read,
   - a file that does not parse.

@@ -400,20 +400,44 @@ fn included_file_with_modules_skips_the_package() {
 }
 
 #[test]
-fn path_attribute_on_an_inline_module_skips_the_package() {
+fn path_attribute_on_an_inline_module_sets_the_folder_of_its_modules() {
     let dir = workspace(
         "",
         &[
             (
                 "app/src/lib.rs",
-                "#[path = \"sub\"]\nmod outer {\n    mod leaf;\n}\n",
+                "#[path = \"sub\"]\nmod outer {\n    mod leaf;\n}\n\
+                 #[path = \"outer/kept.rs\"]\nmod kept;\n\
+                 #[cfg_attr(unix, path = \"csub\")]\nmod co {\n    mod cl;\n}\n\
+                 #[path = r\"raw_impl.rs\"]\nmod raw;\n\
+                 #[cfg_attr(any(), path = \"never_impl.rs\")]\nmod never;\n\
+                 #[cfg_attr(windows, path = \"win\\\\imp.rs\")]\nmod win;\n",
             ),
             ("app/src/sub/leaf.rs", ""),
+            ("app/src/outer/kept.rs", ""),
+            // rustc loads `sub/leaf.rs`, not the default `outer/leaf.rs`.
+            ("app/src/outer/leaf.rs", ""),
+            ("app/src/csub/cl.rs", ""),
+            ("app/src/co/cl.rs", ""),
+            ("app/src/raw_impl.rs", ""),
+            ("app/src/never.rs", ""),
+            ("app/src/never_impl.rs", ""),
+            ("app/src/win.rs", ""),
+            ("app/src/win/imp.rs", ""),
             ("app/src/stale.rs", ""),
         ],
     );
     let (_, report) = run(&dir, &[]);
-    assert_eq!(paths(&report), set(&[]));
+    assert_eq!(
+        paths(&report),
+        set(&[
+            "app/src/never_impl.rs",
+            "app/src/outer/leaf.rs",
+            "app/src/stale.rs",
+        ]),
+        "{report}"
+    );
+    assert_eq!(report["summary"]["skipped_packages"], serde_json::json!([]));
 }
 
 #[test]

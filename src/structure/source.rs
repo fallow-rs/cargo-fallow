@@ -13,7 +13,7 @@ use ra_ap_syntax::ast::{self, HasModuleItem, HasName};
 use ra_ap_syntax::{AstNode, SyntaxKind, TextSize};
 use serde::Serialize;
 
-use crate::attrs::{AttrClass, attributes_of, module_files, plain_name};
+use crate::attrs::{AttrClass, attributes_of, plain_name};
 use crate::gates::parse_edition;
 use crate::modules::{ModuleDecl, SkippedFile, TargetRoot, Visit, walk};
 use crate::parse::{ParseOutcome, with_parsed};
@@ -336,12 +336,13 @@ fn collect_declarations(
         let decl = ModuleDecl {
             name,
             inline_path: inline.clone(),
+            inline_folder: None,
             path_attr: None,
             under_cfg: false,
             cfg_off: false,
             test_only,
         };
-        found.extend(decl.for_files(module_files(&module)));
+        found.extend(decl.for_module(&module));
     }
 }
 

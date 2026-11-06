@@ -983,3 +983,119 @@ fn a_cfg_attr_test_path_of_a_module_is_test_code() {
         "{report}"
     );
 }
+
+#[test]
+fn a_raw_or_escaped_path_literal_of_a_module_is_part_of_the_graph() {
+    let deps = format!(
+        "[dependencies]\n{}{}{}{}{}",
+        path_dep("alpha"),
+        path_dep("beta"),
+        path_dep("gamma"),
+        path_dep("delta"),
+        path_dep("epsilon")
+    );
+    let dir = workspace(
+        &deps,
+        &[
+            (
+                "app/src/lib.rs",
+                "#[path = r\"plat/raw.rs\"]\nmod raw;\n\
+                 #[cfg_attr(unix, path = r#\"plat/cfg_raw.rs\"#)]\nmod cfg_raw;\n\
+                 #[cfg_attr(windows, path = \"plat\\\\win.rs\")]\nmod win;\n\
+                 #[path = \"plat/es\\u{63}.rs\"]\nmod esc;\n\
+                 #[doc = \"plat/doc.rs\"]\nmod doc;\n\
+                 pub fn run() { raw::f(); cfg_raw::f(); win::f(); esc::f(); doc::f(); }\n",
+            ),
+            ("app/src/plat/raw.rs", "pub fn f() { alpha::f(); }\n"),
+            ("app/src/cfg_raw.rs", "pub fn f() {}\n"),
+            ("app/src/plat/cfg_raw.rs", "pub fn f() { beta::f(); }\n"),
+            ("app/src/win.rs", "pub fn f() {}\n"),
+            ("app/src/plat/win.rs", "pub fn f() { gamma::f(); }\n"),
+            ("app/src/plat/esc.rs", "pub fn f() { delta::f(); }\n"),
+            // A `doc` value is not a module file, so `epsilon` stays unused.
+            ("app/src/doc.rs", "pub fn f() {}\n"),
+            ("app/src/plat/doc.rs", "pub fn f() { epsilon::f(); }\n"),
+        ],
+    );
+    let (_, report) = run(&dir, &[]);
+    assert_eq!(
+        findings(&report),
+        set(&["unused-dependency app dependencies epsilon"]),
+        "{report}"
+    );
+}
+
+#[test]
+fn a_path_on_an_inline_module_sets_the_folder_of_its_modules() {
+    let deps = format!(
+        "[dependencies]\n{}{}{}{}{}{}{}",
+        path_dep("alpha"),
+        path_dep("beta"),
+        path_dep("gamma"),
+        path_dep("delta"),
+        path_dep("epsilon"),
+        path_dep("zeta"),
+        path_dep("eta")
+    );
+    let dir = workspace(
+        &deps,
+        &[
+            (
+                "app/src/lib.rs",
+                "#[path = \"imp\"]\nmod outer { pub mod inner; }\n\
+                 mod m { #[path = \"deep\"] pub mod o { pub mod di; } }\n\
+                 #[cfg_attr(unix, path = \"cimp\")]\nmod co { pub mod ci; }\n\
+                 mod a;\n\
+                 pub fn run() { outer::inner::f(); m::o::di::f(); co::ci::f(); a::run(); }\n",
+            ),
+            ("app/src/imp/inner.rs", "pub fn f() { alpha::f(); }\n"),
+            // rustc does not load the default folder of `outer`.
+            ("app/src/outer/inner.rs", "pub fn f() { epsilon::f(); }\n"),
+            ("app/src/m/deep/di.rs", "pub fn f() { beta::f(); }\n"),
+            ("app/src/cimp/ci.rs", "pub fn f() { gamma::f(); }\n"),
+            ("app/src/co/ci.rs", "pub fn f() { delta::f(); }\n"),
+            (
+                "app/src/a.rs",
+                "#[path = \"imp\"]\nmod o2 { pub mod ai; }\npub fn run() { o2::ai::f(); }\n",
+            ),
+            // In `a.rs`, the path starts at `src/`, not at `src/a/`.
+            ("app/src/imp/ai.rs", "pub fn f() { eta::f(); }\n"),
+            ("app/src/a/imp/ai.rs", "pub fn f() { zeta::f(); }\n"),
+        ],
+    );
+    let (_, report) = run(&dir, &[]);
+    assert_eq!(
+        findings(&report),
+        set(&[
+            "unused-dependency app dependencies epsilon",
+            "unused-dependency app dependencies zeta",
+        ]),
+        "{report}"
+    );
+}
+
+#[test]
+fn a_cfg_attr_path_that_no_build_loads_is_not_part_of_the_graph() {
+    let deps = format!("[dependencies]\n{}{}", path_dep("alpha"), path_dep("beta"));
+    let dir = workspace(
+        &deps,
+        &[
+            (
+                "app/src/lib.rs",
+                "#[cfg_attr(any(), path = \"never.rs\")]\nmod a;\n\
+                 #[cfg_attr(not(feature = \"x\"), path = \"off.rs\")]\nmod b;\n\
+                 pub fn run() { a::f(); b::f(); }\n",
+            ),
+            ("app/src/a.rs", "pub fn f() {}\n"),
+            ("app/src/never.rs", "pub fn f() { alpha::f(); }\n"),
+            ("app/src/b.rs", "pub fn f() {}\n"),
+            ("app/src/off.rs", "pub fn f() { beta::f(); }\n"),
+        ],
+    );
+    let (_, report) = run(&dir, &[]);
+    assert_eq!(
+        findings(&report),
+        set(&["unused-dependency app dependencies alpha"]),
+        "{report}"
+    );
+}

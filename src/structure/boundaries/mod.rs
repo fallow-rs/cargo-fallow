@@ -953,13 +953,13 @@ impl PathScan<'_> {
             let decl = ModuleDecl {
                 name,
                 inline_path: inline.clone(),
+                inline_folder: None,
                 path_attr: None,
                 under_cfg: false,
                 cfg_off: false,
                 test_only: false,
             };
-            self.decls
-                .extend(decl.for_files(crate::attrs::module_files(&item)));
+            self.decls.extend(decl.for_module(&item));
             return;
         };
         let mut inner = module.to_vec();

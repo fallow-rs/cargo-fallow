@@ -611,6 +611,7 @@ mod tests {
         scan.modules.push(ModuleDecl {
             name: "extra".to_owned(),
             inline_path: Vec::new(),
+            inline_folder: None,
             path_attr: None,
             under_cfg: false,
             cfg_off: false,
@@ -633,6 +634,7 @@ mod tests {
             modules: vec![ModuleDecl {
                 name: "extra".to_owned(),
                 inline_path: Vec::new(),
+                inline_folder: None,
                 path_attr: None,
                 under_cfg: false,
                 cfg_off: false,

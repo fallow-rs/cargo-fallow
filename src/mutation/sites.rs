@@ -15,7 +15,7 @@ use std::ops::Range;
 use ra_ap_syntax::ast::{self, HasName};
 use ra_ap_syntax::{AstNode, NodeOrToken, SourceFile, SyntaxKind, SyntaxNode, SyntaxToken};
 
-use crate::attrs::{AttrClass, attributes_of, module_files, plain_name};
+use crate::attrs::{AttrClass, attributes_of, plain_name};
 use crate::modules::ModuleDecl;
 use crate::mutation::id::{IdInput, mutant_id};
 use crate::parse::{Edition, ParseOutcome, strip_byte_order_mark, with_parsed};
@@ -323,6 +323,7 @@ impl Walk<'_> {
         let decl = ModuleDecl {
             name: plain_name(&name),
             inline_path,
+            inline_folder: None,
             path_attr: None,
             under_cfg,
             cfg_off: under_cfg,
@@ -330,7 +331,8 @@ impl Walk<'_> {
         };
         // Test code gets no mutants, so the walk skips a test-only file.
         self.found.modules.extend(
-            decl.for_files(module_files(module))
+            decl.for_module(module)
+                .into_iter()
                 .filter(|decl| !decl.test_only),
         );
     }

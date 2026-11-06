@@ -11,7 +11,7 @@ use ra_ap_syntax::{
     AstNode, AstToken, NodeOrToken, SyntaxKind, SyntaxNode, SyntaxToken, WalkEvent,
 };
 
-use crate::attrs::{module_files, plain_name};
+use crate::attrs::plain_name;
 use crate::modules::{ModuleDecl, normalize};
 
 /// The macros that read a file at compile time.
@@ -206,10 +206,6 @@ fn collect_declarations(
         };
         let name = plain_name(&name);
         if let Some(list) = module.item_list() {
-            let moved = module_files(&module).iter().any(|file| file.path.is_some());
-            if moved {
-                found.undecide("a `path` attribute is on an inline module");
-            }
             inline.push(name);
             collect_declarations(list.items(), inline, found);
             inline.pop();
@@ -218,12 +214,13 @@ fn collect_declarations(
         let decl = ModuleDecl {
             name,
             inline_path: inline.clone(),
+            inline_folder: None,
             path_attr: None,
             under_cfg: false,
             cfg_off: false,
             test_only: false,
         };
-        found.modules.extend(decl.for_files(module_files(&module)));
+        found.modules.extend(decl.for_module(&module));
     }
 }
 
@@ -252,6 +249,7 @@ fn macro_tokens(token: &SyntaxToken, rest: &[SyntaxToken], found: &mut Scan) {
                 found.modules.push(ModuleDecl {
                     name: name.strip_prefix("r#").unwrap_or(name).to_owned(),
                     inline_path: Vec::new(),
+                    inline_folder: None,
                     path_attr: None,
                     under_cfg: false,
                     cfg_off: false,
@@ -278,6 +276,7 @@ fn macro_tokens(token: &SyntaxToken, rest: &[SyntaxToken], found: &mut Scan) {
         found.modules.push(ModuleDecl {
             name,
             inline_path: Vec::new(),
+            inline_folder: None,
             path_attr: Some(value),
             under_cfg: false,
             cfg_off: false,

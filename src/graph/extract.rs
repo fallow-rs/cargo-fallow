@@ -8,7 +8,7 @@
 use ra_ap_syntax::ast::{self, HasAttrs, HasName, HasVisibility, VisibilityKind};
 use ra_ap_syntax::{AstNode, AstToken, SyntaxKind, SyntaxNode, WalkEvent};
 
-use crate::attrs::{AttrClass, attr_body, attributes_of, module_files, plain_name};
+use crate::attrs::{AttrClass, attr_body, attributes_of, plain_name};
 use crate::graph::tokens::{
     OUTPUT_MACROS, TokenPath, paths_in_code, paths_in_tree, rust_code_blocks_at,
 };
@@ -999,14 +999,13 @@ impl<'a> Walker<'a> {
         let decl = ModuleDecl {
             name,
             inline_path: self.inline(),
+            inline_folder: None,
             path_attr: None,
             under_cfg: self.under_cfg(),
             cfg_off: self.cfg_off(),
             test_only: false,
         };
-        self.facts
-            .modules
-            .extend(decl.for_files(module_files(&module)));
+        self.facts.modules.extend(decl.for_module(&module));
     }
 
     fn impl_block(&mut self, node: &SyntaxNode) {

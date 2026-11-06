@@ -378,3 +378,62 @@ fn proc_macro_output_counts_only_in_crates_that_can_name_the_macro() {
     .collect();
     assert_eq!(found, expected);
 }
+
+/// A facade that imports the macro in a private module and re-exports it with
+/// a path in the crate: `pub use crate::inner::bench;`.
+const INNER_FILES: &[(&str, &str)] = &[
+    (
+        "Cargo.toml",
+        "[workspace]\nmembers = [\"pm\", \"facade\", \"items\", \"user\"]\nresolver = \"3\"\n",
+    ),
+    (
+        "pm/Cargo.toml",
+        "[package]\nname = \"pm\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n\
+         [lib]\nproc-macro = true\n",
+    ),
+    (
+        "facade/Cargo.toml",
+        "[package]\nname = \"facade\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n\
+         [dependencies]\npm = { path = \"../pm\" }\n",
+    ),
+    (
+        "items/Cargo.toml",
+        "[package]\nname = \"items\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n",
+    ),
+    (
+        "user/Cargo.toml",
+        "[package]\nname = \"user\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n\
+         [dependencies]\nfacade = { path = \"../facade\" }\nitems = { path = \"../items\" }\n",
+    ),
+    (
+        "pm/src/lib.rs",
+        "use proc_macro::TokenStream;\n\
+         macro_rules! quote { ($($t:tt)*) => { stringify!($($t)*) }; }\n\
+         #[proc_macro_attribute]\n\
+         pub fn bench(_args: TokenStream, item: TokenStream) -> TokenStream {\n\
+         \x20   let mut out = item.to_string();\n\
+         \x20   out.push_str(quote! { fn __bench() { items::only_output(); } });\n\
+         \x20   out.parse().expect(\"valid tokens\")\n\
+         }\n",
+    ),
+    (
+        "facade/src/lib.rs",
+        "mod inner {\n    pub(crate) use pm::bench;\n}\npub use crate::inner::bench;\n",
+    ),
+    ("items/src/lib.rs", "pub fn only_output() {}\n"),
+    (
+        "user/src/main.rs",
+        "#[facade::bench]\nfn work() {}\nfn main() { work(); }\n",
+    ),
+];
+
+/// `facade` re-exports the macro of `pm` through a private import, so `user`
+/// can call the macro, and the output uses `items::only_output`.
+#[test]
+fn a_reexport_through_a_path_in_the_crate_counts() {
+    let dir = tempfile::tempdir().expect("create a temporary directory");
+    for (path, text) in INNER_FILES {
+        write(dir.path(), path, text);
+    }
+    assert_eq!(findings(&dir), BTreeSet::new());
+}

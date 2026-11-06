@@ -64,19 +64,17 @@ impl Names {
     }
 }
 
-/// The names that a `pub use` exports from a crate that exports macros with
-/// the names `source`, or `None` when the import exports no macro.
+/// The names that an import binds from a crate or a module with the macro
+/// names `source`, or `None` when the import binds no macro. `rest` is the
+/// part of the path after the crate or the module of `source`.
 ///
-/// - `pub use source;` and `pub extern crate source;` export each name of
-///   the source under the binding.
-/// - A glob import can export a macro, so it exports the names of the
-///   source.
-/// - A named import exports a macro when a name of its path after the crate
-///   can lead to a macro.
+/// - `use source;` and `extern crate source;` bind each name of the source
+///   under the binding.
+/// - A glob import can bind a macro, so it binds the names of the source.
+/// - A named import binds a macro when a name of `rest` can lead to a macro.
 ///
 /// The names of the module of the import also lead to the macros.
-fn exported(graph: &Graph, import: &Import, source: &Names) -> Option<Names> {
-    let rest = import.path.get(1..).unwrap_or_default();
+fn imported(graph: &Graph, import: &Import, rest: &[String], source: &Names) -> Option<Names> {
     let mut names = match &import.binding {
         Binding::Underscore => return None,
         Binding::Glob => source.clone(),
@@ -98,35 +96,65 @@ fn exported(graph: &Graph, import: &Import, source: &Names) -> Option<Names> {
     Some(names)
 }
 
+/// The names that an import binds from a crate that exports macros, or from
+/// a module of its own crate that holds an imported macro.
+fn import_names(
+    graph: &Graph,
+    import: &Import,
+    sources: &FxHashMap<CrateId, Names>,
+    inner: &FxHashMap<CrateId, Names>,
+) -> Option<Names> {
+    let head = import.path.first()?;
+    let mut externs = graph.crates[import.krate]
+        .externs
+        .iter()
+        .filter(|name| &name.name == head)
+        .peekable();
+    if externs.peek().is_some() {
+        let source =
+            externs.find_map(|name| name.target.and_then(|target| sources.get(&target)))?;
+        return imported(
+            graph,
+            import,
+            import.path.get(1..).unwrap_or_default(),
+            source,
+        );
+    }
+    // A path in the crate, for example `crate::inner::name`, binds a macro
+    // when it leads to a macro that another import of the crate binds.
+    let local = inner.get(&import.krate)?;
+    imported(graph, import, &import.path, local)
+}
+
+/// Adds `found` to the names of `krate`, and returns true when they changed.
+fn add_names(map: &mut FxHashMap<CrateId, Names>, krate: CrateId, found: &Names) -> bool {
+    map.entry(krate)
+        .or_insert_with(|| Names::Some(FxHashSet::default()))
+        .extend(found)
+}
+
 /// The proc-macro crate and each crate that re-exports one of its macros,
 /// with the names that lead to the macros. A re-export of a re-export also
-/// counts.
-fn macro_sources(
-    graph: &Graph,
-    imports: &[&Import],
-    proc_macro: CrateId,
-) -> FxHashMap<CrateId, Names> {
+/// counts. A crate can import a macro first and re-export it later with a
+/// path in the crate, as in `use pm::gen;` and `pub use crate::gen;`.
+fn macro_sources(graph: &Graph, proc_macro: CrateId) -> FxHashMap<CrateId, Names> {
     let mut sources = FxHashMap::default();
     sources.insert(proc_macro, Names::All);
+    let mut inner: FxHashMap<CrateId, Names> = FxHashMap::default();
     let mut changed = true;
     while changed {
         changed = false;
-        for &import in imports {
-            let Some(head) = import.path.first() else {
+        for import in &graph.imports {
+            if import.krate == proc_macro {
+                continue;
+            }
+            let Some(found) = import_names(graph, import, &sources, &inner) else {
                 continue;
             };
-            let source = graph.crates[import.krate]
-                .externs
-                .iter()
-                .filter(|name| &name.name == head)
-                .find_map(|name| name.target.and_then(|target| sources.get(&target)));
-            let Some(found) = source.and_then(|source| exported(graph, import, source)) else {
-                continue;
-            };
-            changed |= sources
-                .entry(import.krate)
-                .or_insert_with(|| Names::Some(FxHashSet::default()))
-                .extend(&found);
+            changed |= add_names(&mut inner, import.krate, &found);
+            if import.vis == Vis::Public {
+                changed |= add_names(&mut sources, import.krate, &found);
+            }
         }
     }
     sources
@@ -140,16 +168,11 @@ pub fn expansions(graph: &Graph) -> FxHashMap<CrateId, Expansion> {
     if macros.is_empty() {
         return FxHashMap::default();
     }
-    let imports: Vec<&Import> = graph
-        .imports
-        .iter()
-        .filter(|import| import.vis == Vis::Public)
-        .collect();
     let mut visible: FxHashMap<CrateId, Vec<CrateId>> = FxHashMap::default();
     macros
         .into_iter()
         .map(|proc_macro| {
-            let sources = macro_sources(graph, &imports, proc_macro);
+            let sources = macro_sources(graph, proc_macro);
             let callers: Vec<CrateId> = (0..graph.crates.len())
                 .filter(|&krate| {
                     krate != proc_macro

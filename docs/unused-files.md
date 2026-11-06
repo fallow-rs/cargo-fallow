@@ -29,6 +29,12 @@ file. A condition that each build makes true, such as `all()`, acts as a
 plain `#[path]` attribute. rustc uses only the first `path` attribute of a
 module. These rules do not apply in the tokens of a macro call.
 
+Each `cfg_attr` path on an inline module adds a possible folder for the
+modules in it, so nested inline modules multiply the folders. The walk keeps
+at most 64 possible folders for one module declaration. When nested
+`cfg_attr` paths give more folders, the walk does not read the files in the
+other folders, and `files` can report them.
+
 In some cases, cargo-fallow cannot tell from the syntax if a target uses a
 file. The command does not report a file in these cases:
 

@@ -954,17 +954,16 @@ impl PathScan<'_> {
         };
         let name = crate::attrs::plain_name(&name);
         let Some(list) = item.item_list() else {
-            use ra_ap_syntax::ast::HasAttrs as _;
-            self.decls.push(ModuleDecl {
+            let decl = ModuleDecl {
                 name,
                 inline_path: inline.clone(),
-                path_attr: item
-                    .attrs()
-                    .find_map(|attr| crate::attrs::path_attribute(&attr)),
+                path_attr: None,
                 under_cfg: false,
                 cfg_off: false,
                 test_only: false,
-            });
+            };
+            self.decls
+                .extend(decl.for_files(crate::attrs::module_files(&item)));
             return;
         };
         let mut inner = module.to_vec();

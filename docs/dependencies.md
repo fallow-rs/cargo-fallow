@@ -11,6 +11,11 @@ The command also reads these names in macro tokens, attributes, `cfg_attr`,
 doc tests and intra-doc links. rustdoc needs the dependency of a link such as
 `` [`other_crate::Item`] ``, so the link is a use.
 
+The command reads each file of the module tree. A `mod name;` declaration
+with `path` values in `cfg_attr` attributes adds each file that a `path`
+names, and the default file of the name. The command does not evaluate the
+conditions, so a use in each platform file counts.
+
 ```bash
 cargo fallow deps
 cargo fallow deps --fail-on-issues --format sarif --quiet

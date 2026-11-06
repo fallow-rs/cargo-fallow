@@ -12,10 +12,10 @@
 use std::collections::BTreeMap;
 use std::ops::Range;
 
-use ra_ap_syntax::ast::{self, HasAttrs, HasName};
+use ra_ap_syntax::ast::{self, HasName};
 use ra_ap_syntax::{AstNode, NodeOrToken, SourceFile, SyntaxKind, SyntaxNode, SyntaxToken};
 
-use crate::attrs::{AttrClass, attributes_of, path_attribute, plain_name};
+use crate::attrs::{AttrClass, attributes_of, module_files, plain_name};
 use crate::modules::ModuleDecl;
 use crate::mutation::id::{IdInput, mutant_id};
 use crate::parse::{Edition, ParseOutcome, strip_byte_order_mark, with_parsed};
@@ -320,14 +320,17 @@ impl Walk<'_> {
             .map(|outer| plain_name(&outer))
             .collect();
         inline_path.reverse();
-        self.found.modules.push(ModuleDecl {
+        let decl = ModuleDecl {
             name: plain_name(&name),
             inline_path,
-            path_attr: module.attrs().find_map(|attr| path_attribute(&attr)),
+            path_attr: None,
             under_cfg,
             cfg_off: under_cfg,
             test_only: false,
-        });
+        };
+        self.found
+            .modules
+            .extend(decl.for_files(module_files(module)));
     }
 
     fn finish(mut self, text: &str, file_key: &str) -> FileSites {
@@ -941,6 +944,25 @@ mod tests {
                 ("try", true, None, 0),
                 ("z", false, Some("x/y.rs"), 0),
                 ("nested", false, None, 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn each_cfg_attr_path_of_a_module_is_a_declaration_under_cfg() {
+        let source = "#[cfg_attr(unix, path = \"plat/unix.rs\")]\n\
+                      #[cfg_attr(windows, path = \"plat/windows.rs\")]\nmod platform;\n";
+        let modules = file(source).modules;
+        let found: Vec<(Option<&str>, bool, bool)> = modules
+            .iter()
+            .map(|m| (m.path_attr.as_deref(), m.under_cfg, m.cfg_off))
+            .collect();
+        assert_eq!(
+            found,
+            [
+                (None, true, true),
+                (Some("plat/unix.rs"), true, true),
+                (Some("plat/windows.rs"), true, true),
             ]
         );
     }

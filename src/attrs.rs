@@ -169,11 +169,77 @@ pub fn split_list(text: &str) -> Vec<&str> {
     parts
 }
 
-/// The value of a `#[path = "..."]` attribute.
-pub fn path_attribute(attr: &ast::Attr) -> Option<String> {
-    let body = attr_body(attr);
+/// The value of a `path="..."` attribute body without whitespace.
+fn path_value(body: &str) -> Option<String> {
     let value = body.strip_prefix("path=\"")?.strip_suffix('"')?;
     Some(value.to_owned())
+}
+
+/// One file that a `mod name;` declaration can load.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModuleFile {
+    /// The value of a `path` attribute, or `None` for the default file of the name.
+    pub path: Option<String>,
+    /// True when a `cfg_attr` condition decides whether the build loads the file.
+    pub under_cfg: bool,
+    /// True when a build with all features and tests can load a different file.
+    pub cfg_off: bool,
+}
+
+/// The files that a `mod name;` declaration can load.
+///
+/// The first file comes from a plain `#[path]` attribute, or it is the default
+/// file of the name. Each `path` in a `cfg_attr` attribute adds one file. The
+/// syntax does not tell which condition holds, so each file is a candidate.
+pub fn module_files(module: &ast::Module) -> Vec<ModuleFile> {
+    let mut plain = None;
+    let mut conditional = Vec::new();
+    for attr in module.attrs() {
+        let body = attr_body(&attr);
+        if plain.is_none() {
+            plain = path_value(&body);
+        }
+        cfg_attr_paths(&body, None, &mut conditional);
+    }
+    let first_off = conditional
+        .iter()
+        .any(|(_, condition)| cfg_value_all_features(condition) != Some(false));
+    let mut files = vec![ModuleFile {
+        path: plain,
+        under_cfg: !conditional.is_empty(),
+        cfg_off: first_off,
+    }];
+    files.extend(conditional.into_iter().map(|(path, condition)| ModuleFile {
+        path: Some(path),
+        under_cfg: true,
+        cfg_off: cfg_value_all_features(&condition) != Some(true),
+    }));
+    files
+}
+
+/// Collects each `path` value of a `cfg_attr(..)` body without whitespace,
+/// with its condition. A nested `cfg_attr` joins its condition to `outer`.
+fn cfg_attr_paths(body: &str, outer: Option<&str>, into: &mut Vec<(String, String)>) {
+    let Some(inner) = body
+        .strip_prefix("cfg_attr(")
+        .and_then(|rest| rest.strip_suffix(')'))
+    else {
+        return;
+    };
+    let parts = split_list(inner);
+    let Some((condition, attrs)) = parts.split_first() else {
+        return;
+    };
+    let condition = outer.map_or_else(
+        || (*condition).to_owned(),
+        |outer| format!("all({outer},{condition})"),
+    );
+    for attr in attrs {
+        match path_value(attr) {
+            Some(path) => into.push((path, condition.clone())),
+            None => cfg_attr_paths(attr, Some(&condition), into),
+        }
+    }
 }
 
 /// The text of a name, without a `r#` prefix.
@@ -185,7 +251,55 @@ pub fn plain_name(name: &ast::Name) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::cfg_value_all_features;
+    use super::{ModuleFile, cfg_value_all_features, module_files};
+    use ra_ap_syntax::AstNode;
+    use ra_ap_syntax::ast;
+
+    fn files_of(text: &str) -> Vec<ModuleFile> {
+        let file = ast::SourceFile::parse(text, ra_ap_syntax::Edition::Edition2024).tree();
+        let Some(module) = file.syntax().descendants().find_map(ast::Module::cast) else {
+            panic!("a module declaration");
+        };
+        module_files(&module)
+    }
+
+    fn entry(path: Option<&str>, under_cfg: bool, cfg_off: bool) -> ModuleFile {
+        ModuleFile {
+            path: path.map(str::to_owned),
+            under_cfg,
+            cfg_off,
+        }
+    }
+
+    #[test]
+    fn a_plain_declaration_loads_one_file() {
+        assert_eq!(files_of("mod a;"), [entry(None, false, false)]);
+        assert_eq!(
+            files_of("#[path = \"x.rs\"] mod a;"),
+            [entry(Some("x.rs"), false, false)]
+        );
+    }
+
+    #[test]
+    fn each_cfg_attr_path_is_a_file_with_its_condition() {
+        assert_eq!(
+            files_of(
+                "#[cfg_attr(feature = \"f\", path = \"on.rs\")]\n\
+                 #[cfg_attr(not(feature = \"f\"), path = \"off.rs\")]\n\
+                 #[cfg_attr(unix, doc = \"x\", cfg_attr(test, path = \"nested.rs\"))]\nmod a;"
+            ),
+            [
+                entry(None, true, true),
+                entry(Some("on.rs"), true, false),
+                entry(Some("off.rs"), true, true),
+                entry(Some("nested.rs"), true, true),
+            ]
+        );
+        assert_eq!(
+            files_of("#[cfg_attr(not(feature = \"f\"), path = \"off.rs\")] mod a;"),
+            [entry(None, true, false), entry(Some("off.rs"), true, true)]
+        );
+    }
 
     #[test]
     fn a_cfg_is_on_only_when_features_and_tests_decide_it() {

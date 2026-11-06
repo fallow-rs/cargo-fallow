@@ -21,6 +21,11 @@ the structure checks, it parses each source file one time. The result of a
 check is the same as the result of its own command, and the check has its own
 gate.
 
+The checks run in parallel threads. Each phase writes a start line to stderr,
+and a second line with its time when it ends, for example
+`Finding clones: 2.4 s`. In a CI log, these lines show which phase takes the
+time. `--quiet` hides them.
+
 `check` does not run `mutants` or `visibility --precise`. These commands build
 and run the tests or rust-analyzer, and they take minutes. Run them as
 separate commands.

@@ -44,11 +44,11 @@ while read -r name repository commit; do
     exit 1
   fi
   # The key goes in a new table at the end of the root manifest. A root with
-  # no `[workspace]` table, or with its own `[workspace.metadata]`, would get a
+  # no `[workspace]` table, or with its own fallow configuration, would get a
   # different meaning, so the run stops for it.
   manifest="$workspace/Cargo.toml"
-  if ! grep -q '^\[workspace\]' "$manifest" || grep -q '^\[workspace\.metadata' "$manifest"; then
-    echo "::error::${name}: the root manifest needs a [workspace] table and no [workspace.metadata] table"
+  if ! grep -q '^\[workspace\]' "$manifest" || grep -qE '^\s*\[workspace\.metadata\.fallow' "$manifest"; then
+    echo "::error::${name}: the root manifest needs a [workspace] table and no [workspace.metadata.fallow] table"
     exit 1
   fi
   printf '\n[workspace.metadata.fallow.visibility]\npublic-crates = []\n' >> "$manifest"

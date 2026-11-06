@@ -17,7 +17,11 @@ const USAGE = `Usage: node scripts/corpus-check.mjs --verdicts <file> --results 
   --results <dir>    A folder with <workspace>.json, the output of
                      \`cargo fallow check --format json\` in each workspace.
   --write            Add each new finding with the verdict "baseline", and
-                     remove each finding that the run no longer reports.`;
+                     remove each finding that the run no longer reports.
+
+The folder can also hold <workspace>.internal.json, the output of the run with
+each library internal. Its findings that the default run does not report are
+judged against the \`internal\` verdicts of the workspace.`;
 
 /** The findings of a check report that the verdict file judges, keyed by id. */
 export const judgedFindings = (report, checks) => {
@@ -98,7 +102,12 @@ export const validate = (file) => {
       problems.push(`${name}: \`repository\` must be a URL`);
     }
     for (const { key } of RUNS) {
-      for (const [id, entry] of Object.entries(workspace[key] ?? {})) {
+      const map = workspace[key];
+      if (map !== undefined && (typeof map !== "object" || map === null || Array.isArray(map))) {
+        problems.push(`${name}: \`${key}\` must be an object`);
+        continue;
+      }
+      for (const [id, entry] of Object.entries(map ?? {})) {
         if (!VERDICTS.has(entry.verdict)) {
           problems.push(`${name}: ${id} has the unknown verdict \`${entry.verdict}\``);
         }
@@ -132,11 +141,11 @@ export const RUNS = Object.freeze([
 ]);
 
 /**
- * Judges one result file against its verdicts. Returns `broken` when the
- * result cannot be judged, the count of new findings, and the verdicts that
- * `--write` keeps.
+ * Judges one result file against its verdicts, without the ids in `skip`.
+ * Returns `broken` when the result cannot be judged, the judged ids, the count
+ * of new findings, and the verdicts that `--write` keeps.
  */
-const judgeRun = ({ name, resultPath, verdicts, checks, write, log }) => {
+const judgeRun = ({ name, resultPath, verdicts, checks, skip = new Set(), write, log }) => {
   if (!existsSync(resultPath)) {
     log(`error: ${name}: no result file ${resultPath}`);
     return { broken: true };
@@ -151,6 +160,9 @@ const judgeRun = ({ name, resultPath, verdicts, checks, write, log }) => {
     return { broken: true };
   }
   const found = judgedFindings(report, checks);
+  for (const id of skip) {
+    found.delete(id);
+  }
   const { added, removed, knownFalse } = compare(found, verdicts);
   for (const finding of added) {
     log(
@@ -169,7 +181,7 @@ const judgeRun = ({ name, resultPath, verdicts, checks, write, log }) => {
     `${name}: ${found.size} findings, ${added.length} new, ${removed.length} gone, ${knownFalse.length} known false positives`,
   );
   if (!write) {
-    return { broken: false, added: added.length };
+    return { broken: false, ids: new Set(found.keys()), added: added.length };
   }
   const kept = { ...verdicts };
   for (const finding of added) {
@@ -180,6 +192,7 @@ const judgeRun = ({ name, resultPath, verdicts, checks, write, log }) => {
   }
   return {
     broken: false,
+    ids: new Set(found.keys()),
     added: added.length,
     verdicts: Object.fromEntries(Object.entries(kept).toSorted(([a], [b]) => a.localeCompare(b))),
   };
@@ -201,6 +214,9 @@ export const run = ({ verdictsPath, resultsDir, write, log = console.log }) => {
   let failed = false;
   let broken = false;
   for (const [name, workspace] of Object.entries(file.workspaces)) {
+    // A finding of the default run has its verdict there, so the internal run
+    // judges only the findings that the default run does not report.
+    let judged = new Set();
     for (const mode of RUNS) {
       const resultPath = join(resultsDir, `${name}${mode.suffix}.json`);
       // The default run is always judged. The internal run is judged when the
@@ -213,12 +229,16 @@ export const run = ({ verdictsPath, resultsDir, write, log = console.log }) => {
         resultPath,
         verdicts: workspace[mode.key] ?? {},
         checks: file.checks,
+        skip: judged,
         write,
         log,
       });
       if (state.broken) {
         broken = true;
-      } else if (write) {
+        continue;
+      }
+      judged = new Set([...judged, ...state.ids]);
+      if (write) {
         workspace[mode.key] = state.verdicts;
       } else if (state.added > 0) {
         failed = true;

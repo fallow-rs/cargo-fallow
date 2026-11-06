@@ -224,3 +224,43 @@ test("--write records the internal run in its own section", () => {
   assert.deepEqual(Object.keys(saved.workspaces.demo.findings), ["a"]);
   assert.deepEqual(Object.keys(saved.workspaces.demo.internal), ["b"]);
 });
+
+test("a finding that both runs report needs only its default verdict", () => {
+  const { code, saved } = runInternalCase(
+    withInternal({ a: baseline }, {}),
+    [finding("a")],
+    [finding("a"), finding("b")],
+    true,
+  );
+  assert.equal(code, 0);
+  assert.deepEqual(Object.keys(saved.workspaces.demo.internal), ["b"]);
+  const passed = runInternalCase(
+    withInternal({ a: baseline }, { b: baseline }),
+    [finding("a")],
+    [finding("a"), finding("b")],
+  );
+  assert.equal(passed.code, 0, passed.lines.join("\n"));
+});
+
+test("an internal result with no internal verdicts is judged", () => {
+  const { code, lines } = runInternalCase(
+    verdictFile({ a: baseline }),
+    [finding("a")],
+    [finding("b")],
+  );
+  assert.equal(code, 1);
+  assert.ok(lines.some((line) => line.startsWith("error: demo (internal): new finding b")));
+});
+
+test("a broken internal result fails the run", () => {
+  const broken = { ...finding("p", "parse"), rule: "parse-error" };
+  const { code } = runInternalCase(withInternal({ a: baseline }, {}), [finding("a")], [broken]);
+  assert.equal(code, 2);
+});
+
+test("validate rejects an unknown verdict and a non-object map in internal", () => {
+  const unknown = withInternal({}, { x: { ...baseline, verdict: "maybe" } });
+  assert.ok(validate(unknown).some((problem) => /unknown verdict `maybe`/u.test(problem)));
+  const notMap = withInternal({}, 5);
+  assert.ok(validate(notMap).some((problem) => /`internal` must be an object/u.test(problem)));
+});

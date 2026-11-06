@@ -21,12 +21,13 @@ a library that a registry can publish is an entry point, so the
 | Run | Configuration | Result file | Verdicts |
 | --- | --- | --- | --- |
 | Default | The configuration of the workspace | `<workspace>.json` | `findings` |
-| Internal | `public-crates = []`, so each library is internal | `<workspace>.internal.json` | `internal` |
+| Internal | `public-crates = []`, so each library is internal | `<workspace>.internal.json` | `internal`, for each finding that the default run does not report |
 
 For the internal run, the script adds the key in a new
 `[workspace.metadata.fallow.visibility]` table at the end of the root
 manifest, and restores the manifest after the run. It stops for a root
-manifest with no `[workspace]` table or with a `[workspace.metadata]` table.
+manifest with no `[workspace]` table or with a `[workspace.metadata.fallow]`
+table. A finding that both runs report has one verdict, in `findings`.
 
 ## Verdicts
 
@@ -42,13 +43,15 @@ manifest with no `[workspace]` table or with a `[workspace.metadata]` table.
 
    ```bash
    cargo build --release --locked
-   bash scripts/corpus-run.sh tests/corpus/verdicts.json ~/.cache/corpus target/release/cargo-fallow
+   bash scripts/corpus-run.sh tests/corpus/verdicts.json ~/.cache/corpus "$PWD/target/release/cargo-fallow"
    node scripts/corpus-check.mjs --verdicts tests/corpus/verdicts.json --results ~/.cache/corpus/results
    ```
 
 2. Check each new finding by hand in the source of the workspace.
 3. Fix a false positive in the tool. Add a correct finding with
    `--write`, then change its verdict from `baseline` to `true-positive`.
+   The error line names the run: a line with `(internal)` is a finding of
+   the internal run, and its verdict goes in `internal`.
 
 A finding that is gone gives a note and does not fail the job. `--write`
 removes it from the file.

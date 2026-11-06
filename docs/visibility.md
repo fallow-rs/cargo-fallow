@@ -113,16 +113,8 @@ expansion:
   type of the receiver is unknown,
 - each item with a name in macro tokens, in an attribute or in a
   documentation code block,
-- each item that the output tokens of a proc-macro crate name, in each crate
-  that can call the macro and in the crates that it can use. The output
-  tokens are the tokens of `quote!`, `quote_spanned!`, `parse_quote!` and
-  `parse_quote_spanned!`, but not a `#name` variable. The macro writes these
-  tokens into the crate that calls it, also through a re-export in another
-  crate. A path counts as a path from the root module of each such crate.
-  When a path does not resolve there, each name of the path counts, for
-  example the type and the function of `Thing::new`. A name match puts the
-  item in `undecided`, so a common name in the output, for example a field
-  or a method name, can put items of many crates in `undecided`,
+- each item that the output tokens of a proc-macro crate name. See
+  [Proc-macro output](#proc-macro-output),
 - items of trait impls, `#[macro_export]` macros and proc-macro entry points,
 - items under an attribute macro, for example the fields of a
   `#[napi(object)]` struct,
@@ -151,6 +143,51 @@ a warning:
   type.
 
 The command ignores `cfg` conditions. It reads the code of each branch.
+
+### Proc-macro output
+
+A proc-macro writes its output tokens into the crate that calls the macro.
+The output tokens are the tokens of `quote!`, `quote_spanned!`,
+`parse_quote!` and `parse_quote_spanned!` in a proc-macro crate. A name in
+the output tokens counts in these crates:
+
+- the proc-macro crate;
+- each crate that depends on the proc-macro crate;
+- each crate that depends on a crate that re-exports a macro of the
+  proc-macro crate with `pub use` or `pub extern crate`. A re-export of a
+  re-export also counts;
+- the workspace crates that the crates above depend on, also through other
+  crates.
+
+A crate that only depends on a caller cannot name the macro, so the output
+does not count in that crate.
+
+A path in the output counts as a path from the root module of each crate
+that can call the macro. When the path does not resolve there, each name of
+the path counts. For example, `Thing::new` counts for each type `Thing` and
+each function `new`. A name match puts the item in `undecided`. A common name
+in the output, for example a field or a method name, can put items of many
+crates in `undecided`.
+
+These names in the output tokens are no uses:
+
+- a `#name` variable. In `#krate::name`, only `krate` is a variable, so
+  `name` counts as a name of the output;
+- a name that the output defines: the name after `fn`, `struct`, `enum`,
+  `trait`, `type`, `const`, `static` or `mod`, a parameter, a field
+  declaration and a variant declaration;
+- the tokens of a `quote!` in the test code of the proc-macro crate.
+
+In the output, a name in a `use a::{b, c}` group is no field or method name.
+A method call `.name(..)` counts only for methods, not for fields.
+
+Limits: the command does not read these names, so an item that only they use
+can get a finding:
+
+- a name in a string that `syn::parse_str` or `TokenStream::from_str`
+  parses;
+- a name in the `quote!` tokens of a library crate, for example a helper
+  crate that a proc-macro crate uses.
 
 The command reports no finding in a generated file, because a code generator
 sets the visibility in that file. A file is generated when a comment in its

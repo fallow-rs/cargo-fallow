@@ -30,6 +30,15 @@ pub struct TokenPath {
     /// True for a chain in the tokens of a nested call of an output macro,
     /// for example `quote! { .. }` in the tokens of `vec![..]`.
     pub quoted: bool,
+    /// True for a name that the tokens define and do not use: the name after
+    /// `fn`, `struct`, `enum`, `trait`, `type`, `const`, `static` or `mod`, a
+    /// parameter, a field declaration or a variant declaration.
+    pub defined: bool,
+    /// True for a member name before `(`: a method call `.name(..)`.
+    pub call: bool,
+    /// True for a single name in a `::{..}` group, as in `use a::{b, c}`.
+    /// The name is no field and no method.
+    pub grouped: bool,
 }
 
 /// The macros whose tokens are the output of a proc-macro. The output goes
@@ -41,6 +50,17 @@ pub const OUTPUT_MACROS: &[&str] = &[
     "parse_quote_spanned",
 ];
 
+/// A keyword before the name of an item that the tokens define.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Keyword {
+    Fn,
+    Struct,
+    Enum,
+    /// `trait`, `type`, `const`, `static` or `mod`.
+    Item,
+    Mut,
+}
+
 /// A token with only the facts that the scan needs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Piece<'a> {
@@ -49,10 +69,16 @@ enum Piece<'a> {
     Dollar,
     Pound,
     Bang,
+    Semi,
+    Star,
+    Lt,
+    Gt,
+    Keyword(Keyword),
     Dot,
     Comma,
     OpenBrace,
     CloseBrace,
+    OpenParen,
     Open,
     Close,
     Other,
@@ -108,11 +134,21 @@ fn piece(kind: SyntaxKind, text: &str) -> Piece<'_> {
         T![$] => Piece::Dollar,
         T![#] => Piece::Pound,
         T![!] => Piece::Bang,
+        T![;] => Piece::Semi,
+        T![*] => Piece::Star,
+        T![<] => Piece::Lt,
+        T![>] => Piece::Gt,
+        T![fn] => Piece::Keyword(Keyword::Fn),
+        T![struct] => Piece::Keyword(Keyword::Struct),
+        T![enum] => Piece::Keyword(Keyword::Enum),
+        T![trait] | T![type] | T![const] | T![static] | T![mod] => Piece::Keyword(Keyword::Item),
+        T![mut] => Piece::Keyword(Keyword::Mut),
         T![.] => Piece::Dot,
         T![,] => Piece::Comma,
         T!['{'] => Piece::OpenBrace,
         T!['}'] => Piece::CloseBrace,
-        T!['('] | T!['['] => Piece::Open,
+        T!['('] => Piece::OpenParen,
+        T!['['] => Piece::Open,
         T![')'] | T![']'] => Piece::Close,
         _ => Piece::Other,
     }
@@ -123,6 +159,8 @@ fn piece(kind: SyntaxKind, text: &str) -> Piece<'_> {
 fn chains(pieces: &[Piece<'_>]) -> Vec<TokenPath> {
     let mut records: FxHashMap<usize, Vec<String>> = FxHashMap::default();
     let quoted = quoted_pieces(pieces);
+    let defined = defined_pieces(pieces);
+    let grouped = grouped_pieces(pieces);
     let mut paths = Vec::new();
     let mut index = 0;
     while index < pieces.len() {
@@ -131,6 +169,8 @@ fn chains(pieces: &[Piece<'_>]) -> Vec<TokenPath> {
                 let next = push_chain(pieces, index, first, &mut records, &mut paths);
                 if let Some(path) = paths.last_mut() {
                     path.quoted = quoted[index];
+                    path.defined = defined[index] && path.segments.len() == 1;
+                    path.grouped = grouped[index] && path.segments.len() == 1;
                 }
                 next
             }
@@ -147,14 +187,17 @@ fn quoted_pieces(pieces: &[Piece<'_>]) -> Vec<bool> {
     for index in 0..pieces.len() {
         let call = matches!(pieces[index], Piece::Ident(name) if OUTPUT_MACROS.contains(&name))
             && pieces.get(index + 1) == Some(&Piece::Bang)
-            && matches!(pieces.get(index + 2), Some(Piece::Open | Piece::OpenBrace));
+            && matches!(
+                pieces.get(index + 2),
+                Some(Piece::Open | Piece::OpenParen | Piece::OpenBrace)
+            );
         if !call {
             continue;
         }
         let mut depth = 0_u32;
         for (offset, piece) in pieces.iter().enumerate().skip(index + 2) {
             match piece {
-                Piece::Open | Piece::OpenBrace => depth += 1,
+                Piece::Open | Piece::OpenParen | Piece::OpenBrace => depth += 1,
                 Piece::Close | Piece::CloseBrace => depth = depth.saturating_sub(1),
                 _ => {}
             }
@@ -165,6 +208,123 @@ fn quoted_pieces(pieces: &[Piece<'_>]) -> Vec<bool> {
         }
     }
     quoted
+}
+
+/// For each piece, true when the innermost group around it is a `::{..}`
+/// group of a path.
+fn grouped_pieces(pieces: &[Piece<'_>]) -> Vec<bool> {
+    let mut grouped = vec![false; pieces.len()];
+    let mut stack: Vec<bool> = Vec::new();
+    for (index, piece) in pieces.iter().enumerate() {
+        match piece {
+            Piece::OpenBrace => stack.push(
+                index >= 2
+                    && pieces[index - 1] == Piece::Colon
+                    && pieces[index - 2] == Piece::Colon,
+            ),
+            Piece::Open | Piece::OpenParen => stack.push(false),
+            Piece::CloseBrace | Piece::Close => {
+                stack.pop();
+            }
+            _ => grouped[index] = stack.last() == Some(&true),
+        }
+    }
+    grouped
+}
+
+/// For each piece, true when it is a name that the tokens define. The scan
+/// marks the name after an item keyword. It also marks the parameters of a
+/// function, the fields of a struct and the variants and fields of an enum.
+fn defined_pieces(pieces: &[Piece<'_>]) -> Vec<bool> {
+    let mut defined = vec![false; pieces.len()];
+    for (index, piece) in pieces.iter().enumerate() {
+        let Piece::Keyword(keyword) = *piece else {
+            continue;
+        };
+        // In `*const T`, the name after `const` is a type, not a definition.
+        if keyword == Keyword::Mut || (index > 0 && pieces[index - 1] == Piece::Star) {
+            continue;
+        }
+        let mut name = index + 1;
+        if pieces.get(name) == Some(&Piece::Keyword(Keyword::Mut)) {
+            name += 1;
+        }
+        if !matches!(pieces.get(name), Some(Piece::Ident(_))) {
+            continue;
+        }
+        defined[name] = true;
+        let Some((open, body)) = item_body(pieces, name + 1, keyword) else {
+            continue;
+        };
+        for (inner, depth) in group_names(pieces, open) {
+            let field = single_colon_after(pieces, inner);
+            let mark = match body {
+                Keyword::Fn | Keyword::Struct => depth == 1 && field,
+                Keyword::Enum if depth == 1 => matches!(
+                    pieces[inner - 1],
+                    Piece::OpenBrace | Piece::Comma | Piece::Close
+                ),
+                Keyword::Enum => depth == 2 && field,
+                Keyword::Item | Keyword::Mut => false,
+            };
+            defined[inner] |= mark;
+        }
+    }
+    defined
+}
+
+/// The index of the group that holds the parts of an item, and the keyword
+/// of the item: the parameters of a function, or the body of a struct or an
+/// enum. The scan starts after the name and skips the generic parameters.
+fn item_body(pieces: &[Piece<'_>], start: usize, keyword: Keyword) -> Option<(usize, Keyword)> {
+    let mut angle = 0_u32;
+    for (index, piece) in pieces.iter().enumerate().skip(start) {
+        match piece {
+            Piece::Lt => angle += 1,
+            Piece::Gt => angle = angle.saturating_sub(1),
+            Piece::Open | Piece::OpenParen if angle == 0 => {
+                return (keyword == Keyword::Fn).then_some((index, keyword));
+            }
+            Piece::OpenBrace if angle == 0 => {
+                return matches!(keyword, Keyword::Struct | Keyword::Enum)
+                    .then_some((index, keyword));
+            }
+            Piece::Semi | Piece::CloseBrace | Piece::Close if angle == 0 => return None,
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The names in the group that opens at `open`, each with its depth: one for
+/// a name directly in the group. A nested group in `(..)` or `[..]` gives no
+/// names, because it holds types or attributes, not fields.
+fn group_names(pieces: &[Piece<'_>], open: usize) -> Vec<(usize, u32)> {
+    let mut names = Vec::new();
+    let mut stack: Vec<bool> = Vec::new();
+    for (index, piece) in pieces.iter().enumerate().skip(open) {
+        match piece {
+            Piece::OpenBrace => stack.push(true),
+            Piece::Open | Piece::OpenParen => stack.push(index == open),
+            Piece::CloseBrace | Piece::Close => {
+                stack.pop();
+                if stack.is_empty() {
+                    break;
+                }
+            }
+            Piece::Ident(_) if stack.iter().all(|&named| named) => {
+                let depth = u32::try_from(stack.len()).unwrap_or(u32::MAX);
+                names.push((index, depth));
+            }
+            _ => {}
+        }
+    }
+    names
+}
+
+/// True when a single `:` follows the piece at `index`, not a `::`.
+fn single_colon_after(pieces: &[Piece<'_>], index: usize) -> bool {
+    pieces.get(index + 1) == Some(&Piece::Colon) && pieces.get(index + 2) != Some(&Piece::Colon)
 }
 
 /// Adds the chain that starts with `first` at `index` to `paths`, and returns
@@ -192,6 +352,12 @@ fn push_chain(
         record,
         interpolated: index > 0 && pieces[index - 1] == Piece::Pound,
         quoted: false,
+        defined: false,
+        call: member
+            && index > 0
+            && pieces[index - 1] == Piece::Dot
+            && pieces.get(next) == Some(&Piece::OpenParen),
+        grouped: false,
     });
     next
 }
@@ -256,7 +422,7 @@ fn record_fields(pieces: &[Piece<'_>], open: usize) -> Vec<usize> {
     let mut depth = 0_u32;
     for index in open..pieces.len() {
         match pieces[index] {
-            Piece::OpenBrace | Piece::Open => depth += 1,
+            Piece::OpenBrace | Piece::Open | Piece::OpenParen => depth += 1,
             Piece::CloseBrace | Piece::Close => {
                 depth = depth.saturating_sub(1);
                 if depth == 0 {
@@ -297,6 +463,9 @@ fn path_in_string(literal: &str) -> Option<TokenPath> {
         record: None,
         interpolated: false,
         quoted: false,
+        defined: false,
+        call: false,
+        grouped: false,
     })
 }
 
@@ -418,6 +587,75 @@ mod tests {
                 ("depth".to_owned(), true),
             ]
         );
+    }
+
+    /// The names that the scan marks as defined, in order.
+    fn defined(code: &str) -> Vec<String> {
+        paths_in_code(code, Edition::Edition2021)
+            .into_iter()
+            .filter(|path| path.defined)
+            .map(|path| path.segments.join("::"))
+            .collect()
+    }
+
+    #[test]
+    fn definitions_are_marked() {
+        assert_eq!(
+            defined(
+                "pub fn px<F: Fn(u8)>(&self, cx: &App, mut n: u8) -> Pixels { px(cx.n) } \
+                 struct Shape<T> { #[serde(default)] pub(crate) level: Vec<T>, size: a::B } \
+                 enum Kind { #[default] Alpha, Beta(u8, c::D), Gamma { depth: u8 } } \
+                 trait Tr {} type Al = u8; const LIMIT: u8 = 1; static mut COUNT: u8 = 0; \
+                 mod inner {}"
+            ),
+            [
+                "px", "cx", "n", "Shape", "level", "size", "Kind", "Alpha", "Beta", "Gamma",
+                "depth", "Tr", "Al", "LIMIT", "COUNT", "inner",
+            ]
+        );
+    }
+
+    #[test]
+    fn uses_next_to_definitions_are_not_marked() {
+        assert!(
+            defined(
+                "impl a::Trait for X { } let p: *const Target = q; let r: *mut Other = s; \
+                 let f: fn(u8) -> Out = g; Shape { level: 1 }; x.focus(&handle); \
+                 struct Tuple(Field); fn call(Pat { inner }: Pat) {}"
+            ) == ["Tuple", "call"],
+            "only the item names are definitions"
+        );
+    }
+
+    #[test]
+    fn method_calls_and_use_groups_are_marked() {
+        let paths = paths_in_code(
+            "use a::{b, c::d}; x.call(1); x.field; x.index[0]; S { e, f: 1 }",
+            Edition::Edition2021,
+        );
+        let marks: Vec<(String, bool, bool)> = paths
+            .iter()
+            .map(|path| (path.segments.join("::"), path.call, path.grouped))
+            .collect();
+        let expected = [
+            ("a", false, false),
+            ("b", false, true),
+            ("c::d", false, false),
+            ("x", false, false),
+            ("call", true, false),
+            ("x", false, false),
+            ("field", false, false),
+            ("x", false, false),
+            ("index", false, false),
+            ("S", false, false),
+            ("e", false, false),
+            ("f", false, false),
+        ];
+        let expected: Vec<(String, bool, bool)> = expected
+            .iter()
+            .map(|&(name, call, grouped)| (name.to_owned(), call, grouped))
+            .collect();
+        assert_eq!(marks, expected);
     }
 
     #[test]

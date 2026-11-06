@@ -16,8 +16,9 @@ use std::cell::RefCell;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::graph::credits::{Credits, NameFilter, Scope, Site};
+use crate::graph::expansion::{Expansion, expansions};
 use crate::graph::extract::{ALL_FIELDS, Binding, ItemKind, Origin, RefKind};
-use crate::graph::{CrateId, CrateKind, Extern, Graph, Item, ItemId, ModuleId};
+use crate::graph::{CrateId, Extern, Graph, Item, ItemId, ModuleId};
 use crate::parse::Edition;
 
 /// The names that resolve outside the workspace when no item has them.
@@ -172,7 +173,7 @@ type ImportIndexes<'g> = (FxHashMap<(ModuleId, &'g str), Vec<usize>>, Vec<Vec<us
 /// The crate and the workspace crates that it depends on, also through
 /// other crates: a re-export can give a type of a deeper crate, and the code
 /// can call its methods.
-fn visible_crates(graph: &Graph, krate: CrateId, doc: bool) -> Vec<CrateId> {
+pub(super) fn visible_crates(graph: &Graph, krate: CrateId, doc: bool) -> Vec<CrateId> {
     let entry = &graph.crates[krate];
     let externs = if doc {
         &entry.doc_externs
@@ -195,44 +196,6 @@ fn visible_crates(graph: &Graph, krate: CrateId, doc: bool) -> Vec<CrateId> {
         index += 1;
     }
     crates
-}
-
-/// The crates where the output of a proc-macro crate can be.
-#[derive(Debug, Default)]
-struct Expansion {
-    /// Each other crate that can call the macro, also through a re-export of
-    /// another crate.
-    callers: Vec<CrateId>,
-    /// The proc-macro crate, the callers and the crates that they can use.
-    crates: Vec<CrateId>,
-}
-
-/// The [`Expansion`] of each proc-macro crate.
-fn expansions(graph: &Graph) -> FxHashMap<CrateId, Expansion> {
-    let macros: Vec<CrateId> = (0..graph.crates.len())
-        .filter(|&krate| graph.crates[krate].kind == CrateKind::ProcMacro)
-        .collect();
-    if macros.is_empty() {
-        return FxHashMap::default();
-    }
-    let visible: Vec<Vec<CrateId>> = (0..graph.crates.len())
-        .map(|krate| visible_crates(graph, krate, false))
-        .collect();
-    macros
-        .into_iter()
-        .map(|proc_macro| {
-            let callers: Vec<CrateId> = (0..graph.crates.len())
-                .filter(|&krate| krate != proc_macro && visible[krate].contains(&proc_macro))
-                .collect();
-            let mut crates = visible[proc_macro].clone();
-            for &caller in &callers {
-                crates.extend(visible[caller].iter().copied());
-            }
-            crates.sort_unstable();
-            crates.dedup();
-            (proc_macro, Expansion { callers, crates })
-        })
-        .collect()
 }
 
 /// Indexes the imports of the graph by their binding.
@@ -733,12 +696,14 @@ impl<'g> Resolver<'g> {
     /// True for a name in the output tokens of a proc-macro crate: the tokens
     /// of an output macro such as `quote!`. The tokens of other macros, for
     /// example `vec!`, and a `#name` variable are code of the proc-macro
-    /// crate itself.
+    /// crate itself. The tests of the proc-macro crate do not run the macro
+    /// in a caller, so their tokens are also code of the proc-macro crate.
     fn in_proc_macro_tokens(&self, base: Credit) -> bool {
         let Source::Ref(index) = base.source else {
             return false;
         };
-        self.graph.refs[index].output && self.expansion.contains_key(&base.krate)
+        let reference = &self.graph.refs[index];
+        reference.output && !reference.test_only && self.expansion.contains_key(&base.krate)
     }
 
     fn externs(&self, krate: CrateId, doc: bool) -> &'g [Extern] {

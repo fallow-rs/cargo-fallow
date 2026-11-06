@@ -12,6 +12,7 @@
 
 pub mod credits;
 pub mod doc_links;
+mod expansion;
 pub mod extract;
 pub mod resolve;
 pub mod tokens;

@@ -384,7 +384,7 @@ fn doc_refs_at(markdown: &str, edition: Edition, line: u32) -> Vec<RawRef> {
 }
 
 fn doc_ref(path: TokenPath, line: u32) -> Vec<RawRef> {
-    token_ref_kinds(path)
+    token_ref_kinds(path, false)
         .into_iter()
         .map(|kind| RawRef {
             inline: Vec::new(),
@@ -402,7 +402,11 @@ fn doc_ref(path: TokenPath, line: u32) -> Vec<RawRef> {
 
 /// The references of one token path: the path, and a member reference for a
 /// name that can be a field or a method.
-fn token_ref_kinds(path: TokenPath) -> Vec<RefKind> {
+///
+/// In the output tokens of a proc-macro (`output` true), a name in a
+/// `::{..}` group, as in `use a::{b, c}`, is no member. A method call
+/// `.name(..)` gives a method reference, not a member reference.
+fn token_ref_kinds(path: TokenPath, output: bool) -> Vec<RefKind> {
     if let (Some(record), Some(field)) = (path.record, path.segments.first()) {
         return vec![
             RefKind::Path {
@@ -416,11 +420,17 @@ fn token_ref_kinds(path: TokenPath) -> Vec<RefKind> {
             },
         ];
     }
-    let member = path
-        .member
+    let call = output && path.call;
+    let member = (path.member && !(output && path.grouped))
         .then(|| path.segments.first().cloned())
         .flatten()
-        .map(RefKind::Member);
+        .map(|name| {
+            if call {
+                RefKind::Method(name)
+            } else {
+                RefKind::Member(name)
+            }
+        });
     let mut kinds = vec![RefKind::Path {
         segments: path.segments,
         global: path.global,
@@ -1293,8 +1303,20 @@ impl<'a> Walker<'a> {
                 segments.extend(path.segments.into_iter().skip(1));
                 path.segments = segments;
             }
-            let output = (quoted || path.quoted) && !path.interpolated;
-            for kind in token_ref_kinds(path) {
+            let in_output = quoted || path.quoted;
+            if in_output && path.defined {
+                continue;
+            }
+            let output = if in_output && path.interpolated && path.segments.len() > 1 {
+                // In `#krate::name`, only `krate` is a variable of the code
+                // that builds the tokens. The rest of the path is output.
+                path.segments.remove(0);
+                path.global = false;
+                true
+            } else {
+                in_output && !path.interpolated
+            };
+            for kind in token_ref_kinds(path, output) {
                 self.add_ref(kind, origin);
                 if let Some(reference) = self.facts.refs.last_mut() {
                     reference.output = output;

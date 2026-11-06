@@ -191,3 +191,190 @@ fn proc_macro_tokens_use_items_of_the_crates_that_call_the_macro() {
     .collect();
     assert_eq!(found, expected);
 }
+
+/// A workspace for the scope of the macro output:
+///
+/// - `pm` is a proc-macro crate;
+/// - `facade` re-exports the macro of `pm`, and `relay` re-exports it again
+///   from `facade`;
+/// - `user` calls the macro through `relay`;
+/// - `far` depends on `user` and on `other`, but `far` cannot name the macro;
+/// - `items` holds the items that the output names or defines;
+/// - `plain` re-exports a struct of `facade`, but not the macro, so `tool`
+///   cannot name the macro through `plain`. `tool` also uses `lone`.
+const SCOPE_MANIFESTS: &[(&str, &str)] = &[
+    (
+        "Cargo.toml",
+        "[workspace]\nmembers = [\"pm\", \"facade\", \"relay\", \"user\", \"far\", \"other\", \
+         \"items\", \"plain\", \"tool\", \"lone\"]\nresolver = \"3\"\n",
+    ),
+    (
+        "pm/Cargo.toml",
+        "[package]\nname = \"pm\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n\
+         [lib]\nproc-macro = true\n",
+    ),
+    (
+        "facade/Cargo.toml",
+        "[package]\nname = \"facade\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n\
+         [dependencies]\npm = { path = \"../pm\" }\n",
+    ),
+    (
+        "relay/Cargo.toml",
+        "[package]\nname = \"relay\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n\
+         [dependencies]\nfacade = { path = \"../facade\" }\n",
+    ),
+    (
+        "user/Cargo.toml",
+        "[package]\nname = \"user\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n\
+         [dependencies]\nrelay = { path = \"../relay\" }\nitems = { path = \"../items\" }\n",
+    ),
+    (
+        "far/Cargo.toml",
+        "[package]\nname = \"far\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n\
+         [dependencies]\nuser = { path = \"../user\" }\nother = { path = \"../other\" }\n",
+    ),
+    (
+        "other/Cargo.toml",
+        "[package]\nname = \"other\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n",
+    ),
+    (
+        "items/Cargo.toml",
+        "[package]\nname = \"items\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n",
+    ),
+    (
+        "plain/Cargo.toml",
+        "[package]\nname = \"plain\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n\
+         [dependencies]\nfacade = { path = \"../facade\" }\n",
+    ),
+    (
+        "tool/Cargo.toml",
+        "[package]\nname = \"tool\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n\
+         [dependencies]\nplain = { path = \"../plain\" }\nlone = { path = \"../lone\" }\n",
+    ),
+    (
+        "lone/Cargo.toml",
+        "[package]\nname = \"lone\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n",
+    ),
+];
+
+/// The proc-macro. The output calls `items::chained` and a method
+/// `member_name`, defines names, implements a trait, and names a function
+/// after an interpolated prefix. The test module quotes `items::from_test`.
+const SCOPE_MACRO: &str = "use proc_macro::TokenStream;\n\
+    macro_rules! quote { ($($t:tt)*) => { stringify!($($t)*) }; }\n\
+    #[proc_macro_attribute]\n\
+    pub fn bench(_args: TokenStream, item: TokenStream) -> TokenStream {\n\
+    \x20   let krate = quote!(items);\n\
+    \x20   let mut out = item.to_string();\n\
+    \x20   out.push_str(quote! {\n\
+    \x20       fn __bench(v: u8) { items::chained(); v.member_name(); #krate::via_prefix(); }\n\
+    \x20       fn defined_only() {}\n\
+    \x20       fn take(cursor: u8) -> u8 { cursor + 1 }\n\
+    \x20       struct Shape { level: u8 }\n\
+    \x20       enum Kind { Alpha, Beta { depth: u8 } }\n\
+    \x20       impl items::Marker for Shape {}\n\
+    \x20       const LIMIT: u8 = 1;\n\
+    \x20       use items::{tint, Marker};\n\
+    \x20       fn __glow(v: u8) { v.glow(); v.lone_call(); }\n\
+    \x20   });\n\
+    \x20   let _ = krate;\n\
+    \x20   out.parse().expect(\"valid tokens\")\n\
+    }\n\
+    #[cfg(test)]\n\
+    mod tests {\n\
+    \x20   #[test]\n\
+    \x20   fn quoted() {\n\
+    \x20       let _ = quote! { items::from_test() };\n\
+    \x20   }\n\
+    }\n";
+
+const SCOPE_FILES: &[(&str, &str)] = &[
+    ("pm/src/lib.rs", SCOPE_MACRO),
+    (
+        "facade/src/lib.rs",
+        "pub use pm::bench;\npub struct Helper;\n",
+    ),
+    ("relay/src/lib.rs", "pub use facade::bench;\n"),
+    ("plain/src/lib.rs", "pub use facade::Helper;\n"),
+    (
+        "tool/src/main.rs",
+        "fn main() { let _ = plain::Helper; lone::run(); }\n",
+    ),
+    (
+        "lone/src/lib.rs",
+        "pub struct Lone;\n\
+         impl Lone {\n    pub fn lone_call(&self) {}\n}\n\
+         pub fn run() { Lone.lone_call(); }\n",
+    ),
+    (
+        "user/src/lib.rs",
+        "#[relay::bench]\nfn work() {}\npub fn run() { work(); let _ = items::own(); }\n",
+    ),
+    (
+        "far/src/main.rs",
+        "fn main() { user::run(); other::run(); }\n",
+    ),
+    (
+        "other/src/lib.rs",
+        "pub struct Unrelated;\n\
+         impl Unrelated {\n    pub fn member_name(&self) {}\n}\n\
+         pub fn run() { let _ = Unrelated; }\n",
+    ),
+    (
+        "items/src/lib.rs",
+        "pub trait Marker {}\n\
+         pub fn chained() {}\n\
+         pub fn via_prefix() {}\n\
+         pub fn from_test() {}\n\
+         pub fn defined_only() {}\n\
+         pub fn Alpha() {}\n\
+         pub const LIMIT: u8 = 2;\n\
+         pub struct State {\n    pub cursor: u8,\n    pub level: u8,\n    pub depth: u8,\n\
+         \x20   pub tint: u8,\n    pub glow: u8,\n}\n\
+         pub fn own() -> u8 {\n\
+         \x20   let s = State { cursor: 1, level: 2, depth: 3, tint: 4, glow: 5 };\n\
+         \x20   s.cursor + s.level + s.depth + s.tint + s.glow\n}\n",
+    ),
+];
+
+/// The output of `#[relay::bench]` in `user` calls `items::chained` and
+/// implements `items::Marker`, so both stay `pub`. `relay` re-exports the
+/// macro of `facade`, and `facade` re-exports the macro of `pm`. So `user`
+/// can call the macro. `far` cannot name the macro, so `v.member_name()` does
+/// not use `other::Unrelated::member_name`, and only `other` uses
+/// `Unrelated`. The output only defines
+/// `defined_only`, `Alpha`, `LIMIT`, the parameter `cursor` and the fields
+/// `level` and `depth`, so these names are no uses. `#krate::via_prefix`
+/// uses `via_prefix`. The `quote!` of the test module is not output, so
+/// `from_test` has no use. The name `tint` in `use items::{tint, ..}` is no
+/// field, and `v.glow()` calls a method, so the fields `tint` and `glow` have
+/// no use outside `items`. `tool` cannot name the macro, so `v.lone_call()`
+/// does not use `lone::Lone::lone_call`.
+#[test]
+fn proc_macro_output_counts_only_in_crates_that_can_name_the_macro() {
+    let dir = tempfile::tempdir().expect("create a temporary directory");
+    for (path, text) in SCOPE_MANIFESTS.iter().chain(SCOPE_FILES) {
+        write(dir.path(), path, text);
+    }
+    let found = findings(&dir);
+    let expected: BTreeSet<String> = [
+        "unnecessary-public Unrelated",
+        "dead-public Unrelated::member_name",
+        "dead-public defined_only",
+        "dead-public from_test",
+        "dead-public Alpha",
+        "dead-public LIMIT",
+        "unnecessary-public State",
+        "unnecessary-public State::cursor",
+        "unnecessary-public State::level",
+        "unnecessary-public State::depth",
+        "unnecessary-public State::tint",
+        "unnecessary-public State::glow",
+        "unnecessary-public Lone",
+        "unnecessary-public Lone::lone_call",
+    ]
+    .iter()
+    .map(|row| (*row).to_owned())
+    .collect();
+    assert_eq!(found, expected);
+}

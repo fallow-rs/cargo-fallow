@@ -104,8 +104,10 @@ cargo fallow fix --yes --only visibility   # only the visibility edits
   - an unused entry with an exact version (`=`) or an upper bound (`<`,
     `<=`, `~`) on a crate that another package in the resolve also uses.
     Cargo picks one version for each compatible range, so the entry can pin
-    the version for the other package. When another entry has the same
-    requirement, the pin stays and `fix` removes the entry,
+    the version for the other package. When another entry that `fix` keeps
+    has the same requirement, the pin stays and `fix` removes the entry. An
+    upper bound on the first version of the next compatible range, for
+    example `<0.2` for a `0.1` crate, does not pin,
   - an unused `[dependencies]` entry when the library or a binary uses an
     attribute macro or calls a macro in the place of an item, from a crate
     outside the workspace, by a path such as `#[krate::name]` or

@@ -140,8 +140,8 @@ names it, but `cargo fallow fix` does not remove it in these cases:
 
 A macro call in an expression, for example `log::info!(..)`, a derive and a
 macro that a `use` item imports do not count. The macros of `async_trait`,
-`bitflags`, `ctor`, `lazy_static`, `pin_project`, `serde`, `thiserror`,
-`tokio` and `tracing` write only paths of their own crate and of the
+`bitflags`, `ctor`, `lazy_static`, `pin_project`, `rust_i18n`, `serde`,
+`thiserror`, `tokio` and `tracing` write only paths of their own crate and of the
 standard library, so they do not count either.
 
 ## Feature drift

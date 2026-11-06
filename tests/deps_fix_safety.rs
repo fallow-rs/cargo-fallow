@@ -22,7 +22,7 @@ use tempfile::TempDir;
 const LIBS: &[&str] = &["alpha", "beta", "gamma", "delta"];
 
 /// The crates outside the workspace.
-const EXTERNAL: &[&str] = &["mac", "other", "ctor"];
+const EXTERNAL: &[&str] = &["mac", "other", "ctor", "rust-i18n"];
 
 /// The text of `fix` for an entry that the code of an external macro can use.
 const EXTERNAL_MACRO: &str = "the code of that macro can use the entry";
@@ -109,20 +109,23 @@ fn run(dir: &TempDir, args: &[&str]) -> Value {
 
 /// The first action of each finding of `deps`, keyed by `section key`.
 fn actions(dir: &TempDir) -> BTreeMap<String, Value> {
+    keyed_actions(dir, &["section", "dependency"])
+}
+
+/// The first action of each finding of `deps`, keyed by the values of
+/// `fields`, separated by a space.
+fn keyed_actions(dir: &TempDir, fields: &[&str]) -> BTreeMap<String, Value> {
     let report = run(dir, &["deps", "--format", "json", "--quiet"]);
     report["findings"]
         .as_array()
         .expect("findings is an array")
         .iter()
         .map(|finding| {
-            (
-                format!(
-                    "{} {}",
-                    finding["section"].as_str().unwrap_or("?"),
-                    finding["dependency"].as_str().unwrap_or("?")
-                ),
-                finding["actions"][0].clone(),
-            )
+            let key: Vec<&str> = fields
+                .iter()
+                .map(|field| finding[*field].as_str().unwrap_or("?"))
+                .collect();
+            (key.join(" "), finding["actions"][0].clone())
         })
         .collect()
 }
@@ -188,7 +191,7 @@ fn expression_macros_std_macros_and_workspace_macros_keep_entries_fixable() {
         &manifest,
         &[(
             "app/src/lib.rs",
-            "#[derive(Debug)]\npub struct S;\n#[must_use]\npub fn g() -> u8 {\n\
+            "#[derive(Debug, mac::Thing)]\npub struct S;\n#[must_use]\npub fn g() -> u8 {\n\
              std::println!(\"x\");\n    core::assert!(true);\n    gamma::m!();\n    mac::m!();\n    mac::f();\n    0\n}\n\
              gamma::m!();\n",
         )],
@@ -223,18 +226,43 @@ fn external_macro_in_test_only_code_keeps_only_dev_entries() {
 }
 
 #[test]
-fn attribute_of_a_self_contained_macro_crate_keeps_entries_fixable() {
+fn external_attribute_macro_in_cfg_attr_keeps_unused_entries() {
     let manifest = format!(
-        "[dev-dependencies]\n{}{}",
+        "[features]\nx = []\n\n[dependencies]\n{}{}",
+        dep("mac", "ext"),
+        dep("alpha", "libs"),
+    );
+    let dir = workspace(
+        &manifest,
+        &[(
+            "app/src/lib.rs",
+            "#[cfg_attr(feature = \"x\", mac::attr)]\npub fn g() {}\n",
+        )],
+    );
+    let actions = actions(&dir);
+    assert_eq!(actions.len(), 1, "{actions:?}");
+    assert_action(&actions, "dependencies alpha", false, EXTERNAL_MACRO);
+}
+
+#[test]
+fn macros_of_a_self_contained_macro_crate_keep_entries_fixable() {
+    let manifest = format!(
+        "[dependencies]\n{}{}\n[dev-dependencies]\n{}{}",
+        dep("rust-i18n", "ext"),
+        dep("beta", "libs"),
         dep("ctor", "ext"),
         dep("alpha", "libs"),
     );
     let dir = workspace(
         &manifest,
-        &[("app/tests/it.rs", "#[ctor::ctor]\nfn init() {}\n")],
+        &[
+            ("app/src/lib.rs", "rust_i18n::i18n!(\"locales\");\n"),
+            ("app/tests/it.rs", "#[ctor::ctor]\nfn init() {}\n"),
+        ],
     );
     let actions = actions(&dir);
-    assert_eq!(actions.len(), 1, "{actions:?}");
+    assert_eq!(actions.len(), 2, "{actions:?}");
+    assert_action(&actions, "dependencies beta", true, EXTERNAL_MACRO);
     assert_action(&actions, "dev-dependencies alpha", true, EXTERNAL_MACRO);
 }
 
@@ -244,8 +272,8 @@ fn exact_or_bounded_version_of_a_shared_crate_stays_for_a_person() {
     let manifest = "[dependencies]\n\
          alpha = { path = \"../libs/alpha\", version = \"=0.1.0\" }\n\
          gamma = { path = \"../libs/gamma\", version = \"0.1.0\" }\n\
-         delta = { path = \"../libs/delta\", version = \">=0.1, <0.2\" }\n\
-         other = { path = \"../ext/other\", version = \"~0.1.0\" }\n\
+         delta = { path = \"../libs/delta\", version = \">=0.1, <0.1.5\" }\n\
+         other = { path = \"../ext/other\", version = \"<=0.1.0\" }\n\
          mac = { path = \"../ext/mac\", version = \"=0.1.0\" }\n";
     let dir = workspace(
         manifest,
@@ -304,6 +332,38 @@ fn pin_that_another_entry_repeats_stays_fixable() {
     assert_eq!(actions.len(), 1, "{actions:?}");
     // `beta` keeps the same pin, so the removal does not change the resolve.
     assert_action(&actions, "dependencies alpha", true, PIN);
+}
+
+#[test]
+fn two_unused_entries_with_the_same_pin_stay_for_a_person() {
+    let pin = "alpha = { path = \"../libs/alpha\", version = \"=0.1.0\" }\n";
+    let manifest = format!(
+        "[dependencies]\n{pin}{}{}",
+        dep("beta", "libs"),
+        dep("gamma", "libs"),
+    );
+    let dir = workspace(
+        &manifest,
+        &[
+            ("app/src/lib.rs", "pub fn g() { beta::f(); gamma::f(); }\n"),
+            (
+                "libs/beta/Cargo.toml",
+                "[package]\nname = \"beta\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n\
+                 [dependencies]\nalpha = { path = \"../alpha\" }\n",
+            ),
+            ("libs/beta/src/lib.rs", "pub fn f() { alpha::f(); }\n"),
+            (
+                "libs/gamma/Cargo.toml",
+                "[package]\nname = \"gamma\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n\
+                 [dependencies]\nalpha = { path = \"../alpha\", version = \"=0.1.0\" }\n",
+            ),
+        ],
+    );
+    let actions = keyed_actions(&dir, &["package", "dependency"]);
+    assert_eq!(actions.len(), 2, "{actions:?}");
+    // `fix` removes both entries, so neither entry keeps the pin for `beta`.
+    assert_action(&actions, "app alpha", false, PIN);
+    assert_action(&actions, "gamma alpha", false, PIN);
 }
 
 #[test]

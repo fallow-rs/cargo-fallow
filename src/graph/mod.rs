@@ -307,6 +307,8 @@ struct ParsedFile {
     module_path: Vec<String>,
     under_cfg: bool,
     cfg_off: bool,
+    /// True when only a test build loads the file.
+    test_only: bool,
     generated: bool,
     facts: FileFacts,
     /// The scan of the `files` check, from the same parse.
@@ -496,6 +498,7 @@ fn parse_target(root: &Path, target: &Target, want_scan: bool) -> CrateFiles {
                 module_path: visit.module_path.clone(),
                 under_cfg: visit.under_cfg,
                 cfg_off: visit.cfg_off,
+                test_only: visit.test_only,
                 generated,
                 facts,
                 scan,
@@ -635,6 +638,7 @@ fn add_file(
     let ParsedFile {
         path,
         cfg_off,
+        test_only,
         mut facts,
         ..
     } = file;
@@ -663,7 +667,7 @@ fn add_file(
             owner: raw.owner.map(|index| ids[index]),
             kind: unraw_kind(raw.kind),
             origin: raw.origin,
-            test_only: raw.test_only,
+            test_only: raw.test_only || test_only,
             under_cfg: raw.under_cfg || cfg_off,
             file: file_id,
             line: raw.line,
@@ -709,7 +713,7 @@ fn add_items(
             impl_self: raw.impl_self.clone(),
             impl_trait: raw.impl_trait.is_some(),
             child_module,
-            test_only: raw.test_only || module_is_test(graph, module),
+            test_only: raw.test_only || file.test_only || module_is_test(graph, module),
             under_cfg: raw.under_cfg || file.under_cfg,
             cfg: raw.cfg.clone(),
             flags: raw.flags,

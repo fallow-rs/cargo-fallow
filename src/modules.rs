@@ -1,7 +1,9 @@
 //! The module walk of a target.
 //!
 //! The walk starts at each target root and follows `mod name;` declarations,
-//! with `#[path]` attributes. The caller loads each file and returns the module
+//! with `#[path]` attributes. A declaration with `path` values in `cfg_attr`
+//! attributes gives one [`ModuleDecl`] for each file, so the walk reaches each
+//! platform file. The caller loads each file and returns the module
 //! declarations of that file, so the mutation command and the module graph use
 //! one walk. A declaration inside a macro call is not visible to the parser.
 
@@ -9,6 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
+use crate::attrs::ModuleFile;
 use crate::parse::Edition;
 
 /// A `mod name;` declaration.
@@ -26,8 +29,23 @@ pub struct ModuleDecl {
     /// tests is on the module.
     pub cfg_off: bool,
     /// True when the module exists only in a test build, for example with
-    /// `#[cfg(test)]`. Only the source walk of the structure checks sets it.
+    /// `#[cfg(test)]`. The source walk of the structure checks sets it for
+    /// `#[cfg(test)]`. Each walk sets it for a `cfg_attr(test, path = "..")` file.
     pub test_only: bool,
+}
+
+impl ModuleDecl {
+    /// One declaration for each file that the declaration can load. The
+    /// `cfg` and test flags of a file add to the flags of the declaration.
+    pub fn for_files(self, files: Vec<ModuleFile>) -> impl Iterator<Item = Self> {
+        files.into_iter().map(move |file| Self {
+            path_attr: file.path,
+            under_cfg: self.under_cfg || file.under_cfg,
+            cfg_off: self.cfg_off || file.cfg_off,
+            test_only: self.test_only || file.test_only,
+            ..self.clone()
+        })
+    }
 }
 
 /// A target root of a package.

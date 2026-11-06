@@ -9,11 +9,11 @@
 use std::fs;
 use std::path::Path;
 
-use ra_ap_syntax::ast::{self, HasAttrs, HasModuleItem, HasName};
+use ra_ap_syntax::ast::{self, HasModuleItem, HasName};
 use ra_ap_syntax::{AstNode, SyntaxKind, TextSize};
 use serde::Serialize;
 
-use crate::attrs::{AttrClass, attributes_of, path_attribute, plain_name};
+use crate::attrs::{AttrClass, attributes_of, module_files, plain_name};
 use crate::gates::parse_edition;
 use crate::modules::{ModuleDecl, SkippedFile, TargetRoot, Visit, walk};
 use crate::parse::{ParseOutcome, with_parsed};
@@ -333,14 +333,15 @@ fn collect_declarations(
             inline.pop();
             continue;
         }
-        found.push(ModuleDecl {
+        let decl = ModuleDecl {
             name,
             inline_path: inline.clone(),
-            path_attr: module.attrs().find_map(|attr| path_attribute(&attr)),
+            path_attr: None,
             under_cfg: false,
             cfg_off: false,
             test_only,
-        });
+        };
+        found.extend(decl.for_files(module_files(&module)));
     }
 }
 

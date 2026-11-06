@@ -42,11 +42,13 @@ const CACHE_TAG: &str = "CACHEDIR.TAG";
 const CHUNK_BYTES: usize = 1024 * 1024;
 /// The tables of a manifest whose words give no credit: the ignore lists,
 /// which a finding names.
-const SKIPPED_TABLES: [&str; 4] = [
+const SKIPPED_TABLES: [&str; 6] = [
     "package.metadata.fallow.deps",
     "workspace.metadata.fallow.deps",
     "package.metadata.cargo-shear",
     "workspace.metadata.cargo-shear",
+    "package.metadata.cargo-machete",
+    "workspace.metadata.cargo-machete",
 ];
 /// The table that defines the features. In a member manifest, its words give
 /// no credit.
@@ -588,6 +590,17 @@ mod tests {
         assert!(kept.contains("slow"), "{kept}");
         let outside = without_skipped_tables(manifest, false);
         assert_eq!(outside.matches("fast").count(), 1, "{outside}");
+    }
+
+    #[test]
+    fn each_ignore_list_of_a_manifest_gives_no_credit() {
+        for table in SKIPPED_TABLES {
+            let manifest = format!(
+                "[package]\nname = \"a\"\n\n[{table}]\nignored = [\"fast\"]\n\n[dependencies]\nb = \"1\"\n"
+            );
+            let kept = without_skipped_tables(&manifest, false);
+            assert!(!kept.contains("fast"), "{table}: {kept}");
+        }
     }
 
     #[test]

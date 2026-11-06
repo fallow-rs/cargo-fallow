@@ -45,13 +45,18 @@ struct Declared<'a> {
     platform: Option<String>,
 }
 
+/// The metadata tables of other unused dependency tools whose `ignored` list the
+/// run reads.
+const MIGRATED_TOOLS: [&str; 2] = ["cargo-shear", "cargo-machete"];
+
 /// The ignore lists of one scope, with the entries that hid a finding.
 #[derive(Default)]
 struct IgnoreList {
     /// The names of the cargo-fallow list, which the redundant check covers.
     own: Vec<String>,
-    /// The names of the cargo-shear list, which the run reads for migration.
-    shear: Vec<String>,
+    /// The names of the cargo-shear and cargo-machete lists, which the run reads
+    /// for migration. The redundant check does not cover them.
+    migrated: Vec<String>,
     /// The names that hid a finding.
     used: BTreeSet<String>,
 }
@@ -60,7 +65,10 @@ impl IgnoreList {
     fn from_metadata(value: &Value) -> Self {
         Self {
             own: strings(&value["fallow"]["deps"]["ignored"]),
-            shear: strings(&value["cargo-shear"]["ignored"]),
+            migrated: MIGRATED_TOOLS
+                .iter()
+                .flat_map(|tool| strings(&value[*tool]["ignored"]))
+                .collect(),
             used: BTreeSet::new(),
         }
     }
@@ -74,7 +82,7 @@ impl IgnoreList {
                 self.used.insert((*name).to_owned());
                 hit = true;
             }
-            hit |= self.shear.iter().any(|shear| shear == name);
+            hit |= self.migrated.iter().any(|migrated| migrated == name);
         }
         hit
     }

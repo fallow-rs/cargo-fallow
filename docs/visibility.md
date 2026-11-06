@@ -175,7 +175,9 @@ These names in the output tokens are no uses:
   `name` counts as a name of the output;
 - a name that the output defines: the name after `fn`, `struct`, `enum`,
   `trait`, `type`, `const`, `static` or `mod`, a parameter, a field
-  declaration and a variant declaration;
+  declaration and a variant declaration. A parameter name with an upper
+  case letter first can be a constant, so it counts as a use. The tokens of
+  a nested macro call, for example `m!(fn name)`, count as uses;
 - the tokens of a `quote!` in the test code of the proc-macro crate.
 
 In the output, a name in a `use a::{b, c}` group is no field or method name.

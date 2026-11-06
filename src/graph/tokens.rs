@@ -237,12 +237,17 @@ fn grouped_pieces(pieces: &[Piece<'_>]) -> Vec<bool> {
 /// function, the fields of a struct and the variants and fields of an enum.
 fn defined_pieces(pieces: &[Piece<'_>]) -> Vec<bool> {
     let mut defined = vec![false; pieces.len()];
+    let opaque = opaque_pieces(pieces);
     for (index, piece) in pieces.iter().enumerate() {
         let Piece::Keyword(keyword) = *piece else {
             continue;
         };
         // In `*const T`, the name after `const` is a type, not a definition.
-        if keyword == Keyword::Mut || (index > 0 && pieces[index - 1] == Piece::Star) {
+        // The tokens of a nested macro call can mean anything.
+        if keyword == Keyword::Mut
+            || opaque[index]
+            || (index > 0 && pieces[index - 1] == Piece::Star)
+        {
             continue;
         }
         let mut name = index + 1;
@@ -256,21 +261,61 @@ fn defined_pieces(pieces: &[Piece<'_>]) -> Vec<bool> {
         let Some((open, body)) = item_body(pieces, name + 1, keyword) else {
             continue;
         };
-        for (inner, depth) in group_names(pieces, open) {
+        for (inner, depth, opener) in group_names(pieces, open) {
             let field = single_colon_after(pieces, inner);
             let mark = match body {
-                Keyword::Fn | Keyword::Struct => depth == 1 && field,
-                Keyword::Enum if depth == 1 => matches!(
-                    pieces[inner - 1],
-                    Piece::OpenBrace | Piece::Comma | Piece::Close
-                ),
-                Keyword::Enum => depth == 2 && field,
+                // An upper case parameter can be a constant pattern, a use.
+                Keyword::Fn => depth == 1 && field && !starts_upper_name(pieces[inner]),
+                Keyword::Struct => depth == 1 && field,
+                Keyword::Enum if depth == 1 => variant_position(pieces, inner),
+                // The fields of a variant, not of a struct expression in a
+                // discriminant: the `{` follows the name of a variant.
+                Keyword::Enum => depth == 2 && field && variant_position(pieces, opener - 1),
                 Keyword::Item | Keyword::Mut => false,
             };
             defined[inner] |= mark;
         }
     }
     defined
+}
+
+/// True when the name at `index` is in the position of a variant name in an
+/// enum body: after `{`, `,` or the `]` of an attribute.
+fn variant_position(pieces: &[Piece<'_>], index: usize) -> bool {
+    matches!(pieces[index], Piece::Ident(_))
+        && index > 0
+        && matches!(
+            pieces[index - 1],
+            Piece::OpenBrace | Piece::Comma | Piece::Close
+        )
+}
+
+/// True for a name that starts with an upper case letter.
+fn starts_upper_name(piece: Piece<'_>) -> bool {
+    matches!(piece, Piece::Ident(name) if name.chars().next().is_some_and(char::is_uppercase))
+}
+
+/// For each piece, true when it is in the tokens of a nested macro call that
+/// is not an output macro: `name!(..)`. Those tokens are not Rust code.
+fn opaque_pieces(pieces: &[Piece<'_>]) -> Vec<bool> {
+    let mut opaque = vec![false; pieces.len()];
+    let mut stack: Vec<bool> = Vec::new();
+    for (index, piece) in pieces.iter().enumerate() {
+        match piece {
+            Piece::Open | Piece::OpenParen | Piece::OpenBrace => {
+                let call = index >= 2
+                    && pieces[index - 1] == Piece::Bang
+                    && matches!(pieces[index - 2], Piece::Ident(name) if !OUTPUT_MACROS.contains(&name));
+                let outer = stack.last().copied().unwrap_or(false);
+                stack.push(outer || call);
+            }
+            Piece::Close | Piece::CloseBrace => {
+                stack.pop();
+            }
+            _ => opaque[index] = stack.last().copied().unwrap_or(false),
+        }
+    }
+    opaque
 }
 
 /// The index of the group that holds the parts of an item, and the keyword
@@ -296,25 +341,31 @@ fn item_body(pieces: &[Piece<'_>], start: usize, keyword: Keyword) -> Option<(us
     None
 }
 
-/// The names in the group that opens at `open`, each with its depth: one for
-/// a name directly in the group. A nested group in `(..)` or `[..]` gives no
-/// names, because it holds types or attributes, not fields.
-fn group_names(pieces: &[Piece<'_>], open: usize) -> Vec<(usize, u32)> {
+/// The names in the group that opens at `open`, each with its depth and the
+/// index of the innermost group around it. The depth is one for a name
+/// directly in the group. A nested group in `(..)` or `[..]` gives no names,
+/// because it holds types or attributes, not fields. A name in generic
+/// arguments `<..>` is a type, so it is also left out.
+fn group_names(pieces: &[Piece<'_>], open: usize) -> Vec<(usize, u32, usize)> {
     let mut names = Vec::new();
-    let mut stack: Vec<bool> = Vec::new();
+    let mut stack: Vec<(bool, usize)> = Vec::new();
+    let mut angle = 0_u32;
     for (index, piece) in pieces.iter().enumerate().skip(open) {
         match piece {
-            Piece::OpenBrace => stack.push(true),
-            Piece::Open | Piece::OpenParen => stack.push(index == open),
+            Piece::OpenBrace => stack.push((true, index)),
+            Piece::Open | Piece::OpenParen => stack.push((index == open, index)),
             Piece::CloseBrace | Piece::Close => {
                 stack.pop();
                 if stack.is_empty() {
                     break;
                 }
             }
-            Piece::Ident(_) if stack.iter().all(|&named| named) => {
+            Piece::Lt => angle += 1,
+            Piece::Gt => angle = angle.saturating_sub(1),
+            Piece::Ident(_) if angle == 0 && stack.iter().all(|&(named, _)| named) => {
                 let depth = u32::try_from(stack.len()).unwrap_or(u32::MAX);
-                names.push((index, depth));
+                let opener = stack.last().map_or(open, |&(_, opener)| opener);
+                names.push((index, depth, opener));
             }
             _ => {}
         }
@@ -624,6 +675,17 @@ mod tests {
                  struct Tuple(Field); fn call(Pat { inner }: Pat) {}"
             ) == ["Tuple", "call"],
             "only the item names are definitions"
+        );
+    }
+
+    #[test]
+    fn values_patterns_and_macro_tokens_are_not_definitions() {
+        assert_eq!(
+            defined(
+                "enum E { A = items::Bits { bit: 1 }.other, B = pick::<u8, Target>(), C } \
+                 fn generated(UNIT: (), plain: u8) { invoke!(fn helper); }"
+            ),
+            ["E", "A", "B", "C", "generated", "plain"]
         );
     }
 

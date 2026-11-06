@@ -428,12 +428,20 @@ const INNER_FILES: &[(&str, &str)] = &[
 ];
 
 /// `facade` re-exports the macro of `pm` through a private import, so `user`
-/// can call the macro, and the output uses `items::only_output`.
+/// can call the macro, and the output uses `items::only_output`. The second
+/// facade re-exports a private alias of the macro.
 #[test]
 fn a_reexport_through_a_path_in_the_crate_counts() {
-    let dir = tempfile::tempdir().expect("create a temporary directory");
-    for (path, text) in INNER_FILES {
-        write(dir.path(), path, text);
+    let facades = [
+        "mod inner {\n    pub(crate) use pm::bench;\n}\npub use crate::inner::bench;\n",
+        "use pm::bench as imported;\npub use imported as bench;\n",
+    ];
+    for facade in facades {
+        let dir = tempfile::tempdir().expect("create a temporary directory");
+        for (path, text) in INNER_FILES {
+            write(dir.path(), path, text);
+        }
+        write(dir.path(), "facade/src/lib.rs", facade);
+        assert_eq!(findings(&dir), BTreeSet::new(), "facade: {facade}");
     }
-    assert_eq!(findings(&dir), BTreeSet::new());
 }

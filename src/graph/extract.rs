@@ -419,6 +419,31 @@ fn doc_ref(path: TokenPath, line: u32) -> Vec<RawRef> {
         .collect()
 }
 
+/// Prepares a token path in the output of a proc-macro. Returns `None` for a
+/// name that the output defines. Otherwise returns whether the path is
+/// output, and a method reference for `#ty::name`.
+fn output_path(path: &mut TokenPath, quoted: bool) -> Option<(bool, Option<RefKind>)> {
+    let in_output = quoted || path.quoted;
+    if in_output && path.defined {
+        return None;
+    }
+    let after_head = in_output && path.interpolated && path.segments.len() > 1;
+    if !after_head {
+        return Some((in_output && !path.interpolated, None));
+    }
+    // In `#krate::name`, only `krate` is a variable of the code that builds
+    // the tokens. The rest of the path is output.
+    path.segments.remove(0);
+    path.global = false;
+    // The head of `#ty::name` can be a type, so `name` can be an associated
+    // function or a method.
+    let method = match path.segments.as_slice() {
+        [name] => Some(RefKind::Method(name.clone())),
+        _ => None,
+    };
+    Some((true, method))
+}
+
 /// The references of one token path: the path, and a member reference for a
 /// name that can be a field or a method.
 ///
@@ -1336,25 +1361,8 @@ impl<'a> Walker<'a> {
                 segments.extend(path.segments.into_iter().skip(1));
                 path.segments = segments;
             }
-            let in_output = quoted || path.quoted;
-            if in_output && path.defined {
+            let Some((output, method)) = output_path(&mut path, quoted) else {
                 continue;
-            }
-            let after_head = in_output && path.interpolated && path.segments.len() > 1;
-            let output = if after_head {
-                // In `#krate::name`, only `krate` is a variable of the code
-                // that builds the tokens. The rest of the path is output.
-                path.segments.remove(0);
-                path.global = false;
-                true
-            } else {
-                in_output && !path.interpolated
-            };
-            // The head of `#ty::name` can be a type, so `name` can be an
-            // associated function or a method.
-            let method = match path.segments.as_slice() {
-                [name] if after_head => Some(RefKind::Method(name.clone())),
-                _ => None,
             };
             for kind in token_ref_kinds(path, output).into_iter().chain(method) {
                 self.add_ref(kind, origin);

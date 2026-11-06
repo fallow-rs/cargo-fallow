@@ -130,6 +130,18 @@ fn piece(kind: SyntaxKind, text: &str) -> Piece<'_> {
         T![self] => Piece::Ident("self"),
         T![super] => Piece::Ident("super"),
         T![Self] => Piece::Ident("Self"),
+        T![fn] => Piece::Keyword(Keyword::Fn),
+        T![struct] => Piece::Keyword(Keyword::Struct),
+        T![enum] => Piece::Keyword(Keyword::Enum),
+        T![trait] | T![type] | T![const] | T![static] | T![mod] => Piece::Keyword(Keyword::Item),
+        T![mut] => Piece::Keyword(Keyword::Mut),
+        _ => punctuation(kind),
+    }
+}
+
+/// The piece of a punctuation token, or [`Piece::Other`].
+fn punctuation(kind: SyntaxKind) -> Piece<'static> {
+    match kind {
         T![:] => Piece::Colon,
         T![$] => Piece::Dollar,
         T![#] => Piece::Pound,
@@ -138,11 +150,6 @@ fn piece(kind: SyntaxKind, text: &str) -> Piece<'_> {
         T![*] => Piece::Star,
         T![<] => Piece::Lt,
         T![>] => Piece::Gt,
-        T![fn] => Piece::Keyword(Keyword::Fn),
-        T![struct] => Piece::Keyword(Keyword::Struct),
-        T![enum] => Piece::Keyword(Keyword::Enum),
-        T![trait] | T![type] | T![const] | T![static] | T![mod] => Piece::Keyword(Keyword::Item),
-        T![mut] => Piece::Keyword(Keyword::Mut),
         T![.] => Piece::Dot,
         T![,] => Piece::Comma,
         T!['{'] => Piece::OpenBrace,
@@ -238,51 +245,74 @@ fn grouped_pieces(pieces: &[Piece<'_>]) -> Vec<bool> {
 fn defined_pieces(pieces: &[Piece<'_>]) -> Vec<bool> {
     let mut defined = vec![false; pieces.len()];
     let opaque = opaque_pieces(pieces);
-    for (index, piece) in pieces.iter().enumerate() {
-        let Piece::Keyword(keyword) = *piece else {
+    for index in 0..pieces.len() {
+        let Some((keyword, after_name)) = item_name(pieces, &opaque, index, &mut defined) else {
             continue;
-        };
-        // In `*const T`, the name after `const` is a type, not a definition.
-        // The tokens of a nested macro call can mean anything.
-        if keyword == Keyword::Mut
-            || opaque[index]
-            || (index > 0 && pieces[index - 1] == Piece::Star)
-        {
-            continue;
-        }
-        let mut name = index + 1;
-        if pieces.get(name) == Some(&Piece::Keyword(Keyword::Mut)) {
-            name += 1;
-        }
-        let after_name = match pieces.get(name) {
-            Some(Piece::Ident(_)) => {
-                defined[name] = true;
-                name + 1
-            }
-            // In `fn #name(..)`, the name is a variable of the code that
-            // builds the tokens, but the item still defines its parts.
-            Some(Piece::Pound) if matches!(pieces.get(name + 1), Some(Piece::Ident(_))) => name + 2,
-            _ => continue,
         };
         let Some((open, body)) = item_body(pieces, after_name, keyword) else {
             continue;
         };
         for (inner, depth, opener) in group_names(pieces, open) {
-            let field = single_colon_after(pieces, inner);
-            let mark = match body {
-                // An upper case parameter can be a constant pattern, a use.
-                Keyword::Fn => depth == 1 && field && !starts_upper_name(pieces[inner]),
-                Keyword::Struct => depth == 1 && field,
-                Keyword::Enum if depth == 1 => variant_position(pieces, inner),
-                // The fields of a variant, not of a struct expression in a
-                // discriminant: the `{` follows the name of a variant.
-                Keyword::Enum => depth == 2 && field && variant_position(pieces, opener - 1),
-                Keyword::Item | Keyword::Mut => false,
-            };
-            defined[inner] |= mark;
+            defined[inner] |= defines_part(pieces, body, inner, depth, opener);
         }
     }
     defined
+}
+
+/// For an item keyword at `index`, marks the name of the item and returns the
+/// keyword and the index after the name.
+fn item_name(
+    pieces: &[Piece<'_>],
+    opaque: &[bool],
+    index: usize,
+    defined: &mut [bool],
+) -> Option<(Keyword, usize)> {
+    let Piece::Keyword(keyword) = pieces[index] else {
+        return None;
+    };
+    // In `*const T`, the name after `const` is a type, not a definition.
+    // The tokens of a nested macro call can mean anything.
+    if keyword == Keyword::Mut || opaque[index] || (index > 0 && pieces[index - 1] == Piece::Star) {
+        return None;
+    }
+    let mut name = index + 1;
+    if pieces.get(name) == Some(&Piece::Keyword(Keyword::Mut)) {
+        name += 1;
+    }
+    match pieces.get(name) {
+        Some(Piece::Ident(_)) => {
+            defined[name] = true;
+            Some((keyword, name + 1))
+        }
+        // In `fn #name(..)`, the name is a variable of the code that builds
+        // the tokens, but the item still defines its parts.
+        Some(Piece::Pound) if matches!(pieces.get(name + 1), Some(Piece::Ident(_))) => {
+            Some((keyword, name + 2))
+        }
+        _ => None,
+    }
+}
+
+/// True when the name at `inner`, in a group of the body of an item, is a
+/// part that the item defines: a parameter, a field or a variant.
+fn defines_part(
+    pieces: &[Piece<'_>],
+    body: Keyword,
+    inner: usize,
+    depth: u32,
+    opener: usize,
+) -> bool {
+    let field = single_colon_after(pieces, inner);
+    match body {
+        // An upper case parameter can be a constant pattern, a use.
+        Keyword::Fn => depth == 1 && field && !starts_upper_name(pieces[inner]),
+        Keyword::Struct => depth == 1 && field,
+        Keyword::Enum if depth == 1 => variant_position(pieces, inner),
+        // The fields of a variant, not of a struct expression in a
+        // discriminant: the `{` follows the name of a variant.
+        Keyword::Enum => depth == 2 && field && variant_position(pieces, opener - 1),
+        Keyword::Item | Keyword::Mut => false,
+    }
 }
 
 /// True when the name at `index` is in the position of a variant name in an

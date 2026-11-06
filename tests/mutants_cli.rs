@@ -79,6 +79,9 @@ fn write_files(root: &Path, files: &[(&str, &str)]) {
     }
 }
 
+/// The time limit of one run of the binary.
+const RUN_TIMEOUT: Duration = Duration::from_secs(280);
+
 struct Output {
     code: Option<i32>,
     stdout: String,
@@ -87,8 +90,16 @@ struct Output {
 
 impl Output {
     fn json(&self) -> Value {
-        serde_json::from_str(&self.stdout)
-            .unwrap_or_else(|err| panic!("{err}: {}\n{}", self.stdout, self.stderr))
+        serde_json::from_str(&self.stdout).unwrap_or_else(|err| {
+            panic!(
+                "{err}. Exit code: {:?}. No exit code means that a signal stopped the \
+                     run, for example the {}-second timeout.\nstdout: {}\nstderr: {}",
+                self.code,
+                RUN_TIMEOUT.as_secs(),
+                self.stdout,
+                self.stderr
+            )
+        })
     }
 }
 
@@ -104,10 +115,13 @@ fn mutants(dir: &Path, flags: &[&str]) -> Output {
         .env("MBX_DISABLE", "1")
         // An outer nextest run names its own profile, and a fixture has no such profile.
         .env_remove("NEXTEST_PROFILE")
+        // The cache of a fixture goes to the target folder. A shared folder of the
+        // outer run gives a map from an earlier run.
+        .env_remove("CARGO_TARGET_DIR")
         .args(["mutants", "--quiet", "--jobs", "2", "--manifest-path"])
         .arg(dir.join("Cargo.toml"))
         .args(flags)
-        .timeout(Duration::from_secs(280))
+        .timeout(RUN_TIMEOUT)
         .output()
         .expect("the binary runs");
     Output {
@@ -807,6 +821,9 @@ fn cargo_calls(source: &Path, bin: &Path, flag: &str) -> String {
         .expect("the binary exists")
         .env("MBX_DISABLE", "1")
         .env_remove("NEXTEST_PROFILE")
+        // The cache of a fixture goes to the target folder. A shared folder of the
+        // outer run gives a map from an earlier run.
+        .env_remove("CARGO_TARGET_DIR")
         .env("PATH", std::env::join_paths(paths).expect("a valid PATH"))
         .env_remove("CARGO_NET_OFFLINE")
         .env("CARGO", bin.join("cargo"))
@@ -822,7 +839,7 @@ fn cargo_calls(source: &Path, bin: &Path, flag: &str) -> String {
         .arg(flag)
         .arg("--manifest-path")
         .arg(source.join("Cargo.toml"))
-        .timeout(Duration::from_secs(280))
+        .timeout(RUN_TIMEOUT)
         .output()
         .expect("the binary runs");
     let stdout = String::from_utf8_lossy(&output.stdout);

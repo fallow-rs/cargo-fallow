@@ -265,6 +265,32 @@ fn an_ignore_entry_hides_the_finding() {
 }
 
 #[test]
+fn a_name_in_the_cargo_machete_list_of_another_member_gives_no_credit() {
+    let dir = workspace(
+        "",
+        &[
+            (
+                "alpha/Cargo.toml",
+                &manifest(
+                    "alpha",
+                    "[package.metadata.cargo-machete]\nignored = [\"loose\"]\n",
+                ),
+            ),
+            (
+                "app/Cargo.toml",
+                &manifest("app", "[features]\nloose = []\n"),
+            ),
+        ],
+    );
+    let (_, report) = run(&dir, &[]);
+    assert_eq!(
+        unused_features(&report),
+        BTreeSet::from(["app loose".to_owned()]),
+        "{report:#}"
+    );
+}
+
+#[test]
 fn a_feature_that_a_workflow_turns_on_is_used() {
     let dir = workspace(
         "",

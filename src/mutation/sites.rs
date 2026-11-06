@@ -875,6 +875,8 @@ mod tests {
             "#[rstest]",
             "#[tokio::test(flavor = \"current_thread\")]",
             "#[test_case(1)]",
+            "#[bench]",
+            "#[test::bench]",
         ] {
             let source = format!("{attr}\nfn f(a: u8) -> bool {{ a == 1 }}\n");
             assert!(file(&source).sites.is_empty(), "{attr}");
@@ -890,6 +892,8 @@ mod tests {
             "#[cfg_attr(test, derive(Clone))]",
             "#[cfg_attr(unix, rstest)]",
             "#[attest]",
+            "#[m::bench]",
+            "#[gpui::bench]",
         ] {
             let source = format!("{attr}\nfn f(a: u8) -> bool {{ a == 1 }}\n");
             assert!(!file(&source).sites.is_empty(), "{attr}");

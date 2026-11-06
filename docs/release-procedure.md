@@ -45,7 +45,9 @@ The jobs run in this order:
 2. `build` builds `cargo-fallow` for five targets:
    `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`,
    `x86_64-apple-darwin`, `aarch64-apple-darwin` and `x86_64-pc-windows-msvc`.
-   The job writes a `.sha256` file for each archive.
+   The two musl legs install `musl-tools`, because the musl binaries compile
+   the C code of the mimalloc allocator. The job writes a `.sha256` file for
+   each archive.
 3. `attest` writes a build provenance attestation for each archive.
 4. `sign` uses the `ED25519_BINARY_SIGNING_PRIVATE_KEY` secret to write an
    Ed25519 signature `<archive>.sig` for each archive. Then the job verifies

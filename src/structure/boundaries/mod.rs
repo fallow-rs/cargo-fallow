@@ -209,7 +209,7 @@ pub fn section(
 ) -> Result<Section, CliError> {
     let settings: config::Boundaries = config::section(workspace, "boundaries")?;
     let resolver = Names::new(workspace, &settings.groups)?;
-    progress.step("Checking the boundary rules");
+    let _phase = progress.phase("Checking the boundary rules");
     let edges = edges(workspace);
     let mut findings = Vec::new();
     for rule in &settings.crates {

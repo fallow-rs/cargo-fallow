@@ -308,7 +308,7 @@ pub fn section(
         .iter()
         .filter(|file| !file.skip_metrics && !matches_prefix(&file.path, &settings.exclude))
         .collect();
-    progress.step("Finding clones");
+    let _phase = progress.phase("Finding clones");
     let limits = Limits::default();
     let hides =
         |path: &str, line: u32| scope.hides("dupes", SUPPRESS_KIND, path, Some(&(line..=line)));

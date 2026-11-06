@@ -170,7 +170,9 @@ jobs:
       matrix:
         include:
           # The Linux binaries link musl statically, so they run on each glibc
-          # version. The crate has no C code, so the build needs no musl-gcc.
+          # version. On musl, the build compiles the C code of mimalloc with
+          # the musl-gcc of `musl-tools`. Each Linux leg builds on a runner of
+          # its own architecture, so no cross compiler is needed.
           - target: x86_64-unknown-linux-musl
             os: ubuntu-26.04
           - target: aarch64-unknown-linux-musl
@@ -193,6 +195,12 @@ jobs:
           targets: ${{ matrix.target }}
           cache-key: release-build-${{ matrix.target }}
           save-if: 'false'
+
+      - name: Install musl tools
+        if: contains(matrix.target, 'musl')
+        run: |
+          sudo apt-get update || echo "apt-get update reported errors on at least one source"
+          sudo apt-get install -y musl-tools
 
       - name: Build the binary
         shell: bash

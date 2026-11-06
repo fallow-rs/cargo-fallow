@@ -277,12 +277,12 @@ fn load_workspace(
     progress: Progress,
 ) -> Result<(Workspace, Option<cargo_metadata::Metadata>), CliError> {
     if deps {
-        progress.step("Resolving the workspace with cargo metadata");
+        let _phase = progress.phase("Resolving the workspace with cargo metadata");
         let (workspace, metadata) =
             workspace::load_resolved(options.manifest_path.as_deref(), &options.cargo_flags)?;
         return Ok((workspace, Some(metadata)));
     }
-    progress.step("Reading cargo metadata");
+    let _phase = progress.phase("Reading cargo metadata");
     Ok((
         workspace::load(options.manifest_path.as_deref(), &options.cargo_flags)?,
         None,
@@ -316,7 +316,7 @@ pub fn execute(options: &Options) -> Result<report::CheckReport, CliError> {
 
     let mut sections: Vec<(CheckName, Section)> = Vec::new();
     if runs(CheckName::Parse) {
-        progress.step("Parsing target root files");
+        let _phase = progress.phase("Parsing target root files");
         sections.push((
             CheckName::Parse,
             parse_section(&workspace, enforced || options.fail_on_parse_error),
@@ -547,7 +547,7 @@ fn graph_checks(inputs: &GraphInputs<'_>) -> Result<GraphPart, CliError> {
         progress,
         ..
     } = *inputs;
-    progress.step("Building the module graph");
+    let phase = progress.phase("Building the module graph");
     // Only the visibility check reads the production selection.
     let production = graph::Production {
         bins: visibility_options
@@ -560,6 +560,7 @@ fn graph_checks(inputs: &GraphInputs<'_>) -> Result<GraphPart, CliError> {
     } else {
         (graph::build(workspace, &production), None)
     };
+    drop(phase);
     thread::scope(|threads| {
         let files_thread = scans.map(|scans| {
             threads.spawn(|| files::section(workspace, enforced, scope, progress, Some(scans)))
@@ -584,7 +585,7 @@ fn graph_sections(inputs: &GraphInputs<'_>, module_graph: &Graph) -> Result<Grap
     } = *inputs;
     let mut part = GraphPart::default();
     if let Some(metadata) = metadata {
-        progress.step("Checking the dependencies");
+        let _phase = progress.phase("Checking the dependencies");
         let none = deps::drift::Drift::default();
         let drift = drift.unwrap_or(&none);
         let report = deps::report_with(workspace, metadata, module_graph, enforced, scope, drift);
@@ -600,7 +601,7 @@ fn graph_sections(inputs: &GraphInputs<'_>, module_graph: &Graph) -> Result<Grap
         part.deps = Some(deps::section(&report)?);
     }
     if let Some(options) = visibility_options {
-        progress.step("Checking the visibility");
+        let _phase = progress.phase("Checking the visibility");
         // The code of a consumer workspace counts as a use, so the check
         // reads a graph with its crates.
         let own = visibility::consumers::extend(workspace, options)?.map(|extended| {
@@ -671,8 +672,8 @@ fn source_checks(
     scope: &Scope,
     progress: Progress,
 ) -> Result<SourcePart, CliError> {
-    progress.step("Reading the source files");
     let measures = settings.size.is_some() || settings.complexity.is_some();
+    let phase = progress.phase("Reading the source files");
     let loaded = source::load(
         workspace,
         Needs {
@@ -683,6 +684,7 @@ fn source_checks(
                 .map(|dupes| (dupes.mode, dupes.ignore_imports)),
         },
     );
+    drop(phase);
     let mut part = SourcePart {
         metrics: function_metrics(&loaded, settings),
         file_scores: settings
@@ -693,7 +695,7 @@ fn source_checks(
         ..SourcePart::default()
     };
     if let Some(size) = &settings.size {
-        progress.step("Measuring the files");
+        let _phase = progress.phase("Measuring the files");
         part.size = Some(size::section(&size::Inputs {
             workspace,
             loaded: &loaded,
@@ -704,7 +706,7 @@ fn source_checks(
         })?);
     }
     if let Some(complexity) = &settings.complexity {
-        progress.step("Measuring the complexity");
+        let _phase = progress.phase("Measuring the complexity");
         let coverage = settings
             .coverage
             .as_ref()

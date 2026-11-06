@@ -168,7 +168,7 @@ pub fn section(
     scans: Option<FileScans>,
 ) -> Result<Section, CliError> {
     let settings: Settings = config::section(workspace, "files")?;
-    progress.step("Walking the module trees");
+    let _phase = progress.phase("Walking the module trees");
     let root = workspace.root.as_std_path();
     let packages = Packages::new(workspace);
     let reached = reach(root, workspace, &packages, scans.unwrap_or_default());

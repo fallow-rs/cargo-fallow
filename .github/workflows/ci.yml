@@ -413,10 +413,49 @@ jobs:
       - name: Check for uncommitted changes
         run: git diff --exit-code
 
+  # The Linux release binaries link musl. On musl, mimalloc is the global
+  # allocator (C code), because the allocator of musl is slow when the checks
+  # run in parallel threads (#147). This job builds the release target with
+  # the C compiler of `musl-tools`, as release.yml does. It then checks that
+  # the binary links mimalloc and runs `check` on this repository.
+  musl:
+    name: Linux musl build
+    # A push to main runs only Clippy and Test: the pull request ran this check.
+    if: github.event_name != 'push'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+        with:
+          targets: x86_64-unknown-linux-musl
+          cache-key: musl
+      - name: Install musl tools
+        run: |
+          sudo apt-get update || echo "apt-get update reported errors on at least one source"
+          sudo apt-get install -y musl-tools
+      - name: Build the binary
+        run: cargo build --profile ci-release --locked --target x86_64-unknown-linux-musl
+      - name: Check the allocator
+        run: |
+          binary=target/x86_64-unknown-linux-musl/ci-release/cargo-fallow
+          if ! nm "$binary" | grep -q ' mi_free$'; then
+            echo "the musl binary does not link mimalloc"
+            exit 1
+          fi
+      # The human report shows an error message in the log, and the progress
+      # lines show the time of each phase.
+      - name: Run check on this repository
+        run: target/x86_64-unknown-linux-musl/ci-release/cargo-fallow fallow check
+
   ci-ok:
     name: CI
     if: always()
-    needs: [fmt, clippy, test, windows, package, doc, typos, scripts, audit, deny, shear, zizmor, msrv]
+    needs: [fmt, clippy, test, windows, package, doc, typos, scripts, audit, deny, shear, zizmor, msrv, musl]
     runs-on: ubuntu-26.04
     timeout-minutes: 5
     permissions: {}

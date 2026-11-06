@@ -11,6 +11,7 @@ mod sarif;
 
 use std::collections::BTreeMap;
 use std::io::{self, Write};
+use std::time::Instant;
 
 use fallow_report_protocol::{GateFile, GateOutcome};
 
@@ -121,5 +122,36 @@ impl Progress {
         }
         // Progress is optional. A failed write must not stop the run.
         let _ = write_stderr(message);
+    }
+
+    /// Writes the start line of a phase. The phase writes its time when the
+    /// returned guard drops, also when the phase stops on an error. Several
+    /// phases can run at the same time, so a start line alone does not show
+    /// when the phase before it ended.
+    #[must_use = "the phase ends when the guard drops"]
+    pub fn phase(self, message: &'static str) -> Phase {
+        self.step(message);
+        Phase {
+            progress: self,
+            message,
+            started: Instant::now(),
+        }
+    }
+}
+
+/// A running phase of the progress output. On drop, it writes
+/// `<message>: <seconds> s`.
+#[derive(Debug)]
+pub struct Phase {
+    progress: Progress,
+    message: &'static str,
+    started: Instant,
+}
+
+impl Drop for Phase {
+    fn drop(&mut self) {
+        let seconds = self.started.elapsed().as_secs_f64();
+        self.progress
+            .step(&format!("{}: {seconds:.1} s", self.message));
     }
 }

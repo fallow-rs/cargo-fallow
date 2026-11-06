@@ -53,6 +53,11 @@ tempfile = "3"
 toml_edit = { version = "0.25", default-features = false, features = ["parse", "display"] }
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 
+# The allocator of musl is slow when several threads allocate at the same
+# time. The Linux release binaries link musl, so they use mimalloc.
+[target.'cfg(target_env = "musl")'.dependencies]
+mimalloc = { version = "0.1.52", default-features = false }
+
 [features]
 # `--precise` mode of `cargo fallow visibility`: rust-analyzer as a library,
 # about 150 more crates. The default build has no `ra_ap_*` crate beyond the

@@ -10,7 +10,7 @@ This skill runs `docs/release-procedure.md` from the first check to the
 Marketplace listing. The procedure is canonical. When this skill and the
 procedure disagree, follow the procedure and update this skill.
 
-release-contract: e2d022fbd0bb7e8932ca2aed47b7fa83f3890d815b93a1b1d3090a528dc651d7
+release-contract: 323e5f2393a879ccf47a51bee5f4af5697267919a2827a62f2c11483013555cf
 
 `.github/scripts/release-skill.test.mjs` fails when a contract file changes
 and this pin stays the same. Read the change, update the steps below, then

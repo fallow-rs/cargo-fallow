@@ -284,6 +284,43 @@ fn human_summary_and_progress() {
     assert_eq!(quiet.stderr, "");
 }
 
+/// The checks of `check` run in parallel threads, so a start line does not
+/// show when the phase before it ended. Each phase writes its time when it
+/// ends (fallow-rs/cargo-fallow#147).
+#[test]
+fn each_phase_of_check_writes_its_time_to_stderr() {
+    let fixture = Fixture::new("ws-structure");
+    let run = check(&fixture, &["--format", "json"]);
+    for phase in [
+        "Resolving the workspace with cargo metadata",
+        "Parsing target root files",
+        "Building the module graph",
+        "Checking the dependencies",
+        "Walking the module trees",
+        "Checking the visibility",
+        "Checking the boundary rules",
+        "Reading the source files",
+        "Measuring the files",
+        "Measuring the complexity",
+        "Finding clones",
+    ] {
+        let done = format!("{phase}: ");
+        let line = run
+            .stderr
+            .lines()
+            .find(|line| line.starts_with(&done))
+            .unwrap_or_else(|| panic!("no time for `{phase}`:\n{}", run.stderr));
+        let time = line
+            .strip_prefix(&done)
+            .and_then(|rest| rest.strip_suffix(" s"))
+            .and_then(|seconds| seconds.parse::<f64>().ok());
+        assert!(time.is_some(), "{line}");
+    }
+    // The time lines go to stderr, so the report stays the same.
+    let quiet = check(&fixture, &["--format", "json", "--quiet"]);
+    assert_eq!(quiet.stdout, run.stdout);
+}
+
 #[test]
 fn a_gate_finding_is_an_error_in_json_and_in_sarif() {
     let fixture = Fixture::new("ws-ok");

@@ -10,7 +10,7 @@ This skill runs `docs/release-procedure.md` from the first check to the
 Marketplace listing. The procedure is canonical. When this skill and the
 procedure disagree, follow the procedure and update this skill.
 
-release-contract: 323e5f2393a879ccf47a51bee5f4af5697267919a2827a62f2c11483013555cf
+release-contract: fc131be9882bfaf8f42592ccab40e0511f42c5ff11d822313a30a0113fc6b962
 
 `.github/scripts/release-skill.test.mjs` fails when a contract file changes
 and this pin stays the same. Read the change, update the steps below, then
@@ -33,11 +33,13 @@ set the pin to the hash that the test prints.
 ```bash
 git fetch -q --force origin --tags
 git status --porcelain
-node scripts/verify-release-ci.mjs --sha "$(git rev-parse origin/main)"
+node scripts/verify-release-ci.mjs --sha "$(git rev-parse origin/main)" --dispatch-missing
 ls changelog.d/*.md | grep -v README.md
 ```
 
-The status must be empty, and the CI check must pass. The last command
+The status must be empty, and the CI check must pass. The check starts a
+`Corpus` run on `main`, because a weekly run does not count. Step 8 of the
+procedure gives the fix for each cause of a failed `Corpus` run. The last command
 lists the fragments of the release. At least one fragment must exist, except
 in a resume: `Cargo.toml` already has the new version, `CHANGELOG.md` has its
 section, and the tag is absent. Then skip step 2, and in step 4 use the

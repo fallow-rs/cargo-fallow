@@ -24,9 +24,13 @@ import { parseArgs } from "node:util";
 
 /**
  * The workflows that must have a successful run on the release SHA. Each one
- * runs on push to main. `fuzz-smoke.yml` has a path filter, so a release
- * commit can have no run of it. `dispatchable: false` marks a workflow
+ * runs on push to main, except an entry with `onPush: false`: the gate starts
+ * that one with `--dispatch-missing`. `fuzz-smoke.yml` has a path filter, so a
+ * release commit can have no run of it. `dispatchable: false` marks a workflow
  * without a `workflow_dispatch` trigger.
+ *
+ * `corpus.yml` checks the findings on the corpus workspaces. A weekly run does
+ * not count, so a release commit gets its own run.
  *
  * Update this list when a workflow gets or loses the push trigger on main.
  * `scripts/verify-release-ci.test.mjs` compares it with the workflow files.
@@ -34,6 +38,7 @@ import { parseArgs } from "node:util";
 export const REQUIRED_WORKFLOWS = Object.freeze([
   { name: "CI", file: "ci.yml" },
   { name: "Commitlint", file: "commitlint.yml", dispatchable: false },
+  { name: "Corpus", file: "corpus.yml", onPush: false },
   { name: "Fuzz Smoke", file: "fuzz-smoke.yml" },
   { name: "GitHub Action", file: "github-action.yml" },
   { name: "GitLab template", file: "gitlab-template.yml", dispatchable: false },
@@ -237,14 +242,19 @@ const ghDispatch = (repo) => (workflow) => {
   }
 };
 
-// Starts each missing required workflow one time. It starts nothing when a
-// missing workflow has no workflow_dispatch trigger, because the gate then
-// fails anyway. Returns `{ ok, started }`.
-const dispatchMissingRuns = async (evaluation, { sha, dispatched, readMainSha, dispatch, log }) => {
+// Starts each missing required workflow that `select` accepts, one time. It
+// starts nothing when a missing workflow has no workflow_dispatch trigger,
+// because the gate then fails anyway. Returns `{ ok, started }`.
+const dispatchMissingRuns = async (
+  evaluation,
+  { sha, dispatched, readMainSha, dispatch, log, select = () => true },
+) => {
   if (evaluation.missing.some((workflow) => workflow.dispatchable === false)) {
     return { ok: true, started: 0 };
   }
-  const missing = evaluation.missing.filter((workflow) => !dispatched.has(workflow.file));
+  const missing = evaluation.missing.filter(
+    (workflow) => select(workflow) && !dispatched.has(workflow.file),
+  );
   if (missing.length === 0) return { ok: true, started: 0 };
   const mainSha = await readMainSha();
   if (mainSha !== sha) {
@@ -328,9 +338,16 @@ export const verifyReleaseCi = async (
       apiErrors = 0;
       const allowMissing = now() - graceStart < options.missingGraceMinutes * 60_000;
       evaluation = evaluateRuns(runs, { required, allowMissing });
+      // A workflow with no push trigger never gets a run without a dispatch,
+      // so it starts at once. Each other missing workflow first gets the grace
+      // time, because its push run can still appear.
+      const graceOver = evaluation.state === "fail" && evaluation.failed.length === 0;
+      const dispatchOnly = evaluation.missing.some(
+        (workflow) => workflow.onPush === false && !dispatched.has(workflow.file),
+      );
       if (
         options.dispatchMissing &&
-        evaluation.state === "fail" &&
+        (graceOver || dispatchOnly) &&
         evaluation.failed.length === 0
       ) {
         const result = await dispatchMissingRuns(evaluation, {
@@ -339,6 +356,7 @@ export const verifyReleaseCi = async (
           readMainSha,
           dispatch,
           log,
+          select: graceOver ? undefined : (workflow) => workflow.onPush === false,
         });
         if (!result.ok) return 1;
         if (result.started > 0) {

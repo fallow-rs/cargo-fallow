@@ -122,6 +122,28 @@ The command also reads `ignored` in `[package.metadata.cargo-shear]`,
 cargo-shear or cargo-machete with no change to its `ignored` lists. The
 `redundant-ignore` rule checks only the cargo-fallow lists.
 
+## External macros
+
+A macro of a crate outside the workspace can write paths of other crates. For
+example, `#[gpui::bench]` writes `criterion::` paths into the bench. The
+command cannot read that output. It still reports such an entry when no code
+names it, but `cargo fallow fix` does not remove it in these cases:
+
+- The library or a binary uses an attribute macro of an external crate by a
+  path, for example `#[krate::name]`, or calls its macro in the place of an
+  item, for example `krate::name!(..);` in a module. Then the unused
+  `[dependencies]` entries stay for a person.
+- Test code, a bench or an example does the same. Then the unused
+  `[dev-dependencies]` entries stay for a person. Code under a `cfg` that
+  holds only in a test build, for example `all(test, feature = "x")`, is test
+  code here.
+
+A macro call in an expression, for example `log::info!(..)`, a derive and a
+macro that a `use` item imports do not count. The macros of `async_trait`,
+`bitflags`, `ctor`, `lazy_static`, `pin_project`, `serde`, `thiserror`,
+`tokio` and `tracing` write only paths of their own crate and of the
+standard library, so they do not count either.
+
 ## Feature drift
 
 Cargo resolves features for each build. When one member turns on a feature

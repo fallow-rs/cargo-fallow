@@ -264,6 +264,20 @@ pub enum Origin {
     DocLink,
 }
 
+/// True when a macro call is in the place of an item: in a file, a module,
+/// an `impl` block, a trait or an `extern` block.
+fn is_item_position(call: &SyntaxNode) -> bool {
+    call.parent().is_some_and(|parent| {
+        matches!(
+            parent.kind(),
+            SyntaxKind::SOURCE_FILE
+                | SyntaxKind::ITEM_LIST
+                | SyntaxKind::ASSOC_ITEM_LIST
+                | SyntaxKind::EXTERN_ITEM_LIST
+        )
+    })
+}
+
 /// One reference.
 #[derive(Debug, Clone)]
 pub struct RawRef {
@@ -289,6 +303,10 @@ pub struct RawRef {
     /// True for a name in the tokens of an output macro such as `quote!`,
     /// but not for a `#name` variable.
     pub output: bool,
+    /// True for the path of an attribute, for example `#[krate::name]`, and
+    /// of a macro call in the place of an item, for example `krate::name!(..);`
+    /// in a module. Such a macro writes items that the graph does not see.
+    pub invocation: bool,
 }
 
 /// The facts of one file.
@@ -396,6 +414,7 @@ fn doc_ref(path: TokenPath, line: u32) -> Vec<RawRef> {
             line,
             cfg: Vec::new(),
             output: false,
+            invocation: false,
         })
         .collect()
 }
@@ -567,6 +586,7 @@ impl<'a> Walker<'a> {
             line,
             cfg: self.conditions(),
             output: false,
+            invocation: false,
         };
         let self_path = self.doc_self_path(node);
         let mut refs = Vec::new();
@@ -1091,6 +1111,7 @@ impl<'a> Walker<'a> {
             line: self.line_at(self.cursor),
             cfg: self.conditions(),
             output: false,
+            invocation: false,
         });
     }
 
@@ -1130,6 +1151,7 @@ impl<'a> Walker<'a> {
         let (segments, global) = path_segments(path);
         if segments.len() > 1 && !is_builtin_attribute(&segments.join("::")) {
             self.add_ref(RefKind::Path { segments, global }, Origin::Attr);
+            self.mark_invocation();
         }
     }
 
@@ -1228,6 +1250,14 @@ impl<'a> Walker<'a> {
         );
     }
 
+    /// Marks the last reference as the path of an attribute or of a macro call
+    /// in the place of an item.
+    fn mark_invocation(&mut self) {
+        if let Some(reference) = self.facts.refs.last_mut() {
+            reference.invocation = true;
+        }
+    }
+
     fn macro_call(&mut self, node: &SyntaxNode) {
         let Some(call) = ast::MacroCall::cast(node.clone()) else {
             return;
@@ -1240,6 +1270,9 @@ impl<'a> Walker<'a> {
             let (segments, global) = path_segments(&path);
             if segments.len() > 1 {
                 self.add_ref(RefKind::Path { segments, global }, Origin::Macro);
+                if is_item_position(node) {
+                    self.mark_invocation();
+                }
             }
             self.add_ref(RefKind::Macro(name.text().to_string()), Origin::Macro);
             if name.text() == "include"

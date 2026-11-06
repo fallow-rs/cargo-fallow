@@ -133,6 +133,9 @@ fn mutants(dir: &Path, fake: Option<&FakeCargo>, flags: &[&str]) -> Output {
     command
         .env("MBX_DISABLE", "1")
         .env_remove("NEXTEST_PROFILE")
+        // The cache of a fixture goes to the target folder. A shared folder of the
+        // outer run gives a map from an earlier run.
+        .env_remove("CARGO_TARGET_DIR")
         .args(["mutants", "--quiet", "--jobs", "2", "--manifest-path"])
         .arg(dir.join("Cargo.toml"))
         .args(flags)

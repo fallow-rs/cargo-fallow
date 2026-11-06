@@ -38,6 +38,7 @@ fn write_crate(dir: &Path, files: &[(&str, &str)]) {
 
 struct Run {
     report: Value,
+    stdout: String,
     stderr: String,
     code: Option<i32>,
     source: TempDir,
@@ -55,7 +56,7 @@ impl Run {
                  stdout: {}\nstderr: {}",
                 self.code,
                 RUN_TIMEOUT.as_secs(),
-                self.report,
+                self.stdout,
                 self.stderr
             )
         })
@@ -91,6 +92,9 @@ fn run(files: &[(&str, &str)], flags: &[&str]) -> Run {
         .env("MBX_DISABLE", "1")
         // An outer nextest run names its own profile, and a fixture has no such profile.
         .env_remove("NEXTEST_PROFILE")
+        // The cache of a fixture goes to the target folder. A shared folder of the
+        // outer run gives a map from an earlier run.
+        .env_remove("CARGO_TARGET_DIR")
         .args([
             "mutants",
             "--format",
@@ -109,6 +113,7 @@ fn run(files: &[(&str, &str)], flags: &[&str]) -> Run {
     let report = serde_json::from_slice(&output.stdout).unwrap_or(Value::Null);
     Run {
         report,
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
         code: output.status.code(),
         source,
@@ -1014,6 +1019,9 @@ fn human_output_lists_the_survivors() {
         .env("MBX_DISABLE", "1")
         // An outer nextest run names its own profile, and a fixture has no such profile.
         .env_remove("NEXTEST_PROFILE")
+        // The cache of a fixture goes to the target folder. A shared folder of the
+        // outer run gives a map from an earlier run.
+        .env_remove("CARGO_TARGET_DIR")
         .args([
             "mutants",
             "--tier",
@@ -1107,6 +1115,9 @@ mod tests {
         .env("MBX_DISABLE", "1")
         // An outer nextest run names its own profile, and a fixture has no such profile.
         .env_remove("NEXTEST_PROFILE")
+        // The cache of a fixture goes to the target folder. A shared folder of the
+        // outer run gives a map from an earlier run.
+        .env_remove("CARGO_TARGET_DIR")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -1152,6 +1163,9 @@ fn run_in(source: &Path, flags: &[&str], rustc: Option<&Path>) -> (Value, String
         .env("MBX_DISABLE", "1")
         // An outer nextest run names its own profile, and a fixture has no such profile.
         .env_remove("NEXTEST_PROFILE")
+        // The cache of a fixture goes to the target folder. A shared folder of the
+        // outer run gives a map from an earlier run.
+        .env_remove("CARGO_TARGET_DIR")
         .args(["mutants", "--format", "json", "--jobs", "2"])
         .arg("--manifest-path")
         .arg(source.join("Cargo.toml"))

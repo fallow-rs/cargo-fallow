@@ -32,6 +32,7 @@ fn write_files(dir: &Path, files: &[(&str, &str)]) {
 
 struct Run {
     report: Value,
+    stdout: String,
     stderr: String,
     code: Option<i32>,
     _source: TempDir,
@@ -49,7 +50,7 @@ impl Run {
                  stdout: {}\nstderr: {}",
                 self.code,
                 RUN_TIMEOUT.as_secs(),
-                self.report,
+                self.stdout,
                 self.stderr
             )
         })
@@ -91,6 +92,9 @@ fn run_in(folder: &str, files: &[(&str, &str)], flags: &[&str]) -> Run {
         .env("MBX_DISABLE", "1")
         // An outer nextest run names its own profile, and a fixture has no such profile.
         .env_remove("NEXTEST_PROFILE")
+        // The cache of a fixture goes to the target folder. A shared folder of the
+        // outer run gives a map from an earlier run.
+        .env_remove("CARGO_TARGET_DIR")
         .current_dir(source.path().join(folder))
         .args(["mutants", "--no-cache", "--format", "json", "--work-dir"])
         .arg(work.path().join("run"))
@@ -100,6 +104,7 @@ fn run_in(folder: &str, files: &[(&str, &str)], flags: &[&str]) -> Run {
         .expect("the binary runs");
     Run {
         report: serde_json::from_slice(&output.stdout).unwrap_or(Value::Null),
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
         code: output.status.code(),
         _source: source,
@@ -1130,6 +1135,9 @@ fn a_signal_leaves_no_temporary_folder() {
         .env("MBX_DISABLE", "1")
         // An outer nextest run names its own profile, and a fixture has no such profile.
         .env_remove("NEXTEST_PROFILE")
+        // The cache of a fixture goes to the target folder. A shared folder of the
+        // outer run gives a map from an earlier run.
+        .env_remove("CARGO_TARGET_DIR")
         .env("TMPDIR", temp.path())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -1253,6 +1261,9 @@ fn the_human_report_names_the_gaps() {
         .env("MBX_DISABLE", "1")
         // An outer nextest run names its own profile, and a fixture has no such profile.
         .env_remove("NEXTEST_PROFILE")
+        // The cache of a fixture goes to the target folder. A shared folder of the
+        // outer run gives a map from an earlier run.
+        .env_remove("CARGO_TARGET_DIR")
         .current_dir(source.path())
         .args([
             "mutants",
@@ -1281,6 +1292,9 @@ fn the_human_report_names_the_gaps() {
         .env("MBX_DISABLE", "1")
         // An outer nextest run names its own profile, and a fixture has no such profile.
         .env_remove("NEXTEST_PROFILE")
+        // The cache of a fixture goes to the target folder. A shared folder of the
+        // outer run gives a map from an earlier run.
+        .env_remove("CARGO_TARGET_DIR")
         .current_dir(source.path())
         .args(["mutants", "--no-cache", "--tier", "schema", "--work-dir"])
         .arg(work.path().join("run"))

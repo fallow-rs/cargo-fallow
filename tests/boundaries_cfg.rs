@@ -267,3 +267,15 @@ fn another_test_attribute_and_a_test_cfg_attr_give_credit() {
     let (_, report) = boundaries(&workspace(TWO_BUILDS, &[("src/lib.rs", lib)]));
     assert_eq!(places(&report), Vec::<String>::new(), "{report:#}");
 }
+
+#[test]
+fn only_the_built_in_bench_attribute_is_a_test_condition() {
+    let lib = "#[cfg(test)]\nmod h {\n    pub fn helper() {}\n}\n#[m::bench]\nfn work() {\n    crate::h::helper();\n}\n#[bench]\nfn b() {\n    crate::h::helper();\n}\n#[test::bench]\nfn c() {\n    crate::h::helper();\n}\n#[::test::bench]\nfn d() {\n    crate::h::helper();\n}\n";
+    let (_, report) = boundaries(&workspace(TWO_BUILDS, &[("src/lib.rs", lib)]));
+    let line = line_of(lib, "#[m::bench]") + 2;
+    assert_eq!(
+        places(&report),
+        [format!("src/lib.rs:{line}")],
+        "{report:#}"
+    );
+}

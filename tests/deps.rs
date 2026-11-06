@@ -228,6 +228,35 @@ fn dependency_that_only_tests_use_moves_to_dev_dependencies() {
     assert_eq!(beta["actions"][0]["type"], "move-to-dev-dependencies");
 }
 
+/// Only `#[bench]` and `#[test::bench]` are the built-in bench attribute. An
+/// attribute macro of a crate with the name `bench` can stay in production
+/// code, so the dependency of that crate stays in `[dependencies]`.
+#[test]
+fn bench_attribute_macro_of_a_crate_is_production_code() {
+    let deps = format!(
+        "[dependencies]\n{}{}{}",
+        path_dep("alpha"),
+        path_dep("beta"),
+        path_dep("gamma")
+    );
+    let dir = workspace(
+        &deps,
+        &[(
+            "app/src/main.rs",
+            "#[alpha::bench]\nfn work() {}\n#[bench]\nfn b() { beta::f(); }\n\
+             #[test::bench]\nfn c() { gamma::f(); }\nfn main() { work(); }\n",
+        )],
+    );
+    let (_, report) = run(&dir, &[]);
+    assert_eq!(
+        findings(&report),
+        set(&[
+            "misplaced-dependency app dependencies beta",
+            "misplaced-dependency app dependencies gamma",
+        ])
+    );
+}
+
 #[test]
 fn misplaced_dependency_that_dev_already_has_is_removed_not_moved() {
     let deps = format!(

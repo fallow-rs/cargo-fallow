@@ -145,8 +145,10 @@ counts as production code. The summary has `production: true`. This is the
 `production` option of fallow for JavaScript for the duplication check.
 `cargo fallow check` reads the same table key, and the key changes only the
 duplication part of `check`. The test attributes are `#[cfg(test)]` and the
-test macros `test`, `bench`, `rstest`, `test_case` and `quickcheck`, also
-with a path, for example `#[tokio::test]`. Code in a macro call, for example
+test macros `test`, `rstest`, `test_case` and `quickcheck`, also with a
+path, for example `#[tokio::test]`. The built-in `#[bench]` and
+`#[test::bench]` are test attributes too. A `bench` macro of another crate,
+for example `#[gpui::bench]`, is not. Code in a macro call, for example
 a test in `proptest! { ... }`, stays production code, because the parser keeps
 a macro call as tokens.
 
@@ -160,9 +162,10 @@ build that does not name it. Each other option is unknown, for example a
 feature or a target that no build names. A condition with an unknown option
 can be unknown, and then the rule gives credit. The rule counts the `cfg` of
 the item, of each node around the code, and of each module declaration on the
-way to the file. `#[test]` and `#[bench]` count as `cfg(test)`. Another test
-attribute and a `cfg_attr` that can add a `cfg` or a test attribute are
-unknown.
+way to the file. `#[test]`, also with a path, and the built-in `#[bench]`
+count as `cfg(test)`. A crate macro such as `#[gpui::bench]` is not a test
+attribute. Another test attribute and a `cfg_attr` that can add a `cfg` or a
+test attribute are unknown.
 
 The rule reports a path only when the syntax can decide. It gives credit in
 these cases:

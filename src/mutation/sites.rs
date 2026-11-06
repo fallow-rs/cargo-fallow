@@ -328,9 +328,11 @@ impl Walk<'_> {
             cfg_off: under_cfg,
             test_only: false,
         };
-        self.found
-            .modules
-            .extend(decl.for_files(module_files(module)));
+        // Test code gets no mutants, so the walk skips a test-only file.
+        self.found.modules.extend(
+            decl.for_files(module_files(module))
+                .filter(|decl| !decl.test_only),
+        );
     }
 
     fn finish(mut self, text: &str, file_key: &str) -> FileSites {
@@ -965,5 +967,14 @@ mod tests {
                 (Some("plat/windows.rs"), true, true),
             ]
         );
+    }
+
+    #[test]
+    fn a_cfg_attr_test_path_of_a_module_is_not_a_declaration() {
+        let source = "#[cfg_attr(test, path = \"mock.rs\")]\n\
+                      #[cfg_attr(unix, cfg_attr(test, path = \"mock_unix.rs\"))]\nmod imp;\n";
+        let modules = file(source).modules;
+        let found: Vec<Option<&str>> = modules.iter().map(|m| m.path_attr.as_deref()).collect();
+        assert_eq!(found, [None]);
     }
 }

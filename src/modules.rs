@@ -29,18 +29,20 @@ pub struct ModuleDecl {
     /// tests is on the module.
     pub cfg_off: bool,
     /// True when the module exists only in a test build, for example with
-    /// `#[cfg(test)]`. Only the source walk of the structure checks sets it.
+    /// `#[cfg(test)]`. The source walk of the structure checks sets it for
+    /// `#[cfg(test)]`. Each walk sets it for a `cfg_attr(test, path = "..")` file.
     pub test_only: bool,
 }
 
 impl ModuleDecl {
     /// One declaration for each file that the declaration can load. The
-    /// `cfg` flags of a file add to the flags of the declaration.
+    /// `cfg` and test flags of a file add to the flags of the declaration.
     pub fn for_files(self, files: Vec<ModuleFile>) -> impl Iterator<Item = Self> {
         files.into_iter().map(move |file| Self {
             path_attr: file.path,
             under_cfg: self.under_cfg || file.under_cfg,
             cfg_off: self.cfg_off || file.cfg_off,
+            test_only: self.test_only || file.test_only,
             ..self.clone()
         })
     }

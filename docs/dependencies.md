@@ -14,7 +14,9 @@ doc tests and intra-doc links. rustdoc needs the dependency of a link such as
 The command reads each file of the module tree. A `mod name;` declaration
 with `path` values in `cfg_attr` attributes adds each file that a `path`
 names, and the default file of the name. The command does not evaluate the
-conditions, so a use in each platform file counts.
+conditions, so a use in each platform file counts. A file whose condition
+holds only in a test build, such as `cfg_attr(test, path = "mock.rs")`, is
+test code.
 
 ```bash
 cargo fallow deps

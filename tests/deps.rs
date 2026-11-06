@@ -906,3 +906,31 @@ fn the_default_file_of_a_module_with_cfg_attr_paths_is_part_of_the_graph() {
     let (_, report) = run(&dir, &[]);
     assert_eq!(findings(&report), set(&[]), "{report}");
 }
+
+#[test]
+fn a_cfg_attr_test_path_of_a_module_is_test_code() {
+    let deps = format!("[dependencies]\n{}{}", path_dep("alpha"), path_dep("beta"));
+    let dir = workspace(
+        &deps,
+        &[
+            (
+                "app/src/lib.rs",
+                "#[cfg_attr(test, path = \"mock.rs\")]\n\
+                 #[cfg_attr(unix, cfg_attr(test, path = \"mock_unix.rs\"))]\n\
+                 mod imp;\npub fn run() { imp::f(); }\n",
+            ),
+            ("app/src/imp.rs", "pub fn f() {}\n"),
+            ("app/src/mock.rs", "pub fn f() { alpha::f(); }\n"),
+            ("app/src/mock_unix.rs", "pub fn f() { beta::f(); }\n"),
+        ],
+    );
+    let (_, report) = run(&dir, &[]);
+    assert_eq!(
+        findings(&report),
+        set(&[
+            "misplaced-dependency app dependencies alpha",
+            "misplaced-dependency app dependencies beta",
+        ]),
+        "{report}"
+    );
+}

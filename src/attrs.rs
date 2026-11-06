@@ -184,6 +184,9 @@ pub struct ModuleFile {
     pub under_cfg: bool,
     /// True when a build with all features and tests can load a different file.
     pub cfg_off: bool,
+    /// True when only a test build can load the file, for example with
+    /// `cfg_attr(test, path = "mock.rs")`.
+    pub test_only: bool,
 }
 
 /// The files that a `mod name;` declaration can load.
@@ -208,11 +211,13 @@ pub fn module_files(module: &ast::Module) -> Vec<ModuleFile> {
         path: plain,
         under_cfg: !conditional.is_empty(),
         cfg_off: first_off,
+        test_only: false,
     }];
     files.extend(conditional.into_iter().map(|(path, condition)| ModuleFile {
         path: Some(path),
         under_cfg: true,
         cfg_off: cfg_value_all_features(&condition) != Some(true),
+        test_only: only_in_tests(&condition),
     }));
     files
 }
@@ -268,6 +273,14 @@ mod tests {
             path: path.map(str::to_owned),
             under_cfg,
             cfg_off,
+            test_only: false,
+        }
+    }
+
+    fn test_entry(path: &str, cfg_off: bool) -> ModuleFile {
+        ModuleFile {
+            test_only: true,
+            ..entry(Some(path), true, cfg_off)
         }
     }
 
@@ -292,8 +305,12 @@ mod tests {
                 entry(None, true, true),
                 entry(Some("on.rs"), true, false),
                 entry(Some("off.rs"), true, true),
-                entry(Some("nested.rs"), true, true),
+                test_entry("nested.rs", true),
             ]
+        );
+        assert_eq!(
+            files_of("#[cfg_attr(test, path = \"mock.rs\")] mod a;"),
+            [entry(None, true, true), test_entry("mock.rs", false)]
         );
         assert_eq!(
             files_of("#[cfg_attr(not(feature = \"f\"), path = \"off.rs\")] mod a;"),

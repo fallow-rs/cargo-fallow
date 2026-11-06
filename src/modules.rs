@@ -57,6 +57,12 @@ pub struct ModuleDecl {
     pub test_only: bool,
 }
 
+/// The most candidate folders of nested inline modules that a declaration
+/// keeps. Each `cfg_attr` path on an inline module multiplies the
+/// candidates, so deep nesting can otherwise make a very large number. Real
+/// code has a few candidates.
+const MAX_INLINE_FOLDERS: usize = 64;
+
 impl ModuleDecl {
     /// One declaration for each file that the `mod name;` item `module` can
     /// load. The `path` attributes of the enclosing inline modules and of
@@ -77,13 +83,16 @@ impl ModuleDecl {
                 .map(|name| crate::attrs::plain_name(&name))
                 .unwrap_or_default();
             let choices = module_files(inline);
-            let mut next = Vec::with_capacity(folders.len() * choices.len());
-            for (folder, flags) in &folders {
-                for choice in &choices {
-                    next.push((folder.nested(depth, &name, choice), flags.join(choice)));
-                }
-            }
-            folders = next;
+            let name = name.as_str();
+            folders = folders
+                .iter()
+                .flat_map(|(folder, flags)| {
+                    choices
+                        .iter()
+                        .map(move |choice| (folder.nested(depth, name, choice), flags.join(choice)))
+                })
+                .take(MAX_INLINE_FOLDERS)
+                .collect();
         }
         let files = module_files(module);
         let mut decls = Vec::with_capacity(folders.len() * files.len());
@@ -519,6 +528,17 @@ mod tests {
             folders_of("#[cfg_attr(any(), path = \"u\")] mod a { mod leaf; }"),
             [(None, None, false)]
         );
+    }
+
+    #[test]
+    fn deep_cfg_attr_folders_keep_a_bounded_number_of_candidates() {
+        // Each level has 4 candidates, so 12 levels make 4^12 combinations.
+        let open = "#[cfg_attr(unix, path = \"u\")] #[cfg_attr(windows, path = \"w\")] \
+                    #[cfg_attr(target_os = \"linux\", path = \"l\")] mod a { ";
+        let text = format!("{}mod leaf;{}", open.repeat(12), " }".repeat(12));
+        let found = folders_of(&text);
+        assert_eq!(found.len(), MAX_INLINE_FOLDERS);
+        assert_eq!(found[0], (None, None, true));
     }
 
     fn write_files(root: &Path, paths: &[&str]) {

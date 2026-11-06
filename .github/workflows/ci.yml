@@ -410,13 +410,17 @@ jobs:
           '
       - name: Check compilation
         run: cargo check --locked --offline
+      # The `ra_ap_*` crates of `--precise` mode set their own rust-version.
+      # Without this step, a bump of these crates above 1.98 passes CI.
+      - name: Check compilation with the precise feature
+        run: cargo check --locked --offline --features precise
       - name: Check for uncommitted changes
         run: git diff --exit-code
 
   ci-ok:
     name: CI
     if: always()
-    needs: [fmt, clippy, test, windows, package, doc, typos, scripts, audit, deny, shear, zizmor, msrv]
+    needs: [fmt, clippy, test, windows, precise, package, doc, typos, scripts, audit, deny, shear, zizmor, msrv]
     runs-on: ubuntu-26.04
     timeout-minutes: 5
     permissions: {}

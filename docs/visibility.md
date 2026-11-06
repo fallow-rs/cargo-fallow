@@ -155,7 +155,8 @@ the output tokens counts in these crates:
 - each crate that depends on the proc-macro crate;
 - each crate that depends on a crate that re-exports a macro of the
   proc-macro crate with `pub use` or `pub extern crate`. A re-export of a
-  re-export also counts;
+  re-export also counts. A glob or a module re-export counts only when its
+  path leads to a module with the macro;
 - the workspace crates that the crates above depend on, also through other
   crates.
 
@@ -171,14 +172,19 @@ crates in `undecided`.
 
 These names in the output tokens are no uses:
 
-- a `#name` variable. In `#krate::name`, only `krate` is a variable, so
-  `name` counts as a name of the output;
-- a name that the output defines: the name after `fn`, `struct`, `enum`,
-  `trait`, `type`, `const`, `static` or `mod`, a parameter, a field
-  declaration and a variant declaration. A parameter name with an upper
-  case letter first can be a constant, so it counts as a use. The tokens of
-  a nested macro call, for example `m!(fn name)`, count as uses;
+- a `#name` variable. In `#ty::name`, only `ty` is a variable. `name`
+  counts as a name of the output, also for an associated function or a
+  method;
+- a name that the output defines. These are the item names after `fn`,
+  `struct`, `enum`, `trait`, `type`, `const`, `static` or `mod`. Parameters,
+  field declarations and variant declarations are also definitions. An item
+  with a `#name` variable as its name, as in `fn #name(cursor: u8)`, also
+  defines its parameters or fields;
 - the tokens of a `quote!` in the test code of the proc-macro crate.
+
+A parameter name with an upper case letter first can be a constant, so it
+counts as a use. The tokens of a nested macro call, for example
+`m!(fn name)`, count as uses.
 
 In the output, a name in a `use a::{b, c}` group is no field or method name.
 A method call `.name(..)` counts only for methods, not for fields.

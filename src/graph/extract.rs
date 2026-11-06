@@ -1307,7 +1307,8 @@ impl<'a> Walker<'a> {
             if in_output && path.defined {
                 continue;
             }
-            let output = if in_output && path.interpolated && path.segments.len() > 1 {
+            let after_head = in_output && path.interpolated && path.segments.len() > 1;
+            let output = if after_head {
                 // In `#krate::name`, only `krate` is a variable of the code
                 // that builds the tokens. The rest of the path is output.
                 path.segments.remove(0);
@@ -1316,7 +1317,13 @@ impl<'a> Walker<'a> {
             } else {
                 in_output && !path.interpolated
             };
-            for kind in token_ref_kinds(path, output) {
+            // The head of `#ty::name` can be a type, so `name` can be an
+            // associated function or a method.
+            let method = match path.segments.as_slice() {
+                [name] if after_head => Some(RefKind::Method(name.clone())),
+                _ => None,
+            };
+            for kind in token_ref_kinds(path, output).into_iter().chain(method) {
                 self.add_ref(kind, origin);
                 if let Some(reference) = self.facts.refs.last_mut() {
                     reference.output = output;

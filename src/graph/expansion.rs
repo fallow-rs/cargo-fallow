@@ -68,28 +68,33 @@ impl Names {
 /// names `source`, or `None` when the import binds no macro. `rest` is the
 /// part of the path after the crate or the module of `source`.
 ///
-/// - `use source;` and `extern crate source;` bind each name of the source
-///   under the binding.
-/// - A glob import can bind a macro, so it binds the names of the source.
-/// - A named import binds a macro when a name of `rest` can lead to a macro.
+/// An import binds a macro only when each name of `rest` can lead to a
+/// macro. `crate`, `self` and `super` are no names of the source.
+///
+/// - `use source;`, `extern crate source;` and `use source::*;` bind each
+///   name of the source.
+/// - A glob import of a module with a macro binds the names of the source.
+/// - A named import with a path binds its own name.
 ///
 /// The names of the module of the import also lead to the macros.
 fn imported(graph: &Graph, import: &Import, rest: &[String], source: &Names) -> Option<Names> {
+    let leads = rest
+        .iter()
+        .filter(|segment| !matches!(segment.as_str(), "crate" | "self" | "super"))
+        .all(|segment| source.covers(segment));
+    if !leads {
+        return None;
+    }
     let mut names = match &import.binding {
         Binding::Underscore => return None,
-        Binding::Glob => source.clone(),
-        Binding::Name(name) => {
-            let mut names = if rest.is_empty() {
-                source.clone()
-            } else if rest.iter().any(|segment| source.covers(segment)) {
-                Names::Some(FxHashSet::default())
-            } else {
-                return None;
-            };
-            names.insert(name);
-            names
+        Binding::Name(name) if !rest.is_empty() => {
+            Names::Some(FxHashSet::from_iter([name.clone()]))
         }
+        Binding::Glob | Binding::Name(_) => source.clone(),
     };
+    if let Binding::Name(name) = &import.binding {
+        names.insert(name);
+    }
     for segment in &graph.modules[import.module].path {
         names.insert(segment);
     }

@@ -254,11 +254,17 @@ fn defined_pieces(pieces: &[Piece<'_>]) -> Vec<bool> {
         if pieces.get(name) == Some(&Piece::Keyword(Keyword::Mut)) {
             name += 1;
         }
-        if !matches!(pieces.get(name), Some(Piece::Ident(_))) {
-            continue;
-        }
-        defined[name] = true;
-        let Some((open, body)) = item_body(pieces, name + 1, keyword) else {
+        let after_name = match pieces.get(name) {
+            Some(Piece::Ident(_)) => {
+                defined[name] = true;
+                name + 1
+            }
+            // In `fn #name(..)`, the name is a variable of the code that
+            // builds the tokens, but the item still defines its parts.
+            Some(Piece::Pound) if matches!(pieces.get(name + 1), Some(Piece::Ident(_))) => name + 2,
+            _ => continue,
+        };
+        let Some((open, body)) = item_body(pieces, after_name, keyword) else {
             continue;
         };
         for (inner, depth, opener) in group_names(pieces, open) {
@@ -321,14 +327,28 @@ fn opaque_pieces(pieces: &[Piece<'_>]) -> Vec<bool> {
 /// The index of the group that holds the parts of an item, and the keyword
 /// of the item: the parameters of a function, or the body of a struct or an
 /// enum. The scan starts after the name and skips the generic parameters.
+/// For a struct or an enum, it also skips a `(..)` group, for example the
+/// `Fn(u8)` of a where clause.
 fn item_body(pieces: &[Piece<'_>], start: usize, keyword: Keyword) -> Option<(usize, Keyword)> {
     let mut angle = 0_u32;
+    let mut skipped = 0_u32;
     for (index, piece) in pieces.iter().enumerate().skip(start) {
+        if skipped > 0 {
+            match piece {
+                Piece::Open | Piece::OpenParen | Piece::OpenBrace => skipped += 1,
+                Piece::Close | Piece::CloseBrace => skipped -= 1,
+                _ => {}
+            }
+            continue;
+        }
         match piece {
             Piece::Lt => angle += 1,
             Piece::Gt => angle = angle.saturating_sub(1),
             Piece::Open | Piece::OpenParen if angle == 0 => {
-                return (keyword == Keyword::Fn).then_some((index, keyword));
+                if keyword == Keyword::Fn {
+                    return Some((index, keyword));
+                }
+                skipped = 1;
             }
             Piece::OpenBrace if angle == 0 => {
                 return matches!(keyword, Keyword::Struct | Keyword::Enum)
@@ -663,6 +683,17 @@ mod tests {
                 "px", "cx", "n", "Shape", "level", "size", "Kind", "Alpha", "Beta", "Gamma",
                 "depth", "Tr", "Al", "LIMIT", "COUNT", "inner",
             ]
+        );
+    }
+
+    #[test]
+    fn where_clauses_and_interpolated_names_keep_definitions() {
+        assert_eq!(
+            defined(
+                "struct W<F> where F: Fn(u8) { wfield: F } fn #name(cursor: u8) {} \
+                 struct #other { level: u8 } struct T(u8) where u8: Copy; fn after(n: u8) {}"
+            ),
+            ["W", "wfield", "cursor", "level", "T", "after", "n"]
         );
     }
 

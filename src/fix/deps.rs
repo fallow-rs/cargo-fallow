@@ -27,8 +27,9 @@ const PACKAGE_TABLES: [&str; 5] = [
 ];
 
 /// True when `fix` can apply the action of a finding of `rule`. A warning is
-/// not fixed: a person decides it. An entry that turns on features is not
-/// fixed either: see `Finding::manual`.
+/// not fixed: a person decides it. An entry with a reason in
+/// `Finding::manual`, for example an entry that turns on features, is not
+/// fixed either.
 pub const fn fixes(rule: Rule) -> bool {
     matches!(
         rule,

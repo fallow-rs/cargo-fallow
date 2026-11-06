@@ -18,6 +18,11 @@ const MANUAL_FEATURES: &str = "The entry turns on features, and another dependen
 /// Why `fix` leaves a misplaced entry that a feature names.
 const MANUAL_FEATURE_NAMES: &str =
     "A feature of the package names the dependency, and a feature cannot name a dev-dependency.";
+/// Why `fix` leaves an entry with an exact version or an upper bound.
+const MANUAL_PIN: &str = "The entry can pin the version of the crate for other dependencies.";
+/// Why `fix` leaves an entry where a target calls a macro of a crate outside
+/// the workspace.
+const MANUAL_EXTERNAL_MACRO: &str = "A target uses a macro of a crate outside the workspace, and the code of that macro can use the entry.";
 /// Why `fix` leaves a workspace entry.
 const MANUAL_INHERITED: &str = "A member entry that `fix` keeps inherits it.";
 
@@ -38,6 +43,7 @@ pub struct Analysis {
 }
 
 /// One declared dependency with the facts that the rules need.
+#[derive(Clone)]
 struct Declared<'a> {
     dependency: &'a cargo_metadata::Dependency,
     key: String,
@@ -115,6 +121,7 @@ pub fn analyze(workspace: &Workspace, metadata: &Metadata, graph: &Graph) -> Ana
     let mut workspace_ignores = IgnoreList::from_metadata(&metadata.workspace_metadata);
     let mut member_keys: BTreeSet<String> = BTreeSet::new();
     let empty = PackageUsage::default();
+    let removed = removed_entries(metadata, &skipped, &usage);
     // The workspace keys that a member entry inherits, where `fix` keeps the
     // member entry. Without the workspace entry, that member entry breaks.
     let mut kept_inherited: BTreeSet<String> = BTreeSet::new();
@@ -147,7 +154,7 @@ pub fn analyze(workspace: &Workspace, metadata: &Metadata, graph: &Graph) -> Ana
         }
         let used = usage.get(package.name.as_str()).unwrap_or(&empty);
         let mut ignores = IgnoreList::from_metadata(&package.metadata);
-        let found = package_findings(metadata, package, used)
+        let found = package_findings(metadata, package, used, &removed)
             .into_iter()
             .chain(feature_findings(package, &text, &features));
         let removed = add_findings(
@@ -393,20 +400,227 @@ fn section_of(kind: DependencyKind) -> Section {
     }
 }
 
+/// The entries of the members, as the package id and the index in
+/// `dependencies`, that a finding of `fix` removes. The ignore lists do not
+/// count, so the set can hold more entries than `fix` removes.
+type RemovedEntries<'a> = BTreeSet<(&'a PackageId, usize)>;
+
+/// The entries of the members that `fix` can remove. A skipped package keeps
+/// each entry.
+fn removed_entries<'a>(
+    metadata: &'a Metadata,
+    skipped: &BTreeMap<String, String>,
+    usage: &BTreeMap<String, PackageUsage>,
+) -> RemovedEntries<'a> {
+    let empty = PackageUsage::default();
+    let mut removed = BTreeSet::new();
+    for package in metadata.workspace_packages() {
+        if skipped.contains_key(package.name.as_str()) {
+            continue;
+        }
+        let used = usage.get(package.name.as_str()).unwrap_or(&empty);
+        for judged in judge_entries(metadata, package, used) {
+            if is_removal(judged.rule) {
+                removed.insert((&package.id, judged.index));
+            }
+        }
+    }
+    removed
+}
+
+/// The facts of one entry that can make `fix` leave it.
+struct Hazards {
+    /// True when the version requirement of the entry can hold the version
+    /// that another package in the resolve gets.
+    pins: bool,
+    /// True when a target that the section of the entry serves calls a macro
+    /// of a crate outside the workspace.
+    external_macro: bool,
+}
+
 /// Why `fix` leaves the entry of a finding, if it leaves the entry.
-fn manual_reason(package: &Package, entry: &Declared<'_>, rule: Rule) -> Option<&'static str> {
+fn manual_reason(
+    package: &Package,
+    entry: &Declared<'_>,
+    rule: Rule,
+    hazards: &Hazards,
+) -> Option<&'static str> {
     if !entry.dependency.features.is_empty() {
         Some(MANUAL_FEATURES)
     } else if rule == Rule::MisplacedDependency && feature_configures(package, &entry.key) {
         Some(MANUAL_FEATURE_NAMES)
+    } else if hazards.pins && is_removal(rule) {
+        Some(MANUAL_PIN)
+    } else if hazards.external_macro
+        && matches!(rule, Rule::UnusedDependency | Rule::UnusedDevDependency)
+    {
+        Some(MANUAL_EXTERNAL_MACRO)
     } else {
         None
     }
 }
 
-/// The findings of one package, before the ignore lists. The manifest path,
-/// the line and the actions come later.
-fn package_findings(metadata: &Metadata, package: &Package, used: &PackageUsage) -> Vec<Finding> {
+/// True when the version is the first version of a semver-compatible range,
+/// for example `0.2.0` or `2.0.0`. An upper bound `<` on such a version holds
+/// no version below the newest compatible version.
+const fn starts_compatible_range(major: u64, minor: u64, patch: u64) -> bool {
+    patch == 0 && ((major > 0 && minor == 0) || (major == 0 && minor > 0))
+}
+
+/// True when a comparator can hold a crate below its newest compatible
+/// version: `=`, `<=`, and `<` or `~` with a bound inside a compatible range.
+fn holds_older_version(comparator: &cargo_metadata::semver::Comparator) -> bool {
+    use cargo_metadata::semver::Op;
+    let major = comparator.major;
+    match comparator.op {
+        Op::Exact | Op::LessEq => true,
+        Op::Less => {
+            !comparator.pre.is_empty()
+                || !starts_compatible_range(
+                    major,
+                    comparator.minor.unwrap_or(0),
+                    comparator.patch.unwrap_or(0),
+                )
+        }
+        Op::Tilde => comparator.minor.map_or_else(
+            || !starts_compatible_range(major + 1, 0, 0),
+            |minor| !starts_compatible_range(major, minor + 1, 0),
+        ),
+        _ => false,
+    }
+}
+
+/// True when the entry has an exact version or an upper bound, another
+/// package in the resolve depends on the same crate, and no other entry that
+/// stays after `fix` has the same requirement. Cargo picks one version for
+/// each semver-compatible range, so the entry can hold the version of the
+/// other package.
+fn pins_shared_version(
+    metadata: &Metadata,
+    package: &Package,
+    index: usize,
+    resolved: &[&Package],
+    removed: &RemovedEntries<'_>,
+) -> bool {
+    let dependency = &package.dependencies[index];
+    if !dependency.req.comparators.iter().any(holds_older_version) {
+        return false;
+    }
+    // The dev-dependencies of a package outside the workspace are not in the
+    // resolve, so they hold no version. An entry that `fix` also removes holds
+    // no version after the fix.
+    let members: BTreeSet<&PackageId> = metadata.workspace_members.iter().collect();
+    let kept_elsewhere = metadata.packages.iter().any(|other| {
+        let member = members.contains(&other.id);
+        other
+            .dependencies
+            .iter()
+            .enumerate()
+            .any(|(other_index, declared)| {
+                (other.id != package.id || other_index != index)
+                    && !removed.contains(&(&other.id, other_index))
+                    && (member || declared.kind != DependencyKind::Development)
+                    && declared.name == dependency.name
+                    && declared.req == dependency.req
+            })
+    });
+    if kept_elsewhere {
+        return false;
+    }
+    let ids: BTreeSet<&PackageId> = resolved.iter().map(|found| &found.id).collect();
+    metadata.resolve.as_ref().is_some_and(|resolve| {
+        resolve
+            .nodes
+            .iter()
+            .any(|node| node.id != package.id && node.deps.iter().any(|dep| ids.contains(&dep.pkg)))
+    })
+}
+
+/// The name of a dependency in the code: the rename, the library name of the
+/// resolved package, or the package name with `_` for `-`.
+fn code_name(dependency: &cargo_metadata::Dependency, resolved: &[&Package]) -> String {
+    dependency.rename.as_deref().map_or_else(
+        || lib_name(resolved).unwrap_or_else(|| crate_name(&dependency.name)),
+        crate_name,
+    )
+}
+
+/// Crates outside the workspace whose attribute and item macros write paths of
+/// the crate itself and of the standard library only, so their output uses no
+/// other entry.
+const SELF_CONTAINED_MACRO_CRATES: [&str; 10] = [
+    "async_trait",
+    "bitflags",
+    "ctor",
+    "lazy_static",
+    "pin_project",
+    "rust_i18n",
+    "serde",
+    "thiserror",
+    "tokio",
+    "tracing",
+];
+
+/// The contexts that use an attribute of a dependency outside the workspace,
+/// or call its macro in the place of an item, by a path such as
+/// `#[krate::name]` or `krate::name!`. The graph does not see the code that
+/// such a macro writes. The crates in [`SELF_CONTAINED_MACRO_CRATES`] do not
+/// count.
+fn external_macro_contexts(
+    metadata: &Metadata,
+    package: &Package,
+    used: &PackageUsage,
+) -> BTreeSet<Context> {
+    let members: BTreeSet<&PackageId> = metadata.workspace_members.iter().collect();
+    let mut contexts = BTreeSet::new();
+    for dependency in &package.dependencies {
+        let Some(resolved) = resolved_packages(metadata, package, &dependency.name) else {
+            continue;
+        };
+        if resolved.iter().any(|found| members.contains(&found.id)) {
+            continue;
+        }
+        let name = code_name(dependency, &resolved);
+        if SELF_CONTAINED_MACRO_CRATES.contains(&name.as_str()) {
+            continue;
+        }
+        if let Some(found) = used.invoked.get(&name) {
+            contexts.extend(found.iter().copied());
+        }
+    }
+    contexts
+}
+
+/// True when the section of an entry serves code of `context`: `[dependencies]`
+/// serves libraries and binaries, `[dev-dependencies]` serves tests, benches
+/// and examples.
+const fn serves(section: Section, context: Context) -> bool {
+    match section {
+        Section::Normal => context.is_production(),
+        Section::Dev => context.is_test(),
+        Section::Build | Section::Workspace => false,
+    }
+}
+
+/// One entry of a package that a rule reports.
+struct Judged<'a> {
+    /// The index of the entry in `dependencies` of the package.
+    index: usize,
+    entry: Declared<'a>,
+    resolved: Vec<&'a Package>,
+    rule: Rule,
+    used_by: Vec<&'static str>,
+    /// True when a dev entry with the same key, on each platform of the
+    /// normal entry, makes the normal entry a plain removal.
+    in_dev: bool,
+}
+
+/// The entries of one package that a rule reports, with the rule of each.
+fn judge_entries<'a>(
+    metadata: &'a Metadata,
+    package: &'a Package,
+    used: &PackageUsage,
+) -> Vec<Judged<'a>> {
     let declared: Vec<Declared<'_>> = package
         .dependencies
         .iter()
@@ -426,8 +640,8 @@ fn package_findings(metadata: &Metadata, package: &Package, used: &PackageUsage)
         entry.section == Section::Dev
             && COMPILE_TEST_HARNESSES.contains(&entry.dependency.name.as_str())
     });
-    let mut findings = Vec::new();
-    for entry in &declared {
+    let mut judged = Vec::new();
+    for (index, entry) in declared.iter().enumerate() {
         if compile_tests && entry.section == Section::Dev {
             continue;
         }
@@ -435,11 +649,7 @@ fn package_findings(metadata: &Metadata, package: &Package, used: &PackageUsage)
             continue;
         };
         let links = resolved.iter().any(|dep| dep.links.is_some());
-        let code_name = entry.dependency.rename.as_deref().map_or_else(
-            || lib_name(&resolved).unwrap_or_else(|| crate_name(&entry.dependency.name)),
-            crate_name,
-        );
-        let contexts = used.contexts(&code_name);
+        let contexts = used.contexts(&code_name(entry.dependency, &resolved));
         let also_normal = declared.iter().any(|other| {
             other.section == Section::Normal && other.dependency.name == entry.dependency.name
         });
@@ -457,29 +667,65 @@ fn package_findings(metadata: &Metadata, package: &Package, used: &PackageUsage)
         if links && rule.severity() == Severity::Error {
             continue;
         }
-        let mut found = finding(
-            rule,
-            Some(package.name.to_string()),
-            entry.section.label().to_owned(),
-            entry.platform.clone(),
-            entry.key.clone(),
-        );
-        found.package_name =
-            (entry.dependency.name != entry.key).then(|| entry.dependency.name.clone());
-        found.optional = entry.dependency.optional;
-        found.used_by = used_by;
-        found.manual = manual_reason(package, entry, rule);
-        // Only a dev entry with the same key, on each platform of the normal
-        // entry, makes the normal entry a plain removal.
-        found.in_dev = declared.iter().any(|other| {
+        let in_dev = declared.iter().any(|other| {
             other.section == Section::Dev
                 && other.dependency.name == entry.dependency.name
                 && other.key == entry.key
                 && (other.platform.is_none() || other.platform == entry.platform)
         });
-        findings.push(found);
+        judged.push(Judged {
+            index,
+            entry: entry.clone(),
+            resolved,
+            rule,
+            used_by,
+            in_dev,
+        });
     }
-    findings
+    judged
+}
+
+/// The findings of one package, before the ignore lists. The manifest path,
+/// the line and the actions come later.
+fn package_findings(
+    metadata: &Metadata,
+    package: &Package,
+    used: &PackageUsage,
+    removed: &RemovedEntries<'_>,
+) -> Vec<Finding> {
+    let macro_contexts = external_macro_contexts(metadata, package, used);
+    judge_entries(metadata, package, used)
+        .into_iter()
+        .map(|judged| {
+            let entry = &judged.entry;
+            let mut found = finding(
+                judged.rule,
+                Some(package.name.to_string()),
+                entry.section.label().to_owned(),
+                entry.platform.clone(),
+                entry.key.clone(),
+            );
+            found.package_name =
+                (entry.dependency.name != entry.key).then(|| entry.dependency.name.clone());
+            found.optional = entry.dependency.optional;
+            let hazards = Hazards {
+                pins: pins_shared_version(
+                    metadata,
+                    package,
+                    judged.index,
+                    &judged.resolved,
+                    removed,
+                ),
+                external_macro: macro_contexts
+                    .iter()
+                    .any(|context| serves(entry.section, *context)),
+            };
+            found.manual = manual_reason(package, entry, judged.rule, &hazards);
+            found.used_by = judged.used_by;
+            found.in_dev = judged.in_dev;
+            found
+        })
+        .collect()
 }
 
 /// The rule for one dependency and the contexts that use it, or `None` when
@@ -716,4 +962,45 @@ fn actions(finding: &Finding) -> Vec<Action> {
         file: finding.manifest_path.clone(),
         line: finding.line,
     }]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cargo_metadata::semver::VersionReq;
+
+    fn holds(req: &str) -> bool {
+        VersionReq::parse(req)
+            .unwrap_or_else(|err| panic!("{req}: {err}"))
+            .comparators
+            .iter()
+            .any(holds_older_version)
+    }
+
+    #[test]
+    fn a_requirement_pins_only_below_the_newest_compatible_version() {
+        for req in [
+            "=0.1.0",
+            "<=0.1.9",
+            ">=0.1, <0.1.5",
+            "<1.2",
+            "<0.2.0-alpha",
+            "~1.2",
+            "~1.2.3",
+        ] {
+            assert!(holds(req), "{req}");
+        }
+        for req in [
+            "0.1",
+            "^1.2",
+            ">=0.1, <0.2",
+            ">=1.0, <2",
+            "~0.1",
+            "~0.1.2",
+            "~1",
+            "*",
+        ] {
+            assert!(!holds(req), "{req}");
+        }
+    }
 }

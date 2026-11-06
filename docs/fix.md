@@ -101,6 +101,20 @@ cargo fallow fix --yes --only visibility   # only the visibility edits
   - an entry that turns on features (`features = [...]`), because Cargo
     unifies the features of a package and another dependency can need them,
   - a misplaced entry that a feature of the package names,
+  - an unused entry with an exact version (`=`) or an upper bound (`<`,
+    `<=`, `~`) on a crate that another package in the resolve also uses.
+    Cargo picks one version for each compatible range, so the entry can pin
+    the version for the other package. When another entry that `fix` keeps
+    has the same requirement, the pin stays and `fix` removes the entry. An
+    upper bound on the first version of the next compatible range, for
+    example `<0.2` for a `0.1` crate, does not pin,
+  - an unused `[dependencies]` entry when the library or a binary uses an
+    attribute macro or calls a macro in the place of an item, from a crate
+    outside the workspace, by a path such as `#[krate::name]` or
+    `krate::name!(..);`. The same applies to a `[dev-dependencies]` entry and
+    test code, a bench or an example. The command cannot read the code that
+    such a macro writes, and that code can name the entry. See
+    [External macros](dependencies.md#external-macros),
   - a workspace entry that one of these member entries inherits.
 - The command keeps the comments and the format of each `Cargo.toml`. When the
   command removes or moves an entry, the comment above the entry is removed

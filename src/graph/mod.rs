@@ -263,6 +263,10 @@ pub struct Ref {
     /// True for a name in the tokens of an output macro such as `quote!`,
     /// but not for a `#name` variable.
     pub output: bool,
+    /// True for the path of an attribute, for example `#[krate::name]`, and
+    /// of a macro call in the place of an item, for example `krate::name!(..);`
+    /// in a module.
+    pub invocation: bool,
 }
 
 /// The workspace module graph.
@@ -674,6 +678,7 @@ fn add_file(
             line: raw.line,
             cfg: raw.cfg,
             output: raw.output,
+            invocation: raw.invocation,
         });
     }
 }
@@ -937,6 +942,7 @@ fn included_code(
                 line: site.line,
                 cfg: conditions,
                 output: false,
+                invocation: false,
             }
         };
         for import in facts.uses {

@@ -76,6 +76,10 @@ pub struct PackageUsage {
     /// in the text of its files, also in strings. `None` when the package has
     /// no build script.
     pub generated: Option<BTreeSet<String>>,
+    /// The first segment of each attribute path and of each macro call path in
+    /// the place of an item, for example `krate` of `#[krate::name]` or
+    /// `krate::name!(..);`, with the contexts of the calls.
+    pub invoked: BTreeMap<String, BTreeSet<Context>>,
 }
 
 impl PackageUsage {
@@ -256,6 +260,9 @@ fn add_ref(
         RefKind::Path { segments, .. } | RefKind::RecordField { segments, .. } => {
             if let Some(first) = segments.first() {
                 add(usage, package, first, context);
+                if reference.invocation {
+                    add_invoked(usage, package, first, invoked_context(reference, context));
+                }
             }
         }
         RefKind::Macro(name) if name == "include" => {
@@ -358,6 +365,47 @@ fn add(usage: &mut BTreeMap<String, PackageUsage>, package: &str, name: &str, co
         .insert(context);
 }
 
+/// The context of a macro call. Code under a condition such as
+/// `all(test, feature = "x")` exists only in a test build, also when the
+/// usage of names counts it as the code of the library.
+fn invoked_context(reference: &Ref, context: Context) -> Context {
+    if context.is_production() && reference.cfg.iter().any(|cfg| requires_test(cfg)) {
+        Context::UnitTest
+    } else {
+        context
+    }
+}
+
+/// True when a `cfg` condition with no whitespace holds only in a test build:
+/// `test`, or `all(..)` with such a part.
+fn requires_test(condition: &str) -> bool {
+    condition == "test"
+        || condition
+            .strip_prefix("all(")
+            .and_then(|rest| rest.strip_suffix(')'))
+            .is_some_and(|list| {
+                crate::attrs::split_list(list)
+                    .into_iter()
+                    .any(requires_test)
+            })
+}
+
+fn add_invoked(
+    usage: &mut BTreeMap<String, PackageUsage>,
+    package: &str,
+    name: &str,
+    context: Context,
+) {
+    let name = name.strip_prefix("r#").unwrap_or(name);
+    usage
+        .entry(package.to_owned())
+        .or_default()
+        .invoked
+        .entry(name.to_owned())
+        .or_default()
+        .insert(context);
+}
+
 /// The context of code in a crate of `kind`. `doc` marks a code block in the
 /// documentation. rustdoc tests only the code blocks of a library, so the
 /// documentation of another crate kind has no context.
@@ -395,6 +443,25 @@ fn is_test_module(graph: &Graph, module: ModuleId) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_condition_holds_only_in_a_test_build_when_each_build_needs_test() {
+        for condition in [
+            "test",
+            "all(test,feature=\"a\")",
+            "all(unix,all(test,windows))",
+        ] {
+            assert!(requires_test(condition), "{condition}");
+        }
+        for condition in [
+            "unix",
+            "any(test,unix)",
+            "not(test)",
+            "all(unix,feature=\"test\")",
+        ] {
+            assert!(!requires_test(condition), "{condition}");
+        }
+    }
 
     #[test]
     fn path_prefixes_are_found_in_code_and_strings() {

@@ -6,12 +6,12 @@
 
 use std::path::Path;
 
-use ra_ap_syntax::ast::{self, HasAttrs, HasModuleItem, HasName};
+use ra_ap_syntax::ast::{self, HasModuleItem, HasName};
 use ra_ap_syntax::{
     AstNode, AstToken, NodeOrToken, SyntaxKind, SyntaxNode, SyntaxToken, WalkEvent,
 };
 
-use crate::attrs::{attr_body, path_attribute, plain_name};
+use crate::attrs::{module_files, plain_name};
 use crate::modules::{ModuleDecl, normalize};
 
 /// The macros that read a file at compile time.
@@ -206,10 +206,7 @@ fn collect_declarations(
         };
         let name = plain_name(&name);
         if let Some(list) = module.item_list() {
-            let moved = module.attrs().any(|attr| {
-                path_attribute(&attr).is_some()
-                    || cfg_attr_paths(&attr_body(&attr)).next().is_some()
-            });
+            let moved = module_files(&module).iter().any(|file| file.path.is_some());
             if moved {
                 found.undecide("a `path` attribute is on an inline module");
             }
@@ -218,32 +215,16 @@ fn collect_declarations(
             inline.pop();
             continue;
         }
-        let decl = |path_attr: Option<String>| ModuleDecl {
-            name: name.clone(),
+        let decl = ModuleDecl {
+            name,
             inline_path: inline.clone(),
-            path_attr,
+            path_attr: None,
             under_cfg: false,
             cfg_off: false,
             test_only: false,
         };
-        found
-            .modules
-            .push(decl(module.attrs().find_map(|attr| path_attribute(&attr))));
-        for attr in module.attrs() {
-            found
-                .modules
-                .extend(cfg_attr_paths(&attr_body(&attr)).map(|path| decl(Some(path))));
-        }
+        found.modules.extend(decl.for_files(module_files(&module)));
     }
-}
-
-/// The `path = "..."` values in a `cfg_attr(..)` body without whitespace.
-fn cfg_attr_paths(body: &str) -> impl Iterator<Item = String> + '_ {
-    let inner = body.strip_prefix("cfg_attr(").unwrap_or_default();
-    inner.match_indices("path=\"").filter_map(move |(at, key)| {
-        let value = &inner[at + key.len()..];
-        value.find('"').map(|end| value[..end].to_owned())
-    })
 }
 
 /// True for a token in the token tree of a macro call or a macro definition.

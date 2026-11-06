@@ -905,3 +905,81 @@ fn include_cycle_with_many_calls_finishes() {
     assert_eq!(code, 0, "{report}");
     assert_eq!(findings(&report), set(&[]));
 }
+
+#[test]
+fn each_cfg_attr_path_of_a_module_is_part_of_the_graph() {
+    let deps = format!(
+        "[dependencies]\n{}{}{}{}",
+        path_dep("alpha"),
+        path_dep("beta"),
+        path_dep("gamma"),
+        path_dep("delta")
+    );
+    let dir = workspace(
+        &deps,
+        &[
+            (
+                "app/src/lib.rs",
+                "#[cfg_attr(unix, path = \"plat/unix.rs\")]\n\
+                 #[cfg_attr(\n    windows,\n    path = \"plat/windows.rs\"\n)]\n\
+                 #[cfg_attr(not(unix), cfg_attr(feature = \"x\", path = \"plat/nested.rs\"))]\n\
+                 mod platform;\npub fn run() { platform::f(); }\n",
+            ),
+            ("app/src/plat/unix.rs", "pub fn f() { alpha::f(); }\n"),
+            ("app/src/plat/windows.rs", "pub fn f() { beta::f(); }\n"),
+            ("app/src/plat/nested.rs", "pub fn f() { gamma::f(); }\n"),
+        ],
+    );
+    let (code, report) = run(&dir, &[]);
+    assert_eq!(code, 0, "{report}");
+    assert_eq!(
+        findings(&report),
+        set(&["unused-dependency app dependencies delta"])
+    );
+}
+
+#[test]
+fn the_default_file_of_a_module_with_cfg_attr_paths_is_part_of_the_graph() {
+    let deps = format!("[dependencies]\n{}{}", path_dep("alpha"), path_dep("beta"));
+    let dir = workspace(
+        &deps,
+        &[
+            (
+                "app/src/lib.rs",
+                "#[cfg_attr(windows, path = \"imp_windows.rs\")]\nmod imp;\npub fn run() { imp::f(); }\n",
+            ),
+            ("app/src/imp.rs", "pub fn f() { alpha::f(); }\n"),
+            ("app/src/imp_windows.rs", "pub fn f() { beta::f(); }\n"),
+        ],
+    );
+    let (_, report) = run(&dir, &[]);
+    assert_eq!(findings(&report), set(&[]), "{report}");
+}
+
+#[test]
+fn a_cfg_attr_test_path_of_a_module_is_test_code() {
+    let deps = format!("[dependencies]\n{}{}", path_dep("alpha"), path_dep("beta"));
+    let dir = workspace(
+        &deps,
+        &[
+            (
+                "app/src/lib.rs",
+                "#[cfg_attr(test, path = \"mock.rs\")]\n\
+                 #[cfg_attr(unix, cfg_attr(test, path = \"mock_unix.rs\"))]\n\
+                 mod imp;\npub fn run() { imp::f(); }\n",
+            ),
+            ("app/src/imp.rs", "pub fn f() {}\n"),
+            ("app/src/mock.rs", "pub fn f() { alpha::f(); }\n"),
+            ("app/src/mock_unix.rs", "pub fn f() { beta::f(); }\n"),
+        ],
+    );
+    let (_, report) = run(&dir, &[]);
+    assert_eq!(
+        findings(&report),
+        set(&[
+            "misplaced-dependency app dependencies alpha",
+            "misplaced-dependency app dependencies beta",
+        ]),
+        "{report}"
+    );
+}

@@ -2012,3 +2012,32 @@ fn a_test_helper_method_that_another_module_calls_keeps_pub() {
     let (found, _) = findings(&dir, &[]);
     assert_eq!(found, set(&[]));
 }
+
+/// Each `cfg_attr` path of a module is a file of the crate, so a use in a
+/// file of another platform counts.
+#[test]
+fn a_use_in_a_cfg_attr_path_file_counts() {
+    let dir = workspace(&[
+        ("app/src/main.rs", "fn main() { mid::shared(); }\n"),
+        (
+            "mid/src/lib.rs",
+            "#[cfg_attr(windows, path = \"imp_w.rs\")]\npub mod imp;\n\
+             pub fn shared() { imp::run(); }\npub fn helper() {}\n",
+        ),
+        ("mid/src/imp.rs", "pub fn run() {}\n"),
+        (
+            "mid/src/imp_w.rs",
+            "pub fn run() { crate::helper(); }\npub fn w_unused() {}\n",
+        ),
+    ]);
+    let (found, _) = findings(&dir, &[]);
+    assert_eq!(
+        found,
+        set(&[
+            "dead-public imp::w_unused",
+            "unnecessary-public helper",
+            "unnecessary-public imp",
+            "unnecessary-public imp::run",
+        ])
+    );
+}

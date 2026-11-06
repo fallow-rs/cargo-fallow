@@ -12,4 +12,5 @@
   file with the `\` in its name does not exist. A dependency that only a
   Windows file uses then counts on each host.
 - A `cfg_attr` condition that no build makes true, such as `any()`, now adds
-  no module file.
+  no module file. A condition that each build makes true, such as `all()`,
+  now replaces the default file, so `files` reports that file.

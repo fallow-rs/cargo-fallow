@@ -400,6 +400,24 @@ fn included_file_with_modules_skips_the_package() {
 }
 
 #[test]
+fn cfg_attr_path_that_each_build_uses_reports_the_default_file() {
+    let dir = workspace(
+        "",
+        &[
+            (
+                "app/src/lib.rs",
+                "#[cfg_attr(all(), path = \"plat/always.rs\")]\nmod q;\n",
+            ),
+            ("app/src/plat/always.rs", ""),
+            // rustc loads `plat/always.rs` in each build, never `q.rs`.
+            ("app/src/q.rs", ""),
+        ],
+    );
+    let (_, report) = run(&dir, &[]);
+    assert_eq!(paths(&report), set(&["app/src/q.rs"]), "{report}");
+}
+
+#[test]
 fn path_attribute_on_an_inline_module_sets_the_folder_of_its_modules() {
     let dir = workspace(
         "",

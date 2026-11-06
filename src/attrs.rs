@@ -295,7 +295,10 @@ impl ModuleFile {
 /// file of the name. Each `path` in a `cfg_attr` attribute adds one file. The
 /// syntax does not tell which condition holds, so each file is a candidate.
 /// A condition that is false in every build, for example `any()`, adds no
-/// file. On an inline module, each value is a folder for the nested modules.
+/// file. A condition that is true in every build, for example `all()`, acts
+/// as a plain `#[path]` attribute. rustc uses the first `path` attribute, so a
+/// later one adds no file. On an inline module, each value is a folder for
+/// the nested modules.
 pub fn module_files(module: &ast::Module) -> Vec<ModuleFile> {
     let mut plain = None;
     let mut conditional = Vec::new();
@@ -303,10 +306,18 @@ pub fn module_files(module: &ast::Module) -> Vec<ModuleFile> {
         if plain.is_none() {
             plain = path_value(&meta);
         }
-        cfg_attr_paths(&meta, None, &mut conditional);
+        let mut found = Vec::new();
+        cfg_attr_paths(&meta, None, &mut found);
+        for (path, condition) in found {
+            match cfg_constant(&condition) {
+                Some(false) => {}
+                Some(true) => {
+                    plain.get_or_insert(path);
+                }
+                None => conditional.push((path, condition)),
+            }
+        }
     }
-    // A condition that no build makes true loads no file.
-    conditional.retain(|(_, condition)| cfg_constant(condition) != Some(false));
     let first_off = conditional
         .iter()
         .any(|(_, condition)| cfg_value_all_features(condition) != Some(false));
@@ -460,9 +471,31 @@ mod tests {
             files_of("#[cfg_attr(any(not(feature = \"f\")), path = \"x.rs\")] mod a;"),
             [entry(None, true, false), entry(Some("x.rs"), true, true)]
         );
+    }
+
+    #[test]
+    fn a_condition_that_each_build_makes_true_replaces_the_default_file() {
+        for always in ["all()", "not(any())", "true", "any(unix,all())"] {
+            assert_eq!(
+                files_of(&format!("#[cfg_attr({always}, path = \"x.rs\")] mod a;")),
+                [entry(Some("x.rs"), false, false)],
+                "{always}"
+            );
+        }
+        // rustc uses the first `path` attribute, so a later one loads no file.
         assert_eq!(
-            files_of("#[cfg_attr(not(any()), path = \"x.rs\")] mod a;"),
-            [entry(None, true, true), entry(Some("x.rs"), true, false)]
+            files_of("#[path = \"p.rs\"] #[cfg_attr(all(), path = \"x.rs\")] mod a;"),
+            [entry(Some("p.rs"), false, false)]
+        );
+        // An earlier condition that a build setting decides can still win.
+        assert_eq!(
+            files_of(
+                "#[cfg_attr(unix, path = \"u.rs\")] #[cfg_attr(all(), path = \"x.rs\")] mod a;"
+            ),
+            [
+                entry(Some("x.rs"), true, true),
+                entry(Some("u.rs"), true, true)
+            ]
         );
     }
 

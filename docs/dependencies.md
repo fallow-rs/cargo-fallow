@@ -15,7 +15,8 @@ The command reads each file of the module tree. A `mod name;` declaration
 with `path` values in `cfg_attr` attributes adds each file that a `path`
 names, and the default file of the name. The command does not evaluate the
 conditions, so a use in each platform file counts. A condition that no build
-makes true, such as `any()`, adds no file. A file whose condition holds only
+makes true, such as `any()`, adds no file. A condition that each build makes
+true, such as `all()`, acts as a plain `#[path]` attribute. A file whose condition holds only
 in a test build, such as `cfg_attr(test, path = "mock.rs")`, is test code.
 
 A `path` value can be a raw string, and the command resolves its escapes like

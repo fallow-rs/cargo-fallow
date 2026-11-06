@@ -75,12 +75,22 @@ pub fn classify(body: &str) -> AttrClass {
 }
 
 /// True for an attribute that makes a test out of a function. The list holds the
-/// test macros of the wider ecosystem, also with a path before the name.
+/// test macros of the wider ecosystem, also with a path before the name, for
+/// example `#[tokio::test]`. The name `bench` is a test only as the built-in
+/// attribute, see [`is_bench_attribute`].
 pub fn is_test_attribute(body: &str) -> bool {
-    const NAMES: [&str; 5] = ["test", "bench", "rstest", "test_case", "quickcheck"];
+    const NAMES: [&str; 4] = ["test", "rstest", "test_case", "quickcheck"];
     let name = body.split('(').next().unwrap_or(body);
     let last = name.rsplit("::").next().unwrap_or(name);
-    NAMES.contains(&last)
+    NAMES.contains(&last) || is_bench_attribute(name)
+}
+
+/// True for the path of the built-in bench attribute: `bench` or
+/// `test::bench`. An attribute macro of another crate with the name `bench`,
+/// for example `#[gpui::bench]`, can expand to production code, so it is not a
+/// test attribute.
+pub fn is_bench_attribute(path: &str) -> bool {
+    matches!(path.trim_start_matches("::"), "bench" | "test::bench")
 }
 
 /// True when a `cfg` condition with no whitespace can only hold in a test build.

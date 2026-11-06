@@ -5,3 +5,7 @@ node_modules/
 .plans/
 fuzz/artifacts/
 fuzz/target/
+# A fuzz run adds the inputs that it finds to the corpus. Only the `.rs` seeds
+# are part of the repository.
+fuzz/corpus/fuzz_parse/*
+!fuzz/corpus/fuzz_parse/*.rs

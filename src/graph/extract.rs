@@ -102,7 +102,8 @@ impl Vis {
 /// Attributes and other facts that make an item a root of the liveness walk.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ItemFlags {
-    /// `#[test]`, `#[bench]` and the test macros of the wider ecosystem.
+    /// `#[test]`, the built-in `#[bench]` and the test macros of the wider
+    /// ecosystem.
     pub test_fn: bool,
     /// `#[no_mangle]`, `#[export_name]` or `#[used]`.
     pub external: bool,
@@ -1384,11 +1385,11 @@ impl<'a> Walker<'a> {
 pub const UNKNOWN_CFG: &str = "?";
 
 /// The conditions of the `cfg` attributes of a node, outer and inner, with no
-/// whitespace: `test` for `#[cfg(test)]`. `#[test]` and `#[bench]`, also with
-/// a path such as `#[tokio::test]`, give `test`, because only a test build
-/// compiles them. Another test attribute, for example `#[test_case(1)]`, and
-/// a `cfg_attr` that can add a `cfg` or a test attribute give
-/// [`UNKNOWN_CFG`].
+/// whitespace: `test` for `#[cfg(test)]`. `#[test]`, also with a path such as
+/// `#[tokio::test]`, and the built-in `#[bench]` give `test`, because only a
+/// test build compiles them. Another test attribute, for example
+/// `#[test_case(1)]`, and a `cfg_attr` that can add a `cfg` or a test
+/// attribute give [`UNKNOWN_CFG`].
 pub fn cfg_conditions(owner: &ast::AnyHasAttrs) -> Vec<String> {
     owner
         .attrs()
@@ -1398,7 +1399,7 @@ pub fn cfg_conditions(owner: &ast::AnyHasAttrs) -> Vec<String> {
                 return Some(condition.strip_suffix(')').unwrap_or(condition).to_owned());
             }
             let name = body.split('(').next().unwrap_or(&body);
-            if matches!(name.rsplit("::").next(), Some("test" | "bench")) {
+            if name.rsplit("::").next() == Some("test") || crate::attrs::is_bench_attribute(name) {
                 return Some("test".to_owned());
             }
             if crate::attrs::is_test_attribute(&body) {

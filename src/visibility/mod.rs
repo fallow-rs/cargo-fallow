@@ -98,7 +98,9 @@ pub struct Finding {
     pub kind: FindingKind,
     /// The item.
     pub item: ItemId,
-    /// True when only test code reaches the item.
+    /// True when only test code reaches the item, and the step is
+    /// `#[cfg(test)]`, not a smaller keyword. An `unnecessary-restricted-visibility`
+    /// finding on an item that exists only in test builds has `false`.
     pub test_only: bool,
 }
 
@@ -869,10 +871,13 @@ fn judge(
             }),
         );
         if restricted_finding(graph, surface, facts.uses, item) {
+            // An item that exists only in test builds already has its
+            // `#[cfg(test)]`, and the compiler already checks it for dead code.
+            // So the keyword change is its step.
             findings.push(Finding {
                 kind: FindingKind::UnnecessaryRestricted,
                 item,
-                test_only,
+                test_only: test_only && !graph.items[item].test_only,
             });
         }
     }

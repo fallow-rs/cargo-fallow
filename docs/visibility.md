@@ -52,7 +52,7 @@ cargo fallow visibility --precise
 
 | Flag | Meaning |
 | --- | --- |
-| `--production <PACKAGE:BIN>` | A production binary. The flag can repeat. Without the flag, each binary is a production binary. Tests, benches, examples and doctests are roots of a different kind. An item that only these roots use has `test_only: true`. |
+| `--production <PACKAGE:BIN>` | A production binary. The flag can repeat. Without the flag, each binary is a production binary. Tests, benches, examples and doctests are roots of a different kind. An item that only these roots use has `test_only: true`, except for an `unnecessary-restricted-visibility` finding on a `#[cfg(test)]` item. Such an item already has `#[cfg(test)]`, so its step is the keyword change. |
 | `--exclude-crate <CRATE>` | A library whose public items are an external API. The flag can repeat. |
 | `--public-crate <CRATE>` | A library whose exported items are an external API. Each other library is internal. The flag can repeat. |
 | `--uniform-fields` | When all fields of a struct have the same written visibility, the command changes them as a group. |

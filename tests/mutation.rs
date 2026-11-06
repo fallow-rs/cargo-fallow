@@ -22,6 +22,9 @@ use assert_cmd::Command;
 use serde_json::Value;
 use tempfile::TempDir;
 
+/// The time limit of one run of the binary.
+const RUN_TIMEOUT: Duration = Duration::from_secs(280);
+
 const MANIFEST: &str = "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\npublish = false\n\n[workspace]\n";
 
 fn write_crate(dir: &Path, files: &[(&str, &str)]) {
@@ -35,6 +38,7 @@ fn write_crate(dir: &Path, files: &[(&str, &str)]) {
 
 struct Run {
     report: Value,
+    stdout: String,
     stderr: String,
     code: Option<i32>,
     source: TempDir,
@@ -42,8 +46,20 @@ struct Run {
 }
 
 impl Run {
+    /// The mutants of the report. A run with no report fails with its exit code
+    /// and its stderr, so the cause of the failure shows in the test output.
     fn mutants(&self) -> &Vec<Value> {
-        self.report["mutants"].as_array().expect("the mutants")
+        self.report["mutants"].as_array().unwrap_or_else(|| {
+            panic!(
+                "the run gave no report with mutants. Exit code: {:?}. No exit code \
+                 means that a signal stopped the run, for example the {}-second timeout.\n\
+                 stdout: {}\nstderr: {}",
+                self.code,
+                RUN_TIMEOUT.as_secs(),
+                self.stdout,
+                self.stderr
+            )
+        })
     }
 
     /// The mutants of one operator text, as `(replacement, status)`.
@@ -76,6 +92,9 @@ fn run(files: &[(&str, &str)], flags: &[&str]) -> Run {
         .env("MBX_DISABLE", "1")
         // An outer nextest run names its own profile, and a fixture has no such profile.
         .env_remove("NEXTEST_PROFILE")
+        // The cache of a fixture goes to the target folder. A shared folder of the
+        // outer run gives a map from an earlier run.
+        .env_remove("CARGO_TARGET_DIR")
         .args([
             "mutants",
             "--format",
@@ -88,12 +107,13 @@ fn run(files: &[(&str, &str)], flags: &[&str]) -> Run {
         .arg("--work-dir")
         .arg(work.path().join("run"))
         .args(flags)
-        .timeout(Duration::from_secs(280))
+        .timeout(RUN_TIMEOUT)
         .output()
         .expect("the binary runs");
     let report = serde_json::from_slice(&output.stdout).unwrap_or(Value::Null);
     Run {
         report,
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
         code: output.status.code(),
         source,
@@ -999,6 +1019,9 @@ fn human_output_lists_the_survivors() {
         .env("MBX_DISABLE", "1")
         // An outer nextest run names its own profile, and a fixture has no such profile.
         .env_remove("NEXTEST_PROFILE")
+        // The cache of a fixture goes to the target folder. A shared folder of the
+        // outer run gives a map from an earlier run.
+        .env_remove("CARGO_TARGET_DIR")
         .args([
             "mutants",
             "--tier",
@@ -1009,7 +1032,7 @@ fn human_output_lists_the_survivors() {
             "--manifest-path",
         ])
         .arg(source.path().join("Cargo.toml"))
-        .timeout(Duration::from_secs(280))
+        .timeout(RUN_TIMEOUT)
         .output()
         .expect("the binary runs");
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -1092,6 +1115,9 @@ mod tests {
         .env("MBX_DISABLE", "1")
         // An outer nextest run names its own profile, and a fixture has no such profile.
         .env_remove("NEXTEST_PROFILE")
+        // The cache of a fixture goes to the target folder. A shared folder of the
+        // outer run gives a map from an earlier run.
+        .env_remove("CARGO_TARGET_DIR")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -1137,13 +1163,16 @@ fn run_in(source: &Path, flags: &[&str], rustc: Option<&Path>) -> (Value, String
         .env("MBX_DISABLE", "1")
         // An outer nextest run names its own profile, and a fixture has no such profile.
         .env_remove("NEXTEST_PROFILE")
+        // The cache of a fixture goes to the target folder. A shared folder of the
+        // outer run gives a map from an earlier run.
+        .env_remove("CARGO_TARGET_DIR")
         .args(["mutants", "--format", "json", "--jobs", "2"])
         .arg("--manifest-path")
         .arg(source.join("Cargo.toml"))
         .arg("--work-dir")
         .arg(work.path().join("run"))
         .args(flags)
-        .timeout(Duration::from_secs(280))
+        .timeout(RUN_TIMEOUT)
         .output()
         .expect("the binary runs");
     (

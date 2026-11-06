@@ -713,3 +713,23 @@ fn a_failed_write_back_stops_the_run() {
         "{error}"
     );
 }
+
+/// A `#[cfg(test)]` helper that only its own module uses becomes private, and
+/// the workspace still builds with its tests.
+#[test]
+fn a_test_helper_in_a_private_module_becomes_private() {
+    let core = "mod protocol;\npub fn used() { protocol::send(); }\n";
+    let dir = workspace(core, APP);
+    write(
+        dir.path(),
+        "core/src/protocol.rs",
+        "pub fn send() {}\n#[cfg(test)]\npub fn local() {}\n\
+         #[cfg(test)]\nmod tests {\n    #[test]\n    fn t() {\n        super::local();\n    }\n}\n",
+    );
+    let (code, stdout, stderr) = fix(&dir, &["--yes", "--format", "json", "--quiet"], None);
+    assert_eq!(code, 0, "{stderr} {stdout}");
+    assert!(
+        read(&dir, "core/src/protocol.rs").contains("#[cfg(test)]\nfn local() {}"),
+        "{stdout}"
+    );
+}

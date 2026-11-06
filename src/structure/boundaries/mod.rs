@@ -55,7 +55,7 @@ use crate::workspace::{self, LinkKind, Member, Workspace};
 const ANY: &str = "*";
 
 /// Replaces each `{name}` in a message template with its value.
-pub(super) fn fill(template: &str, values: &[(&str, &str)]) -> String {
+fn fill(template: &str, values: &[(&str, &str)]) -> String {
     values
         .iter()
         .fold(template.to_owned(), |text, (name, value)| {
@@ -369,11 +369,7 @@ impl<'a> Names<'a> {
 
     /// The package names that `values` names. An unknown package name gives a
     /// warning, because a rule can name a package that a later change adds.
-    pub(super) fn expand(
-        &self,
-        rule: &str,
-        values: &[String],
-    ) -> Result<BTreeSet<String>, CliError> {
+    fn expand(&self, rule: &str, values: &[String]) -> Result<BTreeSet<String>, CliError> {
         let mut names = BTreeSet::new();
         for value in values {
             if value == ANY {

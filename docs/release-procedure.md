@@ -40,7 +40,7 @@ The jobs run in this order:
    manual run of that commit. It does not count pull request runs and
    weekly runs. For each workflow, the newest run decides. A release stops
    when that run failed, or when one of these workflows has no successful
-   run: `CI`, `Commitlint`, `Fuzz Smoke`, `GitHub Action` and
+   run: `CI`, `Commitlint`, `Corpus`, `Fuzz Smoke`, `GitHub Action` and
    `GitLab template`. A dry run skips this step.
 2. `build` builds `cargo-fallow` for five targets:
    `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`,
@@ -134,9 +134,12 @@ session and pull request that can merge to `main`, also auto-merge.
    ```
 
    The script waits for each push run of the commit. `Fuzz Smoke` has a
-   path filter, so a commit can have no run of it. `--dispatch-missing`
-   then starts it one time with `gh workflow run`, while `main` is the
-   release commit. The `plan` job runs the same check without
+   path filter, so a commit can have no run of it. `Corpus` runs on a
+   schedule, and a weekly run does not count. `--dispatch-missing` starts
+   each of them one time with `gh workflow run`, while `main` is the
+   release commit. A `Corpus` run fails when a finding on a corpus
+   workspace has no verdict. Then add the verdict in a pull request, as
+   `tests/corpus/README.md` describes, and prepare the release again. The `plan` job runs the same check without
    `--dispatch-missing`. `REQUIRED_WORKFLOWS` in the script lists the
    workflows. Its test fails when a workflow that runs on a push to `main`
    is not in the list.

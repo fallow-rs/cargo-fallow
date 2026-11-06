@@ -24,9 +24,13 @@ import { parseArgs } from "node:util";
 
 /**
  * The workflows that must have a successful run on the release SHA. Each one
- * runs on push to main. `fuzz-smoke.yml` has a path filter, so a release
- * commit can have no run of it. `dispatchable: false` marks a workflow
+ * runs on push to main, except an entry with `onPush: false`: the gate starts
+ * that one with `--dispatch-missing`. `fuzz-smoke.yml` has a path filter, so a
+ * release commit can have no run of it. `dispatchable: false` marks a workflow
  * without a `workflow_dispatch` trigger.
+ *
+ * `corpus.yml` checks the findings on the corpus workspaces. A weekly run does
+ * not count, so a release commit gets its own run.
  *
  * Update this list when a workflow gets or loses the push trigger on main.
  * `scripts/verify-release-ci.test.mjs` compares it with the workflow files.
@@ -34,6 +38,7 @@ import { parseArgs } from "node:util";
 export const REQUIRED_WORKFLOWS = Object.freeze([
   { name: "CI", file: "ci.yml" },
   { name: "Commitlint", file: "commitlint.yml", dispatchable: false },
+  { name: "Corpus", file: "corpus.yml", onPush: false },
   { name: "Fuzz Smoke", file: "fuzz-smoke.yml" },
   { name: "GitHub Action", file: "github-action.yml" },
   { name: "GitLab template", file: "gitlab-template.yml", dispatchable: false },

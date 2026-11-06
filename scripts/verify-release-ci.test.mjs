@@ -67,9 +67,9 @@ const runsOnPushToMain = (file) => {
   return branches === null || /(?:^|[\s,'"])main(?:$|[\s,'"])/u.test(branches.groups.list);
 };
 
-test("each required workflow runs on a push to main", () => {
+test("each required workflow runs on a push to main, or the gate dispatches it", () => {
   for (const workflow of REQUIRED_WORKFLOWS) {
-    assert.ok(runsOnPushToMain(workflow.file), workflow.file);
+    assert.equal(runsOnPushToMain(workflow.file), workflow.onPush !== false, workflow.file);
     assert.equal(
       /^ {2}workflow_dispatch:/mu.test(triggers(workflow.file)),
       workflow.dispatchable !== false,
@@ -83,7 +83,15 @@ test("each workflow that runs on a push to main is required", () => {
   const pushed = readdirSync(dir)
     .filter((file) => file.endsWith(".yml") && runsOnPushToMain(file))
     .toSorted();
-  assert.deepEqual(REQUIRED_WORKFLOWS.map((workflow) => workflow.file).toSorted(), pushed);
+  const required = REQUIRED_WORKFLOWS.filter((workflow) => workflow.onPush !== false);
+  assert.deepEqual(required.map((workflow) => workflow.file).toSorted(), pushed);
+});
+
+test("a release needs a corpus run, which the gate dispatches", () => {
+  const corpus = REQUIRED_WORKFLOWS.find((workflow) => workflow.file === "corpus.yml");
+  assert.ok(corpus, "corpus.yml is required");
+  assert.equal(corpus.onPush, false);
+  assert.notEqual(corpus.dispatchable, false);
 });
 
 test("a weekly run on the release commit does not count", () => {
@@ -151,7 +159,7 @@ test("a required run passes only on success, another run also on skipped", () =>
   assert.equal(evaluateRuns(skipped).state, "fail");
   const extra = [
     ...allPassed(),
-    run("corpus.yml", { event: "workflow_dispatch", conclusion: "skipped" }),
+    run("hawk.yml", { event: "workflow_dispatch", conclusion: "skipped" }),
   ];
   assert.equal(evaluateRuns(extra).state, "pass");
 });

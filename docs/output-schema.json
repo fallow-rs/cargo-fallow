@@ -2445,7 +2445,7 @@
         },
         "test_only": {
           "type": "boolean",
-          "description": "True when only test code reaches an item that also exists in other\nbuilds. Such an item needs `#[cfg(test)]`, not a smaller keyword."
+          "description": "True when only test code reaches the item, and the step is\n`#[cfg(test)]`, not a smaller keyword. An `unnecessary-restricted-visibility`\nfinding on an item that exists only in test builds has `false`."
         },
         "actions": {
           "type": "array",

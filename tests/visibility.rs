@@ -1951,6 +1951,30 @@ fn a_test_helper_gets_the_keyword_change_as_its_step() {
     assert!(!step.contains("cfg(test)"), "{step}");
 }
 
+/// `pub(crate)` on an item that a `#[cfg(all(test, ..))]` module uses can add a
+/// dead code warning in a build without that `cfg`, so the step stays for a
+/// person.
+#[test]
+fn a_public_test_helper_keeps_the_test_only_step() {
+    let dir = workspace(&[
+        (
+            "mid/src/lib.rs",
+            "pub mod util;\n#[cfg(all(test, debug_assertions))]\n\
+             mod t { #[test] fn t() { crate::util::helper(); } }\n",
+        ),
+        ("mid/src/util.rs", "#[cfg(test)]\npub fn helper() {}\n"),
+    ]);
+    let (_, text) = run(&dir, &["--format", "json"]);
+    let report: Value = serde_json::from_str(&text).expect("the output is JSON");
+    let row = report["findings"]
+        .as_array()
+        .and_then(|rows| rows.iter().find(|row| row["item"] == "util::helper"))
+        .unwrap_or_else(|| panic!("a finding on util::helper: {report:#}"));
+    assert_eq!(row["kind"], "unnecessary-public", "{report:#}");
+    assert_eq!(row["test_only"], true, "{report:#}");
+    assert_eq!(row["actions"][0]["auto_fixable"], false, "{report:#}");
+}
+
 /// rustc rejects a `use` that re-exports an item with more visibility than
 /// the item has, so a re-exported item keeps its visibility.
 #[test]

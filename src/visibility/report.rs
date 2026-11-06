@@ -160,8 +160,9 @@ pub struct FindingRow {
     pub visibility: String,
     /// The smaller visibility. An empty text means private.
     pub suggested: String,
-    /// True when only test code reaches an item that also exists in other
-    /// builds. Such an item needs `#[cfg(test)]`, not a smaller keyword.
+    /// True when only test code reaches the item, and the step is
+    /// `#[cfg(test)]`, not a smaller keyword. An `unnecessary-restricted-visibility`
+    /// finding on an item that exists only in test builds has `false`.
     pub test_only: bool,
     /// The next steps.
     pub actions: Vec<Action>,

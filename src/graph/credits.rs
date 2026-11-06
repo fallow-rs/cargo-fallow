@@ -60,9 +60,22 @@ pub struct Site {
     pub credit: Credit,
 }
 
-/// The key of a group: the filter, the crate of the code and true for the
-/// crate of a documentation test. The name is the inner key.
-type GroupKey = (NameFilter, CrateId, bool);
+/// The crates where the items of a name credit can be.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Scope {
+    /// The crate of the code and the crates that it can use.
+    Code,
+    /// The crates that a documentation test of the crate can use.
+    Doc,
+    /// The crates where the output of a proc-macro can be: the proc-macro
+    /// crate, each crate that can call the macro, and the crates that they
+    /// can use.
+    Expansion,
+}
+
+/// The key of a group: the filter, the crate of the code and the scope. The
+/// name is the inner key.
+type GroupKey = (NameFilter, CrateId, Scope);
 
 /// The credits of every import and every reference of the graph.
 #[derive(Debug, Default)]

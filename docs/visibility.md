@@ -113,6 +113,12 @@ expansion:
   type of the receiver is unknown,
 - each item with a name in macro tokens, in an attribute or in a
   documentation code block,
+- each item that the macro tokens of a proc-macro crate name, in each crate
+  that can call the macro and in the crates that it can use. The macro writes
+  its tokens into the crate that calls it, also through a re-export in
+  another crate. A path counts as a path from the root module of each such
+  crate. When a path does not resolve there, each name of the path counts,
+  for example the type and the function of `Thing::new`,
 - items of trait impls, `#[macro_export]` macros and proc-macro entry points,
 - items under an attribute macro, for example the fields of a
   `#[napi(object)]` struct,

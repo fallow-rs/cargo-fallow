@@ -113,12 +113,16 @@ expansion:
   type of the receiver is unknown,
 - each item with a name in macro tokens, in an attribute or in a
   documentation code block,
-- each item that the macro tokens of a proc-macro crate name, in each crate
-  that can call the macro and in the crates that it can use. The macro writes
-  its tokens into the crate that calls it, also through a re-export in
-  another crate. A path counts as a path from the root module of each such
-  crate. When a path does not resolve there, each name of the path counts,
-  for example the type and the function of `Thing::new`,
+- each item that the output tokens of a proc-macro crate name, in each crate
+  that can call the macro and in the crates that it can use. The output
+  tokens are the tokens of `quote!`, `quote_spanned!`, `parse_quote!` and
+  `parse_quote_spanned!`, but not a `#name` variable. The macro writes these
+  tokens into the crate that calls it, also through a re-export in another
+  crate. A path counts as a path from the root module of each such crate.
+  When a path does not resolve there, each name of the path counts, for
+  example the type and the function of `Thing::new`. A name match puts the
+  item in `undecided`, so a common name in the output, for example a field
+  or a method name, can put items of many crates in `undecided`,
 - items of trait impls, `#[macro_export]` macros and proc-macro entry points,
 - items under an attribute macro, for example the fields of a
   `#[napi(object)]` struct,

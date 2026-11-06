@@ -63,11 +63,18 @@ const MANIFESTS: &[(&str, &str)] = &[
 
 /// The proc-macro. A local `quote!` keeps the test free of registry crates.
 /// The tokens name items of `a` and of `lonely`, and `m` depends on neither.
+/// The `vec!` call and the `#depth` variable are code of the proc-macro, not
+/// its output.
 const MACRO: &str = "use proc_macro::TokenStream;\n\
     macro_rules! quote { ($($t:tt)*) => { stringify!($($t)*) }; }\n\
+    struct Opts {\n    width: i32,\n}\n\
     #[proc_macro_attribute]\n\
     pub fn bench(_args: TokenStream, item: TokenStream) -> TokenStream {\n\
+    \x20   let opts = Opts { width: 1 };\n\
+    \x20   let all = vec![opts.width, 2];\n\
+    \x20   let depth = all.len();\n\
     \x20   let mut out = item.to_string();\n\
+    \x20   out.push_str(quote! { fn __depth() -> usize { #depth } });\n\
     \x20   out.push_str(quote! {\n\
     \x20       fn __bench() -> i32 { a::helper() + a::Thing::make().go() + lonely::solo() }\n\
     \x20       fn __poll() { let _ = core::task::Poll::Ready(()); }\n\
@@ -89,12 +96,15 @@ const FILES: &[(&str, &str)] = &[
          pub fn single() -> i32 { 6 }\n\
          pub struct Gadget;\n\
          pub struct Config {\n    pub level: i32,\n}\n\
+         pub struct Size {\n    pub width: i32,\n}\n\
+         pub fn depth() -> i32 { 8 }\n\
+         pub fn size() -> i32 { depth() + Size { width: 9 }.width }\n\
          impl Gadget {\n    pub fn build() -> i32 { 7 }\n}\n\
          impl Thing {\n    pub fn make() -> Self { Self }\n    pub fn go(&self) -> i32 { 3 }\n}\n",
     ),
     (
         "app/src/main.rs",
-        "#[facade::bench]\nfn work() {}\nfn main() { work(); }\n",
+        "#[facade::bench]\nfn work() {}\nfn main() { work(); let _ = a::size(); }\n",
     ),
     (
         "lonely/src/lib.rs",
@@ -161,14 +171,23 @@ fn findings(dir: &TempDir) -> BTreeSet<String> {
 /// so it does not use `a::Poll`. The output can import `single` and
 /// `Gadget` in its own module, so the bare name and the path that does not
 /// resolve from the root of `app` use the items of `a`. The struct
-/// expression of the output uses the field `Config::level`.
+/// expression of the output uses the field `Config::level`. The field name
+/// in `vec!` and the `#depth` variable are not in the output, so `Size`,
+/// `Size::width` and `depth` can be private.
 #[test]
 fn proc_macro_tokens_use_items_of_the_crates_that_call_the_macro() {
     let dir = workspace();
     let found = findings(&dir);
-    let expected: BTreeSet<String> = ["dead-public unused", "dead-public solo", "dead-public Poll"]
-        .iter()
-        .map(|row| (*row).to_owned())
-        .collect();
+    let expected: BTreeSet<String> = [
+        "dead-public unused",
+        "dead-public solo",
+        "dead-public Poll",
+        "unnecessary-public Size",
+        "unnecessary-public Size::width",
+        "unnecessary-public depth",
+    ]
+    .iter()
+    .map(|row| (*row).to_owned())
+    .collect();
     assert_eq!(found, expected);
 }

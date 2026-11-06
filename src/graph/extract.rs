@@ -9,7 +9,9 @@ use ra_ap_syntax::ast::{self, HasAttrs, HasName, HasVisibility, VisibilityKind};
 use ra_ap_syntax::{AstNode, AstToken, SyntaxKind, SyntaxNode, WalkEvent};
 
 use crate::attrs::{AttrClass, attr_body, attributes_of, path_attribute, plain_name};
-use crate::graph::tokens::{TokenPath, paths_in_code, paths_in_tree, rust_code_blocks_at};
+use crate::graph::tokens::{
+    OUTPUT_MACROS, TokenPath, paths_in_code, paths_in_tree, rust_code_blocks_at,
+};
 use crate::modules::ModuleDecl;
 use crate::parse::{Edition, ParseOutcome, with_parsed};
 
@@ -283,6 +285,9 @@ pub struct RawRef {
     pub line: u32,
     /// The `cfg` conditions on each enclosing node of the file.
     pub cfg: Vec<String>,
+    /// True for a name in the tokens of an output macro such as `quote!`,
+    /// but not for a `#name` variable.
+    pub output: bool,
 }
 
 /// The facts of one file.
@@ -389,6 +394,7 @@ fn doc_ref(path: TokenPath, line: u32) -> Vec<RawRef> {
             under_cfg: false,
             line,
             cfg: Vec::new(),
+            output: false,
         })
         .collect()
 }
@@ -559,6 +565,7 @@ impl<'a> Walker<'a> {
             under_cfg: self.cfg_off(),
             line,
             cfg: self.conditions(),
+            output: false,
         };
         let self_path = self.doc_self_path(node);
         let mut refs = Vec::new();
@@ -1080,6 +1087,7 @@ impl<'a> Walker<'a> {
             under_cfg: self.cfg_off(),
             line: self.line_at(self.cursor),
             cfg: self.conditions(),
+            output: false,
         });
     }
 
@@ -1221,9 +1229,11 @@ impl<'a> Walker<'a> {
         let Some(call) = ast::MacroCall::cast(node.clone()) else {
             return;
         };
+        let mut quoted = false;
         if let Some(path) = call.path()
             && let Some(name) = path.segment().and_then(|segment| segment.name_ref())
         {
+            quoted = OUTPUT_MACROS.contains(&name.text());
             let (segments, global) = path_segments(&path);
             if segments.len() > 1 {
                 self.add_ref(RefKind::Path { segments, global }, Origin::Macro);
@@ -1244,7 +1254,7 @@ impl<'a> Walker<'a> {
             } else {
                 Origin::Macro
             };
-            self.token_refs(tree.syntax(), origin);
+            self.token_refs(tree.syntax(), origin, quoted);
         }
     }
 
@@ -1265,11 +1275,13 @@ impl<'a> Walker<'a> {
             } else {
                 Origin::Macro
             };
-            self.token_refs(&tree, origin);
+            self.token_refs(&tree, origin, false);
         }
     }
 
-    fn token_refs(&mut self, tree: &SyntaxNode, origin: Origin) {
+    /// The references of the names in a token tree. With `quoted` true, the
+    /// tree is the tokens of an output macro such as `quote!`.
+    fn token_refs(&mut self, tree: &SyntaxNode, origin: Origin, quoted: bool) {
         for mut path in paths_in_tree(tree) {
             if let (Some(first), Some(self_ty)) = (path.segments.first(), self.impl_self())
                 && first == "Self"
@@ -1278,8 +1290,12 @@ impl<'a> Walker<'a> {
                 segments.extend(path.segments.into_iter().skip(1));
                 path.segments = segments;
             }
+            let output = (quoted || path.quoted) && !path.interpolated;
             for kind in token_ref_kinds(path) {
                 self.add_ref(kind, origin);
+                if let Some(reference) = self.facts.refs.last_mut() {
+                    reference.output = output;
+                }
             }
         }
     }
@@ -1301,7 +1317,7 @@ impl<'a> Walker<'a> {
         match meta {
             ast::Meta::TokenTreeMeta(meta) => {
                 if let Some(tree) = meta.token_tree() {
-                    self.token_refs(tree.syntax(), Origin::Attr);
+                    self.token_refs(tree.syntax(), Origin::Attr, false);
                 }
             }
             ast::Meta::KeyValueMeta(meta) => self.key_value(&meta),
@@ -1338,7 +1354,7 @@ impl<'a> Walker<'a> {
             }
             return;
         }
-        self.token_refs(expr.syntax(), Origin::Attr);
+        self.token_refs(expr.syntax(), Origin::Attr, false);
     }
 
     /// The code blocks of the doc comments of the file. Each run of doc

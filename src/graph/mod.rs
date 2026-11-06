@@ -259,6 +259,9 @@ pub struct Ref {
     pub line: u32,
     /// The `cfg` conditions on each enclosing node of the code in its file.
     pub cfg: Vec<String>,
+    /// True for a name in the tokens of an output macro such as `quote!`,
+    /// but not for a `#name` variable.
+    pub output: bool,
 }
 
 /// The workspace module graph.
@@ -665,6 +668,7 @@ fn add_file(
             file: file_id,
             line: raw.line,
             cfg: raw.cfg,
+            output: raw.output,
         });
     }
 }
@@ -927,6 +931,7 @@ fn included_code(
                 under_cfg: site.under_cfg,
                 line: site.line,
                 cfg: conditions,
+                output: false,
             }
         };
         for import in facts.uses {

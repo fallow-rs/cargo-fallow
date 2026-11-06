@@ -6,9 +6,10 @@
 //! visible crates. A method call, a field access and a name in macro tokens
 //! work the same way, because the syntax does not show the type.
 //!
-//! A proc-macro writes its tokens into the crate that calls the macro. A name
-//! in the macro tokens of a proc-macro crate therefore counts in each crate
-//! that can call the macro, and in the crates that those crates can use.
+//! A proc-macro writes its output tokens, for example the tokens of `quote!`,
+//! into the crate that calls the macro. A name in the output tokens of a
+//! proc-macro crate therefore counts in each crate that can call the macro,
+//! and in the crates that those crates can use.
 
 use std::cell::RefCell;
 
@@ -729,10 +730,15 @@ impl<'g> Resolver<'g> {
         }
     }
 
-    /// True for code in the macro tokens of a proc-macro crate.
+    /// True for a name in the output tokens of a proc-macro crate: the tokens
+    /// of an output macro such as `quote!`. The tokens of other macros, for
+    /// example `vec!`, and a `#name` variable are code of the proc-macro
+    /// crate itself.
     fn in_proc_macro_tokens(&self, base: Credit) -> bool {
-        matches!(base.origin, Origin::Macro | Origin::PublicMacro)
-            && self.expansion.contains_key(&base.krate)
+        let Source::Ref(index) = base.source else {
+            return false;
+        };
+        self.graph.refs[index].output && self.expansion.contains_key(&base.krate)
     }
 
     fn externs(&self, krate: CrateId, doc: bool) -> &'g [Extern] {

@@ -27,7 +27,11 @@ const run = (file, { status = "completed", conclusion = "success", event = "push
   html_url: `https://github.com/${REPO}/actions/runs/${id ?? nextId}`,
 });
 
-const allPassed = () => REQUIRED_WORKFLOWS.map((workflow) => run(workflow.file));
+// A workflow with no push trigger gets its run from a dispatch.
+const allPassed = () =>
+  REQUIRED_WORKFLOWS.map((workflow) =>
+    run(workflow.file, { event: workflow.onPush === false ? "workflow_dispatch" : "push" }),
+  );
 
 const options = (extra = {}) => ({
   sha: SHA,
@@ -87,11 +91,50 @@ test("each workflow that runs on a push to main is required", () => {
   assert.deepEqual(required.map((workflow) => workflow.file).toSorted(), pushed);
 });
 
-test("a release needs a corpus run, which the gate dispatches", () => {
-  const corpus = REQUIRED_WORKFLOWS.find((workflow) => workflow.file === "corpus.yml");
-  assert.ok(corpus, "corpus.yml is required");
-  assert.equal(corpus.onPush, false);
-  assert.notEqual(corpus.dispatchable, false);
+test("a required workflow with no push trigger can be dispatched", () => {
+  for (const workflow of REQUIRED_WORKFLOWS.filter((entry) => entry.onPush === false)) {
+    assert.notEqual(workflow.dispatchable, false, workflow.file);
+  }
+});
+
+test("a weekly corpus run leaves the corpus run of the release missing", () => {
+  const runs = [
+    ...allPassed().filter((entry) => !entry.path.endsWith("corpus.yml")),
+    run("corpus.yml", { event: "schedule" }),
+  ];
+  const evaluation = evaluateRuns(runs);
+  assert.equal(evaluation.state, "fail");
+  assert.deepEqual(
+    evaluation.missing.map((workflow) => workflow.file),
+    ["corpus.yml"],
+  );
+});
+
+test("--dispatch-missing starts the corpus run at the first poll", async () => {
+  const { now, wait } = clock();
+  const started = [];
+  const others = allPassed().filter((entry) => !entry.path.endsWith("corpus.yml"));
+  const pending = others.map((entry) =>
+    entry.path.endsWith("ci.yml") ? { ...entry, status: "in_progress", conclusion: null } : entry,
+  );
+  let polls = 0;
+  const code = await verifyReleaseCi(options({ dispatchMissing: true, missingGraceMinutes: 5 }), {
+    now,
+    wait,
+    log: () => {},
+    readMainSha: () => SHA,
+    dispatch: (workflow) => {
+      started.push({ file: workflow.file, poll: polls });
+      return { ok: true };
+    },
+    readRuns: () => {
+      polls += 1;
+      if (started.length === 0) return pending;
+      return [...others, run("corpus.yml", { id: 60_000, event: "workflow_dispatch" })];
+    },
+  });
+  assert.equal(code, 0);
+  assert.deepEqual(started, [{ file: "corpus.yml", poll: 1 }]);
 });
 
 test("a weekly run on the release commit does not count", () => {

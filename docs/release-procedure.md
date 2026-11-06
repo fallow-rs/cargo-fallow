@@ -134,12 +134,20 @@ session and pull request that can merge to `main`, also auto-merge.
    ```
 
    The script waits for each push run of the commit. `Fuzz Smoke` has a
-   path filter, so a commit can have no run of it. `Corpus` runs on a
-   schedule, and a weekly run does not count. `--dispatch-missing` starts
-   each of them one time with `gh workflow run`, while `main` is the
-   release commit. A `Corpus` run fails when a finding on a corpus
-   workspace has no verdict. Then add the verdict in a pull request, as
-   `tests/corpus/README.md` describes, and prepare the release again. The `plan` job runs the same check without
+   path filter, so a commit can have no run of it. `--dispatch-missing`
+   starts it one time with `gh workflow run` after the grace time, while
+   `main` is the release commit. `Corpus` has no push trigger, and a weekly
+   run does not count, so `--dispatch-missing` starts it at the first poll.
+
+   When `Corpus` fails, read its log:
+   - A clone, fetch or tool error: run the job again with
+     `gh run rerun <run ID> --failed`.
+   - A new correct finding: add its verdict in a pull request, as
+     `tests/corpus/README.md` describes.
+   - A new false positive: fix the tool in a pull request, with a
+     changelog fragment. Do not add a verdict to pass the gate.
+
+   After a pull request, prepare the release again from the new `main`. The `plan` job runs the same check without
    `--dispatch-missing`. `REQUIRED_WORKFLOWS` in the script lists the
    workflows. Its test fails when a workflow that runs on a push to `main`
    is not in the list.

@@ -242,14 +242,19 @@ const ghDispatch = (repo) => (workflow) => {
   }
 };
 
-// Starts each missing required workflow one time. It starts nothing when a
-// missing workflow has no workflow_dispatch trigger, because the gate then
-// fails anyway. Returns `{ ok, started }`.
-const dispatchMissingRuns = async (evaluation, { sha, dispatched, readMainSha, dispatch, log }) => {
+// Starts each missing required workflow that `select` accepts, one time. It
+// starts nothing when a missing workflow has no workflow_dispatch trigger,
+// because the gate then fails anyway. Returns `{ ok, started }`.
+const dispatchMissingRuns = async (
+  evaluation,
+  { sha, dispatched, readMainSha, dispatch, log, select = () => true },
+) => {
   if (evaluation.missing.some((workflow) => workflow.dispatchable === false)) {
     return { ok: true, started: 0 };
   }
-  const missing = evaluation.missing.filter((workflow) => !dispatched.has(workflow.file));
+  const missing = evaluation.missing.filter(
+    (workflow) => select(workflow) && !dispatched.has(workflow.file),
+  );
   if (missing.length === 0) return { ok: true, started: 0 };
   const mainSha = await readMainSha();
   if (mainSha !== sha) {
@@ -333,9 +338,16 @@ export const verifyReleaseCi = async (
       apiErrors = 0;
       const allowMissing = now() - graceStart < options.missingGraceMinutes * 60_000;
       evaluation = evaluateRuns(runs, { required, allowMissing });
+      // A workflow with no push trigger never gets a run without a dispatch,
+      // so it starts at once. Each other missing workflow first gets the grace
+      // time, because its push run can still appear.
+      const graceOver = evaluation.state === "fail" && evaluation.failed.length === 0;
+      const dispatchOnly = evaluation.missing.some(
+        (workflow) => workflow.onPush === false && !dispatched.has(workflow.file),
+      );
       if (
         options.dispatchMissing &&
-        evaluation.state === "fail" &&
+        (graceOver || dispatchOnly) &&
         evaluation.failed.length === 0
       ) {
         const result = await dispatchMissingRuns(evaluation, {
@@ -344,6 +356,7 @@ export const verifyReleaseCi = async (
           readMainSha,
           dispatch,
           log,
+          select: graceOver ? undefined : (workflow) => workflow.onPush === false,
         });
         if (!result.ok) return 1;
         if (result.started > 0) {

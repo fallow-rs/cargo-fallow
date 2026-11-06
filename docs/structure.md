@@ -163,9 +163,9 @@ feature or a target that no build names. A condition with an unknown option
 can be unknown, and then the rule gives credit. The rule counts the `cfg` of
 the item, of each node around the code, and of each module declaration on the
 way to the file. `#[test]`, also with a path, and the built-in `#[bench]`
-count as `cfg(test)`. Another test
-attribute and a `cfg_attr` that can add a `cfg` or a test attribute are
-unknown.
+count as `cfg(test)`. A crate macro such as `#[gpui::bench]` is not a test
+attribute. Another test attribute and a `cfg_attr` that can add a `cfg` or a
+test attribute are unknown.
 
 The rule reports a path only when the syntax can decide. It gives credit in
 these cases:

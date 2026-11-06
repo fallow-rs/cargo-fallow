@@ -559,6 +559,26 @@ fn ignore_lists_hide_findings_and_a_stale_entry_is_reported() {
 }
 
 #[test]
+fn cargo_machete_lists_hide_findings_and_are_not_reported_as_stale() {
+    let deps = format!(
+        "[package.metadata.cargo-machete]\nignored = [\"alpha\", \"delta\"]\n\n[dependencies]\n{}{}{}",
+        path_dep("alpha"),
+        path_dep("beta"),
+        path_dep("gamma")
+    );
+    let dir = workspace(&deps, &[("app/src/lib.rs", "")]);
+    let root = dir.path().join("Cargo.toml");
+    let mut text = fs::read_to_string(&root).expect("read the root manifest");
+    text.push_str("\n[workspace.metadata.cargo-machete]\nignored = [\"beta\"]\n");
+    fs::write(&root, text).expect("write the root manifest");
+    let (_, report) = run(&dir, &[]);
+    assert_eq!(
+        findings(&report),
+        set(&["unused-dependency app dependencies gamma"])
+    );
+}
+
+#[test]
 fn workspace_dependencies_inherit_and_unused_entries_are_reported() {
     let dir = workspace(
         "[dependencies]\nalpha = { workspace = true }\nbeta.workspace = true\n",

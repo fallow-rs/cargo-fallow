@@ -109,10 +109,11 @@ ignored = ["chrono"] # unifies the features with a workspace build
 ignored = ["getrandom"]
 ```
 
-The command also reads `ignored` in `[package.metadata.cargo-shear]` and
-`[workspace.metadata.cargo-shear]`. Thus a workspace can move from cargo-shear
-with no change to its `ignored` lists. The `redundant-ignore` rule checks only the
-cargo-fallow lists.
+The command also reads `ignored` in `[package.metadata.cargo-shear]`,
+`[workspace.metadata.cargo-shear]`, `[package.metadata.cargo-machete]` and
+`[workspace.metadata.cargo-machete]`. Thus a workspace can move from
+cargo-shear or cargo-machete with no change to its `ignored` lists. The
+`redundant-ignore` rule checks only the cargo-fallow lists.
 
 ## Feature drift
 

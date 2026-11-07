@@ -1329,36 +1329,44 @@ impl<'a> Walker<'a> {
         }
     }
 
+    /// Adds the references of the path of a macro call. Returns true when the
+    /// macro writes its input into its output, see [`OUTPUT_MACROS`].
+    fn macro_name_refs(&mut self, node: &SyntaxNode, call: &ast::MacroCall) -> bool {
+        let Some(path) = call.path() else {
+            return false;
+        };
+        let Some(name) = path.segment().and_then(|segment| segment.name_ref()) else {
+            return false;
+        };
+        let item_position = is_item_position(node);
+        let (segments, global) = path_segments(&path);
+        let single = segments.len() == 1 && !global;
+        if segments.len() > 1 {
+            self.add_ref(RefKind::Path { segments, global }, Origin::Macro);
+            if item_position {
+                self.mark_invocation();
+            }
+        }
+        self.add_ref(RefKind::Macro(name.text().to_string()), Origin::Macro);
+        if single && item_position {
+            self.mark_invocation();
+        }
+        if name.text() == "include"
+            && let Some(file) = call.token_tree().as_ref().and_then(single_string)
+            && let Some(site) = self.facts.refs.pop()
+        {
+            self.facts
+                .code_includes
+                .push(CodeInclude { path: file, site });
+        }
+        OUTPUT_MACROS.contains(&name.text())
+    }
+
     fn macro_call(&mut self, node: &SyntaxNode) {
         let Some(call) = ast::MacroCall::cast(node.clone()) else {
             return;
         };
-        let mut quoted = false;
-        if let Some(path) = call.path()
-            && let Some(name) = path.segment().and_then(|segment| segment.name_ref())
-        {
-            quoted = OUTPUT_MACROS.contains(&name.text());
-            let (segments, global) = path_segments(&path);
-            let single = segments.len() == 1 && !global;
-            if segments.len() > 1 {
-                self.add_ref(RefKind::Path { segments, global }, Origin::Macro);
-                if is_item_position(node) {
-                    self.mark_invocation();
-                }
-            }
-            self.add_ref(RefKind::Macro(name.text().to_string()), Origin::Macro);
-            if single && is_item_position(node) {
-                self.mark_invocation();
-            }
-            if name.text() == "include"
-                && let Some(file) = call.token_tree().as_ref().and_then(single_string)
-                && let Some(site) = self.facts.refs.pop()
-            {
-                self.facts
-                    .code_includes
-                    .push(CodeInclude { path: file, site });
-            }
-        }
+        let quoted = self.macro_name_refs(node, &call);
         if let Some(tree) = call.token_tree() {
             let origin = if writes_pub(tree.syntax()) {
                 Origin::PublicMacro

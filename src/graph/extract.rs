@@ -241,6 +241,10 @@ pub enum RefKind {
     Macro(String),
     /// A name in tokens that can be a field or a method.
     Member(String),
+    /// A one-name attribute on an item, for example `#[name]`, that is not an
+    /// attribute of the compiler. An import can bring an attribute macro with
+    /// that name into scope. The name can also be a derive helper.
+    Attribute(String),
 }
 
 /// Where a reference is.
@@ -278,6 +282,21 @@ fn is_item_position(call: &SyntaxNode) -> bool {
     })
 }
 
+/// True when the attribute of `path` is an outer attribute of an item. Only
+/// such an attribute can be an attribute macro.
+fn on_item(path: &ast::Path) -> bool {
+    path.syntax()
+        .ancestors()
+        .find_map(ast::Attr::cast)
+        .filter(|attr| attr.excl_token().is_none())
+        .and_then(|attr| attr.syntax().parent())
+        .is_some_and(|owner| {
+            ast::Item::can_cast(owner.kind())
+                || ast::AssocItem::can_cast(owner.kind())
+                || ast::ExternItem::can_cast(owner.kind())
+        })
+}
+
 /// One reference.
 #[derive(Debug, Clone)]
 pub struct RawRef {
@@ -306,6 +325,8 @@ pub struct RawRef {
     /// True for the path of an attribute, for example `#[krate::name]`, and
     /// of a macro call in the place of an item, for example `krate::name!(..);`
     /// in a module. Such a macro writes items that the graph does not see.
+    /// A one-name call in the place of an item, for example `name!(..);`,
+    /// marks its [`RefKind::Macro`] reference.
     pub invocation: bool,
 }
 
@@ -1180,11 +1201,22 @@ impl<'a> Walker<'a> {
 
     /// The path of an attribute, for example `#[tokio::main]`, is a reference
     /// when it has a crate prefix. A single name needs an import, which is a
-    /// reference already. The attributes of the compiler and its tools are not.
+    /// reference already, so a single name on an item is only an
+    /// [`RefKind::Attribute`]. The attributes of the compiler and its tools
+    /// are not references.
     fn attribute_path(&mut self, path: &ast::Path) {
-        let (segments, global) = path_segments(path);
-        if segments.len() > 1 && !is_builtin_attribute(&segments.join("::")) {
+        let (mut segments, global) = path_segments(path);
+        if is_builtin_attribute(&segments.join("::")) {
+            return;
+        }
+        if segments.len() > 1 {
             self.add_ref(RefKind::Path { segments, global }, Origin::Attr);
+            self.mark_invocation();
+        } else if !global
+            && on_item(path)
+            && let Some(name) = segments.pop()
+        {
+            self.add_ref(RefKind::Attribute(name), Origin::Attr);
             self.mark_invocation();
         }
     }
@@ -1302,6 +1334,7 @@ impl<'a> Walker<'a> {
         {
             quoted = OUTPUT_MACROS.contains(&name.text());
             let (segments, global) = path_segments(&path);
+            let single = segments.len() == 1 && !global;
             if segments.len() > 1 {
                 self.add_ref(RefKind::Path { segments, global }, Origin::Macro);
                 if is_item_position(node) {
@@ -1309,6 +1342,9 @@ impl<'a> Walker<'a> {
                 }
             }
             self.add_ref(RefKind::Macro(name.text().to_string()), Origin::Macro);
+            if single && is_item_position(node) {
+                self.mark_invocation();
+            }
             if name.text() == "include"
                 && let Some(file) = call.token_tree().as_ref().and_then(single_string)
                 && let Some(site) = self.facts.refs.pop()

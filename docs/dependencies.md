@@ -141,13 +141,23 @@ names it, but `cargo fallow fix` does not remove it in these cases:
   path, for example `#[krate::name]`, or calls its macro in the place of an
   item, for example `krate::name!(..);` in a module. Then the unused
   `[dependencies]` entries stay for a person.
+- The same applies to a one-name attribute on an item, for example
+  `#[name]`, and to a one-name macro call in the place of an item, for
+  example `name!(..);`, when an import in scope can bring the name from an
+  external crate. Such an import is a named import or a rename of the name,
+  for example `use krate::prelude::name;`, or a glob import, for example
+  `use krate::prelude::*;`. The command follows re-exports and glob imports
+  of the workspace modules and crates. For example, `#[wasm_bindgen] pub
+  async fn` writes `wasm_bindgen_futures::` paths.
 - Test code, a bench or an example does the same. Then the unused
   `[dev-dependencies]` entries stay for a person. Code under a `cfg` that
   holds only in a test build, for example `all(test, feature = "x")`, is test
   code here.
 
-A macro call in an expression, for example `log::info!(..)`, a derive and a
-macro that a `use` item imports do not count. The macros of `async_trait`,
+A macro call in an expression, for example `log::info!(..)`, a derive, an
+attribute of the compiler, for example `#[inline]`, and an attribute on a
+field or a parameter do not count. A macro that `#[macro_use] extern crate`
+brings into scope does not count either. The macros of `async_trait`,
 `bitflags`, `ctor`, `lazy_static`, `pin_project`, `rust_i18n`, `serde`,
 `thiserror`, `tokio` and `tracing` write only paths of their own crate and of the
 standard library, so they do not count either.

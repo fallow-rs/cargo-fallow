@@ -111,9 +111,11 @@ cargo fallow fix --yes --only visibility   # only the visibility edits
   - an unused `[dependencies]` entry when the library or a binary uses an
     attribute macro or calls a macro in the place of an item, from a crate
     outside the workspace, by a path such as `#[krate::name]` or
-    `krate::name!(..);`. The same applies to a `[dev-dependencies]` entry and
-    test code, a bench or an example. The command cannot read the code that
-    such a macro writes, and that code can name the entry. See
+    `krate::name!(..);`, or by one name that an import brings into scope,
+    such as `#[name]` after `use krate::prelude::*;`. The same applies to a
+    `[dev-dependencies]` entry and test code, a bench or an example. The
+    command cannot read the code that such a macro writes, and that code can
+    name the entry. See
     [External macros](dependencies.md#external-macros),
   - a workspace entry that one of these member entries inherits.
 - The command keeps the comments and the format of each `Cargo.toml`. When the

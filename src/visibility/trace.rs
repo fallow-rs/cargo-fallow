@@ -296,6 +296,7 @@ fn credit_label(graph: &Graph, credit: &Credit) -> &'static str {
         RefKind::Member(_) => "member-name",
         RefKind::RecordField { .. } => "record-field",
         RefKind::Macro(_) => "macro-call",
+        RefKind::Attribute(_) => "attribute",
     }
 }
 

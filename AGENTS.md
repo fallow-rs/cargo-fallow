@@ -37,7 +37,7 @@ cargo metadata -> workspace model -> gates -> report -> render
   `mutants` command and the module graph use it. Do not add a second walk.
 - `src/attrs.rs` reads attributes and names from the syntax tree.
 - `src/graph/` holds the workspace module graph: crates, modules, items,
-  imports and references, and the name resolution in `resolve.rs`.
+  imports and references, and the name resolution in `resolve/`.
 - `src/deps/` holds the `deps` command: the unused dependency rules on top of
   the module graph and `cargo metadata` with the resolve.
 - `src/visibility/` holds the `visibility` command. `precise/` holds

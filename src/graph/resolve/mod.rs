@@ -11,7 +11,9 @@
 //! proc-macro crate therefore counts in each crate that can call the macro,
 //! and in the crates that those crates can use.
 
-use std::cell::RefCell;
+mod origins;
+
+use std::cell::{Cell, RefCell};
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -118,6 +120,13 @@ pub struct Resolver<'g> {
     /// For each lookup at depth 0 that runs now, the modules that its glob walk
     /// expanded, with the smallest depth. A nested lookup gets its own map.
     expanded: RefCell<Vec<FxHashMap<ModuleId, usize>>>,
+    /// For each module and name, the crates outside the workspace that can
+    /// give the name. See [`Resolver::outside_origins`].
+    origin_memo: RefCell<FxHashMap<(ModuleId, String), Vec<String>>>,
+    /// The module and name of each origin walk that runs now.
+    origin_active: RefCell<FxHashSet<(ModuleId, String)>>,
+    /// True when a cycle cut an origin walk that runs now short.
+    origin_cut: Cell<bool>,
 }
 
 /// The declared items of each module, the members of each type name and the
@@ -233,6 +242,9 @@ impl<'g> Resolver<'g> {
             lookup_memo: RefCell::new(vec![FxHashMap::default(); graph.modules.len()]),
             active: RefCell::new(FxHashSet::default()),
             expanded: RefCell::new(Vec::new()),
+            origin_memo: RefCell::new(FxHashMap::default()),
+            origin_active: RefCell::new(FxHashSet::default()),
+            origin_cut: Cell::new(false),
         }
     }
 
@@ -419,6 +431,8 @@ impl<'g> Resolver<'g> {
             RefKind::Macro(name) => {
                 self.credit_names(credits, base, name, Class::Exact, NameFilter::Macro);
             }
+            // The import of the attribute gives the credit.
+            RefKind::Attribute(_) => {}
         }
     }
 

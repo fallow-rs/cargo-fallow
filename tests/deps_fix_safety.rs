@@ -266,6 +266,82 @@ fn macros_of_a_self_contained_macro_crate_keep_entries_fixable() {
     assert_action(&actions, "dev-dependencies alpha", true, EXTERNAL_MACRO);
 }
 
+/// Writes a workspace where `app` depends on `mac` and `alpha`, with
+/// `app/src/lib.rs` set to `lib`, and returns the actions of `deps`.
+fn single_name_actions(lib: &str) -> BTreeMap<String, Value> {
+    let manifest = format!(
+        "[dependencies]\n{}{}{}",
+        dep("mac", "ext"),
+        dep("gamma", "libs"),
+        dep("alpha", "libs")
+    );
+    let dir = workspace(&manifest, &[("app/src/lib.rs", lib)]);
+    actions(&dir)
+}
+
+#[test]
+fn single_name_attribute_from_a_glob_import_keeps_unused_entries() {
+    // `#[wasm_bindgen] pub async fn` writes `wasm_bindgen_futures::` paths.
+    let actions = single_name_actions("use mac::prelude::*;\n#[attr]\npub async fn g() {}\n");
+    assert_action(&actions, "dependencies alpha", false, EXTERNAL_MACRO);
+}
+
+#[test]
+fn single_name_attribute_from_a_named_import_keeps_unused_entries() {
+    let named = single_name_actions("use mac::prelude::attr;\n#[attr]\npub fn g() {}\n");
+    assert_action(&named, "dependencies alpha", false, EXTERNAL_MACRO);
+    let renamed =
+        single_name_actions("use mac::prelude::attr as bind;\n#[bind(x)]\npub fn g() {}\n");
+    assert_action(&renamed, "dependencies alpha", false, EXTERNAL_MACRO);
+}
+
+#[test]
+fn single_name_item_macro_from_an_import_keeps_unused_entries() {
+    let named = single_name_actions("use mac::m;\nm!();\n");
+    assert_action(&named, "dependencies alpha", false, EXTERNAL_MACRO);
+    let glob = single_name_actions("use mac::*;\npub struct S;\nimpl S {\n    m!();\n}\n");
+    assert_action(&glob, "dependencies alpha", false, EXTERNAL_MACRO);
+}
+
+#[test]
+fn single_name_attribute_through_a_local_import_keeps_unused_entries() {
+    let parent = single_name_actions(
+        "use mac::*;\nmod inner {\n    use super::*;\n    #[attr]\n    pub fn g() {}\n}\n",
+    );
+    assert_action(&parent, "dependencies alpha", false, EXTERNAL_MACRO);
+    let reexport = single_name_actions(
+        "pub use mac::attr;\nmod inner {\n    use crate::attr;\n    #[attr]\n    pub fn g() {}\n}\n",
+    );
+    assert_action(&reexport, "dependencies alpha", false, EXTERNAL_MACRO);
+}
+
+#[test]
+fn single_name_attribute_in_a_glob_cycle_keeps_unused_entries() {
+    // The test module comes first, so its walk meets the cycle of `a` and the
+    // root before the walk of the library code in `a`.
+    let actions = single_name_actions(
+        "use mac::*;\nuse a::*;\n#[cfg(test)]\nmod t {\n    use super::*;\n    #[attr]\n    fn x() {}\n}\n\
+         mod a {\n    use super::*;\n    #[attr]\n    pub fn g() {}\n}\n",
+    );
+    assert_action(&actions, "dependencies alpha", false, EXTERNAL_MACRO);
+}
+
+#[test]
+fn single_name_macros_that_no_external_import_binds_keep_entries_fixable() {
+    let cases = [
+        // A builtin attribute, a field attribute and an expression macro.
+        "use mac::*;\n#[inline]\npub fn g() { m!(); }\npub struct S {\n    #[helper]\n    pub x: u8,\n}\n",
+        // A glob import of a workspace crate.
+        "use gamma::*;\n#[attr]\npub fn g() {}\nm!();\n",
+        // A local macro, and an import that binds another name.
+        "use mac::f;\nmacro_rules! local { () => {} }\nlocal!();\n#[attr]\npub fn g() { f(); }\n",
+    ];
+    for lib in cases {
+        let actions = single_name_actions(lib);
+        assert_action(&actions, "dependencies alpha", true, EXTERNAL_MACRO);
+    }
+}
+
 #[test]
 fn exact_or_bounded_version_of_a_shared_crate_stays_for_a_person() {
     // `beta` also depends on `alpha`, `gamma`, `delta` and `other`.

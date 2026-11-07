@@ -5,6 +5,7 @@ use std::fs;
 use std::path::Path;
 
 use crate::graph::extract::{Origin, RefKind};
+use crate::graph::resolve::Resolver;
 use crate::graph::{CrateKind, Graph, ModuleId, Ref};
 
 /// The part of a package that uses a name. The labels are the names in the
@@ -78,7 +79,9 @@ pub struct PackageUsage {
     pub generated: Option<BTreeSet<String>>,
     /// The first segment of each attribute path and of each macro call path in
     /// the place of an item, for example `krate` of `#[krate::name]` or
-    /// `krate::name!(..);`, with the contexts of the calls.
+    /// `krate::name!(..);`, with the contexts of the calls. A one-name call,
+    /// for example `#[name]` or `name!(..);`, adds each crate outside the
+    /// workspace that an import in scope can bring the name from.
     pub invoked: BTreeMap<String, BTreeSet<Context>>,
 }
 
@@ -272,7 +275,41 @@ fn add_ref(
                 .included
                 .insert(context);
         }
-        RefKind::Macro(_) | RefKind::Method(_) | RefKind::Field(_) | RefKind::Member(_) => {}
+        RefKind::Macro(_)
+        | RefKind::Attribute(_)
+        | RefKind::Method(_)
+        | RefKind::Field(_)
+        | RefKind::Member(_) => {}
+    }
+}
+
+/// The one name of an attribute, or of a macro call in the place of an item,
+/// that an import can bring into scope from another crate.
+fn single_invocation(reference: &Ref) -> Option<&str> {
+    match &reference.kind {
+        RefKind::Attribute(name) => Some(name),
+        RefKind::Macro(name) if reference.invocation && name != "include" => Some(name),
+        _ => None,
+    }
+}
+
+/// Adds the crates outside the workspace whose attribute or item macro a
+/// one-name call can be, for example `#[name]` after `use krate::prelude::*;`.
+fn add_single_invocations(graph: &Graph, usage: &mut BTreeMap<String, PackageUsage>) {
+    let mut resolver: Option<Resolver<'_>> = None;
+    for reference in &graph.refs {
+        let Some(name) = single_invocation(reference) else {
+            continue;
+        };
+        let krate = &graph.crates[reference.krate];
+        let Some(context) = ref_context(graph, krate.kind, reference) else {
+            continue;
+        };
+        let resolver = resolver.get_or_insert_with(|| Resolver::new(graph));
+        let context = invoked_context(reference, context);
+        for origin in resolver.outside_origins(reference.module, name) {
+            add_invoked(usage, &krate.package, &origin, context);
+        }
     }
 }
 
@@ -302,6 +339,7 @@ pub fn collect(graph: &Graph, root: &Path) -> BTreeMap<String, PackageUsage> {
             add_ref(&mut usage, &krate.package, reference, context);
         }
     }
+    add_single_invocations(graph, &mut usage);
     usage
 }
 

@@ -849,6 +849,7 @@ fn unraw_kind(kind: RefKind) -> RefKind {
             field: unraw(field),
         },
         RefKind::Macro(name) => RefKind::Macro(unraw(name)),
+        RefKind::Attribute(name) => RefKind::Attribute(unraw(name)),
         RefKind::Member(name) => RefKind::Member(unraw(name)),
     }
 }

@@ -223,7 +223,7 @@ impl Context<'_> {
             RefKind::Method(name) | RefKind::Field(name) | RefKind::Member(name) => {
                 return RefVerdict::unresolved(scope.denied_names.contains(name.as_str()));
             }
-            RefKind::Macro(_) => return RefVerdict::Skip,
+            RefKind::Macro(_) | RefKind::Attribute(_) => return RefVerdict::Skip,
         };
         let Some(first) = segments.first() else {
             return RefVerdict::Skip;

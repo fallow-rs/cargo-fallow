@@ -147,8 +147,10 @@ names it, but `cargo fallow fix` does not remove it in these cases:
   external crate. Such an import is a named import or a rename of the name,
   for example `use krate::prelude::name;`, or a glob import, for example
   `use krate::prelude::*;`. The command follows re-exports and glob imports
-  of the workspace modules and crates. For example, `#[wasm_bindgen] pub
-  async fn` writes `wasm_bindgen_futures::` paths.
+  of the workspace modules and crates, and renames of the crate, for example
+  `use krate as alias;`. A `#[macro_use] extern crate krate;` brings each
+  macro of `krate` into scope in the whole crate. For example,
+  `#[wasm_bindgen] pub async fn` writes `wasm_bindgen_futures::` paths.
 - Test code, a bench or an example does the same. Then the unused
   `[dev-dependencies]` entries stay for a person. Code under a `cfg` that
   holds only in a test build, for example `all(test, feature = "x")`, is test
@@ -156,11 +158,13 @@ names it, but `cargo fallow fix` does not remove it in these cases:
 
 A macro call in an expression, for example `log::info!(..)`, a derive, an
 attribute of the compiler, for example `#[inline]`, and an attribute on a
-field or a parameter do not count. A macro that `#[macro_use] extern crate`
-brings into scope does not count either. The macros of `async_trait`,
-`bitflags`, `ctor`, `lazy_static`, `pin_project`, `rust_i18n`, `serde`,
-`thiserror`, `tokio` and `tracing` write only paths of their own crate and of the
-standard library, so they do not count either.
+field, a parameter, a statement or an expression do not count. Stable Rust
+runs an attribute macro only on an item. A re-export through a workspace
+crate counts only when the package itself declares the crate of the macro.
+The macros of `async_trait`, `bitflags`, `ctor`, `lazy_static`,
+`pin_project`, `rust_i18n`, `serde`, `thiserror`, `tokio` and `tracing` write
+only paths of their own crate and of the standard library, so they do not
+count either.
 
 ## Feature drift
 

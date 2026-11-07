@@ -66,16 +66,13 @@ impl Resolver<'_> {
         let Some((last, prefix)) = path.split_last() else {
             return Vec::new();
         };
-        // A path of one segment names a crate or a module, not a macro.
+        // A path of one segment names a crate or a module. A crate outside the
+        // workspace gives each name under it, also when a rename such as
+        // `use krate as alias;` or `extern crate krate as alias;` binds it.
         let Some(first) = prefix.first() else {
-            return Vec::new();
+            return self.outside_crate(krate, last).into_iter().collect();
         };
-        let mut found: Vec<String> = self
-            .externs(krate, false)
-            .iter()
-            .filter(|entry| entry.target.is_none() && entry.name == *first)
-            .map(|entry| entry.name.clone())
-            .collect();
+        let mut found: Vec<String> = self.outside_crate(krate, first).into_iter().collect();
         let (targets, _, _) = self.resolve_path(krate, module, prefix, global, false);
         for target in targets {
             if let Some(next) = self.module_of(target) {
@@ -91,5 +88,13 @@ impl Resolver<'_> {
             }
         }
         found
+    }
+
+    /// `name` when it names a crate outside the workspace in `krate`.
+    fn outside_crate(&self, krate: CrateId, name: &str) -> Option<String> {
+        self.externs(krate, false)
+            .iter()
+            .find(|entry| entry.target.is_none() && entry.name == name)
+            .map(|entry| entry.name.clone())
     }
 }

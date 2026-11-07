@@ -233,6 +233,8 @@ pub struct Import {
     /// The `cfg` conditions on the `use` item and on each enclosing node of
     /// its file.
     pub cfg: Vec<String>,
+    /// True for `#[macro_use] extern crate`.
+    pub macro_use: bool,
 }
 
 /// One reference.
@@ -818,6 +820,7 @@ fn import_of(
         file,
         line: raw.line,
         cfg: raw.cfg,
+        macro_use: raw.macro_use,
     }
 }
 

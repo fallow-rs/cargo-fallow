@@ -212,6 +212,9 @@ pub struct RawUse {
     /// The `cfg` conditions on the `use` item and on each enclosing node of
     /// the file.
     pub cfg: Vec<String>,
+    /// True for `#[macro_use] extern crate`, which brings the macros of the
+    /// crate into scope by one name.
+    pub macro_use: bool,
 }
 
 /// The way that code names something.
@@ -1112,6 +1115,7 @@ impl<'a> Walker<'a> {
                 item: item_index,
                 line: self.line_at(self.cursor),
                 cfg: self.conditions(),
+                macro_use: false,
             });
         }
     }
@@ -1148,6 +1152,7 @@ impl<'a> Walker<'a> {
             item: None,
             line: self.line_at(self.cursor),
             cfg: self.conditions(),
+            macro_use: item.attrs().any(|attr| loads_macros(&attr_body(&attr))),
         });
     }
 
@@ -1599,9 +1604,17 @@ fn inner_allows_dead(node: &SyntaxNode) -> bool {
         .any(|attr| allows_dead(&attr_body(&attr)))
 }
 
+/// True when the body of an attribute on `extern crate` can be `macro_use`.
+/// A `cfg_attr` counts, because its condition can hold.
+fn loads_macros(body: &str) -> bool {
+    body == "macro_use"
+        || body.starts_with("macro_use(")
+        || (body.starts_with("cfg_attr(") && body.contains("macro_use"))
+}
+
 /// True for an attribute that the compiler or a tool defines, not a macro.
 fn is_builtin_attribute(path: &str) -> bool {
-    const BUILTIN: [&str; 39] = [
+    const BUILTIN: [&str; 45] = [
         "cfg",
         "default",
         "cfg_attr",
@@ -1641,6 +1654,12 @@ fn is_builtin_attribute(path: &str) -> bool {
         "global_allocator",
         "panic_handler",
         "diagnostic",
+        "no_implicit_prelude",
+        "naked",
+        "collapse_debuginfo",
+        "instruction_set",
+        "debugger_visualizer",
+        "no_link",
     ];
     let first = path.split("::").next().unwrap_or(path);
     BUILTIN.contains(&first) || matches!(first, "rustfmt" | "clippy" | "rustdoc")

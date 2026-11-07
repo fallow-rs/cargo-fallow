@@ -316,6 +316,32 @@ fn single_name_attribute_through_a_local_import_keeps_unused_entries() {
 }
 
 #[test]
+fn single_name_attribute_through_a_renamed_crate_keeps_unused_entries() {
+    let cases = [
+        "extern crate mac as wb;\nuse wb::*;\n#[attr]\npub fn g() {}\n",
+        "use mac as wb;\nuse wb::prelude::*;\n#[attr]\npub fn g() {}\n",
+        "use mac as wb;\nuse wb::prelude::attr;\n#[attr]\npub fn g() {}\n",
+    ];
+    for lib in cases {
+        let actions = single_name_actions(lib);
+        assert_action(&actions, "dependencies alpha", false, EXTERNAL_MACRO);
+    }
+}
+
+#[test]
+fn single_name_macro_from_a_macro_use_extern_crate_keeps_unused_entries() {
+    let root = single_name_actions("#[macro_use]\nextern crate mac;\nm! {}\n");
+    assert_action(&root, "dependencies alpha", false, EXTERNAL_MACRO);
+    let module = single_name_actions(
+        "#[macro_use]\nextern crate mac;\nmod inner {\n    #[attr]\n    pub fn g() {}\n}\n",
+    );
+    assert_action(&module, "dependencies alpha", false, EXTERNAL_MACRO);
+    // Without `#[macro_use]`, the crate brings no macro into scope.
+    let plain = single_name_actions("extern crate mac;\nm! {}\n");
+    assert_action(&plain, "dependencies alpha", true, EXTERNAL_MACRO);
+}
+
+#[test]
 fn single_name_attribute_in_a_glob_cycle_keeps_unused_entries() {
     // The test module comes first, so its walk meets the cycle of `a` and the
     // root before the walk of the library code in `a`.
@@ -331,6 +357,8 @@ fn single_name_macros_that_no_external_import_binds_keep_entries_fixable() {
     let cases = [
         // A builtin attribute, a field attribute and an expression macro.
         "use mac::*;\n#[inline]\npub fn g() { m!(); }\npub struct S {\n    #[helper]\n    pub x: u8,\n}\n",
+        // Attributes of the compiler that are not in the prelude of macros.
+        "use mac::*;\n#[no_implicit_prelude]\nmod x {}\n#[naked]\npub fn n() {}\n",
         // A glob import of a workspace crate.
         "use gamma::*;\n#[attr]\npub fn g() {}\nm!();\n",
         // A local macro, and an import that binds another name.

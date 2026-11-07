@@ -6,7 +6,7 @@ use std::path::Path;
 
 use crate::graph::extract::{Origin, RefKind};
 use crate::graph::resolve::Resolver;
-use crate::graph::{CrateKind, Graph, ModuleId, Ref};
+use crate::graph::{CrateId, CrateKind, Graph, ModuleId, Ref};
 
 /// The part of a package that uses a name. The labels are the names in the
 /// `used_by` list of a finding.
@@ -296,6 +296,7 @@ fn single_invocation(reference: &Ref) -> Option<&str> {
 /// Adds the crates outside the workspace whose attribute or item macro a
 /// one-name call can be, for example `#[name]` after `use krate::prelude::*;`.
 fn add_single_invocations(graph: &Graph, usage: &mut BTreeMap<String, PackageUsage>) {
+    let loaded = macro_use_crates(graph);
     let mut resolver: Option<Resolver<'_>> = None;
     for reference in &graph.refs {
         let Some(name) = single_invocation(reference) else {
@@ -307,10 +308,31 @@ fn add_single_invocations(graph: &Graph, usage: &mut BTreeMap<String, PackageUsa
         };
         let resolver = resolver.get_or_insert_with(|| Resolver::new(graph));
         let context = invoked_context(reference, context);
-        for origin in resolver.outside_origins(reference.module, name) {
-            add_invoked(usage, &krate.package, &origin, context);
+        let origins = resolver.outside_origins(reference.module, name);
+        let from_macro_use = loaded.get(&reference.krate).into_iter().flatten();
+        for origin in origins.iter().chain(from_macro_use) {
+            add_invoked(usage, &krate.package, origin, context);
         }
     }
+}
+
+/// The crates outside the workspace that `#[macro_use] extern crate` loads,
+/// for each crate. Their macros are in scope by one name in the whole crate.
+fn macro_use_crates(graph: &Graph) -> BTreeMap<CrateId, Vec<String>> {
+    let mut loaded: BTreeMap<CrateId, Vec<String>> = BTreeMap::new();
+    for import in graph.imports.iter().filter(|import| import.macro_use) {
+        let [name] = import.path.as_slice() else {
+            continue;
+        };
+        let outside = graph.crates[import.krate]
+            .externs
+            .iter()
+            .any(|entry| entry.target.is_none() && entry.name == *name);
+        if outside {
+            loaded.entry(import.krate).or_default().push(name.clone());
+        }
+    }
+    loaded
 }
 
 /// The usage of each package, keyed by package name. `root` is the

@@ -77,6 +77,7 @@ hooks.
 | Workflow security | `uvx zizmor@1.26.1 --min-confidence medium --format plain .github/ action.yml` | none | `ci.yml` |
 | GitHub Action scripts | `shellcheck -x action/scripts/*.sh action/tests/run.sh` and `bash action/tests/run.sh` | none | `github-action.yml` |
 | GitHub Action self-test | The action of the checkout on this repository | none | `github-action.yml`, Linux, macOS and Windows |
+| Self-test gates (deps, boundaries, size, complexity, files) | `sh scripts/self-gates.sh` | pre-push | `github-action.yml` |
 | MSRV | `cargo +1.98.0 check --locked` and `cargo +1.98.0 check --locked --features precise` | none | `ci.yml` |
 | Commit messages | `commitlint` | commit-msg | `commitlint.yml` |
 | DCO sign-off | `node .github/scripts/check-dco.mjs` | commit-msg | `commitlint.yml` |

@@ -113,6 +113,11 @@ hooks {
       ["cargo-shear"] {
         check = "if command -v cargo-shear >/dev/null 2>&1; then cargo shear; else sh scripts/hook-tool-hint.sh cargo-shear; fi"
       }
+      // Same gates as the Action self-test job. A plain `cargo fallow check`
+      // exits 0 when a gate fails.
+      ["self-gates"] {
+        check = "sh scripts/self-gates.sh"
+      }
     }
   }
 }

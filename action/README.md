@@ -94,6 +94,7 @@ does not fail on them:
 | `working-directory` | `.` | The folder in which the command runs. |
 | `manifest-path` | empty | The `Cargo.toml` of the workspace, relative to `working-directory`. |
 | `format` | `human` | The format of the report in the log and in the `report` output: `human`, `json` or `sarif`. |
+| `sarif-output` | `always` | `when-needed` can omit the SARIF log for a clean `check` with no SARIF consumer. See [How the action runs a command](#how-the-action-runs-a-command). |
 | `fail-on-issues` | `true` | Pass the gate flag to the command, so a failed gate fails the job. See [Gate flags](#gate-flags). |
 | `args` | empty | More arguments, separated by spaces. The action does not expand them in a shell. The action rejects `--format` and `--quiet`, because it sets them itself. For example, `--changed-since origin/main` reports only the findings in the changed files. |
 | `base` | empty | The ref to compare with. The action passes it as `--base` to `check`, `size` and `api`, and as `--in-diff` to `mutants`. `check --base` needs a cargo-fallow version after 0.1.0. `auto` uses the base commit of the pull request, or on a push, the commit before the push. See [Base](#base). |
@@ -276,11 +277,31 @@ The action checks the signature first, and then the checksum:
 
 The action first runs the command with `--format json`. The action uses the exit
 code of that run to pass or fail the job. For a static command, the action runs the command
-again for the SARIF log. When `format` is `human`, it runs the command a third
+again for the SARIF log by default. When `format` is `human`, it runs the command a third
 time for the human report. `mutants` runs the tests of each mutant, so the action
 runs `mutants` only one time. The SARIF log of `mutants` comes from
 `action/jq/mutants-sarif.jq`. `action/tests/run.sh` compares the output of that
 filter with the SARIF output of a real run.
+
+For a JSON-only check, use these inputs to avoid the extra SARIF analysis on
+a clean result:
+
+```yaml
+        with:
+          format: json
+          annotations: 'false'
+          sarif-output: when-needed
+```
+
+This mode omits SARIF only for `command: check` with exit code zero, no
+findings or stale suppressions, and no warning or failed gate. Unknown report
+schemas keep SARIF. `format: sarif`, `annotations: true` or `sarif: true`
+always requests SARIF, including for a clean run. Other commands keep their
+SARIF output. The default `always` mode preserves the existing outputs.
+
+When the log is omitted, the `sarif` output is empty. The JSON report, gate
+verdict, job summary and comment text stay the same. Runs with findings keep
+the SARIF diagnostics used by the summary and comments.
 
 ## Tests
 

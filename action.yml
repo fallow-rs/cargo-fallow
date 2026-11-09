@@ -24,9 +24,13 @@ inputs:
     required: false
     default: ''
   format:
-    description: 'The report that the action writes to the log and to the `report` output: human, json or sarif. The action always writes the JSON report and, when it can, the SARIF log.'
+    description: 'The report that the action writes to the log and to the `report` output: human, json or sarif. The action always writes JSON. sarif-output controls the additional SARIF log.'
     required: false
     default: 'human'
+  sarif-output:
+    description: 'always keeps the SARIF output. when-needed omits it for a successful check with no findings or gate warnings, unless format, annotations or code-scanning upload needs it. Other commands keep SARIF.'
+    required: false
+    default: 'always'
   fail-on-issues:
     description: 'Fail the job when the gate of the command fails. The action gives --fail-on-issues to the command. An execution error (exit code 2) always fails the job.'
     required: false
@@ -178,6 +182,9 @@ runs:
         INPUT_WORKING_DIRECTORY: ${{ inputs.working-directory }}
         INPUT_MANIFEST_PATH: ${{ inputs.manifest-path }}
         INPUT_FORMAT: ${{ inputs.format }}
+        INPUT_SARIF_OUTPUT: ${{ inputs.sarif-output }}
+        INPUT_ANNOTATIONS: ${{ inputs.annotations }}
+        INPUT_UPLOAD_SARIF: ${{ inputs.sarif }}
         INPUT_FAIL_ON_ISSUES: ${{ inputs.fail-on-issues }}
         INPUT_ARGS: ${{ inputs.args }}
         INPUT_BASE: ${{ inputs.base }}

@@ -8,7 +8,7 @@ set -euo pipefail
 # steps can read the reports. The `gate` step applies the exit code later.
 # Only an invalid input stops this step.
 #
-# Static commands run again for the SARIF log and for the human report.
+# Static commands run again for a requested SARIF log and human report.
 # `mutants` runs the tests of each mutant, so it runs once: the SARIF log comes
 # from action/jq/mutants-sarif.jq.
 #
@@ -17,7 +17,8 @@ set -euo pipefail
 #   INPUT_FAIL_ON_ISSUES, INPUT_ARGS, INPUT_BASE, INPUT_ARTIFACTS_DIR,
 #   INPUT_PACKAGE, INPUT_MAX_MUTANTS, INPUT_TIME_BUDGET, INPUT_JOBS,
 #   INPUT_TIMEOUT, INPUT_CHANGED_SINCE, INPUT_AUTO_CHANGED_SINCE, INPUT_BASELINE,
-#   INPUT_SAVE_BASELINE, PR_BASE_SHA, PUSH_BEFORE_SHA,
+#   INPUT_SAVE_BASELINE, INPUT_SARIF_OUTPUT, INPUT_ANNOTATIONS, INPUT_UPLOAD_SARIF,
+#   PR_BASE_SHA, PUSH_BEFORE_SHA,
 #   GITHUB_WORKSPACE, GITHUB_OUTPUT, RUNNER_TEMP,
 #   CARGO_FALLOW_BIN
 
@@ -25,6 +26,7 @@ set -euo pipefail
 : "${INPUT_FAIL_ON_ISSUES:=true}" "${INPUT_ARGS:=}" "${INPUT_BASE:=}"
 : "${INPUT_CHANGED_SINCE:=}" "${INPUT_AUTO_CHANGED_SINCE:=false}" "${INPUT_BASELINE:=}"
 : "${INPUT_SAVE_BASELINE:=}"
+: "${INPUT_SARIF_OUTPUT:=always}" "${INPUT_ANNOTATIONS:=true}" "${INPUT_UPLOAD_SARIF:=false}"
 : "${INPUT_ARTIFACTS_DIR:=}" "${INPUT_PACKAGE:=}" "${INPUT_MAX_MUTANTS:=}"
 : "${INPUT_TIME_BUDGET:=}" "${INPUT_JOBS:=}" "${INPUT_TIMEOUT:=}" "${PR_BASE_SHA:=}" "${PUSH_BEFORE_SHA:=}"
 : "${GITHUB_WORKSPACE:=$PWD}" "${GITHUB_OUTPUT:=/dev/stdout}"
@@ -106,6 +108,12 @@ case "$INPUT_FORMAT" in
   *) fail "Invalid 'format' input: ${INPUT_FORMAT}. Use human, json or sarif." ;;
 esac
 check_boolean fail-on-issues "$INPUT_FAIL_ON_ISSUES"
+check_boolean annotations "$INPUT_ANNOTATIONS"
+check_boolean sarif "$INPUT_UPLOAD_SARIF"
+case "$INPUT_SARIF_OUTPUT" in
+  always | when-needed) ;;
+  *) fail "Invalid 'sarif-output' input: ${INPUT_SARIF_OUTPUT}. Use always or when-needed." ;;
+esac
 check_number max-mutants "$INPUT_MAX_MUTANTS"
 check_number time-budget "$INPUT_TIME_BUDGET"
 check_number jobs "$INPUT_JOBS"
@@ -296,6 +304,17 @@ fi
 PREFIX="$(path_prefix)"
 WROTE_SARIF=false
 if jq -e '.error == true' "$RESULTS" > /dev/null; then
+  :
+elif [ "$INPUT_SARIF_OUTPUT" = "when-needed" ] && [ "$COMMAND" = "check" ] \
+  && [ "$INPUT_FORMAT" != "sarif" ] && [ "$INPUT_ANNOTATIONS" = "false" ] \
+  && [ "$INPUT_UPLOAD_SARIF" = "false" ] && [ "$EXIT_CODE" -eq 0 ] \
+  && jq -e '
+    .schema_version == 1 and .kind == "check" and .total_issues == 0
+    and ((.stale_suppressions // []) == []) and ((.findings // []) == [])
+    and (.gate_outcomes | type == "object" and length > 0
+      and all(.[]; .status == "pass" or .status == "skipped"))
+  ' "$RESULTS" > /dev/null 2>&1; then
+  # Zero issues alone does not exclude warnings or non-enforced gate failures.
   :
 elif [ "$COMMAND" = "mutants" ]; then
   jq -f "${ACTION_JQ_DIR}/mutants-sarif.jq" "$RESULTS" > "$SARIF"

@@ -91,6 +91,16 @@ jobs:
           install: source
           fail-on-issues: 'false'
 
+      - name: Clean JSON check without unused SARIF
+        id: clean-json
+        uses: ./
+        with:
+          command: check
+          args: --only deps
+          format: json
+          annotations: 'false'
+          sarif-output: when-needed
+
       - name: deps
         id: deps
         uses: ./
@@ -196,6 +206,11 @@ jobs:
           CHECK_EXIT: ${{ steps.check.outputs.exit-code }}
           CHECK_ISSUES: ${{ steps.check.outputs.issues }}
           CHECK_RESULTS: ${{ steps.check.outputs.results }}
+          CLEAN_JSON_EXIT: ${{ steps.clean-json.outputs.exit-code }}
+          CLEAN_JSON_ISSUES: ${{ steps.clean-json.outputs.issues }}
+          CLEAN_JSON_SARIF: ${{ steps.clean-json.outputs.sarif }}
+          CLEAN_JSON_REPORT: ${{ steps.clean-json.outputs.report }}
+          CLEAN_JSON_RESULTS: ${{ steps.clean-json.outputs.results }}
           DEPS_METHOD: ${{ steps.deps.outputs.install-method }}
           DEPS_REPORT: ${{ steps.deps.outputs.report }}
           DEPS_RESULTS: ${{ steps.deps.outputs.results }}
@@ -230,6 +245,10 @@ jobs:
           expect "check: sections" "$(jq -c '.sections | keys' "$CHECK_RESULTS")" '["boundaries","complexity","deps","dupes","files","size","visibility"]'
           expect "check: health language" "$(jq -r .health.language "$CHECK_RESULTS")" "rust"
           expect "deps: install method" "$DEPS_METHOD" "path"
+          expect "clean JSON check: exit code" "$CLEAN_JSON_EXIT" "0"
+          expect "clean JSON check: issues" "$CLEAN_JSON_ISSUES" "0"
+          expect "clean JSON check: no unused SARIF" "$CLEAN_JSON_SARIF" ""
+          expect "clean JSON check: selected report" "$CLEAN_JSON_REPORT" "$CLEAN_JSON_RESULTS"
           expect "deps: format json reports the JSON file" "$DEPS_REPORT" "$DEPS_RESULTS"
           expect "deps: kind" "$(jq -r .kind "$DEPS_RESULTS")" "deps"
           expect "boundaries: exit code" "$BOUNDARIES_EXIT" "0"

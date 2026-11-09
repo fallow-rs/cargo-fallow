@@ -269,6 +269,61 @@ assert_equals "$(output_of results)" "$(cd "$CASE_DIR/artifacts" && pwd -P)/carg
 assert_equals "$(output_of report)" "$(cd "$CASE_DIR/artifacts" && pwd -P)/cargo-fallow-report.txt" "check: report output is the human report"
 assert_equals "$(output_of path-prefix)" "" "check: no cargo, so no prefix"
 
+run_analyze INPUT_COMMAND=check INPUT_FORMAT=json INPUT_SARIF_OUTPUT=when-needed \
+  INPUT_ANNOTATIONS=false INPUT_UPLOAD_SARIF=false \
+  STUB_JSON="$FIXTURES/check-clean.json" STUB_SARIF="$FIXTURES/check-clean.sarif"
+assert_equals "$(calls_made)" "1" "clean JSON check with no SARIF consumer runs once"
+assert_equals "$(output_of sarif)" "" "unused clean SARIF has no output path"
+assert_equals "$(output_of report)" "$(output_of results)" "JSON remains the selected report"
+assert_equals "$(summary "$(output_of results)" "" 0 50)" \
+  "$(summary "$FIXTURES/check-clean.json" "$FIXTURES/check-clean.sarif" 0 50)" \
+  "omitting clean SARIF preserves the job summary and comment text"
+
+for consumer in INPUT_FORMAT=sarif INPUT_ANNOTATIONS=true INPUT_UPLOAD_SARIF=true; do
+  run_analyze INPUT_COMMAND=check INPUT_FORMAT=json INPUT_SARIF_OUTPUT=when-needed \
+    INPUT_ANNOTATIONS=false INPUT_UPLOAD_SARIF=false "$consumer" \
+    STUB_JSON="$FIXTURES/check-clean.json" STUB_SARIF="$FIXTURES/check-clean.sarif"
+  assert_equals "$(calls_made)" "2" "$consumer retains SARIF on a clean check"
+  assert_equals "$(cat "$(output_of sarif)")" "$(cat "$FIXTURES/check-clean.sarif")" \
+    "$consumer receives the SARIF report"
+done
+
+for diagnostic in \
+  '.total_issues = 1' \
+  '.gate_outcomes["parse-error"].status = "warn"' \
+  '.gate_outcomes["parse-error"].status = "fail"' \
+  '.stale_suppressions = [{path: "src/lib.rs", line: 1}]' \
+  '.findings = [{rule: "stale-suppression"}]' \
+  '.total_issues = "0"' \
+  'del(.total_issues)' \
+  '.schema_version = 2' \
+  '.gate_outcomes = {}' \
+  '.gate_outcomes = null' \
+  '.gate_outcomes["parse-error"].status = "unknown"'; do
+  json="$WORK/diagnostic.json"
+  jq "$diagnostic" "$FIXTURES/check-clean.json" > "$json"
+  run_analyze INPUT_COMMAND=check INPUT_FORMAT=json INPUT_SARIF_OUTPUT=when-needed \
+    INPUT_ANNOTATIONS=false STUB_JSON="$json"
+  assert_equals "$(calls_made)" "2" "$diagnostic retains diagnostics or unknown reports"
+  assert_contains "$(summary "$(output_of results)" "$(output_of sarif)" 0 50)" \
+    'src/deps/manifest.rs' "$diagnostic keeps SARIF finding locations in the summary"
+done
+
+run_analyze INPUT_COMMAND=check INPUT_FORMAT=json INPUT_SARIF_OUTPUT=when-needed \
+  INPUT_ANNOTATIONS=false STUB_JSON="$FIXTURES/check-clean.json" STUB_EXIT=1
+assert_equals "$(calls_made)" "2" "a nonzero exit retains SARIF even with no counted issues"
+assert_equals "$(output_of exit-code)" "1" "the JSON gate verdict is unchanged"
+run_analyze INPUT_COMMAND=deps INPUT_FORMAT=json INPUT_SARIF_OUTPUT=when-needed \
+  INPUT_ANNOTATIONS=false STUB_JSON="$FIXTURES/check-clean.json"
+assert_equals "$(calls_made)" "2" "other commands retain their SARIF output"
+run_analyze INPUT_COMMAND=check INPUT_FORMAT=json STUB_JSON="$FIXTURES/check-clean.json"
+assert_equals "$(calls_made)" "2" "the default JSON consumer still receives SARIF"
+for invalid in INPUT_SARIF_OUTPUT=never INPUT_ANNOTATIONS=yes INPUT_UPLOAD_SARIF=yes; do
+  run_analyze INPUT_COMMAND=check "$invalid"
+  assert_equals "$CODE" "1" "$invalid is rejected"
+  assert_equals "$(calls_made)" "0" "$invalid runs no analysis"
+done
+
 for command in check deps files visibility boundaries size complexity dupes mutants; do
   run_analyze INPUT_COMMAND="$command" INPUT_FORMAT=json
   assert_equals "$(call_args 1)" "$command --fail-on-issues --format json " "$command: the gate flag is --fail-on-issues"

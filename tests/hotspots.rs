@@ -281,3 +281,50 @@ fn a_trend_without_a_snapshot_gives_a_warning() {
     assert!(report.get("health_trend").is_none(), "{report:#}");
     assert!(stderr.contains("snapshot"), "{stderr}");
 }
+
+#[test]
+fn the_human_text_lists_the_hotspots_the_file_scores_and_the_trend() {
+    let dir = repository();
+    let root = dir.path();
+    let snapshot = root.join("snapshot.json");
+    let snapshot = snapshot.to_str().expect("UTF-8");
+    let (code, _, stderr) = check(root, &["--only", "complexity", "--save-snapshot", snapshot]);
+    assert_eq!(code, Some(0), "{stderr}");
+    let output = Command::cargo_bin("cargo-fallow")
+        .expect("find the binary")
+        .current_dir(root)
+        .args([
+            "check",
+            "--format",
+            "human",
+            "--quiet",
+            "--only",
+            "complexity",
+        ])
+        .args(["--hotspots", "--file-scores", "--trend-from", snapshot])
+        .output()
+        .expect("run the binary");
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(output.status.code(), Some(0), "{text}");
+    assert!(
+        text.contains(
+            "Hotspots (since 6m, 3 or more commits): 2 files\n  100.0  app/src/busy.rs  4 commits, density 0.44, "
+        ),
+        "{text}"
+    );
+    let scores = text
+        .split_once("File scores, the least maintainable first:\n")
+        .map_or_else(|| panic!("a list of file scores: {text}"), |(_, rest)| rest);
+    let order: Vec<&str> = scores
+        .lines()
+        .take_while(|line| line.starts_with("  "))
+        .filter_map(|line| line.split_whitespace().nth(1))
+        .collect();
+    assert_eq!(order.len(), 4, "{text}");
+    assert_eq!(order.last(), Some(&"app/src/lib.rs"), "{text}");
+    assert!(text.contains("Trend against the snapshot of "), "{text}");
+    assert!(
+        text.contains("  complexity 0 -> 0 (+0, stable)\n"),
+        "{text}"
+    );
+}

@@ -33,8 +33,12 @@ jobs:
         with:
           persist-credentials: false
 
+      # The `precise` tests load the standard library sources.
       - name: Set up Rust
         uses: ./.github/actions/setup-rust
+        with:
+          components: rust-src
+          cache-key: coverage
 
       # The mutants CLI tests run `cargo nextest`, so the job needs it too.
       - name: Install cargo-llvm-cov and cargo-nextest
@@ -42,10 +46,12 @@ jobs:
         with:
           tool: cargo-llvm-cov,cargo-nextest
 
+      # The coverage includes the opt-in `precise` feature, so that the floor
+      # also measures the code of a `--features precise` build.
       - name: Run tests with coverage
         run: |
           mkdir -p coverage
-          cargo llvm-cov --locked --lcov --output-path coverage/lcov.info
+          cargo llvm-cov --locked --features precise --lcov --output-path coverage/lcov.info
 
       - name: Compute coverage
         run: |
@@ -59,8 +65,7 @@ jobs:
           echo "Line coverage: $COVERAGE%" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Enforce coverage floor
-        # Hard gate. Raise the floor over time, never lower it. Local line
-        # coverage at the time of this change: 98.1%.
+        # Hard gate. Raise the floor over time, never lower it.
         run: |
           FLOOR=95.0
           awk -v cov="$COVERAGE" -v floor="$FLOOR" 'BEGIN {

@@ -237,3 +237,45 @@ fn without_every_part_is_an_error() {
     );
     assert_eq!(output.status.code(), Some(2), "{output:?}");
 }
+
+#[test]
+fn the_human_text_names_each_file_and_each_state() {
+    let dir = repo();
+    let root = dir.path();
+    let text = |args: &[&str]| {
+        let output = run(root, args);
+        assert!(output.status.success(), "{args:?}: {output:?}");
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    };
+    let planned = text(&["agent", "install", "--dry-run"]);
+    assert!(
+        planned.contains("Would create .claude/skills/cargo-fallow/SKILL.md\n"),
+        "{planned}"
+    );
+    assert!(!planned.contains("agent status"), "{planned}");
+    assert!(!root.join(".claude/skills").exists());
+
+    let installed = text(&["agent", "install"]);
+    assert!(
+        installed.contains("Created .codex/hooks/cargo-fallow-gate.sh\n"),
+        "{installed}"
+    );
+    assert!(
+        installed.ends_with("\n\nRun `cargo fallow agent status` to see the state.\n"),
+        "{installed}"
+    );
+
+    let status = text(&["agent", "status"]);
+    assert!(
+        status.starts_with("guide  current: AGENTS.md\n"),
+        "{status}"
+    );
+    assert!(
+        status.contains("skill  current (claude): .claude/skills/cargo-fallow/SKILL.md\n"),
+        "{status}"
+    );
+    assert!(
+        status.contains("gate   installed (codex): .codex/hooks/cargo-fallow-gate.sh\n"),
+        "{status}"
+    );
+}

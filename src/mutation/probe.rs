@@ -11,12 +11,17 @@
 //! from the cgroup when it has a limit, else from `/proc/meminfo`.
 
 use std::collections::BTreeMap;
+#[cfg(any(test, target_os = "linux"))]
 use std::fs;
 use std::io;
+#[cfg(any(test, target_os = "linux"))]
 use std::path::Path;
+#[cfg(target_os = "macos")]
 use std::thread;
+#[cfg(target_os = "macos")]
 use std::time::Duration;
 
+#[cfg(target_os = "macos")]
 use crate::mutation::process::new_command;
 
 /// One row of the process table.
@@ -41,21 +46,38 @@ pub trait Probe: Send + Sync {
 }
 
 /// The probe of this operating system, or `None` when it has no probe.
+///
+/// Each probe is compiled only for its own system, because it reads tools or
+/// files of that system. The tests check the parsers on each host.
+#[cfg_attr(
+    any(target_os = "macos", target_os = "linux"),
+    expect(
+        clippy::unnecessary_wraps,
+        reason = "a system with no probe gets `None`"
+    )
+)]
 pub fn system_probe() -> Option<Box<dyn Probe>> {
-    if cfg!(target_os = "macos") {
+    #[cfg(target_os = "macos")]
+    {
         Some(Box::new(MacProbe))
-    } else if cfg!(target_os = "linux") {
+    }
+    #[cfg(target_os = "linux")]
+    {
         Some(Box::new(LinuxProbe {
             proc: Path::new("/proc"),
             cgroup: Path::new("/sys/fs/cgroup"),
         }))
-    } else {
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
         None
     }
 }
 
+#[cfg(target_os = "macos")]
 struct MacProbe;
 
+#[cfg(target_os = "macos")]
 impl Probe for MacProbe {
     fn table(&self) -> io::Result<Vec<Row>> {
         let output = new_command("ps")
@@ -84,6 +106,7 @@ impl Probe for MacProbe {
 /// so it costs about 20 ms of CPU, and `top` costs about one second. Returns
 /// `None` when the tool is missing or fails in another way, so that `top` reads
 /// the values. A process that ended has no row.
+#[cfg(target_os = "macos")]
 fn footprint_tool(pids: &[u32]) -> Option<BTreeMap<u32, u64>> {
     // `footprint` cannot read a process during an exec. A second read a moment
     // later is still much cheaper than `top`.
@@ -94,8 +117,10 @@ fn footprint_tool(pids: &[u32]) -> Option<BTreeMap<u32, u64>> {
 }
 
 /// The wait before the second read of `footprint`.
+#[cfg(target_os = "macos")]
 const FOOTPRINT_RETRY: Duration = Duration::from_millis(50);
 
+#[cfg(target_os = "macos")]
 fn footprint_read(pids: &[u32]) -> Option<BTreeMap<u32, u64>> {
     let mut command = new_command(FOOTPRINT);
     command.args(["-f", "bytes"]);
@@ -113,11 +138,14 @@ fn footprint_read(pids: &[u32]) -> Option<BTreeMap<u32, u64>> {
 }
 
 /// The footprint tool of macOS.
+#[cfg(target_os = "macos")]
 const FOOTPRINT: &str = "/usr/bin/footprint";
 /// The message of `footprint` when no given process exists.
+#[cfg(target_os = "macos")]
 const NO_PROCESS: &str = "Unable to find any processes";
 
 /// Reads the footprints with `top`.
+#[cfg(target_os = "macos")]
 fn top_footprints(pids: &[u32]) -> io::Result<BTreeMap<u32, u64>> {
     let mut command = new_command("top");
     command.args(["-l", "1", "-stats", "pid,mem"]);
@@ -135,6 +163,7 @@ fn top_footprints(pids: &[u32]) -> io::Result<BTreeMap<u32, u64>> {
 /// for example `sleep [42]: 64-bit    Footprint: 1032432 B (16384 bytes per page)`.
 /// The value is in KiB. A name can hold brackets, so the pid comes from the last
 /// bracket pair before the colon.
+#[cfg(any(test, target_os = "macos"))]
 fn parse_footprint(text: &str) -> BTreeMap<u32, u64> {
     text.lines()
         .filter_map(|line| {
@@ -152,6 +181,7 @@ fn parse_footprint(text: &str) -> BTreeMap<u32, u64> {
 }
 
 /// Reads `pid ppid rss` lines. A line with another shape does not count.
+#[cfg(any(test, target_os = "macos"))]
 fn parse_ps(text: &str) -> Vec<Row> {
     text.lines()
         .filter_map(|line| {
@@ -167,6 +197,7 @@ fn parse_ps(text: &str) -> Vec<Row> {
 
 /// Reads the `pid mem` rows of `top`. The header lines do not start with a
 /// number, so they do not count.
+#[cfg(any(test, target_os = "macos"))]
 fn parse_top(text: &str) -> BTreeMap<u32, u64> {
     text.lines()
         .filter_map(|line| {
@@ -179,6 +210,7 @@ fn parse_top(text: &str) -> BTreeMap<u32, u64> {
 }
 
 /// Reads a size of `top`, such as `1808K`, `29M+` or `12G-`, as KiB.
+#[cfg(any(test, target_os = "macos"))]
 fn parse_top_size(text: &str) -> Option<u64> {
     let text = text.trim_end_matches(['+', '-']);
     let digits = text.trim_end_matches(|c: char| c.is_ascii_alphabetic());
@@ -193,11 +225,13 @@ fn parse_top_size(text: &str) -> Option<u64> {
     })
 }
 
+#[cfg(any(test, target_os = "linux"))]
 struct LinuxProbe<'a> {
     proc: &'a Path,
     cgroup: &'a Path,
 }
 
+#[cfg(any(test, target_os = "linux"))]
 impl Probe for LinuxProbe<'_> {
     fn table(&self) -> io::Result<Vec<Row>> {
         let mut rows = Vec::new();
@@ -241,6 +275,7 @@ impl Probe for LinuxProbe<'_> {
     }
 }
 
+#[cfg(any(test, target_os = "linux"))]
 struct Status {
     ppid: u32,
     rss_kib: u64,
@@ -248,6 +283,7 @@ struct Status {
 }
 
 /// Reads `/proc/<pid>/status`. A kernel thread has no memory lines.
+#[cfg(any(test, target_os = "linux"))]
 fn parse_status(text: &str) -> Option<Status> {
     let field = |name: &str| {
         text.lines()
@@ -261,6 +297,7 @@ fn parse_status(text: &str) -> Option<Status> {
     })
 }
 
+#[cfg(any(test, target_os = "linux"))]
 fn meminfo_free_percent(text: &str) -> Option<u32> {
     let field = |name: &str| {
         text.lines()
@@ -272,6 +309,7 @@ fn meminfo_free_percent(text: &str) -> Option<u32> {
 
 /// Reads the limit of a cgroup v2 from the `0::/path` line of `/proc/self/cgroup`.
 /// A cgroup with the limit `max` gives no value.
+#[cfg(any(test, target_os = "linux"))]
 fn cgroup_free_percent(root: &Path, self_cgroup: &str) -> Option<u32> {
     let path = self_cgroup
         .lines()
@@ -297,6 +335,7 @@ fn cgroup_free_percent(root: &Path, self_cgroup: &str) -> Option<u32> {
     percent(limit.saturating_sub(used.saturating_sub(cache)), limit)
 }
 
+#[cfg(any(test, target_os = "linux"))]
 fn percent(part: u64, whole: u64) -> Option<u32> {
     (whole > 0).then(|| u32::try_from(part.saturating_mul(100) / whole).unwrap_or(100))
 }

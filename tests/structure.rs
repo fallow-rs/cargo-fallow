@@ -1625,7 +1625,8 @@ fn action_jq(filter: &str, input: &str, args: &[(&str, &str)]) -> Option<String>
     output
         .status
         .success()
-        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+        // jq on Windows writes CRLF line ends. The annotations use LF.
+        .then(|| String::from_utf8_lossy(&output.stdout).replace("\r\n", "\n"))
 }
 
 #[test]

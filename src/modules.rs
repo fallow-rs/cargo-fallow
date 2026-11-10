@@ -488,10 +488,14 @@ mod tests {
             .map(|decl| {
                 (
                     decl.inline_folder.map(|folder| {
-                        (
-                            folder.from_file_folder,
-                            folder.path.to_string_lossy().into_owned(),
-                        )
+                        // Join the parts with `/`, so that the test has one
+                        // expected value on each host.
+                        let parts: Vec<_> = folder
+                            .path
+                            .iter()
+                            .map(|part| part.to_string_lossy())
+                            .collect();
+                        (folder.from_file_folder, parts.join("/"))
                     }),
                     decl.path_attr,
                     decl.cfg_off,

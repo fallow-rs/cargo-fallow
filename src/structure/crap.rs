@@ -437,8 +437,12 @@ mod tests {
 
     #[test]
     fn the_parser_maps_each_path_to_the_workspace_and_adds_the_records() {
-        let text = "TN:\nSF:/w/src/lib.rs\nFN:1,f\nDA:1,3\nDA:2,0\nDA:x,1\nend_of_record\nSF:/w/src/lib.rs\nDA:2,1\nend_of_record\nSF:/other/x.rs\nDA:1,1\nend_of_record\nSF:src/rel.rs\r\nDA:4,1\r\nend_of_record\n";
-        let lcov = parse(text, Path::new("/w"), None);
+        // A path that starts with `/` is absolute only with a drive on Windows.
+        let drive = if cfg!(windows) { "C:" } else { "" };
+        let text = format!(
+            "TN:\nSF:{drive}/w/src/lib.rs\nFN:1,f\nDA:1,3\nDA:2,0\nDA:x,1\nend_of_record\nSF:{drive}/w/src/lib.rs\nDA:2,1\nend_of_record\nSF:{drive}/other/x.rs\nDA:1,1\nend_of_record\nSF:src/rel.rs\r\nDA:4,1\r\nend_of_record\n"
+        );
+        let lcov = parse(&text, Path::new(&format!("{drive}/w")), None);
         let keys: Vec<&str> = lcov.files.keys().map(String::as_str).collect();
         assert_eq!(keys, ["src/lib.rs", "src/rel.rs"]);
         assert_eq!(lcov.files["src/lib.rs"], BTreeMap::from([(1, 3), (2, 1)]));

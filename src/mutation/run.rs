@@ -666,8 +666,7 @@ fn dependents_of(workspace: &Workspace, member: &Member) -> Vec<String> {
 fn package_folder(member: &Member) -> PathBuf {
     Path::new(&member.manifest_path)
         .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_default()
+        .map_or_default(Path::to_path_buf)
 }
 
 fn target_roots(member: &Member) -> Vec<TargetRoot> {

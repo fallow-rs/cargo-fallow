@@ -243,7 +243,7 @@ impl Context<'_> {
             .resolver
             .resolve(reference.krate, reference.module, segments, global);
         if !resolved.exact {
-            let last = segments.last().map(String::as_str).unwrap_or_default();
+            let last = segments.last().map_or_default(String::as_str);
             return RefVerdict::unresolved(scope.denied_names.contains(last));
         }
         // A guessed first name that resolves is outside the workspace.

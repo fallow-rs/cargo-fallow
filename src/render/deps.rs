@@ -67,7 +67,7 @@ pub fn human(report: &DepsReport) -> String {
                 manifest = &row.manifest_path;
                 let _ = writeln!(out, "  {manifest}");
             }
-            let line = row.line.map(|line| format!(":{line} ")).unwrap_or_default();
+            let line = row.line.map_or_default(|line| format!(":{line} "));
             let _ = writeln!(out, "    {line}{}", detail(row));
         }
     }

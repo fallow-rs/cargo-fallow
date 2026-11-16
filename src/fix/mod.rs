@@ -286,8 +286,7 @@ fn plan(
     let production = crate::graph::Production {
         bins: options
             .as_ref()
-            .map(|options| options.production.clone())
-            .unwrap_or_default(),
+            .map_or_default(|options| options.production.clone()),
     };
     let module_graph = crate::graph::build(workspace, &production);
     let mut planned = Plan {
@@ -317,9 +316,7 @@ fn plan(
             .as_ref()
             .map(|extended| crate::graph::build(&extended.workspace, &production));
         let module_graph = own.as_ref().unwrap_or(&module_graph);
-        planned.consumers = extended
-            .map(|extended| extended.manifests)
-            .unwrap_or_default();
+        planned.consumers = extended.map_or_default(|extended| extended.manifests);
         let (edits, skipped) = plan_visibility(workspace, module_graph, options, &scope, progress);
         planned.visibility = edits;
         planned.skipped += skipped;
@@ -548,9 +545,7 @@ fn leave_out(
     warned: &[check::Diagnostic],
 ) -> Vec<visibility::Edit> {
     let mut left = Vec::new();
-    let error_lines: Vec<&str> = errors
-        .map(|text| text.lines().collect())
-        .unwrap_or_default();
+    let error_lines: Vec<&str> = errors.map_or_default(|text| text.lines().collect());
     for line in &error_lines {
         let names = visibility::named_items(line);
         let place = error_place(line);

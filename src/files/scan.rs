@@ -271,8 +271,7 @@ fn macro_tokens(token: &SyntaxToken, rest: &[SyntaxToken], found: &mut Scan) {
     {
         let name = Path::new(&value)
             .file_stem()
-            .map(|stem| stem.to_string_lossy().into_owned())
-            .unwrap_or_default();
+            .map_or_default(|stem| stem.to_string_lossy().into_owned());
         found.modules.push(ModuleDecl {
             name,
             inline_path: Vec::new(),

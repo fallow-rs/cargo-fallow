@@ -99,16 +99,16 @@ fn load_file(root: &Path, visit: &Visit, needs: Needs) -> Result<(File, Vec<Modu
             } else {
                 Vec::new()
             };
-            let tokens = needs
-                .tokens
-                .filter(|_| !skip_metrics)
-                .map(|(mode, ignore_imports)| {
-                    (
-                        tokens(file.syntax(), &index, mode, ignore_imports),
-                        test_lines(file.syntax(), &index),
-                    )
-                })
-                .unwrap_or_default();
+            let tokens =
+                needs
+                    .tokens
+                    .filter(|_| !skip_metrics)
+                    .map_or_default(|(mode, ignore_imports)| {
+                        (
+                            tokens(file.syntax(), &index, mode, ignore_imports),
+                            test_lines(file.syntax(), &index),
+                        )
+                    });
             // An inner `#![cfg(test)]` makes the whole file test code.
             let test_only = visit.test_only || is_test_item(file.syntax());
             (

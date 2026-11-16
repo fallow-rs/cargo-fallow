@@ -690,8 +690,7 @@ impl<'g> Resolver<'g> {
             Scope::Expansion => self
                 .expansion
                 .get(&krate)
-                .map(|expansion| expansion.crates.clone())
-                .unwrap_or_default(),
+                .map_or_default(|expansion| expansion.crates.clone()),
         }
     }
 

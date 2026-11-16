@@ -142,8 +142,7 @@ pub fn trace(
     for package in metadata.workspace_packages() {
         let manifest_path = workspace::relative_path(&workspace.root, &package.manifest_path);
         let entries = fs::read_to_string(&package.manifest_path)
-            .map(|text| manifest::entries(&text))
-            .unwrap_or_default();
+            .map_or_default(|text| manifest::entries(&text));
         for dependency in &package.dependencies {
             let key = dependency.rename.as_deref().unwrap_or(&dependency.name);
             if !matches(key, &dependency.name) {

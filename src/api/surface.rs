@@ -141,8 +141,7 @@ pub fn surface(workspace: &Workspace, selection: &Selection) -> Surface {
                     .iter()
                     .any(|kind| kind == "lib" || kind == "proc-macro")
             })
-            .map(|target| target.src_path.clone())
-            .unwrap_or_default();
+            .map_or_default(|target| target.src_path.clone());
         let mut api = CrateApi {
             manifest: member.manifest_path.clone(),
             root_file,

@@ -411,8 +411,7 @@ impl AgentStatus {
             let script = surface
                 .script
                 .as_deref()
-                .map(|script| format!(": {script}"))
-                .unwrap_or_default();
+                .map_or_default(|script| format!(": {script}"));
             let _ = writeln!(
                 text,
                 "gate   {} ({}){script}",

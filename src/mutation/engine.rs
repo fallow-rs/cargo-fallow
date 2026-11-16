@@ -1014,23 +1014,19 @@ impl Engine<'_> {
         });
         RemovedMutant {
             id: id_text(removal.id),
-            file: found
-                .map(|(file, _, _)| file.path.clone())
-                .unwrap_or_default(),
+            file: found.map_or_default(|(file, _, _)| file.path.clone()),
             line: found.map_or(0, |(file, site, _)| {
                 file.original[..site.report_range().start]
                     .matches('\n')
                     .count()
                     + 1
             }),
-            replacement: found
-                .map(|(_, _, mutant)| {
-                    mutant
-                        .text
-                        .clone()
-                        .unwrap_or_else(|| mutant.replacement.to_owned())
-                })
-                .unwrap_or_default(),
+            replacement: found.map_or_default(|(_, _, mutant)| {
+                mutant
+                    .text
+                    .clone()
+                    .unwrap_or_else(|| mutant.replacement.to_owned())
+            }),
             round: removal.round,
             how: removal.how,
             code: removal.code.clone(),

@@ -80,8 +80,7 @@ impl ModuleDecl {
         for (depth, inline) in outer.iter().enumerate() {
             let name = inline
                 .name()
-                .map(|name| crate::attrs::plain_name(&name))
-                .unwrap_or_default();
+                .map_or_default(|name| crate::attrs::plain_name(&name));
             let choices = module_files(inline);
             let name = name.as_str();
             folders = folders

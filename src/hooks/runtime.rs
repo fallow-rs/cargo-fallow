@@ -119,8 +119,7 @@ fn one_line_panics() {
     std::panic::set_hook(Box::new(|info| {
         let place = info
             .location()
-            .map(|place| format!(" at {}:{}", place.file(), place.line()))
-            .unwrap_or_default();
+            .map_or_default(|place| format!(" at {}:{}", place.file(), place.line()));
         let _ = writeln!(
             io::stderr().lock(),
             "{PREFIX}: internal error{place}, skipping the check."

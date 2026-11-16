@@ -295,8 +295,7 @@ fn dupes_find_the_copied_function_across_packages_and_gate_on_the_flags() {
         .filter(|group| {
             let files: Vec<&str> = group["instances"]
                 .as_array()
-                .map(|all| all.iter().filter_map(|i| i["file"].as_str()).collect())
-                .unwrap_or_default();
+                .map_or_default(|all| all.iter().filter_map(|i| i["file"].as_str()).collect());
             files == ["crates/core/src/lib.rs", "crates/process/src/lib.rs"]
         })
         .collect();
@@ -437,8 +436,7 @@ fn size_without_a_base_lists_hotspots_and_skips_the_growth_gate() {
     );
     let names: Vec<&str> = report["summary"]["large_functions"]
         .as_array()
-        .map(|all| all.iter().filter_map(|f| f["name"].as_str()).collect())
-        .unwrap_or_default();
+        .map_or_default(|all| all.iter().filter_map(|f| f["name"].as_str()).collect());
     assert_eq!(names, ["branchy", "quiet"]);
     // The doc comment and the attributes are not part of the function length.
     assert_eq!(report["summary"]["large_functions"][0]["line_count"], 16);
@@ -949,8 +947,7 @@ fn changed_since_keeps_a_clone_group_with_one_changed_copy_and_skips_the_thresho
     for group in groups {
         let files: Vec<&str> = group["instances"]
             .as_array()
-            .map(|all| all.iter().filter_map(|i| i["file"].as_str()).collect())
-            .unwrap_or_default();
+            .map_or_default(|all| all.iter().filter_map(|i| i["file"].as_str()).collect());
         assert!(files.contains(&"crates/process/src/lib.rs"), "{group:#}");
     }
     assert!(

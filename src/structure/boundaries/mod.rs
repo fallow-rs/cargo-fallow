@@ -766,8 +766,7 @@ fn package_of(workspace: &Workspace, path: &str) -> String {
                 .then_some((dir.len(), &member.name))
         })
         .max()
-        .map(|(_, name)| name.clone())
-        .unwrap_or_default()
+        .map_or_default(|(_, name)| name.clone())
 }
 
 /// Adds each `.rs` file at or below `path`, relative to `root`, with `/`.

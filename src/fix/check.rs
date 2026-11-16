@@ -67,10 +67,7 @@ pub fn diagnostics(stdout: &str) -> Vec<Diagnostic> {
             if level != "warning" && level != "error" {
                 return None;
             }
-            let all = message["spans"]
-                .as_array()
-                .map(Vec::as_slice)
-                .unwrap_or_default();
+            let all = message["spans"].as_array().map_or_default(Vec::as_slice);
             let span = all
                 .iter()
                 .find(|span| span["is_primary"] == true)

@@ -106,11 +106,9 @@ pub fn check(
             .members
             .iter()
             .find(|candidate| &candidate.name == member)
-            .map(|candidate| candidate.manifest_path.clone())
-            .unwrap_or_default();
+            .map_or_default(|candidate| candidate.manifest_path.clone());
         let entries = std::fs::read_to_string(workspace.root.as_std_path().join(&manifest))
-            .map(|text| super::manifest::entries(&text))
-            .unwrap_or_default();
+            .map_or_default(|text| super::manifest::entries(&text));
         // The member itself is no dependency that it can pin.
         for difference in differences(&own, &whole)
             .into_iter()

@@ -241,15 +241,11 @@ mod tests {
     use super::*;
 
     fn kinds(command: &str) -> Vec<WriteKind> {
-        git_write(command)
-            .map(|write| write.kinds)
-            .unwrap_or_default()
+        git_write(command).map_or_default(|write| write.kinds)
     }
 
     fn targets(command: &str) -> Vec<String> {
-        git_write(command)
-            .map(|write| write.targets)
-            .unwrap_or_default()
+        git_write(command).map_or_default(|write| write.targets)
     }
 
     #[test]

@@ -427,8 +427,7 @@ fn owner_name(node: &SyntaxNode) -> String {
             .and_then(|item| item.name())
             .map(|name| name.text().to_string())
     };
-    text.map(|text| text.split_whitespace().collect::<Vec<_>>().join(" "))
-        .unwrap_or_default()
+    text.map_or_default(|text| text.split_whitespace().collect::<Vec<_>>().join(" "))
 }
 
 /// The `let` name of a closure, or [`CLOSURE_NAME`].

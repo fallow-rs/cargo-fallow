@@ -173,7 +173,7 @@ pub fn summary(summary: &Summary<'_>, prefix: &str) -> String {
                 .and_then(|value| value.as_str().map(str::to_owned))
                 .unwrap_or_default(),
             if outcome.enforced { "yes" } else { "no" },
-            outcome.observed.map(number).unwrap_or_default()
+            outcome.observed.map_or_default(number)
         );
     }
     let all = results(summary.sarif);

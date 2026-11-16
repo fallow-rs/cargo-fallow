@@ -624,9 +624,7 @@ fn graph_checks(inputs: &GraphInputs<'_>) -> Result<GraphPart, CliError> {
     let phase = progress.phase("Building the module graph");
     // Only the visibility check reads the production selection.
     let production = graph::Production {
-        bins: visibility_options
-            .map(|options| options.production.clone())
-            .unwrap_or_default(),
+        bins: visibility_options.map_or_default(|options| options.production.clone()),
     };
     let (module_graph, scans) = if inputs.files {
         let (module_graph, scans) = graph::build_with_scans(workspace, &production);
@@ -864,7 +862,7 @@ fn parse_section(workspace: &Workspace, enforced: bool) -> Section {
     let gates = outcomes;
     let findings = gates
         .get(&RustGateName::ParseError)
-        .map(|outcome| {
+        .map_or_default(|outcome| {
             outcome
                 .files
                 .iter()
@@ -891,8 +889,7 @@ fn parse_section(workspace: &Workspace, enforced: bool) -> Section {
                     )])
                 })
                 .collect()
-        })
-        .unwrap_or_default();
+        });
     Section {
         human: render::parse_human(&gates),
         json: serde_json::Value::Null,

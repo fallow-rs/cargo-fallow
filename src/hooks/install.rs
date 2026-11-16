@@ -130,8 +130,7 @@ pub fn install_root(manifest_path: Option<&Path>) -> Result<Root, CliError> {
         .strip_prefix(&top)
         .ok()
         .filter(|relative| !relative.as_os_str().is_empty())
-        .map(|relative| format!("{}/Cargo.toml", slashed(relative)))
-        .unwrap_or_default();
+        .map_or_default(|relative| format!("{}/Cargo.toml", slashed(relative)));
     Ok(Root {
         root: top,
         manifest,
@@ -478,13 +477,11 @@ pub fn status(args: &StatusArgs) -> Result<u8, CliError> {
                 let version = surface
                     .installer_version
                     .as_deref()
-                    .map(|version| format!(" (cargo-fallow {version})"))
-                    .unwrap_or_default();
+                    .map_or_default(|version| format!(" (cargo-fallow {version})"));
                 let script = surface
                     .script
                     .as_deref()
-                    .map(|script| format!(": {script}"))
-                    .unwrap_or_default();
+                    .map_or_default(|script| format!(": {script}"));
                 let _ = writeln!(
                     text,
                     "{:<7}{}{script}{version}",

@@ -238,8 +238,7 @@ mod tests {
         let schema = document();
         let named: BTreeSet<&str> = schema["$defs"]["CheckSections"]["properties"]
             .as_object()
-            .map(|properties| properties.keys().map(String::as_str).collect())
-            .unwrap_or_default();
+            .map_or_default(|properties| properties.keys().map(String::as_str).collect());
         // The parse gate has no report of its own.
         let checks: BTreeSet<&str> = CheckName::ALL
             .iter()

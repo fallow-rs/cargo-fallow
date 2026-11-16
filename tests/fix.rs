@@ -217,8 +217,7 @@ fn misplaced_dependency_moves_to_dev_dependencies() {
     let after = read(&dir, "app/Cargo.toml");
     let dev = after
         .split_once("[dev-dependencies]")
-        .map(|(_, rest)| rest)
-        .unwrap_or_default();
+        .map_or_default(|(_, rest)| rest);
     assert!(dev.contains("beta = { path"), "{after}");
     let (_, normal) = after.split_once("[dependencies]").expect("the table stays");
     let normal = normal

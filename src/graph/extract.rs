@@ -1058,15 +1058,12 @@ impl<'a> Walker<'a> {
                 Some(name) => plain_name(&name),
                 None => return,
             },
-            None => node
-                .parent()
-                .map(|list| {
-                    list.children()
-                        .take_while(|child| child != node)
-                        .count()
-                        .to_string()
-                })
-                .unwrap_or_default(),
+            None => node.parent().map_or_default(|list| {
+                list.children()
+                    .take_while(|child| child != node)
+                    .count()
+                    .to_string()
+            }),
         };
         let index = self.add_item(node, name, ItemKind::Field, vis_of(node));
         self.push(node, Frame::Owner(index));
@@ -1275,7 +1272,7 @@ impl<'a> Walker<'a> {
         let Some(field) = field else {
             return;
         };
-        let (segments, global) = path.map(|path| self.segments_of(&path)).unwrap_or_default();
+        let (segments, global) = path.map_or_default(|path| self.segments_of(&path));
         if segments.is_empty() {
             self.add_ref(RefKind::Field(field), Origin::Body);
             return;

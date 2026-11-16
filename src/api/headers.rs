@@ -286,8 +286,7 @@ mod tests {
             .items
             .into_iter()
             .find(|((_, found), _)| found == name)
-            .map(|(_, fact)| fact)
-            .unwrap_or_default()
+            .map_or_default(|(_, fact)| fact)
     }
 
     #[test]

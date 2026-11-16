@@ -929,16 +929,9 @@ fn the_switch_sees_the_mutant_while_other_processes_read_their_record() {
         .expect("the mutant that the test kills");
     let record = run.work.path().join("record");
     fs::write(&record, format!("fallow-mutant:{killed}")).expect("write the record");
-    let deps = run.work.path().join("run/target-schema/debug/deps");
-    let binary = fs::read_dir(&deps)
-        .expect("the schema has test binaries")
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .find(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.starts_with("fixture-") && !name.contains('.'))
-        })
+    // Cargo 1.100 puts test binaries in the build directory, not in
+    // `debug/deps`, so search the whole profile directory.
+    let binary = find_fixture_binary(&run.work.path().join("run/target-schema/debug"))
         .expect("the test binary of the fixture");
     let with_record = |program: &[&str]| {
         let mut command = Process::new("sh");
@@ -1472,4 +1465,25 @@ fn missing_llvm_tools_stop_the_run_with_a_clear_error() {
         Some(&rustc),
     );
     assert_eq!(code, Some(0), "{report}");
+}
+
+/// Returns the first test binary of the fixture crate below `dir`.
+fn find_fixture_binary(dir: &Path) -> Option<std::path::PathBuf> {
+    for entry in fs::read_dir(dir).ok()?.filter_map(Result::ok) {
+        let path = entry.path();
+        if path.is_dir() {
+            if let Some(found) = find_fixture_binary(&path) {
+                return Some(found);
+            }
+            continue;
+        }
+        let is_binary = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("fixture-") && !name.contains('.'));
+        if is_binary {
+            return Some(path);
+        }
+    }
+    None
 }

@@ -477,7 +477,7 @@ impl Scope {
         if self
             .baseline
             .as_ref()
-            .is_some_and(|baseline| baseline.absorbs(&entry.id))
+            .is_some_and(|baseline| baseline.absorbs_entry(&entry))
         {
             return false;
         }
@@ -487,12 +487,18 @@ impl Scope {
         true
     }
 
-    /// True when a saved clone group of the baseline covers `copies`, the
-    /// copies of a clone group whose fingerprint the baseline does not hold.
-    pub fn absorbs_edited_clone(&self, copies: &[crate::baseline::Region]) -> bool {
-        self.baseline
-            .as_ref()
-            .is_some_and(|baseline| baseline.absorbs_edited_clone(copies))
+    /// True when the run reads or saves a baseline.
+    pub const fn uses_baseline(&self) -> bool {
+        self.baseline.is_some() || self.recorder.is_some()
+    }
+
+    /// For each clone group, by its copies, true when a saved clone group of
+    /// the baseline matches it after an edit.
+    pub fn absorbs_edited_clones(&self, groups: &[Vec<crate::baseline::Region>]) -> Vec<bool> {
+        self.baseline.as_ref().map_or_else(
+            || vec![false; groups.len()],
+            |baseline| baseline.absorbs_edited_clones(groups),
+        )
     }
 
     /// True when the baseline does not hold the entry that `entry` builds.

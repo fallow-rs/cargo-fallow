@@ -214,7 +214,7 @@ pub struct Summary {
 }
 
 pub fn run(args: &DupesArgs) -> Result<Section, CliError> {
-    let (workspace, settings, loaded, progress) = load(args)?;
+    let (workspace, settings, progress) = settings(args)?;
     // `--threshold` is the flag of the threshold gate. A threshold from the
     // config only reports the gate, the same as each other gate without its flag.
     let gates = Enforce {
@@ -229,6 +229,7 @@ pub fn run(args: &DupesArgs) -> Result<Section, CliError> {
             || args.production
             || args.no_production,
     );
+    let loaded = read_source(&workspace, &settings, scope.uses_baseline(), progress);
     scope.annotate(section(&loaded, &settings, gates, &scope, progress)?)
 }
 
@@ -236,7 +237,8 @@ pub fn run(args: &DupesArgs) -> Result<Section, CliError> {
 /// ignores the baseline and `--changed-since`.
 pub fn run_trace(args: &DupesArgs, fingerprint: &str) -> Result<u8, CliError> {
     crate::trace::check_format(args.common.format, "dupes")?;
-    let (_, settings, loaded, progress) = load(args)?;
+    let (workspace, settings, progress) = settings(args)?;
+    let loaded = read_source(&workspace, &settings, false, progress);
     let gates = Enforce {
         clones: false,
         threshold: false,
@@ -246,10 +248,8 @@ pub fn run_trace(args: &DupesArgs, fingerprint: &str) -> Result<u8, CliError> {
     crate::trace::write(args.common.format, &traced.human(), &traced)
 }
 
-/// Reads the workspace, the settings and the token streams.
-fn load(
-    args: &DupesArgs,
-) -> Result<(workspace::Workspace, Duplication, Loaded, Progress), CliError> {
+/// Reads the workspace and the settings.
+fn settings(args: &DupesArgs) -> Result<(workspace::Workspace, Duplication, Progress), CliError> {
     let progress = Progress::new(args.common.quiet);
     progress.step("Reading cargo metadata");
     let workspace = workspace::load(
@@ -272,16 +272,25 @@ fn load(
     if args.production || args.no_production {
         settings.production = args.production;
     }
+    Ok((workspace, settings, progress))
+}
+
+/// Reads the token streams. `functions` is true when the run reads or saves
+/// a baseline: a baseline entry names the functions of each copy.
+fn read_source(
+    workspace: &workspace::Workspace,
+    settings: &Duplication,
+    functions: bool,
+    progress: Progress,
+) -> Loaded {
     progress.step("Reading the token streams");
-    let loaded = source::load(
-        &workspace,
-        // A baseline entry names the functions of each copy.
+    source::load(
+        workspace,
         Needs {
-            functions: true,
+            functions,
             tokens: Some((settings.mode, settings.ignore_imports)),
         },
-    );
-    Ok((workspace, settings, loaded, progress))
+    )
 }
 
 /// The gates of the check that fail the run.
@@ -420,7 +429,7 @@ fn production_file(file: &File) -> Option<File> {
         path: file.path.clone(),
         lines: file.lines.saturating_sub(file.test_lines),
         skip_metrics: file.skip_metrics,
-        functions: file.functions.clone(),
+        functions: Vec::new(),
         tokens,
         test_only: false,
         test_lines: 0,
@@ -460,23 +469,45 @@ fn kept_groups(groups: Vec<CloneGroup>, loaded: &Loaded, scope: &Scope) -> Vec<C
             )
         })
         .collect();
+    if !scope.uses_baseline() {
+        return scoped
+            .into_iter()
+            .filter(|group| {
+                scope.keeps_entry_of(|| Entry::new("dupes", DUPES_RULE, &group.fingerprint))
+            })
+            .collect();
+    }
     // A clone group has one baseline entry: its fingerprint and the place of
     // each copy. Each fingerprint must match before the copies of the other
     // groups can match a saved group.
+    let copies: Vec<Vec<Region>> = scoped.iter().map(|group| regions(group, loaded)).collect();
     let exact: Vec<bool> = scoped
         .iter()
-        .map(|group| {
+        .zip(&copies)
+        .map(|(group, copies)| {
             scope.keeps_entry(Entry {
-                instances: regions(group, loaded),
+                instances: copies.clone(),
                 ..Entry::new("dupes", DUPES_RULE, &group.fingerprint)
             })
         })
         .collect();
-    scoped
+    let candidates: Vec<(CloneGroup, Vec<Region>)> = scoped
         .into_iter()
+        .zip(copies)
         .zip(exact)
-        .filter(|(group, kept)| *kept && !scope.absorbs_edited_clone(&regions(group, loaded)))
-        .map(|(group, _)| group)
+        .filter(|(_, kept)| *kept)
+        .map(|(pair, _)| pair)
+        .collect();
+    let found: Vec<Vec<Region>> = candidates
+        .iter()
+        .map(|(_, copies)| copies.clone())
+        .collect();
+    let edited = scope.absorbs_edited_clones(&found);
+    candidates
+        .into_iter()
+        .zip(edited)
+        .filter(|(_, absorbed)| !absorbed)
+        .map(|((group, _), _)| group)
         .collect()
 }
 

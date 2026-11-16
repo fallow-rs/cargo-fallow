@@ -196,3 +196,37 @@ fn an_edit_above_and_inside_both_copies_keeps_the_saved_clone() {
     assert_eq!(report["findings"], Value::Array(Vec::new()), "{report}");
     assert_eq!(report["baseline"]["stale"], Value::Array(Vec::new()));
 }
+
+#[test]
+fn an_unchanged_third_copy_still_fails() {
+    let dir = workspace();
+    write(dir.path(), "src/e.rs", &body("third", ""));
+    let (code, report) = gated(&dir);
+    assert_eq!(code, 1, "{report}");
+}
+
+#[test]
+fn a_new_clone_added_inside_the_functions_of_an_edited_clone_still_fails() {
+    let dir = workspace();
+    let block = "    let words: Vec<&str> = vec![\"a\", \"bb\", \"ccc\"];\n    let mut out = Vec::new();\n    for word in words {\n        match word.len() {\n            0 => continue,\n            1 | 2 => out.push(word.to_uppercase()),\n            _ => out.push(word.chars().rev().collect::<String>()),\n        }\n    }\n    out.sort();\n    out.dedup();\n    total += out.len() as u32;\n";
+    // Different code before the new block in each copy keeps the new block
+    // apart from the saved clone.
+    let first = format!("{ADDED}    if items.is_empty() {{ return 0; }}\n{block}");
+    let second = format!("{ADDED}    let unused = Some(3).map_or(0, |x| x + 1);\n{block}");
+    write(
+        dir.path(),
+        "src/a.rs",
+        &format!("// a\n\n{}", body("first", &first)),
+    );
+    write(
+        dir.path(),
+        "src/b.rs",
+        &format!("{}\n", body("second", &second)),
+    );
+    assert!(
+        groups(&dir, &[]) >= 2,
+        "the run finds the old and the new clone"
+    );
+    let (code, report) = gated(&dir);
+    assert_eq!(code, 1, "{report}");
+}

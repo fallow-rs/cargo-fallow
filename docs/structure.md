@@ -214,15 +214,24 @@ share a line with the copy, in the form of the `complexity` report.
 
 A run with a baseline matches each clone group in two steps:
 
-1. A group whose fingerprint is in the baseline matches that entry.
-2. A group with a new fingerprint matches a saved group that no fingerprint
-   matched, when each copy of the group is a saved copy after an edit. A copy
+1. A group whose fingerprint is in the baseline matches that entry. The group
+   must not have more copies than the saved group: the fingerprint reads the
+   tokens of one copy, so a new identical copy keeps the fingerprint.
+2. A group with a new fingerprint can match a saved group that no fingerprint
+   matched. Each copy of the group must be a saved copy after an edit. A copy
    is a saved copy after an edit when it is in the same file, and:
    - each function that the copy touches is a function of the saved copy, or
    - the copy is outside each function, and it shares at least half of its
      lines with the saved copy.
 
-The group then counts as known, and the saved group is not stale. Thus an
+In step 2, the nearest group matches the saved group: the group whose copies
+start nearest to the saved lines and have the nearest line count. An edit
+can split a clone in two, so a further group also matches while the matched
+groups together have no more lines than the saved group. An edit can also
+join two saved clones in the same functions. The joined group then matches
+both saved groups.
+
+A matched group counts as known, and its saved group is not stale. Thus an
 edit that changes, extends or shortens the code inside a saved clone does
 not fail the gate. An edit above the clone moves its lines, but it does not
 change its functions.
@@ -230,13 +239,20 @@ change its functions.
 A group still counts as new in these cases:
 
 - The group has a copy in a file or a function that the saved group does not
-  have, for example a third copy, or a copy that grew into the next function.
+  have, for example a copy that grew into the next function.
+- The group has more copies than the saved group, for example a third copy.
+- The group is in the functions of a saved clone, but the saved clone has its
+  own group, or the lines of the saved clone are used up. For example, an
+  edit inside a saved clone that also adds a second, separate clone to the
+  same functions gives one new group.
 - The group is in code that had no saved clone, for example two lines that
   an edit made equal.
 
-One saved group can match more than one group, for example when an edit
-splits a clone in two. A baseline from an older version has no `instances`,
-so only step 1 applies. Save the baseline again to add them.
+A function name has the form of the `complexity` report: `name`, or
+`Type::name` in an `impl`. Two functions with the same name in one file, for
+example in two `impl` blocks of one type, count as one function. A baseline
+from an older version has no `instances`, so only step 1 applies, without
+the copy count. Save the baseline again to add them.
 
 The growth rule of `size` is the rule of `scripts/check-file-size.mjs` in
 fallow, applied to `.rs` files. A file over the limit must not grow, and a new

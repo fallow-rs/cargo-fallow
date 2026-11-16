@@ -753,8 +753,9 @@ fn source_checks(
     progress: Progress,
 ) -> Result<SourcePart, CliError> {
     // A `dupes` baseline entry names the functions of each copy.
-    let measures =
-        settings.size.is_some() || settings.complexity.is_some() || settings.dupes.is_some();
+    let measures = settings.size.is_some()
+        || settings.complexity.is_some()
+        || (settings.dupes.is_some() && scope.uses_baseline());
     let phase = progress.phase("Reading the source files");
     let loaded = source::load(
         workspace,

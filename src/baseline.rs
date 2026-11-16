@@ -10,7 +10,7 @@
 //! fingerprint still matches a saved group when its copies are in the same
 //! functions (see [`Loaded::absorbs_edited_clone`]).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
@@ -114,6 +114,39 @@ fn same_copy(saved: &Region, found: &Region) -> bool {
         .all(|name| saved.functions.contains(name))
 }
 
+/// The distance of the copies of a clone group from the copies of a saved
+/// group: for each copy, the line distance from the nearest saved copy that
+/// [`same_copy`] accepts, plus the change of the line count.
+fn distance(saved: &[Region], found: &[Region]) -> u64 {
+    found
+        .iter()
+        .map(|copy| {
+            saved
+                .iter()
+                .filter(|old| same_copy(old, copy))
+                .map(|old| {
+                    u64::from(old.start_line.abs_diff(copy.start_line))
+                        + u64::from(old.lines().abs_diff(copy.lines()))
+                })
+                .min()
+                .unwrap_or(u64::MAX / 4)
+        })
+        .sum()
+}
+
+/// The line count of the longest copy.
+fn span(copies: &[Region]) -> u32 {
+    copies.iter().map(Region::lines).max().unwrap_or_default()
+}
+
+/// The saved ids, with the number of saved copies of each.
+fn saved_ids(entries: &[Entry]) -> BTreeMap<String, usize> {
+    entries
+        .iter()
+        .map(|entry| (entry.id.clone(), entry.instances.len()))
+        .collect()
+}
+
 /// True when each copy of `found` is a copy of `saved` after an edit. A clone
 /// needs two copies, so a group with fewer is never covered.
 fn covers(saved: &[Region], found: &[Region]) -> bool {
@@ -145,8 +178,9 @@ pub struct File {
 pub struct Loaded {
     /// The path of the file, as the user gave it.
     pub path: String,
-    /// The ids of the file.
-    ids: BTreeSet<String>,
+    /// The ids of the file, with the number of saved copies of a clone
+    /// group. The number is 0 for an entry with no copies.
+    ids: BTreeMap<String, usize>,
     /// The entries of the file.
     entries: Vec<Entry>,
     /// The ids that a finding of the run matched.
@@ -186,7 +220,7 @@ impl Loaded {
         }
         Ok(Self {
             path: display,
-            ids: file.findings.iter().map(|entry| entry.id.clone()).collect(),
+            ids: saved_ids(&file.findings),
             entries: file.findings,
             matched: Mutex::default(),
             edited: Mutex::default(),
@@ -195,7 +229,7 @@ impl Loaded {
 
     /// True when the baseline holds `id`. The id then counts as matched.
     pub fn absorbs(&self, id: &str) -> bool {
-        if !self.ids.contains(id) {
+        if !self.ids.contains_key(id) {
             return false;
         }
         self.matched
@@ -205,28 +239,71 @@ impl Loaded {
         true
     }
 
-    /// True when a saved clone group covers the copies of a clone group
-    /// whose fingerprint is not in the baseline: each copy of the group is a
-    /// copy of the saved group after an edit (see [`same_copy`]). Each saved
-    /// group that covers the copies then counts as matched.
+    /// True when the baseline holds the entry. A clone group with more
+    /// copies than the saved group is new duplication, also with an equal
+    /// fingerprint, because the fingerprint reads the tokens of one copy.
+    pub fn absorbs_entry(&self, entry: &Entry) -> bool {
+        let saved = self.ids.get(&entry.id).copied().unwrap_or_default();
+        if saved > 0 && entry.instances.len() > saved {
+            return false;
+        }
+        self.absorbs(&entry.id)
+    }
+
+    /// The clone groups, by the copies of each group, that a saved clone
+    /// group matches after an edit. A group matches a saved group that no
+    /// fingerprint matched, when each copy of the group is a copy of the
+    /// saved group after an edit (see [`same_copy`]). The group with the
+    /// least distance (see [`distance`]) matches. An edit can split a clone,
+    /// so a further group matches while the matched groups together have no
+    /// more lines than the saved group. The saved group then counts as
+    /// matched. An edit can also join two clones, so each saved group that no
+    /// group matched counts as matched when it covers a matched group.
     ///
-    /// Call it after [`Self::absorbs`] has seen each group of the run. A
-    /// saved group that an equal fingerprint matched does not take part.
-    pub fn absorbs_edited_clone(&self, copies: &[Region]) -> bool {
-        let covering: Vec<String> = {
+    /// Call it after [`Self::absorbs_entry`] has seen each group of the run.
+    pub fn absorbs_edited_clones(&self, groups: &[Vec<Region>]) -> Vec<bool> {
+        let mut pairs: Vec<(u64, usize, usize)> = {
             let matched = self.matched.lock().unwrap_or_else(PoisonError::into_inner);
             self.entries
                 .iter()
-                .filter(|entry| !entry.instances.is_empty() && !matched.contains(&entry.id))
-                .filter(|entry| covers(&entry.instances, copies))
-                .map(|entry| entry.id.clone())
+                .enumerate()
+                .filter(|(_, entry)| !entry.instances.is_empty() && !matched.contains(&entry.id))
+                .flat_map(|(saved, entry)| {
+                    groups
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, copies)| covers(&entry.instances, copies))
+                        .map(move |(found, copies)| {
+                            (distance(&entry.instances, copies), saved, found)
+                        })
+                })
                 .collect()
         };
-        let absorbed = !covering.is_empty();
-        self.edited
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .extend(covering);
+        pairs.sort_unstable();
+        let mut absorbed = vec![false; groups.len()];
+        let mut used: BTreeMap<usize, u32> = BTreeMap::new();
+        let mut edited = self.edited.lock().unwrap_or_else(PoisonError::into_inner);
+        for &(_, saved, found) in &pairs {
+            if absorbed[found] {
+                continue;
+            }
+            let lines = span(&groups[found]);
+            let total = match used.get(&saved) {
+                None => lines,
+                Some(before) if before + lines <= span(&self.entries[saved].instances) => {
+                    before + lines
+                }
+                Some(_) => continue,
+            };
+            used.insert(saved, total);
+            absorbed[found] = true;
+            edited.insert(self.entries[saved].id.clone());
+        }
+        for (_, saved, found) in pairs {
+            if absorbed[found] && !used.contains_key(&saved) {
+                edited.insert(self.entries[saved].id.clone());
+            }
+        }
         absorbed
     }
 
@@ -359,7 +436,7 @@ mod tests {
     fn loaded(entries: Vec<Entry>) -> Loaded {
         Loaded {
             path: "b.json".to_owned(),
-            ids: entries.iter().map(|entry| entry.id.clone()).collect(),
+            ids: saved_ids(&entries),
             entries,
             matched: Mutex::default(),
             edited: Mutex::default(),
@@ -445,11 +522,83 @@ mod tests {
             entry("dupes", "dup:3"),
         ]);
         assert!(baseline.absorbs("dup:1"));
-        assert!(baseline.absorbs_edited_clone(&copies));
+        assert_eq!(
+            baseline.absorbs_edited_clones(std::slice::from_ref(&copies)),
+            [true]
+        );
         assert_eq!(baseline.matched(), 2);
         assert_eq!(baseline.stale(&["dupes"]), [entry("dupes", "dup:3")]);
         let empty = loaded(vec![clone_entry("dup:1", copies.clone())]);
         assert!(empty.absorbs("dup:1"));
-        assert!(!empty.absorbs_edited_clone(&copies));
+        assert_eq!(empty.absorbs_edited_clones(&[copies]), [false]);
+    }
+
+    #[test]
+    fn a_saved_group_matches_more_groups_only_within_its_lines() {
+        let saved = vec![
+            in_functions("a.rs", 10, &["first"]),
+            in_functions("b.rs", 10, &["second"]),
+        ];
+        let baseline = loaded(vec![clone_entry("dup:1", saved)]);
+        let near = vec![
+            in_functions("a.rs", 11, &["first"]),
+            in_functions("b.rs", 11, &["second"]),
+        ];
+        let added = vec![
+            in_functions("a.rs", 40, &["first"]),
+            in_functions("b.rs", 40, &["second"]),
+        ];
+        assert_eq!(
+            baseline.absorbs_edited_clones(&[added, near]),
+            [false, true]
+        );
+        assert_eq!(baseline.matched(), 1);
+        // An edit split the saved copy of 20 lines into two parts.
+        let split = loaded(vec![clone_entry(
+            "dup:1",
+            vec![
+                in_functions("a.rs", 10, &["first"]),
+                in_functions("b.rs", 10, &["second"]),
+            ],
+        )]);
+        let part = |start: u32, end_line: u32| {
+            [("a.rs", "first"), ("b.rs", "second")]
+                .map(|(file, name)| Region {
+                    end_line,
+                    ..in_functions(file, start, &[name])
+                })
+                .to_vec()
+        };
+        assert_eq!(
+            split.absorbs_edited_clones(&[part(10, 18), part(20, 30)]),
+            [true, true]
+        );
+        // An edit joined two saved clones of the same functions.
+        let joined = loaded(vec![
+            clone_entry("dup:1", part(10, 29)),
+            clone_entry("dup:2", part(31, 36)),
+        ]);
+        assert_eq!(joined.absorbs_edited_clones(&[part(10, 36)]), [true]);
+        assert!(joined.stale(&["dupes"]).is_empty());
+    }
+
+    #[test]
+    fn an_equal_fingerprint_with_more_copies_is_new() {
+        let copies = vec![region("a.rs", 1, 20), region("b.rs", 1, 20)];
+        let baseline = loaded(vec![clone_entry("dup:1", copies.clone())]);
+        let mut third = copies.clone();
+        third.push(region("c.rs", 1, 20));
+        assert!(!baseline.absorbs_entry(&clone_entry("dup:1", third)));
+        assert!(baseline.absorbs_entry(&clone_entry("dup:1", copies)));
+        // An entry from an older version has no copies, so the id decides.
+        let old = loaded(vec![entry("dupes", "dup:2")]);
+        assert!(old.absorbs_entry(&clone_entry(
+            "dup:2",
+            vec![
+                region("a.rs", 1, 2),
+                region("b.rs", 1, 2),
+                region("c.rs", 1, 2)
+            ]
+        )));
     }
 }

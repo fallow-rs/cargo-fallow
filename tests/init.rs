@@ -381,3 +381,62 @@ fn the_saved_count_is_the_number_of_baseline_entries() {
     );
     assert_eq!(report["baseline_findings"], entries.len(), "{report}");
 }
+
+#[test]
+fn the_reported_baseline_is_the_configured_baseline() {
+    let dir = package();
+    let manifest = fs::read_to_string(dir.path().join("Cargo.toml")).expect("read the manifest");
+    write(
+        dir.path(),
+        "Cargo.toml",
+        &format!("{manifest}\n[workspace.metadata.fallow]\nbaseline = \"custom.json\"\n"),
+    );
+    let printed = json(dir.path(), &["init", "--quiet", "--format", "json"]);
+    assert_eq!(
+        printed["baseline"].as_str(),
+        Some("custom.json"),
+        "{printed}"
+    );
+    let (code, text) = run(dir.path(), &["init", "--quiet"]);
+    assert_eq!(code, 0, "{text}");
+    assert!(
+        text.contains("saves the current findings to `custom.json`"),
+        "{text}"
+    );
+    let written = json(
+        dir.path(),
+        &["init", "--write", "--quiet", "--format", "json"],
+    );
+    assert_eq!(
+        written["baseline"].as_str(),
+        Some("custom.json"),
+        "{written}"
+    );
+    assert!(dir.path().join("custom.json").is_file());
+}
+
+#[test]
+fn init_without_write_rejects_what_write_rejects() {
+    let dir = package();
+    let manifest = fs::read_to_string(dir.path().join("Cargo.toml")).expect("read the manifest");
+    for (extra, text) in [
+        (
+            "\n[workspace.metadata]\nfallow = { baseline = \"x.json\" }\n",
+            "is not a table",
+        ),
+        (
+            "\n[workspace.metadata.fallow]\nbaseline = \"../outside.json\"\n",
+            "leaves the workspace root",
+        ),
+    ] {
+        write(dir.path(), "Cargo.toml", &format!("{manifest}{extra}"));
+        for args in [
+            &["init", "--quiet", "--format", "json"][..],
+            &["init", "--write", "--quiet", "--format", "json"][..],
+        ] {
+            let (code, error) = run(dir.path(), args);
+            assert_eq!(code, 2, "{args:?}: {error}");
+            assert!(error.contains(text), "{args:?}: {error}");
+        }
+    }
+}

@@ -128,10 +128,9 @@ pub fn run(args: &InitArgs) -> Result<u8, CliError> {
     let tables = fallow_tables(&merged.doc);
     let mut findings = None;
     let mut written = false;
-    let mut baseline = BASELINE_FILE.to_owned();
+    let baseline = configured_baseline(&merged.doc)?;
     if args.write {
         written = merged.write(root)?;
-        baseline = configured_baseline(root)?;
         let path = root.join(&baseline);
         if fs::symlink_metadata(&path).is_ok() {
             render::warn(&format!(
@@ -309,15 +308,7 @@ fn baseline_entries(path: &Path) -> Result<usize, CliError> {
 }
 
 /// The `baseline` key of the root manifest after the edit.
-fn configured_baseline(root: &Path) -> Result<String, CliError> {
-    let manifest = root.join("Cargo.toml");
-    let text = fs::read_to_string(&manifest).map_err(|err| failed(&manifest, &err))?;
-    let doc: DocumentMut = text.parse().map_err(|err| {
-        CliError::new(
-            ErrorCode::InvalidConfig,
-            format!("the root Cargo.toml does not parse: {err}"),
-        )
-    })?;
+fn configured_baseline(doc: &DocumentMut) -> Result<String, CliError> {
     let path = doc
         .get("workspace")
         .and_then(|item| item.get("metadata"))
@@ -508,7 +499,7 @@ mod tests {
         let second = fs::read_to_string(dir.path().join("Cargo.toml")).expect("read the manifest");
         assert_eq!(first, second);
         assert_eq!(
-            configured_baseline(dir.path()).expect("a key"),
+            configured_baseline(&merge(dir.path(), &LIMITS).expect("a merge").doc).expect("a key"),
             BASELINE_FILE
         );
     }

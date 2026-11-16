@@ -487,6 +487,14 @@ impl Scope {
         true
     }
 
+    /// True when a saved clone group of the baseline covers `copies`, the
+    /// copies of a clone group whose fingerprint the baseline does not hold.
+    pub fn absorbs_edited_clone(&self, copies: &[crate::baseline::Region]) -> bool {
+        self.baseline
+            .as_ref()
+            .is_some_and(|baseline| baseline.absorbs_edited_clone(copies))
+    }
+
     /// True when the baseline does not hold the entry that `entry` builds.
     /// A run without a baseline and without `--save-baseline` builds no
     /// entry.

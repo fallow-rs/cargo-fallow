@@ -428,6 +428,13 @@
         "id": {
           "type": "string",
           "description": "The stable id of the finding."
+        },
+        "instances": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/BaselineRegion"
+          },
+          "description": "The lines of each copy of a `dupes` clone group. The other checks\nleave the field out."
         }
       },
       "required": [
@@ -475,6 +482,40 @@
         "findings"
       ],
       "description": "The baseline file. The field order is the wire order."
+    },
+    "BaselineRegion": {
+      "type": "object",
+      "properties": {
+        "file": {
+          "type": "string",
+          "description": "The file, relative to the workspace root."
+        },
+        "start_line": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The first line, from 1."
+        },
+        "end_line": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The last line."
+        },
+        "functions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The sorted names of the functions that share a line with the copy."
+        }
+      },
+      "required": [
+        "file",
+        "start_line",
+        "end_line"
+      ],
+      "description": "The place of one copy of a saved clone group."
     },
     "BaselineSummary": {
       "type": "object",

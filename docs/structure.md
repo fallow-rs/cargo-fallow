@@ -203,6 +203,41 @@ human, markdown or JSON output.
 `cargo fallow dupes --trace <FINGERPRINT>` shows the instances of one clone
 group. See [Trace](trace.md).
 
+### Clone groups in a baseline
+
+The fingerprint of a clone group is a hash of its normalized tokens. An edit
+inside a copy changes the tokens, so the group gets a new fingerprint. For
+this reason, the [baseline](adoption.md#baselines) entry of a clone group
+also has an `instances` list: the file, the first line, the last line and the
+`functions` of each copy. `functions` holds the names of the functions that
+share a line with the copy, in the form of the `complexity` report.
+
+A run with a baseline matches each clone group in two steps:
+
+1. A group whose fingerprint is in the baseline matches that entry.
+2. A group with a new fingerprint matches a saved group that no fingerprint
+   matched, when each copy of the group is a saved copy after an edit. A copy
+   is a saved copy after an edit when it is in the same file, and:
+   - each function that the copy touches is a function of the saved copy, or
+   - the copy is outside each function, and it shares at least half of its
+     lines with the saved copy.
+
+The group then counts as known, and the saved group is not stale. Thus an
+edit that changes, extends or shortens the code inside a saved clone does
+not fail the gate. An edit above the clone moves its lines, but it does not
+change its functions.
+
+A group still counts as new in these cases:
+
+- The group has a copy in a file or a function that the saved group does not
+  have, for example a third copy, or a copy that grew into the next function.
+- The group is in code that had no saved clone, for example two lines that
+  an edit made equal.
+
+One saved group can match more than one group, for example when an edit
+splits a clone in two. A baseline from an older version has no `instances`,
+so only step 1 applies. Save the baseline again to add them.
+
 The growth rule of `size` is the rule of `scripts/check-file-size.mjs` in
 fallow, applied to `.rs` files. A file over the limit must not grow, and a new
 file must not be over the limit. The rule does not check test files, files in

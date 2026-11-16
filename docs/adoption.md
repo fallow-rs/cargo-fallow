@@ -135,7 +135,9 @@ cargo fallow check --baseline fallow-baseline.json --fail-on-issues
   each finding to a JSON file. The run then exits 0. Commit the file.
 - `--baseline <PATH>` removes each finding whose id is in the file. A removed
   finding does not count for a gate. A clone group of `dupes` has one entry,
-  which is the `fingerprint` of the group.
+  which is the `fingerprint` of the group and the place of each copy. After
+  an edit inside a saved clone, the group still matches its entry. See
+  [Clone groups in a baseline](structure.md#clone-groups-in-a-baseline).
 - The ids do not use line numbers, so an edit above a finding does not change
   its id.
 - The JSON report has a `baseline` field with `path`, `matched` and `stale`.

@@ -612,17 +612,14 @@ const fn description(kind: FindingKind) -> &'static str {
 /// shape.
 pub fn baseline_entry(graph: &Graph, finding: &Finding) -> crate::baseline::Entry {
     let row = row(graph, finding);
-    crate::baseline::Entry {
-        check: KIND.to_owned(),
-        rule: row.kind.to_owned(),
-        id: crate::finding::fingerprint(&[
-            KIND,
-            crate::finding::id_rule(row.kind),
-            &row.krate,
-            &row.item,
-            row.item_kind,
-        ]),
-    }
+    let id = crate::finding::fingerprint(&[
+        KIND,
+        crate::finding::id_rule(row.kind),
+        &row.krate,
+        &row.item,
+        row.item_kind,
+    ]);
+    crate::baseline::Entry::new(KIND, row.kind, &id)
 }
 
 fn row(graph: &Graph, finding: &Finding) -> FindingRow {

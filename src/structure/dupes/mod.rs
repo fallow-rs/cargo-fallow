@@ -45,7 +45,7 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use xxhash_rust::xxh3::xxh3_64;
 
-use crate::baseline::Entry;
+use crate::baseline::{Entry, Region};
 use crate::error::{CliError, ErrorCode};
 use crate::finding::{self as shared, Category, Draft, Impact, Location, Severity};
 use crate::gates::RustGateName as Gate;
@@ -275,8 +275,9 @@ fn load(
     progress.step("Reading the token streams");
     let loaded = source::load(
         &workspace,
+        // A baseline entry names the functions of each copy.
         Needs {
-            functions: false,
+            functions: true,
             tokens: Some((settings.mode, settings.ignore_imports)),
         },
     );
@@ -327,26 +328,7 @@ pub fn section(
     skipped_files.sort();
     // A clone group counts when one of its copies is in a changed file.
     let found_groups = found.groups.len();
-    let groups: Vec<_> = found
-        .groups
-        .into_iter()
-        .filter(|group| {
-            scope.keeps_any(
-                group
-                    .instances
-                    .iter()
-                    .map(|instance| instance.file.as_str()),
-            )
-        })
-        // A clone group has one baseline entry: its fingerprint.
-        .filter(|group| {
-            scope.keeps_entry(Entry {
-                check: "dupes".to_owned(),
-                rule: DUPES_RULE.to_owned(),
-                id: group.fingerprint.clone(),
-            })
-        })
-        .collect();
+    let groups = kept_groups(found.groups, loaded, scope);
     let mut stats = found.stats;
     let mut families = found.families;
     if groups.len() != found_groups {
@@ -438,7 +420,7 @@ fn production_file(file: &File) -> Option<File> {
         path: file.path.clone(),
         lines: file.lines.saturating_sub(file.test_lines),
         skip_metrics: file.skip_metrics,
-        functions: Vec::new(),
+        functions: file.functions.clone(),
         tokens,
         test_only: false,
         test_lines: 0,
@@ -463,6 +445,74 @@ fn threshold_gate(
         fallow_report_protocol::GateStatus::Pass
     };
     fallow_report_protocol::GateOutcome::measured(status, enforced, observed, threshold)
+}
+
+/// The clone groups that the scope keeps and the baseline does not hold.
+fn kept_groups(groups: Vec<CloneGroup>, loaded: &Loaded, scope: &Scope) -> Vec<CloneGroup> {
+    let scoped: Vec<_> = groups
+        .into_iter()
+        .filter(|group| {
+            scope.keeps_any(
+                group
+                    .instances
+                    .iter()
+                    .map(|instance| instance.file.as_str()),
+            )
+        })
+        .collect();
+    // A clone group has one baseline entry: its fingerprint and the place of
+    // each copy. Each fingerprint must match before the copies of the other
+    // groups can match a saved group.
+    let exact: Vec<bool> = scoped
+        .iter()
+        .map(|group| {
+            scope.keeps_entry(Entry {
+                instances: regions(group, loaded),
+                ..Entry::new("dupes", DUPES_RULE, &group.fingerprint)
+            })
+        })
+        .collect();
+    scoped
+        .into_iter()
+        .zip(exact)
+        .filter(|(group, kept)| *kept && !scope.absorbs_edited_clone(&regions(group, loaded)))
+        .map(|(group, _)| group)
+        .collect()
+}
+
+/// The lines and the functions of each copy of `group`, as a baseline saves
+/// them.
+fn regions(group: &CloneGroup, loaded: &Loaded) -> Vec<Region> {
+    group
+        .instances
+        .iter()
+        .map(|instance| {
+            let functions = loaded
+                .files
+                .binary_search_by(|file| file.path.as_str().cmp(&instance.file))
+                .map(|index| touched_functions(&loaded.files[index], instance))
+                .unwrap_or_default();
+            Region {
+                file: instance.file.clone(),
+                start_line: instance.start_line,
+                end_line: instance.end_line,
+                functions,
+            }
+        })
+        .collect()
+}
+
+/// The sorted names of the functions that share a line with `instance`.
+fn touched_functions(file: &File, instance: &Instance) -> Vec<String> {
+    let names: BTreeSet<&str> = file
+        .functions
+        .iter()
+        .filter(|function| {
+            function.start_line <= instance.end_line && instance.start_line <= function.end_line
+        })
+        .map(|function| function.name.as_str())
+        .collect();
+    names.into_iter().map(str::to_owned).collect()
 }
 
 fn place(instance: &Instance) -> Location {

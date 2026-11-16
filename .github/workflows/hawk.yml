@@ -34,7 +34,6 @@ jobs:
 
       - uses: ./.github/actions/setup-rust
         with:
-          toolchain: '1.99.0'
           cache-key: hawk
 
       - name: Install Hawk

@@ -11,7 +11,7 @@ readonly SCRIPT_DIR
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 readonly REPO_ROOT
 
-if [[ "$(cargo +1.99.0 hawk --version)" != "${EXPECTED_HAWK_VERSION}" ]]; then
+if [[ "$(cargo hawk --version)" != "${EXPECTED_HAWK_VERSION}" ]]; then
   printf 'error: expected %s\n' "${EXPECTED_HAWK_VERSION}" >&2
   exit 2
 fi
@@ -41,4 +41,4 @@ if [[ -n "${FALLOW_HAWK_GRAPH_DIR:-}" ]]; then
   hawk_args+=(--graph-dir "${FALLOW_HAWK_GRAPH_DIR}")
 fi
 
-exec cargo +1.99.0 hawk "${hawk_args[@]}"
+exec cargo hawk "${hawk_args[@]}"

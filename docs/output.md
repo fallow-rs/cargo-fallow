@@ -97,6 +97,13 @@ The gates of `check` are the gates of the checks that ran: `parse-error`,
 name as a gate of the JavaScript CLI. The run fails when the `status` of a
 gate is `fail` and its `enforced` value is `true`.
 
+Each finding counts for the gate of its own check. `error-severity-findings`
+is the gate of `deps`, so it counts the `error` findings of `deps` only. For
+example, a `code-duplication` finding with the `error` severity counts for
+`duplication-findings`, and a `complexity` finding counts for
+`health-findings`. Thus `error-severity-findings` can pass with `observed: 0`
+while the report has `error` findings of other checks.
+
 cargo-fallow parses each target root file on a separate thread. The stack
 size of that thread comes from the file length, so deep nesting does not
 crash the run. When a file needs more stack than cargo-fallow can reserve, the

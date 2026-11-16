@@ -6,6 +6,11 @@
 //! exceptions: the JavaScript tool has no gate on mutation results
 //! (`surviving-mutants`), and it counts an unused file in
 //! `error-severity-findings`, not in its own gate (`unused-files`).
+//!
+//! Each check has its own gate. `error-severity-findings` is the gate of
+//! `deps`: it counts the `error` findings of `deps` only. An `error` finding
+//! of another check counts for the gate of that check, for example
+//! `duplication-findings` of `dupes`.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -29,7 +34,8 @@ pub enum RustGateName {
     DuplicationFindings,
     /// `dupes --threshold`: the duplicated lines are over the percentage.
     DuplicationThreshold,
-    /// Fails when the run has a finding with the `error` severity.
+    /// `deps`: a finding with the `error` severity. The `error` findings of
+    /// the other checks count for the gate of their check.
     ErrorSeverityFindings,
     /// `size --base` or `size --staged`: a file over the line limit grew.
     FileGrowth,
@@ -93,7 +99,7 @@ impl RustGateName {
             Self::DuplicationThreshold => {
                 "The duplicated lines are over the percentage of all lines."
             }
-            Self::ErrorSeverityFindings => "The run has a finding with the error severity.",
+            Self::ErrorSeverityFindings => "A `deps` finding has the error severity.",
             Self::FileGrowth => "A file over the line limit grew.",
             Self::HealthFindings => "A function is over a complexity limit.",
             Self::ParseError => "A target root file does not parse.",
@@ -217,6 +223,12 @@ fn gate_file(path: &str, parsed: ParseOutcome) -> Option<GateFile> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_error_severity_gate_names_the_check_that_it_counts() {
+        let text = RustGateName::ErrorSeverityFindings.description();
+        assert!(text.contains("`deps`"), "{text}");
+    }
 
     #[test]
     fn gate_file_follows_the_contract_for_each_parse_result() {

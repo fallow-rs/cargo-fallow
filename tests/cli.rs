@@ -1012,6 +1012,35 @@ fn help_and_version_exit_0() {
 }
 
 #[test]
+fn the_quiet_help_says_that_the_report_stays() {
+    for command in [
+        "check",
+        "deps",
+        "files",
+        "visibility",
+        "boundaries",
+        "size",
+        "complexity",
+        "dupes",
+        "fix",
+        "init",
+        "mutants",
+        "api",
+    ] {
+        let help = run(cargo_fallow(), &[command, "--help"]);
+        assert_eq!(help.code, 0, "{command}");
+        let text = help.stdout.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            text.contains(
+                "--quiet Hide the progress lines on stderr. The report on stdout does not change"
+            ),
+            "{command}: {}",
+            help.stdout
+        );
+    }
+}
+
+#[test]
 fn json_output_is_deterministic() {
     let fixture = Fixture::new("ws-ok");
     let first = check(&fixture, &["--format", "json", "--quiet"]);

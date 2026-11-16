@@ -80,7 +80,9 @@ table has its default severity and gate.
 A finding that counts for a gate has the default severity `error`: the
 `error` rules of `deps`, and each rule of `files`, `visibility`,
 `boundaries`, `size`, `complexity`, `dupes`, and the surviving mutants of
-`mutants`. The rules table cannot change `surviving-mutant`. A finding that
+`mutants`. The finding counts for the gate of its own check, for example
+`duplication-findings` of `dupes`. `error-severity-findings` is the gate of
+`deps` only. The rules table cannot change `surviving-mutant`. A finding that
 counts for no gate is a warning, for example `unused-optional-dependency` or
 `stale-suppression`. `cargo fallow explain <rule>` shows the default of each
 rule. A gate fails the run only with its flag, for example

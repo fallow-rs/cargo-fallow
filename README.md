@@ -287,8 +287,9 @@ the test selection and the limits.
 
 ## With scripts and coding agents
 
-In a script or a coding agent, add `--format json --quiet`. Each command then
-writes one JSON document to stdout:
+In a script or a coding agent, add `--format json --quiet`. `--quiet` hides
+only the progress lines on stderr. The format sets the report on stdout. Each
+command then writes one JSON document to stdout:
 
 - `kind` is the name of the command, and `schema_version` is the version of
   the document shape.

@@ -52,7 +52,7 @@ pub struct CommonArgs {
     /// The output format.
     #[arg(long, value_enum, default_value_t = Format::Human)]
     pub format: Format,
-    /// Hide the progress lines on stderr.
+    /// Hide the progress lines on stderr. The report on stdout does not change.
     #[arg(long)]
     pub quiet: bool,
     #[command(flatten)]

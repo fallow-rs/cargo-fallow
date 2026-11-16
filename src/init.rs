@@ -6,7 +6,8 @@
 //! limits as a baseline, so the first `cargo fallow check --fail-on-issues`
 //! passes, and a new finding later fails it. `--write` adds the tables to the root `Cargo.toml` with
 //! `toml_edit` and writes the baseline file. A key that the manifest has
-//! already keeps its value, so a second `--write` changes nothing.
+//! already keeps its value, so a second `--write` changes nothing. The printed
+//! tables are the tables of the manifest after the edit.
 
 use std::fmt::Write as _;
 use std::fs;
@@ -80,12 +81,13 @@ pub struct InitReport {
     pub kind: &'static str,
     /// The version of cargo-fallow.
     pub version: &'static str,
-    /// The tables as TOML text.
+    /// The `[workspace.metadata.fallow]` tables of the root manifest after
+    /// `--write`, as TOML text, also in a run without `--write`.
     pub tables: String,
     /// The baseline file, relative to the workspace root.
     pub baseline: String,
-    /// The findings that this run saved to the baseline, or `null` when the
-    /// run wrote no baseline.
+    /// The number of entries in the baseline file that this run wrote, or
+    /// `null` when the run wrote no baseline. A clone group has one entry.
     pub baseline_findings: Option<usize>,
     /// True when the command changed the manifest or wrote the baseline.
     pub written: bool,
@@ -122,12 +124,13 @@ pub fn run(args: &InitArgs) -> Result<u8, CliError> {
     let json = serde_json::to_value(&first)
         .map_err(|err| CliError::output(&std::io::Error::other(err)))?;
     let limits = limits(&json);
-    let tables = tables(&limits);
+    let merged = merge(root, &limits)?;
+    let tables = fallow_tables(&merged.doc);
     let mut findings = None;
     let mut written = false;
     let mut baseline = BASELINE_FILE.to_owned();
     if args.write {
-        written = write_tables(root, &limits)?;
+        written = merged.write(root)?;
         baseline = configured_baseline(root)?;
         let path = root.join(&baseline);
         if fs::symlink_metadata(&path).is_ok() {
@@ -140,7 +143,8 @@ pub fn run(args: &InitArgs) -> Result<u8, CliError> {
             // no entry that the new limits make stale.
             progress.step("Saving the findings with the new limits");
             let saved = temp_file()?;
-            findings = Some(run_check(args, saved.path())?.total_issues);
+            run_check(args, saved.path())?;
+            findings = Some(baseline_entries(saved.path())?);
             write_baseline(&path, saved.path())?;
             written = true;
         }
@@ -185,16 +189,25 @@ fn limits(report: &Value) -> Limits {
     }
 }
 
-/// The tables as TOML text.
-fn tables(limits: &Limits) -> String {
-    let mut text = String::new();
-    let _ = writeln!(text, "[workspace.metadata.fallow]");
-    let _ = writeln!(text, "baseline = \"{BASELINE_FILE}\"");
-    let _ = writeln!(text, "\n[workspace.metadata.fallow.complexity]");
-    let _ = writeln!(text, "max-cyclomatic = {}", limits.max_cyclomatic);
-    let _ = writeln!(text, "max-cognitive = {}", limits.max_cognitive);
-    let _ = writeln!(text, "\n[workspace.metadata.fallow.dupes]");
-    let _ = writeln!(text, "threshold = {:.1}", limits.threshold);
+/// The `[workspace.metadata.fallow]` tables of `doc` as TOML text, in the
+/// order of the manifest.
+fn fallow_tables(doc: &DocumentMut) -> String {
+    let mut out = DocumentMut::new();
+    if let Some(fallow) = doc
+        .get("workspace")
+        .and_then(|item| item.get("metadata"))
+        .and_then(|item| item.get("fallow"))
+    {
+        let mut metadata = Table::new();
+        metadata.set_implicit(true);
+        metadata.insert("fallow", fallow.clone());
+        let mut workspace = Table::new();
+        workspace.set_implicit(true);
+        workspace.insert("metadata", Item::Table(metadata));
+        out.insert("workspace", Item::Table(workspace));
+    }
+    let mut text = out.to_string().trim().to_owned();
+    text.push('\n');
     text
 }
 
@@ -235,12 +248,34 @@ fn run_check(
     })
 }
 
-/// Adds the tables to the root manifest. A key that exists keeps its value.
-/// Returns true when the manifest changed.
-fn write_tables(root: &Path, limits: &Limits) -> Result<bool, CliError> {
+/// The root manifest with the tables of `init` added.
+struct Merged {
+    /// The text of the manifest before the edit.
+    before: String,
+    /// The manifest after the edit.
+    doc: DocumentMut,
+}
+
+impl Merged {
+    /// Writes the manifest when the edit changed it. Returns true when the
+    /// manifest changed.
+    fn write(&self, root: &Path) -> Result<bool, CliError> {
+        let new = self.doc.to_string();
+        if new == self.before {
+            return Ok(false);
+        }
+        let manifest = root.join("Cargo.toml");
+        fs::write(&manifest, new).map_err(|err| failed(&manifest, &err))?;
+        Ok(true)
+    }
+}
+
+/// Adds the tables to the root manifest in memory. A key that exists keeps
+/// its value.
+fn merge(root: &Path, limits: &Limits) -> Result<Merged, CliError> {
     let manifest = root.join("Cargo.toml");
-    let text = fs::read_to_string(&manifest).map_err(|err| failed(&manifest, &err))?;
-    let mut doc: DocumentMut = text.parse().map_err(|err| {
+    let before = fs::read_to_string(&manifest).map_err(|err| failed(&manifest, &err))?;
+    let mut doc: DocumentMut = before.parse().map_err(|err| {
         CliError::new(
             ErrorCode::InvalidConfig,
             format!("the root Cargo.toml does not parse: {err}"),
@@ -261,12 +296,16 @@ fn write_tables(root: &Path, limits: &Limits) -> Result<bool, CliError> {
     );
     let dupes = table(&mut doc, &["workspace", "metadata", "fallow", "dupes"])?;
     keep_or_set(dupes, "threshold", value(limits.threshold));
-    let new = doc.to_string();
-    if new == text {
-        return Ok(false);
-    }
-    fs::write(&manifest, new).map_err(|err| failed(&manifest, &err))?;
-    Ok(true)
+    Ok(Merged { before, doc })
+}
+
+/// The number of entries in the baseline file at `path`. A clone group has
+/// one entry, so the number can be lower than the number of findings.
+fn baseline_entries(path: &Path) -> Result<usize, CliError> {
+    let text = fs::read_to_string(path).map_err(|err| failed(path, &err))?;
+    let file: crate::baseline::File =
+        serde_json::from_str(&text).map_err(|err| CliError::output(&std::io::Error::other(err)))?;
+    Ok(file.findings.len())
 }
 
 /// The `baseline` key of the root manifest after the edit.
@@ -353,7 +392,7 @@ fn human(report: &InitReport, write: bool) -> String {
     } else {
         let _ = writeln!(
             text,
-            "# Add these tables to the root Cargo.toml, or run `cargo fallow init --write`."
+            "# The tables after `cargo fallow init --write`. A key that Cargo.toml has keeps its value."
         );
     }
     text.push_str(&report.tables);
@@ -361,8 +400,8 @@ fn human(report: &InitReport, write: bool) -> String {
     let _ = match (write, report.baseline_findings) {
         (_, Some(findings)) => writeln!(
             text,
-            "\n# The baseline `{baseline}` holds the {findings} current findings, so the first\n\
-             # `cargo fallow check --fail-on-issues` passes. A new finding fails it."
+            "\n# The baseline `{baseline}` holds {findings} entries for the current findings, so the\n\
+             # first `cargo fallow check --fail-on-issues` passes. A new finding fails it."
         ),
         (true, None) => writeln!(
             text,
@@ -417,7 +456,13 @@ mod tests {
 
     #[test]
     fn the_printed_tables_parse_and_hold_the_limits() {
-        let doc: DocumentMut = tables(&LIMITS).parse().expect("the tables parse");
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        fs::write(dir.path().join("Cargo.toml"), "[workspace]\nmembers = []\n")
+            .expect("write the manifest");
+        let merged = merge(dir.path(), &LIMITS).expect("the merge works");
+        let doc: DocumentMut = fallow_tables(&merged.doc)
+            .parse()
+            .expect("the tables parse");
         let fallow = &doc["workspace"]["metadata"]["fallow"];
         assert_eq!(fallow["baseline"].as_str(), Some(BASELINE_FILE));
         assert_eq!(
@@ -426,6 +471,7 @@ mod tests {
         );
         assert!(fallow.get("size").is_none());
         assert_eq!(fallow["dupes"]["threshold"].as_float(), Some(3.5));
+        assert!(doc.get("package").is_none());
     }
 
     #[test]
@@ -448,12 +494,17 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temporary directory");
         let manifest = "[workspace]\nmembers = []\n\n[workspace.metadata.fallow.complexity]\nmax-cyclomatic = 50 # kept\n";
         fs::write(dir.path().join("Cargo.toml"), manifest).expect("write the manifest");
-        assert!(write_tables(dir.path(), &LIMITS).expect("the first write works"));
+        let write = || {
+            merge(dir.path(), &LIMITS)
+                .and_then(|merged| merged.write(dir.path()))
+                .expect("the write works")
+        };
+        assert!(write());
         let first = fs::read_to_string(dir.path().join("Cargo.toml")).expect("read the manifest");
         assert!(first.contains("max-cyclomatic = 50 # kept"), "{first}");
         assert!(first.contains("max-cognitive = 15"), "{first}");
         assert!(!first.contains("[workspace.metadata]\n"), "{first}");
-        assert!(!write_tables(dir.path(), &LIMITS).expect("the second write works"));
+        assert!(!write());
         let second = fs::read_to_string(dir.path().join("Cargo.toml")).expect("read the manifest");
         assert_eq!(first, second);
         assert_eq!(

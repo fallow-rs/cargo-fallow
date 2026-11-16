@@ -3446,7 +3446,7 @@
         },
         "tables": {
           "type": "string",
-          "description": "The tables as TOML text."
+          "description": "The `[workspace.metadata.fallow]` tables of the root manifest after\n`--write`, as TOML text, also in a run without `--write`."
         },
         "baseline": {
           "type": "string",
@@ -3459,7 +3459,7 @@
           ],
           "format": "uint",
           "minimum": 0,
-          "description": "The findings that this run saved to the baseline, or `null` when the\nrun wrote no baseline."
+          "description": "The number of entries in the baseline file that this run wrote, or\n`null` when the run wrote no baseline. A clone group has one entry."
         },
         "written": {
           "type": "boolean",

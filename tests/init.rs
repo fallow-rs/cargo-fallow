@@ -301,3 +301,83 @@ fn write_keeps_an_existing_baseline_and_reports_no_saved_findings() {
     assert_eq!(code, 0, "{text}");
     assert!(text.contains("exists, so the command kept it"), "{text}");
 }
+
+/// The `[workspace.metadata.fallow]` tree of a TOML text.
+fn fallow_tree(text: &str) -> toml_edit::Item {
+    let doc: toml_edit::DocumentMut = text.parse().expect("the text parses");
+    doc.get("workspace")
+        .and_then(|item| item.get("metadata"))
+        .and_then(|item| item.get("fallow"))
+        .cloned()
+        .expect("the text has the fallow table")
+}
+
+fn json(dir: &Path, args: &[&str]) -> serde_json::Value {
+    let (code, text) = run(dir, args);
+    assert_eq!(code, 0, "{text}");
+    serde_json::from_str(&text).expect("JSON")
+}
+
+#[test]
+fn the_tables_are_the_tables_that_write_writes() {
+    let dir = package();
+    let manifest = fs::read_to_string(dir.path().join("Cargo.toml")).expect("read the manifest");
+    write(
+        dir.path(),
+        "Cargo.toml",
+        &format!("{manifest}\n[workspace.metadata.fallow.dupes]\nproduction = true\n"),
+    );
+    let printed = json(dir.path(), &["init", "--quiet", "--format", "json"]);
+    let printed = printed["tables"].as_str().expect("tables").to_owned();
+    assert!(printed.contains("production = true"), "{printed}");
+    let written = json(
+        dir.path(),
+        &["init", "--write", "--quiet", "--format", "json"],
+    );
+    assert_eq!(written["tables"].as_str(), Some(printed.as_str()));
+    let manifest = fs::read_to_string(dir.path().join("Cargo.toml")).expect("read the manifest");
+    assert_eq!(
+        fallow_tree(&printed).to_string(),
+        fallow_tree(&manifest).to_string(),
+        "{printed}\n---\n{manifest}"
+    );
+}
+
+/// The same function body twice, long enough to be a clone.
+fn clone_body(name: &str) -> String {
+    format!(
+        "pub fn {name}(items: &[u32]) -> u32 {{\n    let mut total = 0;\n    for item in items {{\n        if *item > 10 {{\n            total += item * 2;\n        }} else {{\n            total += item + 1;\n        }}\n    }}\n    let extra = items.iter().filter(|x| **x % 3 == 0).count() as u32;\n    total + extra * 7\n}}\n"
+    )
+}
+
+#[test]
+fn the_saved_count_is_the_number_of_baseline_entries() {
+    let dir = package();
+    write(
+        dir.path(),
+        "lib/src/lib.rs",
+        &format!(
+            "pub fn unused() {{}}\npub mod copy;\n{}",
+            clone_body("first")
+        ),
+    );
+    write(dir.path(), "lib/src/copy.rs", &clone_body("second"));
+    let manifest = fs::read_to_string(dir.path().join("Cargo.toml")).expect("read the manifest");
+    write(
+        dir.path(),
+        "Cargo.toml",
+        &format!("{manifest}\n[workspace.metadata.fallow.dupes]\nmin-tokens = 30\nmin-lines = 3\n"),
+    );
+    let report = json(
+        dir.path(),
+        &["init", "--write", "--quiet", "--format", "json"],
+    );
+    let baseline = fs::read_to_string(dir.path().join("fallow-baseline.json")).expect("read");
+    let baseline: serde_json::Value = serde_json::from_str(&baseline).expect("JSON");
+    let entries = baseline["findings"].as_array().expect("findings");
+    assert!(
+        entries.iter().any(|entry| entry["check"] == "dupes"),
+        "{baseline}"
+    );
+    assert_eq!(report["baseline_findings"], entries.len(), "{report}");
+}

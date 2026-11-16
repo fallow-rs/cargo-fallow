@@ -521,8 +521,7 @@ fn regions(group: &CloneGroup, loaded: &Loaded) -> Vec<Region> {
             let functions = loaded
                 .files
                 .binary_search_by(|file| file.path.as_str().cmp(&instance.file))
-                .map(|index| touched_functions(&loaded.files[index], instance))
-                .unwrap_or_default();
+                .map_or_default(|index| touched_functions(&loaded.files[index], instance));
             Region {
                 file: instance.file.clone(),
                 start_line: instance.start_line,

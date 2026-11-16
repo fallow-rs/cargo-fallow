@@ -8,7 +8,7 @@
 //! fingerprint of the group, with the lines and the functions of each copy.
 //! An edit inside a saved clone changes its fingerprint, so a group with a new
 //! fingerprint still matches a saved group when its copies are in the same
-//! functions (see [`Loaded::absorbs_edited_clone`]).
+//! functions (see [`Loaded::absorbs_edited_clones`]).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;

@@ -11,6 +11,150 @@ it.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-17
+
+### Added
+
+- `cargo fallow deps` reads the `ignored` lists in
+  `[package.metadata.cargo-machete]` and `[workspace.metadata.cargo-machete]`,
+  as it does for cargo-shear. A workspace can move from cargo-machete with no
+  change to its lists.
+
+- Each phase of `cargo fallow check` writes its time to stderr when it ends,
+  for example `Finding clones: 10.2 s`. The phases run in parallel, so a CI
+  log now shows which phase takes the time. The `files`, `boundaries` and
+  `dupes` commands write the time of their main phase. `--quiet` hides these
+  lines. (#147)
+
+- `cargo fallow check` and `cargo fallow boundaries` write the time of the
+  item, re-export and cfg rules as a separate phase,
+  `Checking the boundary rules on the module graph`. (#155)
+
+### Fixed
+
+- `cargo fallow visibility` gives the keyword change as the step of an
+  `unnecessary-restricted-visibility` finding on an item that exists only in
+  test builds, for example a `#[cfg(test)] pub` helper or an item in a
+  `#[cfg(test)]` module. `cargo fallow fix` applies it. The step no longer
+  tells you to put `#[cfg(test)]` on an item that already has it. Such a
+  finding has `test_only: false`, and the human output no longer adds
+  "(only tests use it)".
+
+- A function with an attribute macro named `bench` from a crate, for example
+  `#[gpui::bench]`, is no longer a test. This applies to `cargo fallow deps`,
+  `visibility`, `mutants`, `boundaries` and the other structure checks. Only
+  `#[bench]` and `#[test::bench]` are the built-in bench attribute. Before,
+  `deps` could report the crate of such a macro as "used only by unit-test".
+  Its advice to move the crate to `[dev-dependencies]` can break the build.
+
+- `cargo fallow visibility` no longer reports `dead-public` for an item that
+  only the output of a proc-macro uses. A name in the `quote!` tokens of a
+  proc-macro crate now counts in each crate that depends on the proc-macro
+  crate. The name also counts in each crate that depends on a crate that
+  re-exports the macro. These crates can call the macro. The name also counts
+  in the workspace crates that these crates depend on. A name match of this
+  kind puts the item in `undecided`. Some candidates with a common name thus
+  move from `findings` to `undecided`.
+- A name that the `quote!` output only defines, for example the name after
+  `fn` or a field declaration, is no use. The tokens of a `quote!` in the
+  test code of a proc-macro crate also count only in that crate.
+- The command does not read names in a string for `syn::parse_str` or
+  `TokenStream::from_str`. It also does not read the `quote!` tokens of a
+  helper library crate. `docs/visibility.md` lists these limits.
+
+- The module graph and `cargo fallow mutants` now read each file that a
+  `#[cfg_attr(cond, path = "x.rs")] mod name;` declaration can load. Before,
+  `deps` reported a dependency that only a platform file uses, and
+  `visibility` did not see the uses in such a file.
+- A file from `cfg_attr(test, path = "x.rs")` is test code. `deps` counts its
+  uses as test uses, and `mutants` makes no mutants in it.
+- `size`, `complexity`, `dupes` and `boundaries` also read these platform
+  files. Their file counts can go up, and they can report new findings in
+  these files.
+
+- `cargo fallow fix` no longer removes an unused dependency entry with an
+  exact version (`=`) or an upper bound (`<`, `<=`, `~`) when another package
+  in the resolve uses the same crate. The entry can pin the version for that
+  package. When another entry that `fix` keeps has the same requirement,
+  `fix` still removes the entry.
+- `cargo fallow fix` no longer removes an unused dependency entry when a
+  target of that table uses an attribute macro, or calls a macro in the place
+  of an item, from a crate outside the workspace by a path. For example,
+  `#[gpui::bench]` writes `criterion::` paths that the command cannot see.
+  `deps` still reports the entry, and the action tells why `fix` keeps it.
+
+- The module walk now reads a `path` value that is a raw string, such as
+  `#[path = r"plat/imp.rs"]`, and resolves the escapes of a `path` value like
+  rustc. Before, `deps` reported a dependency that only such a file uses, and
+  `fix` removed it.
+- A `path` attribute on an inline module now sets the folder of the modules
+  in it, like rustc: `#[path = "imp"] mod outer { mod inner; }` loads
+  `imp/inner.rs`. Before, the walk read `outer/inner.rs`, and `files` skipped
+  the package.
+- The walk also reads `\` in a `path` value as a folder separator when the
+  file with the `\` in its name does not exist. A dependency that only a
+  Windows file uses then counts on each host.
+- A `cfg_attr` condition that no build makes true, such as `any()`, now adds
+  no module file. A condition that each build makes true, such as `all()`,
+  now replaces the default file, so `files` reports that file.
+
+- `cargo fallow fix` no longer removes an unused dependency entry when a
+  target of that table uses a one-name attribute macro, or calls a one-name
+  macro in the place of an item, that an import brings from a crate outside
+  the workspace. The rule also applies to a rename of the crate and to
+  `#[macro_use] extern crate`. For example, `use wasm_bindgen::prelude::*;` and
+  `#[wasm_bindgen] pub async fn` write `wasm_bindgen_futures::` paths that the
+  command cannot see. `deps` still reports the entry, and the action tells
+  why `fix` keeps it.
+
+- A `dupes` baseline now keeps a saved clone group after an edit inside its
+  copies. The baseline entry of a clone group saves the file, the lines and
+  the functions of each copy. A group with a new fingerprint matches a saved
+  group when each copy is in the same file and functions. Save the baseline
+  again to add this data. See
+  [Clone groups in a baseline](docs/structure.md#clone-groups-in-a-baseline).
+- A baseline no longer hides a new identical copy of a saved clone group. A
+  group with more copies than its saved entry is new duplication.
+
+- `cargo fallow init` now prints the `[workspace.metadata.fallow]` tables that
+  `--write` gives, with the keys that `Cargo.toml` already has, in the order
+  of the file. Before, the output left out the existing keys.
+- The `baseline_findings` field of `init` is now the number of entries in the
+  baseline file. Before, it was the number of findings, and a clone group of
+  `dupes` has one entry for all its copies.
+- `cargo fallow init` now reports the `baseline` path that `Cargo.toml`
+  configures. Before, the output without `--write` always gave
+  `fallow-baseline.json`.
+- `cargo fallow init` without `--write` now exits `2` for a manifest that
+  `--write` cannot edit, or for a `baseline` key that `--write` rejects.
+  Before, it printed tables that `--write` could not write.
+
+- The description of the `error-severity-findings` gate now says that it
+  counts the `error` findings of `deps` only. The `error` findings of the
+  other checks count for the gate of their own check, for example
+  `duplication-findings`.
+- The `--help` text of `--quiet` now says that the flag hides only the
+  progress lines on stderr. Warnings stay, and the report on stdout does not
+  change.
+
+### Performance
+
+- The Linux release binaries use the mimalloc allocator. The allocator of
+  musl was slow when the checks ran in parallel threads. On a 2-CPU Linux
+  machine, `cargo fallow check` on the fallow workspace now takes 22 s
+  instead of 4.5 minutes. The output does not change. (#147)
+
+- The boundary check builds the module graph at most one time for the item,
+  re-export and cfg rules. When `cargo fallow check` also runs the
+  dependency or the visibility check, these rules read the graph of that
+  check, so the run builds no extra graph. The source rules read and parse
+  their files on parallel threads. On the fallow workspace with 2 CPUs,
+  `cargo fallow check` takes about 9 s instead of about 12 s, and
+  `cargo fallow boundaries` on a laptop takes 2.4 s instead of 5.4 s. The
+  findings do not change. (#155)
+
+- The GitHub Action accepts `sarif-output: when-needed` to skip the additional SARIF analysis for clean checks that do not request SARIF output, annotations or code-scanning uploads. The default outputs and diagnostics for runs with findings stay unchanged.
+
 ## [0.3.0] - 2026-11-05
 
 ### Added

@@ -49,7 +49,9 @@ cargo fallow fix --yes --only visibility   # only the visibility edits
   other changes. The next run reports the target.
 - A dependency edit is guarded when a target that the table of the entry
   serves uses a macro of a crate outside the workspace, and that crate and
-  the entry do not depend on each other. The code of the macro can still name
+  the entry do not depend on each other. An entry in a
+  `[target.<platform>.*]` table is never guarded: `cargo check` builds for
+  the host only, so such an entry stays for a person. The code of the macro can still name
   the entry, so the command checks the build (see
   [External macros](dependencies.md#external-macros)). A guarded edit has
   `guarded: true` in the report.
@@ -64,6 +66,15 @@ cargo fallow fix --yes --only visibility   # only the visibility edits
   `skip_reason` `build_fails_before`, and gives a warning. The other
   dependency edits apply without a check, the same as in a plan without a
   guarded edit.
+- When the build before the edits passes only without `--all-features`, the
+  check does not compile the code under a feature. That code can call the
+  macro, so the command leaves out each guarded edit with the `skip_reason`
+  `all_features_fail_before`.
+- When `cargo metadata` fails after the edits, the command leaves out each
+  guarded edit with the `skip_reason` `load_error` and the error in
+  `diagnostic`, and tries again.
+- Before each new round, the command also writes back the old
+  `Cargo.lock`. A kept entry then keeps its locked version.
 - The command also checks each consumer workspace of the visibility table,
   for example `fuzz/` (see [Consumer workspaces](visibility.md#consumer-workspaces)).
   The consumer check has no `--locked`, because a consumer often has no
@@ -93,8 +104,8 @@ cargo fallow fix --yes --only visibility   # only the visibility edits
   and checks. When the messages leave out each edit, the command changes no file
   and exits 0.
 - In the report, each left-out edit has `applied: false`, a `skip_reason`
-  (`compiler_error`, `compiler_warning` or `build_fails_before`) and the
-  compiler message in `diagnostic`. When the check fails and no message names a file of an edit,
+  (`compiler_error`, `compiler_warning`, `load_error`, `build_fails_before`
+  or `all_features_fail_before`) and the message in `diagnostic`. When the check fails and no message names a file of an edit,
   the command exits 2 with the compiler errors.
 - `cargo check` builds for one platform. It does not build code under a `cfg`
   for another platform, and it does not build doc tests. An edit can break
@@ -128,7 +139,8 @@ cargo fallow fix --yes --only visibility   # only the visibility edits
   - an unused `[dependencies]` entry when the library or a binary uses an
     attribute macro or calls a macro in the place of an item, from a crate
     outside the workspace that depends on the entry or that the entry
-    depends on, by a path such as `#[krate::name]` or
+    depends on. For an entry in a `[target.<platform>.*]` table, any such
+    macro keeps the entry, by a path such as `#[krate::name]` or
     `krate::name!(..);`, or by one name that an import brings into scope,
     such as `#[name]` after `use krate::prelude::*;`. The same applies to a
     `[dev-dependencies]` entry and test code, a bench or an example. The

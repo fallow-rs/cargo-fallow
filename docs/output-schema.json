@@ -2572,7 +2572,7 @@
             "string",
             "null"
           ],
-          "description": "Why the command left out the edit: `compiler_error` when a compiler\nerror after the edits names the crate, or `build_fails_before` when\nthe workspace does not build before the edits."
+          "description": "Why the command left out the edit: `compiler_error` or\n`compiler_warning` when a message after the edits names the crate or\nits package, `load_error` when `cargo metadata` fails after the edits,\n`build_fails_before` when the workspace does not build before the\nedits, or `all_features_fail_before` when it builds before the edits\nonly without `--all-features`."
         },
         "diagnostic": {
           "type": [

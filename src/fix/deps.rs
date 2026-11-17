@@ -72,9 +72,12 @@ pub struct Edit {
     /// target uses a macro of a crate outside the workspace.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub guarded: bool,
-    /// Why the command left out the edit: `compiler_error` when a compiler
-    /// error after the edits names the crate, or `build_fails_before` when
-    /// the workspace does not build before the edits.
+    /// Why the command left out the edit: `compiler_error` or
+    /// `compiler_warning` when a message after the edits names the crate or
+    /// its package, `load_error` when `cargo metadata` fails after the edits,
+    /// `build_fails_before` when the workspace does not build before the
+    /// edits, or `all_features_fail_before` when it builds before the edits
+    /// only without `--all-features`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub skip_reason: Option<&'static str>,
     /// The compiler message that left out the edit.

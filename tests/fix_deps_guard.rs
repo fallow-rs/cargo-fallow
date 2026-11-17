@@ -21,8 +21,10 @@ use tempfile::TempDir;
 /// The workspace members that `app` can depend on.
 const LIBS: &[&str] = &["gamma", "delta"];
 
-/// The macros of `mac`: one writes a `::gamma::` path, one writes no path.
+/// The macros of `mac`: one writes a `::gamma::` path, one writes a `::num::`
+/// path, and one writes no path.
 const MAC: &str = "#[macro_export]\nmacro_rules! uses_gamma { () => { pub fn from_gamma() { ::gamma::f(); } } }\n\
+                   #[macro_export]\nmacro_rules! uses_num { () => { pub fn from_num() { ::num::f(); } } }\n\
                    #[macro_export]\nmacro_rules! plain { () => { pub fn plain() {} } }\n";
 
 /// Writes the workspace. `root_extra` follows the `[workspace]` table, and
@@ -76,25 +78,46 @@ fn dep(name: &str, folder: &str) -> String {
     format!("{name} = {{ path = \"../{folder}/{name}\" }}\n")
 }
 
-/// Runs `fix --yes --only deps` and returns the exit code, the report and
-/// stderr.
+/// Runs `fix --yes --only deps --offline` and returns the exit code, the
+/// report and stderr.
 fn fix(dir: &TempDir, env: &[(&str, &str)]) -> (i32, Value, String) {
+    let (code, stdout, stderr) = run(
+        dir,
+        &[
+            "fix",
+            "--yes",
+            "--only",
+            "deps",
+            "--offline",
+            "--format",
+            "json",
+            "--quiet",
+        ],
+        env,
+    );
+    let report = serde_json::from_str(&stdout)
+        .unwrap_or_else(|err| panic!("stdout is JSON ({err}): {stdout}\nstderr: {stderr}"));
+    (code, report, stderr)
+}
+
+/// Runs `cargo fallow` with the arguments and returns the exit code, stdout
+/// and stderr. Each fixture has its own target folder, because the packages
+/// of the fixtures have the same names.
+fn run(dir: &TempDir, args: &[&str], env: &[(&str, &str)]) -> (i32, String, String) {
     let mut command = Command::cargo_bin("cargo-fallow").expect("the binary exists");
-    command.current_dir(dir.path()).args([
-        "fix", "--yes", "--only", "deps", "--format", "json", "--quiet",
-    ]);
+    command
+        .current_dir(dir.path())
+        .args(args)
+        .env("CARGO_TARGET_DIR", dir.path().join("target"));
     for (key, value) in env {
         command.env(key, value);
     }
     let output = command.output().expect("run the binary");
-    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-    let report = serde_json::from_slice(&output.stdout).unwrap_or_else(|err| {
-        panic!(
-            "stdout is JSON ({err}): {}\nstderr: {stderr}",
-            String::from_utf8_lossy(&output.stdout)
-        )
-    });
-    (output.status.code().unwrap_or(-1), report, stderr)
+    (
+        output.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    )
 }
 
 /// The edit of `key` in `section`.
@@ -229,4 +252,129 @@ fn a_run_without_a_guarded_edit_runs_no_check() {
         !dir.path().join("checked").exists(),
         "fix ran `cargo check`"
     );
+}
+
+/// Writes the registry crate `num` at `version` to the vendor folder. The
+/// workspace reads crates.io from that folder, so no test needs a network.
+fn vendor_num(dir: &TempDir, version: &str) {
+    let folder = format!("vendor/num-{version}");
+    write(
+        dir.path(),
+        &format!("{folder}/Cargo.toml"),
+        &format!("[package]\nname = \"num\"\nversion = \"{version}\"\nedition = \"2021\"\n"),
+    );
+    write(
+        dir.path(),
+        &format!("{folder}/src/lib.rs"),
+        "pub fn f() {}\n",
+    );
+    let checksum = format!("{:0>64}", version.replace('.', ""));
+    write(
+        dir.path(),
+        &format!("{folder}/.cargo-checksum.json"),
+        &format!("{{\"files\":{{}},\"package\":\"{checksum}\"}}"),
+    );
+}
+
+/// The version of `num` in `Cargo.lock`.
+fn locked_num(dir: &TempDir) -> String {
+    let lock = read(dir, "Cargo.lock");
+    let rest = lock
+        .split("name = \"num\"\nversion = \"")
+        .nth(1)
+        .unwrap_or_else(|| panic!("no `num` in Cargo.lock: {lock}"));
+    rest.split('"').next().unwrap_or_default().to_owned()
+}
+
+#[test]
+fn a_left_out_edit_keeps_the_locked_version_of_its_crate() {
+    let manifest = format!(
+        "[dependencies]\n{}num = \"1\"\n\n[dev-dependencies]\n{}",
+        dep("mac", "ext"),
+        dep("delta", "libs"),
+    );
+    let dir = workspace("", &manifest, "mac::uses_num!();\n");
+    write(
+        dir.path(),
+        ".cargo/config.toml",
+        "[source.crates-io]\nreplace-with = \"vendored\"\n\n[source.vendored]\ndirectory = \"vendor\"\n",
+    );
+    vendor_num(&dir, "1.0.5");
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
+    let locked = std::process::Command::new(cargo)
+        .current_dir(dir.path())
+        .args(["generate-lockfile", "--offline", "--quiet"])
+        .status()
+        .expect("run cargo");
+    assert!(locked.success());
+    // A newer version in the source: a new resolve of `num` picks it.
+    vendor_num(&dir, "1.0.19");
+    let (code, report, stderr) = fix(&dir, &[]);
+    assert_eq!(code, 0, "{stderr}\n{report}");
+    let num = edit(&report, "dependencies", "num");
+    assert_eq!(num["skip_reason"], "compiler_error", "{report}");
+    assert_eq!(edit(&report, "dev-dependencies", "delta")["applied"], true);
+    assert_eq!(locked_num(&dir), "1.0.5");
+}
+
+#[test]
+fn a_workspace_that_builds_only_without_all_features_keeps_the_guarded_edits() {
+    let manifest = format!(
+        "[features]\nx = []\n\n[dependencies]\n{}{}\n[dev-dependencies]\n{}",
+        dep("mac", "ext"),
+        dep("gamma", "libs"),
+        dep("delta", "libs"),
+    );
+    // The default build does not compile the macro call under the feature.
+    let dir = workspace(
+        "",
+        &manifest,
+        "#[cfg(feature = \"x\")]\nmac::uses_gamma!();\n#[cfg(feature = \"x\")]\npub fn broken() -> u8 { \"x\" }\n",
+    );
+    let (code, report, stderr) = fix(&dir, &[]);
+    assert_eq!(code, 0, "{stderr}\n{report}");
+    let gamma = edit(&report, "dependencies", "gamma");
+    assert_eq!(gamma["applied"], false, "{report}");
+    assert_eq!(gamma["skip_reason"], "all_features_fail_before", "{report}");
+    assert_eq!(edit(&report, "dev-dependencies", "delta")["applied"], true);
+    assert!(read(&dir, "app/Cargo.toml").contains("gamma = { path"));
+}
+
+#[test]
+fn the_human_line_of_a_guarded_edit_holds_in_a_dry_run() {
+    let manifest = format!(
+        "[dependencies]\n{}{}",
+        dep("mac", "ext"),
+        dep("gamma", "libs")
+    );
+    let dir = workspace("", &manifest, "mac::plain!();\n");
+    let (code, stdout, stderr) = run(
+        &dir,
+        &["fix", "--dry-run", "--only", "deps", "--quiet"],
+        &[],
+    );
+    assert_eq!(code, 0, "{stderr}");
+    assert!(stdout.contains("`gamma`"), "{stdout}");
+    assert!(stdout.contains("guarded by `cargo check`"), "{stdout}");
+    assert!(!stdout.contains("checked with"), "{stdout}");
+}
+
+#[test]
+fn a_workspace_that_builds_only_with_all_features_keeps_the_guard() {
+    let manifest = format!(
+        "[features]\nx = []\n\n[dependencies]\n{}{}",
+        dep("mac", "ext"),
+        dep("gamma", "libs"),
+    );
+    // The default build fails, and the build with all features passes.
+    let dir = workspace(
+        "",
+        &manifest,
+        "mac::plain!();\n#[cfg(not(feature = \"x\"))]\npub fn broken() -> u8 { \"x\" }\n",
+    );
+    let (code, report, stderr) = fix(&dir, &[]);
+    assert_eq!(code, 0, "{stderr}\n{report}");
+    let gamma = edit(&report, "dependencies", "gamma");
+    assert_eq!(gamma["applied"], true, "{report}");
+    assert!(!read(&dir, "app/Cargo.toml").contains("gamma"));
 }

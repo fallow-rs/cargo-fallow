@@ -165,6 +165,10 @@ own crate: `#[gpui::bench]` writes `gpui_platform::` paths, and
 `gpui_platform` depends on `gpui`. Likewise, `wasm-bindgen-futures` depends
 on `wasm-bindgen`.
 
+An entry in a `[target.<platform>.*]` table stays for a person when any
+such macro serves its table. `cargo check` builds for the host only, so it
+cannot judge the removal.
+
 When the macro crate and the entry do not depend on each other, the edit of
 the entry is guarded. `cargo fallow fix` removes the entry, runs
 `cargo check`, and keeps the entry when a compiler error names its crate. The

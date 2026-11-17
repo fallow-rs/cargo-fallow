@@ -355,6 +355,32 @@ fn single_name_attribute_from_a_glob_import_keeps_unused_entries() {
 }
 
 #[test]
+fn single_name_attribute_keeps_only_the_related_entry() {
+    // `mac` depends on `alpha`, as `wasm-bindgen` output names a crate that
+    // `wasm-bindgen` depends on. `gamma` does not relate to `mac`.
+    let actions = single_name_actions("use mac::prelude::*;\n#[attr]\npub async fn g() {}\n");
+    assert_action(&actions, "dependencies alpha", false, EXTERNAL_MACRO);
+    assert_action(&actions, "dependencies gamma", true, EXTERNAL_MACRO);
+    let description = actions["dependencies gamma"]["description"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(description.contains(GUARDED), "{description}");
+}
+
+#[test]
+fn an_unrelated_entry_of_a_platform_table_stays_for_a_person() {
+    // `cargo check` builds for the host only, so it cannot judge the entry.
+    let manifest = format!(
+        "[dependencies]\n{}\n[target.'cfg(windows)'.dependencies]\n{}",
+        dep("mac", "ext"),
+        dep("gamma", "libs"),
+    );
+    let dir = workspace(&manifest, &[("app/src/lib.rs", "mac::m!();\n")]);
+    let actions = actions(&dir);
+    assert_action(&actions, "dependencies gamma", false, EXTERNAL_MACRO);
+}
+
+#[test]
 fn single_name_attribute_from_a_named_import_keeps_unused_entries() {
     let named = single_name_actions("use mac::prelude::attr;\n#[attr]\npub fn g() {}\n");
     assert_action(&named, "dependencies alpha", false, EXTERNAL_MACRO);

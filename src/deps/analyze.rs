@@ -22,7 +22,7 @@ const MANUAL_FEATURE_NAMES: &str =
 const MANUAL_PIN: &str = "The entry can pin the version of the crate for other dependencies.";
 /// Why `fix` leaves an entry where a target calls a macro of a crate outside
 /// the workspace.
-const MANUAL_EXTERNAL_MACRO: &str = "A target uses a macro of a crate outside the workspace, that crate and the entry depend on each other, and the code of that macro can use the entry.";
+const MANUAL_EXTERNAL_MACRO: &str = "A target uses a macro of a crate outside the workspace, and the code of that macro can use the entry. The macro crate and the entry depend on each other, or the entry is for one platform, so a `cargo check` on this host cannot judge the edit.";
 /// What `fix` does for an entry where a target calls a macro of an unrelated
 /// crate outside the workspace.
 const GUARDED_EXTERNAL_MACRO: &str = "A target uses a macro of a crate outside the workspace, so `cargo fallow fix` runs `cargo check` after the edit and keeps the entry when the build fails.";
@@ -473,7 +473,7 @@ struct Hazards {
     pins: bool,
     /// True when a target that the section of the entry serves calls a macro
     /// of a crate outside the workspace, and that crate and the entry depend
-    /// on each other in the resolve.
+    /// on each other in the resolve, or the entry is in a platform table.
     external_macro: bool,
 }
 
@@ -794,9 +794,11 @@ fn package_findings(
                     &judged.resolved,
                     removed,
                 ),
-                external_macro: served
-                    .iter()
-                    .any(|found| related(metadata, &found.ids, &judged.resolved)),
+                // `cargo check` builds for the host platform only, so the
+                // guard cannot judge an entry of a platform table.
+                external_macro: served.iter().any(|found| {
+                    entry.platform.is_some() || related(metadata, &found.ids, &judged.resolved)
+                }),
             };
             found.manual = manual_reason(package, entry, judged.rule, &hazards);
             // The code of an unrelated macro can still name the entry, so

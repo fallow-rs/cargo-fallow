@@ -445,14 +445,17 @@ fn apply_all(
         let planned = planned_files(root, &deps_kept, &kept).inspect_err(|_| lock.restore())?;
         progress.step("Writing the edits");
         let mut compiler = None;
+        let mut load_error = None;
         let mut warned: Vec<check::Diagnostic> = Vec::new();
         let outcome = write_and_check(&planned, || {
             if !deps_kept.is_empty() {
                 workspace::load_resolved(manifest, &flags).map_err(|err| {
-                    format!(
+                    let text = format!(
                         "the workspace does not load after the edits: {}",
                         err.message
-                    )
+                    );
+                    load_error = Some(text.clone());
+                    text
                 })?;
             }
             if let Some(all_features) = all_features {
@@ -487,8 +490,11 @@ fn apply_all(
             leave_out_round(
                 &mut kept,
                 &mut deps_kept,
-                compiler.as_deref(),
-                &warned,
+                Messages {
+                    errors: compiler.as_deref(),
+                    load_error: load_error.as_deref(),
+                    warned: &warned,
+                },
                 &workspace.members,
             )
         } else {
@@ -500,6 +506,10 @@ fn apply_all(
         }
         left_out.extend(left);
         deps_left.extend(deps);
+        // The check after the edits wrote `Cargo.lock` without the crates of
+        // the edits. A kept entry would then resolve to the newest version,
+        // so the next round starts from the old lock file too.
+        lock.restore();
         progress.step("Leaving out the edits that the compiler names, and checking again");
     }
     lock.restore();
@@ -533,7 +543,25 @@ fn check_before(
         &args.cargo_flags(true),
         &args.cargo_flags(false),
     ) {
-        Ok((all, warnings, consumers)) => Ok((Some(all), warnings, consumers)),
+        Ok((true, warnings, consumers)) => Ok((Some(true), warnings, consumers)),
+        // A build without all features does not compile the code under a
+        // feature, which can call the macro, so the guard cannot judge the
+        // guarded edits.
+        Ok((false, warnings, consumers)) => {
+            crate::render::warn(
+                "the workspace does not build with `--all-features` before the edits, so the \
+                 guarded dependency edits stay for a person.",
+            );
+            *deps_left = guard::all(
+                deps_kept,
+                guard::ALL_FEATURES_FAIL_BEFORE,
+                "`cargo check --workspace --all-targets --all-features` fails before the edits",
+            );
+            if plan.visibility.is_empty() {
+                return Ok((None, Vec::new(), Vec::new()));
+            }
+            Ok((Some(false), warnings, consumers))
+        }
         Err(error) if plan.visibility.is_empty() => {
             crate::render::warn(&format!(
                 "{}\nThe guarded dependency edits stay for a person. The other edits apply \
@@ -599,6 +627,17 @@ const COMPILER_ERROR: &str = "compiler_error";
 /// The `skip_reason` of an edit that a new compiler warning left out.
 const COMPILER_WARNING: &str = "compiler_warning";
 
+/// The messages of one failed round.
+#[derive(Clone, Copy)]
+struct Messages<'a> {
+    /// The compiler errors, one for each line.
+    errors: Option<&'a str>,
+    /// The error of the `cargo metadata` call after the edits.
+    load_error: Option<&'a str>,
+    /// The new compiler warnings.
+    warned: &'a [check::Diagnostic],
+}
+
 /// Leaves out the visibility edits and the guarded dependency edits that the
 /// compiler errors or the new warnings name, and returns them with their
 /// reason. A guarded dependency edit is named by the crate of the entry. When
@@ -609,10 +648,21 @@ const COMPILER_WARNING: &str = "compiler_warning";
 fn leave_out_round(
     kept: &mut Vec<visibility::Edit>,
     deps: &mut Vec<deps::Edit>,
-    errors: Option<&str>,
-    warned: &[check::Diagnostic],
+    messages: Messages<'_>,
     members: &[workspace::Member],
 ) -> (Vec<visibility::Edit>, Vec<deps::Edit>) {
+    let Messages {
+        errors,
+        load_error,
+        warned,
+    } = messages;
+    // A load error names no item, so only the guarded edits can go.
+    if let Some(message) = load_error {
+        return (
+            Vec::new(),
+            guard::all(deps, guard::LOAD_ERROR, &first_lines(message)),
+        );
+    }
     let error_lines: Vec<&str> = errors.map_or_default(|text| text.lines().collect());
     let mut left = leave_out_named(kept, &error_lines, warned);
     let mut deps_left = guard::named(deps, &error_lines, members);
@@ -1114,7 +1164,7 @@ fn line(fix: &Fix) -> String {
             let reason = fix.diagnostic.as_ref().map_or_else(
                 || {
                     if fix.guarded {
-                        ", checked with `cargo check`".to_owned()
+                        ", guarded by `cargo check`".to_owned()
                     } else {
                         String::new()
                     }
@@ -1185,6 +1235,44 @@ mod tests {
             column: 1,
             spans: Vec::new(),
         }
+    }
+
+    fn dep_edit(key: &str, guarded: bool) -> deps::Edit {
+        deps::Edit {
+            kind: "remove-dependency",
+            rule: crate::deps::report::Rule::UnusedDependency,
+            package: Some("app".to_owned()),
+            manifest_path: "app/Cargo.toml".to_owned(),
+            section: "dependencies".to_owned(),
+            platform: None,
+            dependency: key.to_owned(),
+            line: None,
+            applied: false,
+            guarded,
+            skip_reason: None,
+            diagnostic: None,
+            code_name: guarded.then(|| key.to_owned()),
+        }
+    }
+
+    #[test]
+    fn a_load_error_leaves_out_the_guarded_edits_with_its_message() {
+        let mut kept = vec![edit("a::x", "src/a.rs")];
+        let mut deps = vec![dep_edit("plain", false), dep_edit("guarded", true)];
+        let message = "the workspace does not load after the edits: no entry";
+        let messages = Messages {
+            errors: None,
+            load_error: Some(message),
+            warned: &[],
+        };
+        let (left, deps_left) = leave_out_round(&mut kept, &mut deps, messages, &[]);
+        assert!(left.is_empty());
+        assert_eq!(kept.len(), 1);
+        assert_eq!(deps_left.len(), 1);
+        assert_eq!(deps_left[0].dependency, "guarded");
+        assert_eq!(deps_left[0].skip_reason, Some(guard::LOAD_ERROR));
+        assert_eq!(deps_left[0].diagnostic.as_deref(), Some(message));
+        assert_eq!(deps.len(), 1);
     }
 
     #[test]

@@ -17,6 +17,15 @@ use crate::workspace::Member;
 /// before the edits, so the guard cannot judge the edit.
 pub const BUILD_FAILS_BEFORE: &str = "build_fails_before";
 
+/// The `skip_reason` of a guarded edit when the workspace builds before the
+/// edits only without `--all-features`. That build does not compile the code
+/// under a feature, so the guard cannot judge the edit.
+pub const ALL_FEATURES_FAIL_BEFORE: &str = "all_features_fail_before";
+
+/// The `skip_reason` of a guarded edit when `cargo metadata` fails after the
+/// edits.
+pub const LOAD_ERROR: &str = "load_error";
+
 /// The crate names in a compiler message: the first segment of each path in
 /// backticks. For example `unresolved import `gamma::f`` names `gamma`.
 fn named_crates(message: &str) -> BTreeSet<&str> {

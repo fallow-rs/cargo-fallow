@@ -268,7 +268,7 @@ struct MutantsArgs {
     /// The output format.
     #[arg(long, value_enum, default_value_t = Format::Human)]
     format: Format,
-    /// Hide the progress lines on stderr. The report on stdout does not change.
+    /// Hide the progress lines on stderr. Warnings stay, and the report on stdout does not change.
     #[arg(long)]
     quiet: bool,
     /// Run only the mutants on lines that changed since the fork point of this ref.
@@ -415,7 +415,7 @@ struct VisibilityArgs {
     /// The output format.
     #[arg(long, value_enum, default_value_t = Format::Human)]
     format: Format,
-    /// Hide the progress lines on stderr. The report on stdout does not change.
+    /// Hide the progress lines on stderr. Warnings stay, and the report on stdout does not change.
     #[arg(long)]
     quiet: bool,
     /// A production binary as `PACKAGE:BIN`. The flag can repeat. Without the
@@ -536,7 +536,7 @@ struct DepsArgs {
     /// The output format.
     #[arg(long, value_enum, default_value_t = Format::Human)]
     format: Format,
-    /// Hide the progress lines on stderr. The report on stdout does not change.
+    /// Hide the progress lines on stderr. Warnings stay, and the report on stdout does not change.
     #[arg(long)]
     quiet: bool,
     /// Exit 1 when a finding has the `error` severity. A warning does not count.
@@ -577,7 +577,7 @@ struct CheckArgs {
     /// The output format.
     #[arg(long, value_enum, default_value_t = Format::Human)]
     format: Format,
-    /// Hide the progress lines on stderr. The report on stdout does not change.
+    /// Hide the progress lines on stderr. Warnings stay, and the report on stdout does not change.
     #[arg(long)]
     quiet: bool,
     /// Run only these checks. The flag takes a list with commas and can repeat.

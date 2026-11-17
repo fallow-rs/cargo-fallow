@@ -49,7 +49,7 @@ pub struct InitArgs {
     /// The output format: `human` or `json`.
     #[arg(long, default_value = "human", value_parser = crate::cli::human_or_json())]
     format: Format,
-    /// Hide the progress lines on stderr. The report on stdout does not change.
+    /// Hide the progress lines on stderr. Warnings stay, and the report on stdout does not change.
     #[arg(long)]
     quiet: bool,
     /// Add the tables to the root Cargo.toml and write the baseline file. A key

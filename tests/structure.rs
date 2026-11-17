@@ -1999,3 +1999,32 @@ fn an_off_duplication_rule_keeps_the_threshold_gate_and_hides_the_groups() {
     );
     assert_eq!(code, 1, "{report:#}");
 }
+
+#[test]
+fn the_error_severity_gate_counts_only_the_errors_of_deps() {
+    let fixture = Fixture::new();
+    let (_, report) = fixture.json(&["check"]);
+    let errors: Vec<(String, String)> = report["findings"]
+        .as_array()
+        .expect("findings")
+        .iter()
+        .filter(|finding| finding["severity"] == "error")
+        .map(|finding| {
+            (
+                finding["check"].as_str().unwrap_or_default().to_owned(),
+                finding["rule"].as_str().unwrap_or_default().to_owned(),
+            )
+        })
+        .collect();
+    let deps = errors.iter().filter(|(check, _)| check == "deps").count();
+    assert!(deps > 0, "{errors:?}");
+    assert!(
+        errors.iter().any(|(check, _)| check != "deps"),
+        "{errors:?}"
+    );
+    assert_eq!(
+        report["gate_outcomes"]["error-severity-findings"]["observed"].as_f64(),
+        Some(deps as f64),
+        "{errors:?}"
+    );
+}

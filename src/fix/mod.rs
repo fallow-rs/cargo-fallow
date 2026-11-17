@@ -45,7 +45,7 @@ pub struct FixArgs {
     /// The output format: `human` or `json`.
     #[arg(long, default_value = "human", value_parser = crate::cli::human_or_json())]
     format: Format,
-    /// Hide the progress lines on stderr. The report on stdout does not change.
+    /// Hide the progress lines on stderr. Warnings stay, and the report on stdout does not change.
     #[arg(long)]
     quiet: bool,
     /// Show the edits and write nothing.

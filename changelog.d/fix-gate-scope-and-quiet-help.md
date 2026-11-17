@@ -5,4 +5,5 @@
   other checks count for the gate of their own check, for example
   `duplication-findings`.
 - The `--help` text of `--quiet` now says that the flag hides only the
-  progress lines on stderr. The report on stdout does not change.
+  progress lines on stderr. Warnings stay, and the report on stdout does not
+  change.

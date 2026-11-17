@@ -1032,7 +1032,7 @@ fn the_quiet_help_says_that_the_report_stays() {
         let text = help.stdout.split_whitespace().collect::<Vec<_>>().join(" ");
         assert!(
             text.contains(
-                "--quiet Hide the progress lines on stderr. The report on stdout does not change"
+                "--quiet Hide the progress lines on stderr. Warnings stay, and the report on stdout does not change"
             ),
             "{command}: {}",
             help.stdout

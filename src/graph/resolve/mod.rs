@@ -9,7 +9,8 @@
 //! A proc-macro writes its output tokens, for example the tokens of `quote!`,
 //! into the crate that calls the macro. A name in the output tokens of a
 //! proc-macro crate therefore counts in each crate that can call the macro,
-//! and in the crates that those crates can use.
+//! and in the crates that those crates can use. The output tokens of a helper
+//! crate of the proc-macro crate count in the same crates.
 
 mod origins;
 
@@ -111,7 +112,8 @@ pub struct Resolver<'g> {
     by_name: FxHashMap<&'g str, Vec<ItemId>>,
     named: FxHashMap<(ModuleId, &'g str), Vec<usize>>,
     globs: Vec<Vec<usize>>,
-    /// For each proc-macro crate, the crates where its output can be.
+    /// For each proc-macro crate and each helper crate, the crates where its
+    /// output can be.
     expansion: FxHashMap<CrateId, Expansion>,
     memo: RefCell<FxHashMap<usize, Vec<Target>>>,
     glob_memo: RefCell<FxHashMap<usize, Vec<Target>>>,
@@ -487,12 +489,12 @@ impl<'g> Resolver<'g> {
         }
     }
 
-    /// The credits of a path in the macro tokens of a proc-macro crate. The
-    /// path resolves in the crate that calls the macro, so the resolver
-    /// resolves it from the root module of each caller. When it does not
-    /// resolve in each caller, for example because the output is in a module
-    /// with other imports, each name of the path can name an item: the type
-    /// and the function of `a::Thing::new`.
+    /// The credits of a path in the output tokens of a proc-macro crate or
+    /// of a helper crate. The path resolves in the crate that calls the
+    /// macro, so the resolver resolves it from the root module of each
+    /// caller. When it does not resolve in each caller, for example because
+    /// the output is in a module with other imports, each name of the path
+    /// can name an item: the type and the function of `a::Thing::new`.
     fn credit_expansion_path(
         &self,
         credits: &mut Credits,
@@ -695,7 +697,8 @@ impl<'g> Resolver<'g> {
     }
 
     /// The scope of a name credit. Only an untyped credit from the macro
-    /// tokens of a proc-macro crate gets the crates of the macro output.
+    /// tokens of a proc-macro crate or of a helper crate gets the crates of
+    /// the macro output.
     fn scope(&self, base: Credit, class: Class) -> Scope {
         if base.origin == Origin::Doc {
             Scope::Doc
@@ -706,11 +709,11 @@ impl<'g> Resolver<'g> {
         }
     }
 
-    /// True for a name in the output tokens of a proc-macro crate: the tokens
-    /// of an output macro such as `quote!`. The tokens of other macros, for
-    /// example `vec!`, and a `#name` variable are code of the proc-macro
-    /// crate itself. The tests of the proc-macro crate do not run the macro
-    /// in a caller, so their tokens are also code of the proc-macro crate.
+    /// True for a name in the output tokens of a proc-macro crate or of a
+    /// helper crate: the tokens of an output macro such as `quote!`. The
+    /// tokens of other macros, for example `vec!`, and a `#name` variable are
+    /// code of the crate itself. The tests of the crate do not run the macro
+    /// in a caller, so their tokens are also code of the crate.
     fn in_proc_macro_tokens(&self, base: Credit) -> bool {
         let Source::Ref(index) = base.source else {
             return false;

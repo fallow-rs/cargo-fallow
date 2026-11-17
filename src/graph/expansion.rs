@@ -4,6 +4,9 @@
 //! A crate can call the macro when it can name the macro: it depends on the
 //! proc-macro crate, or on a crate that re-exports the macro. A crate that
 //! only depends on a caller cannot name the macro.
+//!
+//! A helper crate of a proc-macro crate writes output tokens too, and the
+//! proc-macro crate returns them. Its output goes to the same crates.
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -11,7 +14,8 @@ use crate::graph::extract::{Binding, Vis};
 use crate::graph::resolve::visible_crates;
 use crate::graph::{CrateId, CrateKind, Graph, Import};
 
-/// The crates where the output of a proc-macro crate can be.
+/// The crates where the output of a proc-macro crate or of a helper crate
+/// can be.
 #[derive(Debug, Default)]
 pub struct Expansion {
     /// Each other crate that can name the macro: a crate that depends on the
@@ -165,7 +169,13 @@ fn macro_sources(graph: &Graph, proc_macro: CrateId) -> FxHashMap<CrateId, Names
     sources
 }
 
-/// The [`Expansion`] of each proc-macro crate.
+/// The [`Expansion`] of each proc-macro crate and of each helper crate.
+///
+/// A helper crate is a workspace library that a proc-macro crate uses as a
+/// normal dependency, directly or through other helper crates. The
+/// proc-macro crate returns the tokens that its helpers write, so the output
+/// of a helper has the expansion of each proc-macro crate that uses it. A
+/// dev-dependency or a build-dependency writes no output of the macro.
 pub fn expansions(graph: &Graph) -> FxHashMap<CrateId, Expansion> {
     let macros: Vec<CrateId> = (0..graph.crates.len())
         .filter(|&krate| graph.crates[krate].kind == CrateKind::ProcMacro)
@@ -174,29 +184,78 @@ pub fn expansions(graph: &Graph) -> FxHashMap<CrateId, Expansion> {
         return FxHashMap::default();
     }
     let mut visible: FxHashMap<CrateId, Vec<CrateId>> = FxHashMap::default();
-    macros
-        .into_iter()
-        .map(|proc_macro| {
-            let sources = macro_sources(graph, proc_macro);
-            let callers: Vec<CrateId> = (0..graph.crates.len())
-                .filter(|&krate| {
-                    krate != proc_macro
-                        && graph.crates[krate].externs.iter().any(|name| {
-                            name.target
-                                .is_some_and(|target| sources.contains_key(&target))
-                        })
-                })
-                .collect();
-            let mut crates = Vec::new();
-            for &krate in callers.iter().chain([&proc_macro]) {
-                let seen = visible
-                    .entry(krate)
-                    .or_insert_with(|| visible_crates(graph, krate, false));
-                crates.extend(seen.iter().copied());
-            }
-            crates.sort_unstable();
-            crates.dedup();
-            (proc_macro, Expansion { callers, crates })
+    let mut found: FxHashMap<CrateId, Expansion> = macros
+        .iter()
+        .map(|&proc_macro| {
+            let expansion = macro_expansion(graph, proc_macro, &mut visible);
+            (proc_macro, expansion)
         })
-        .collect()
+        .collect();
+    let mut helpers: FxHashMap<CrateId, Expansion> = FxHashMap::default();
+    for proc_macro in macros {
+        let expansion = &found[&proc_macro];
+        for helper in helper_crates(graph, proc_macro) {
+            let entry = helpers.entry(helper).or_default();
+            entry.callers.extend(expansion.callers.iter().copied());
+            entry.crates.extend(expansion.crates.iter().copied());
+        }
+    }
+    for (helper, mut expansion) in helpers {
+        expansion.callers.sort_unstable();
+        expansion.callers.dedup();
+        expansion.crates.sort_unstable();
+        expansion.crates.dedup();
+        found.insert(helper, expansion);
+    }
+    found
+}
+
+/// The [`Expansion`] of one proc-macro crate. `visible` holds the crates
+/// that each crate can use, for the next calls.
+fn macro_expansion(
+    graph: &Graph,
+    proc_macro: CrateId,
+    visible: &mut FxHashMap<CrateId, Vec<CrateId>>,
+) -> Expansion {
+    let sources = macro_sources(graph, proc_macro);
+    let callers: Vec<CrateId> = (0..graph.crates.len())
+        .filter(|&krate| {
+            krate != proc_macro
+                && graph.crates[krate].externs.iter().any(|name| {
+                    name.target
+                        .is_some_and(|target| sources.contains_key(&target))
+                })
+        })
+        .collect();
+    let mut crates = Vec::new();
+    for &krate in callers.iter().chain([&proc_macro]) {
+        let seen = visible
+            .entry(krate)
+            .or_insert_with(|| visible_crates(graph, krate, false));
+        crates.extend(seen.iter().copied());
+    }
+    crates.sort_unstable();
+    crates.dedup();
+    Expansion { callers, crates }
+}
+
+/// The helper crates of a proc-macro crate: each workspace library in the
+/// normal dependencies of the proc-macro crate or of another helper crate.
+fn helper_crates(graph: &Graph, proc_macro: CrateId) -> Vec<CrateId> {
+    let mut helpers: Vec<CrateId> = Vec::new();
+    let mut index = 0;
+    let mut next = Some(proc_macro);
+    while let Some(krate) = next {
+        for name in graph.crates[krate].externs.iter().filter(|name| !name.dev) {
+            if let Some(target) = name.target
+                && graph.crates[target].kind == CrateKind::Lib
+                && !helpers.contains(&target)
+            {
+                helpers.push(target);
+            }
+        }
+        next = helpers.get(index).copied();
+        index += 1;
+    }
+    helpers
 }

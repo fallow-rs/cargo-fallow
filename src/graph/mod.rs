@@ -31,7 +31,7 @@ use crate::graph::extract::{
 use crate::modules::{SkippedFile, TargetRoot, normalize, walk};
 use crate::parse::Edition;
 use crate::structure::source::{has_generated_marker, is_generated};
-use crate::workspace::{LinkKind, Member, Target, Workspace};
+use crate::workspace::{Link, LinkKind, Member, Target, Workspace};
 
 /// An index into [`Graph::crates`].
 pub type CrateId = usize;
@@ -151,6 +151,8 @@ pub struct Extern {
     pub platform: Option<String>,
     /// True for an optional dependency, which a feature enables.
     pub optional: bool,
+    /// True for a dev-dependency that is not also a normal dependency.
+    pub dev: bool,
 }
 
 /// One module.
@@ -524,6 +526,18 @@ fn parse_target(root: &Path, target: &Target, want_scan: bool) -> CrateFiles {
     }
 }
 
+/// True when `member` also has `link` as a normal dependency, with the same
+/// name, platform and feature condition.
+fn normal_link(member: &Member, link: &Link) -> bool {
+    member.links.iter().any(|other| {
+        other.kind == LinkKind::Normal
+            && other.package == link.package
+            && other.rename == link.rename
+            && other.platform == link.platform
+            && other.optional == link.optional
+    })
+}
+
 /// The crate name of a target name.
 pub fn crate_name(target: &str) -> String {
     target.replace('-', "_")
@@ -554,6 +568,7 @@ fn externs_of(
             target: Some(lib),
             platform: None,
             optional: false,
+            dev: false,
         });
     }
     let wanted = |link_kind: LinkKind| match kind {
@@ -586,6 +601,7 @@ fn externs_of(
             target,
             platform: link.platform.clone(),
             optional: link.optional,
+            dev: link.kind == LinkKind::Dev && !normal_link(member, link),
         });
     }
     names.sort_by(|a, b| a.name.cmp(&b.name).then(a.target.cmp(&b.target)));

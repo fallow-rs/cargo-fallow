@@ -604,3 +604,186 @@ fn interpolations_and_where_clauses_in_output() {
     .collect();
     assert_eq!(findings(&dir), expected);
 }
+
+/// A proc-macro crate with helper crates, as in wasm-bindgen:
+///
+/// - `pm` calls `support`, and `support` calls `backend`. Both are normal
+///   dependencies, so both are helpers of `pm`;
+/// - `support` writes `#krate::from_interp()`, and `backend` writes a
+///   `parse_quote!` default that names `runtime::FromDefault`;
+/// - `devhelp` is a dev-dependency and `buildhelp` is a build-dependency of
+///   `pm`, so they are no helpers;
+/// - the test code of `backend` names `runtime::from_test`.
+///
+/// No crate of `pm` depends on `runtime`. Only `app` calls the macro, and it
+/// depends on `runtime`.
+const HELPER_FILES: &[(&str, &str)] = &[
+    (
+        "Cargo.toml",
+        "[workspace]\nmembers = [\"pm\", \"support\", \"backend\", \"devhelp\", \"buildhelp\", \
+         \"runtime\", \"app\"]\nresolver = \"3\"\n",
+    ),
+    (
+        "pm/Cargo.toml",
+        "[package]\nname = \"pm\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n\
+         [lib]\nproc-macro = true\n\n\
+         [dependencies]\nsupport = { path = \"../support\" }\n\n\
+         [dev-dependencies]\ndevhelp = { path = \"../devhelp\" }\n\n\
+         [build-dependencies]\nbuildhelp = { path = \"../buildhelp\" }\n",
+    ),
+    (
+        "support/Cargo.toml",
+        "[package]\nname = \"support\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n\
+         [dependencies]\nbackend = { path = \"../backend\" }\n",
+    ),
+    (
+        "backend/Cargo.toml",
+        "[package]\nname = \"backend\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n",
+    ),
+    (
+        "devhelp/Cargo.toml",
+        "[package]\nname = \"devhelp\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n",
+    ),
+    (
+        "buildhelp/Cargo.toml",
+        "[package]\nname = \"buildhelp\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n",
+    ),
+    (
+        "runtime/Cargo.toml",
+        "[package]\nname = \"runtime\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n",
+    ),
+    (
+        "app/Cargo.toml",
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n\
+         [dependencies]\npm = { path = \"../pm\" }\nruntime = { path = \"../runtime\" }\n",
+    ),
+    (
+        "pm/src/lib.rs",
+        "use proc_macro::TokenStream;\n\
+         #[proc_macro_attribute]\n\
+         pub fn generate(_args: TokenStream, item: TokenStream) -> TokenStream {\n\
+         \x20   support::expand(item.to_string()).parse().expect(\"valid tokens\")\n\
+         }\n\
+         #[cfg(test)]\nmod tests {\n    #[test]\n    fn emits() {\n\
+         \x20       assert!(!devhelp::emit().is_empty());\n    }\n}\n",
+    ),
+    (
+        "pm/build.rs",
+        "fn main() {\n    let _ = buildhelp::emit();\n}\n",
+    ),
+    (
+        "support/src/lib.rs",
+        "macro_rules! quote { ($($t:tt)*) => { stringify!($($t)*) }; }\n\
+         pub fn expand(item: String) -> String {\n\
+         \x20   let krate = quote!(runtime);\n\
+         \x20   let mut out = item;\n\
+         \x20   out.push_str(quote! { fn __interp() { #krate::from_interp(); } });\n\
+         \x20   out.push_str(backend::defaults());\n\
+         \x20   let _ = krate;\n\
+         \x20   out\n\
+         }\n",
+    ),
+    (
+        "backend/src/lib.rs",
+        "macro_rules! parse_quote { ($($t:tt)*) => { stringify!($($t)*) }; }\n\
+         macro_rules! quote { ($($t:tt)*) => { stringify!($($t)*) }; }\n\
+         pub fn defaults() -> &'static str {\n\
+         \x20   parse_quote! { type __Default = runtime::FromDefault; }\n\
+         }\n\
+         #[cfg(test)]\nmod tests {\n    #[test]\n    fn writes() {\n\
+         \x20       assert!(!quote! { runtime::from_test() }.is_empty());\n    }\n}\n",
+    ),
+    (
+        "devhelp/src/lib.rs",
+        "macro_rules! quote { ($($t:tt)*) => { stringify!($($t)*) }; }\n\
+         pub fn emit() -> &'static str {\n    quote! { runtime::from_dev() }\n}\n",
+    ),
+    (
+        "buildhelp/src/lib.rs",
+        "macro_rules! quote { ($($t:tt)*) => { stringify!($($t)*) }; }\n\
+         pub fn emit() -> &'static str {\n    quote! { runtime::from_build() }\n}\n",
+    ),
+    (
+        "runtime/src/lib.rs",
+        "pub fn from_interp() {}\npub struct FromDefault;\npub fn from_dev() {}\n\
+         pub fn from_build() {}\npub fn from_test() {}\npub fn unused() {}\n",
+    ),
+    (
+        "app/src/main.rs",
+        "#[pm::generate]\nfn work() {}\nfn main() { work(); }\n",
+    ),
+];
+
+/// The output that a helper crate writes counts in `app`, the crate that
+/// calls the macro, as the output of `pm` does. The output of a dev or build
+/// dependency of `pm`, and the tokens in the test code of a helper, do not
+/// count. A helper that is also a dev-dependency stays a helper.
+#[test]
+fn output_of_a_helper_crate_counts_in_the_crates_that_call_the_macro() {
+    let manifests = [
+        None,
+        Some(
+            "[package]\nname = \"pm\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\
+             publish = false\n\n[lib]\nproc-macro = true\n\n\
+             [dependencies]\nsupport = { path = \"../support\" }\n\n\
+             [dev-dependencies]\ndevhelp = { path = \"../devhelp\" }\n\
+             support = { path = \"../support\" }\n\n\
+             [build-dependencies]\nbuildhelp = { path = \"../buildhelp\" }\n",
+        ),
+    ];
+    for manifest in manifests {
+        let dir = tempfile::tempdir().expect("create a temporary directory");
+        for (path, text) in HELPER_FILES {
+            write(dir.path(), path, text);
+        }
+        if let Some(manifest) = manifest {
+            write(dir.path(), "pm/Cargo.toml", manifest);
+        }
+        assert_eq!(findings(&dir), helper_expected(), "manifest: {manifest:?}");
+        assert_eq!(
+            extern_rows(&dir, "pm", "support"),
+            1,
+            "manifest: {manifest:?}"
+        );
+    }
+}
+
+/// The number of rows for the name `name` in the externs of the proc-macro
+/// crate of `package` in the visibility report.
+fn extern_rows(dir: &TempDir, package: &str, name: &str) -> usize {
+    let output = Command::cargo_bin("cargo-fallow")
+        .expect("find the binary")
+        .args([
+            "visibility",
+            "--format",
+            "json",
+            "--quiet",
+            "--manifest-path",
+        ])
+        .arg(dir.path().join("Cargo.toml"))
+        .output()
+        .expect("run the binary");
+    let report: Value = serde_json::from_slice(&output.stdout).expect("the output is JSON");
+    report["crates"]
+        .as_array()
+        .expect("an array of crates")
+        .iter()
+        .filter(|row| row["package"] == package && row["kind"] == "proc-macro")
+        .flat_map(|row| row["externs"].as_array().cloned().unwrap_or_default())
+        .filter(|row| row["name"] == name)
+        .count()
+}
+
+/// The findings of the helper workspace: only the names that no helper
+/// output names.
+fn helper_expected() -> BTreeSet<String> {
+    [
+        "dead-public from_dev",
+        "dead-public from_build",
+        "dead-public from_test",
+        "dead-public unused",
+    ]
+    .iter()
+    .map(|row| (*row).to_owned())
+    .collect()
+}

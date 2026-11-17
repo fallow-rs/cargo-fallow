@@ -148,8 +148,17 @@ The command ignores `cfg` conditions. It reads the code of each branch.
 
 A proc-macro writes its output tokens into the crate that calls the macro.
 The output tokens are the tokens of `quote!`, `quote_spanned!`,
-`parse_quote!` and `parse_quote_spanned!` in a proc-macro crate. A name in
-the output tokens counts in these crates:
+`parse_quote!` and `parse_quote_spanned!` in a proc-macro crate or in a
+helper crate of a proc-macro crate. A helper crate is a workspace library in
+the `[dependencies]` or the `[target.'...'.dependencies]` of the proc-macro
+crate or of another helper crate. For
+example, in `macro -> macro-support -> backend`, both `macro-support` and
+`backend` are helper crates of `macro`. The proc-macro crate returns the
+tokens that its helper crates write. A `[dev-dependencies]` or a
+`[build-dependencies]` crate is no helper crate, because the macro does not
+call it.
+
+A name in the output tokens counts in these crates:
 
 - the proc-macro crate;
 - each crate that depends on the proc-macro crate;
@@ -161,7 +170,10 @@ the output tokens counts in these crates:
   crates.
 
 A crate that only depends on a caller cannot name the macro, so the output
-does not count in that crate.
+does not count in that crate. The output of a helper crate counts in the
+crates of each proc-macro crate that uses the helper crate. When two
+proc-macro crates use one helper crate, the output of the helper counts for
+the callers of both macros.
 
 A path in the output counts as a path from the root module of each crate
 that can call the macro. When the path does not resolve there, each name of
@@ -180,7 +192,8 @@ These names in the output tokens are no uses:
   field declarations and variant declarations are also definitions. An item
   with a `#name` variable as its name, as in `fn #name(cursor: u8)`, also
   defines its parameters or fields;
-- the tokens of a `quote!` in the test code of the proc-macro crate.
+- the tokens of a `quote!` in the test code of the proc-macro crate or of
+  a helper crate.
 
 A parameter name with an upper case letter first can be a constant, so it
 counts as a use. The tokens of a nested macro call, for example
@@ -193,9 +206,10 @@ Limits: the command does not read these names, so an item that only they use
 can get a finding:
 
 - a name in a string that `syn::parse_str` or `TokenStream::from_str`
-  parses;
-- a name in the `quote!` tokens of a library crate, for example a helper
-  crate that a proc-macro crate uses.
+  parses. In real macro crates, these strings are often user input or test
+  code, so a name in them is no sure use;
+- a name in the `quote!` tokens of a library crate that is no helper crate
+  of a proc-macro crate.
 
 The command reports no finding in a generated file, because a code generator
 sets the visibility in that file. A file is generated when a comment in its

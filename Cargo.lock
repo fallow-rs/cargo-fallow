@@ -502,9 +502,9 @@ dependencies = [
 
 [[package]]
 name = "fallow-report-protocol"
-version = "3.38.1"
+version = "3.42.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "431e5fa78b780776417bba89bd14b06c80ae31db6e8e9472a6434284b93af3d3"
+checksum = "36c198e7d2692652cf89773fd4a7adefb534ecc444f65ead8451a98490014488"
 dependencies = [
  "schemars",
  "serde",

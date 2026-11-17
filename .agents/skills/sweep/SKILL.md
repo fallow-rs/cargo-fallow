@@ -21,9 +21,9 @@ Run this at the end of each objective, without a prompt from the owner.
    request with the blocker and the next action.
 6. Fix each omission in scope now, in a new pull request through `review`
    and `ship`. Open an issue in `fallow-rs/cargo-fallow` for each other item
-   of needed work. Write the question and a recommended answer in the issue
-   when it needs a decision of the owner. A note in an ignored file, in
-   `/tmp` or in the chat does not track a follow-up.
+   of code work. A note in an ignored file or in `/tmp` does not track that
+   work. Do not open an issue only to ask the owner a question, for example
+   about a release. Put the question and a recommended answer in the report.
 7. Make sure that each worktree, branch and temporary file of the task is
    clean or removed.
 8. Keep a lesson only when it changes a future decision and no skill or doc

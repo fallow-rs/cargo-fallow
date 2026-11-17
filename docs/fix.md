@@ -24,7 +24,7 @@ cargo fallow fix --yes --only visibility   # only the visibility edits
   run a check that the flags leave out, or read its table. The findings of
   that check do not count in `skipped`, and without `deps` the report has no
   `skipped_packages`. With `--only deps`, no visibility edit exists, so the
-  command does not run `cargo check`.
+  command runs `cargo check` only for a guarded dependency edit.
 - A rule at `off` in `[workspace.metadata.fallow.rules]` gets no edit. A
   suppression comment keeps its finding out of the edits. A baseline does not
   hide an edit, because `fix` changes the old findings too.
@@ -47,12 +47,34 @@ cargo fallow fix --yes --only visibility   # only the visibility edits
 - When a `pub use` has a finding, the analysis does not report the target of
   that `pub use` in the same run. Each change is then valid together with the
   other changes. The next run reports the target.
-- With a visibility edit, the command runs `cargo check --workspace
-  --all-targets --all-features` before the edits. When that build fails, the
+- A dependency edit is guarded when a target that the table of the entry
+  serves uses a macro of a crate outside the workspace, and that crate and
+  the entry do not depend on each other. An entry in a
+  `[target.<platform>.*]` table is never guarded: `cargo check` builds for
+  the host only, so such an entry stays for a person. The code of the macro can still name
+  the entry, so the command checks the build (see
+  [External macros](dependencies.md#external-macros)). A guarded edit has
+  `guarded: true` in the report.
+- With a visibility edit or a guarded dependency edit, the command runs
+  `cargo check --workspace --all-targets --all-features` before the edits. When that build fails, the
   command runs it again without `--all-features`. When neither build passes,
   the command changes nothing and exits 2. Make the build pass, or use
   `--dry-run` and make the edits by hand. After the edits, the command runs
   the same check again.
+- When the plan has no visibility edit and the build before the edits fails,
+  the command does not exit 2. It leaves out each guarded edit with the
+  `skip_reason` `build_fails_before`, and gives a warning. The other
+  dependency edits apply without a check, the same as in a plan without a
+  guarded edit.
+- When the build before the edits passes only without `--all-features`, the
+  check does not compile the code under a feature. That code can call the
+  macro, so the command leaves out each guarded edit with the `skip_reason`
+  `all_features_fail_before`.
+- When `cargo metadata` fails after the edits, the command leaves out each
+  guarded edit with the `skip_reason` `load_error` and the error in
+  `diagnostic`, and tries again.
+- Before each new round, the command also writes back the old
+  `Cargo.lock`. A kept entry then keeps its locked version.
 - The command also checks each consumer workspace of the visibility table,
   for example `fuzz/` (see [Consumer workspaces](visibility.md#consumer-workspaces)).
   The consumer check has no `--locked`, because a consumer often has no
@@ -71,13 +93,19 @@ cargo fallow fix --yes --only visibility   # only the visibility edits
   of each file and of `Cargo.lock`. Then it leaves out the edits that the
   compiler errors and the new warnings name, and tries again. A message names
   an edit by the item name in backticks, or by a span at the line of the
-  edit. When no message names an edit, the command leaves out each edit in a
-  file of a message. The command does at most five rounds of edits and
-  checks. When the messages leave out each edit, the command changes no file
+  edit. A message names a guarded dependency edit by the crate name in the
+  code, for example ``unresolved import `my_dep` `` for the entry `my-dep`, and
+  the file of the message must be in the package of the entry. A workspace
+  entry that a left-out entry inherits stays too. When no message names an
+  edit, the command leaves out each visibility edit in a file of a message,
+  and each guarded edit of the package of such a file. When that leaves out
+  nothing, the command leaves out each guarded edit. An edit without the
+  guard never goes this way. The command does at most five rounds of edits
+  and checks. When the messages leave out each edit, the command changes no file
   and exits 0.
 - In the report, each left-out edit has `applied: false`, a `skip_reason`
-  (`compiler_error` or `compiler_warning`) and the compiler message in
-  `diagnostic`. When the check fails and no message names a file of an edit,
+  (`compiler_error`, `compiler_warning`, `load_error`, `build_fails_before`
+  or `all_features_fail_before`) and the message in `diagnostic`. When the check fails and no message names a file of an edit,
   the command exits 2 with the compiler errors.
 - `cargo check` builds for one platform. It does not build code under a `cfg`
   for another platform, and it does not build doc tests. An edit can break
@@ -110,7 +138,9 @@ cargo fallow fix --yes --only visibility   # only the visibility edits
     example `<0.2` for a `0.1` crate, does not pin,
   - an unused `[dependencies]` entry when the library or a binary uses an
     attribute macro or calls a macro in the place of an item, from a crate
-    outside the workspace, by a path such as `#[krate::name]` or
+    outside the workspace that depends on the entry or that the entry
+    depends on. For an entry in a `[target.<platform>.*]` table, any such
+    macro keeps the entry, by a path such as `#[krate::name]` or
     `krate::name!(..);`, or by one name that an import brings into scope,
     such as `#[name]` after `use krate::prelude::*;`. The same applies to a
     `[dev-dependencies]` entry and test code, a bench or an example. The
@@ -138,7 +168,7 @@ cargo fallow fix --yes --only visibility   # only the visibility edits
 The JSON report has `dry_run`, `fixes`, `total_fixed` and `skipped` (the
 findings that `fix` does not change). A dependency entry of `fixes` has
 `type` (`remove-dependency` or `move-to-dev-dependencies`), `rule`,
-`package`, `manifest_path`, `section`, `platform`, `dependency`, `line` and
-`applied`. A `change-visibility` entry has `type`, `rule` (the finding kind),
+`package`, `manifest_path`, `section`, `platform`, `dependency`, `line`,
+`applied`, and for a guarded edit `guarded`, `skip_reason` and `diagnostic`. A `change-visibility` entry has `type`, `rule` (the finding kind),
 `package`, `item`, `path`, `line`, `column`, `from`, `to` and `applied`.
 `skipped_packages` names the packages that `deps` did not check.

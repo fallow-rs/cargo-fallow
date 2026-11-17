@@ -733,3 +733,21 @@ fn a_test_helper_in_a_private_module_becomes_private() {
         "{stdout}"
     );
 }
+
+#[test]
+fn a_visibility_run_that_builds_only_without_all_features_has_no_guard_warning() {
+    let core = format!("{CORE}#[cfg(feature = \"x\")]\npub fn broken() -> u8 {{ \"x\" }}\n");
+    let dir = workspace(&core, APP);
+    write(
+        dir.path(),
+        "core/Cargo.toml",
+        "[package]\nname = \"core-lib\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n[features]\nx = []\n\n[lib]\nname = \"core_lib\"\n",
+    );
+    let (code, stdout, stderr) = fix(&dir, &["--yes", "--format", "json"], None);
+    assert_eq!(code, 0, "{stderr}\n{stdout}");
+    assert_eq!(json(&stdout)["total_fixed"], 1, "{stdout}");
+    assert!(
+        !stderr.contains("guarded dependency edits"),
+        "a run without a guarded edit warns about them: {stderr}"
+    );
+}

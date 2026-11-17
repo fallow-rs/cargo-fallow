@@ -402,9 +402,6 @@ pub fn cargo_check(
     if manifest_path.is_none() {
         command.current_dir(root);
     }
-    if all_features {
-        command.arg("--all-features");
-    }
     command
         .args([
             "check",
@@ -415,6 +412,10 @@ pub fn cargo_check(
             "json",
         ])
         .args(flags);
+    // `--all-features` is a flag of `check`, so it comes after the command.
+    if all_features {
+        command.arg("--all-features");
+    }
     if let Some(path) = manifest_path {
         command.arg("--manifest-path").arg(path);
     }

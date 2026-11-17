@@ -7,12 +7,14 @@
 //! of each `visibility` finding. A warning stays. `--dry-run` writes nothing.
 //!
 //! After the edits, the command loads the workspace with `cargo metadata`
-//! again. With a visibility edit, it also runs `cargo check --workspace
-//! --all-targets`, before and after the edits. When a step after the edits
-//! fails, the command writes back the old bytes of each file and exits 2.
+//! again. With a visibility edit or a guarded dependency edit, it also runs
+//! `cargo check --workspace --all-targets`, before and after the edits. When
+//! a step after the edits fails, the command writes back the old bytes of
+//! each file and exits 2.
 
 pub mod check;
 pub mod deps;
+mod guard;
 pub mod visibility;
 
 use std::fmt::Write as _;
@@ -220,6 +222,7 @@ pub fn run(args: &FixArgs) -> Result<u8, CliError> {
         let applied = apply_all(args, &workspace, &plan, progress)?;
         mark(&mut fixes, &applied);
         skipped += plan.visibility.len() - applied.kept.len();
+        skipped += plan.deps.len() - applied.deps_kept.len();
     }
     let total_fixed = fixes.iter().filter(|fix| fix.applied()).count();
     let report = FixReport {
@@ -246,7 +249,20 @@ pub fn run(args: &FixArgs) -> Result<u8, CliError> {
 fn mark(fixes: &mut [Fix], applied: &Applied) {
     for fix in fixes {
         let written = match fix {
-            Fix::Dependency(_) => true,
+            Fix::Dependency(edit) => {
+                if let Some(other) = applied
+                    .deps_left
+                    .iter()
+                    .find(|other| deps::same_entry(edit, other))
+                {
+                    edit.skip_reason = other.skip_reason;
+                    edit.diagnostic.clone_from(&other.diagnostic);
+                }
+                applied
+                    .deps_kept
+                    .iter()
+                    .any(|other| deps::same_entry(edit, other))
+            }
             Fix::Visibility(edit) => {
                 if let Some(other) = applied
                     .left_out
@@ -382,11 +398,14 @@ fn plan_visibility(
     (visibility_edits, skipped)
 }
 
-/// The visibility edits after the check: the written edits, and the edits
-/// that the compiler messages left out, with their reason.
+/// The edits after the check: the written edits, and the edits that the
+/// compiler messages or a failed build before the edits left out, with their
+/// reason.
 struct Applied {
     kept: Vec<visibility::Edit>,
     left_out: Vec<visibility::Edit>,
+    deps_kept: Vec<deps::Edit>,
+    deps_left: Vec<deps::Edit>,
 }
 
 /// Writes the edits and checks the workspace. On a failure after the first
@@ -400,45 +419,43 @@ fn apply_all(
     let root = workspace.root.as_std_path();
     let manifest = args.manifest_path.as_deref();
     let flags = args.cargo_flags(false);
-    let compiles = !plan.visibility.is_empty();
+    let mut deps_kept = plan.deps.clone();
+    let mut deps_left = Vec::new();
     // `cargo check` can write `Cargo.lock`, so a failed run writes back its
     // old bytes too.
     let lock = Locks::read(root, &plan.consumers);
-    let (all_features, known, consumers) = if compiles {
-        progress.step("Checking that the workspace builds before the edits");
-        let (all, warnings, consumers) = baseline(
-            manifest,
-            &plan.consumers,
-            root,
-            &args.cargo_flags(true),
-            &flags,
-        )
-        .inspect_err(|_| lock.restore())?;
-        (Some(all), warnings, consumers)
-    } else {
-        (None, Vec::new(), Vec::new())
-    };
+    let (all_features, known, consumers) =
+        check_before(args, plan, root, &mut deps_kept, &mut deps_left, progress)
+            .inspect_err(|_| lock.restore())?;
     let formatted = formatted_files(workspace, &plan.visibility);
     let mut kept = plan.visibility.clone();
     let mut left_out = Vec::new();
     for round in 1..=CHECK_ROUNDS {
         // When the compiler messages left out each edit, the run ends with no
         // edit, and the files keep their old bytes.
-        if kept.is_empty() && plan.deps.is_empty() {
+        if kept.is_empty() && deps_kept.is_empty() {
             lock.restore();
-            return Ok(Applied { kept, left_out });
+            return Ok(Applied {
+                kept,
+                left_out,
+                deps_kept,
+                deps_left,
+            });
         }
-        let planned = planned_files(root, &plan.deps, &kept).inspect_err(|_| lock.restore())?;
+        let planned = planned_files(root, &deps_kept, &kept).inspect_err(|_| lock.restore())?;
         progress.step("Writing the edits");
         let mut compiler = None;
+        let mut load_error = None;
         let mut warned: Vec<check::Diagnostic> = Vec::new();
         let outcome = write_and_check(&planned, || {
-            if !plan.deps.is_empty() {
+            if !deps_kept.is_empty() {
                 workspace::load_resolved(manifest, &flags).map_err(|err| {
-                    format!(
+                    let text = format!(
                         "the workspace does not load after the edits: {}",
                         err.message
-                    )
+                    );
+                    load_error = Some(text.clone());
+                    text
                 })?;
             }
             if let Some(all_features) = all_features {
@@ -451,7 +468,12 @@ fn apply_all(
         let error = match outcome {
             Ok(()) => {
                 format_files(workspace, &planned, &formatted);
-                return Ok(Applied { kept, left_out });
+                return Ok(Applied {
+                    kept,
+                    left_out,
+                    deps_kept,
+                    deps_left,
+                });
             }
             // A file that keeps the edited bytes would be the old bytes of
             // the next round, so the run stops.
@@ -464,20 +486,95 @@ fn apply_all(
         // The compiler names the items that the edits broke. Each round
         // leaves out the edits of those items, and the next round starts from
         // the old bytes again.
-        let left = if round < CHECK_ROUNDS {
-            leave_out(&mut kept, compiler.as_deref(), &warned)
+        let (left, deps) = if round < CHECK_ROUNDS {
+            leave_out_round(
+                &mut kept,
+                &mut deps_kept,
+                Messages {
+                    errors: compiler.as_deref(),
+                    load_error: load_error.as_deref(),
+                    warned: &warned,
+                },
+                &workspace.members,
+            )
         } else {
-            Vec::new()
+            (Vec::new(), Vec::new())
         };
-        if left.is_empty() {
+        if left.is_empty() && deps.is_empty() {
             lock.restore();
             return Err(error);
         }
         left_out.extend(left);
+        deps_left.extend(deps);
+        // The check after the edits wrote `Cargo.lock` without the crates of
+        // the edits. A kept entry would then resolve to the newest version,
+        // so the next round starts from the old lock file too.
+        lock.restore();
         progress.step("Leaving out the edits that the compiler names, and checking again");
     }
     lock.restore();
     Err(failed("the workspace does not build after the edits"))
+}
+
+/// The check before the edits: `Some(true)` for an all-features build, or
+/// `None` without a check, the warnings, and the consumer workspaces that
+/// build.
+type Before = (Option<bool>, Vec<check::Diagnostic>, Vec<PathBuf>);
+
+/// Runs the check before the edits when a visibility edit or a guarded
+/// dependency edit needs it. Without a visibility edit, a failed build leaves
+/// out only the guarded edits, and the other edits apply without a check.
+fn check_before(
+    args: &FixArgs,
+    plan: &Plan,
+    root: &Path,
+    deps_kept: &mut Vec<deps::Edit>,
+    deps_left: &mut Vec<deps::Edit>,
+    progress: Progress,
+) -> Result<Before, CliError> {
+    if plan.visibility.is_empty() && !deps_kept.iter().any(|edit| edit.guarded) {
+        return Ok((None, Vec::new(), Vec::new()));
+    }
+    progress.step("Checking that the workspace builds before the edits");
+    match baseline(
+        args.manifest_path.as_deref(),
+        &plan.consumers,
+        root,
+        &args.cargo_flags(true),
+        &args.cargo_flags(false),
+    ) {
+        Ok((true, warnings, consumers)) => Ok((Some(true), warnings, consumers)),
+        // A build without all features does not compile the code under a
+        // feature, which can call the macro, so the guard cannot judge the
+        // guarded edits.
+        Ok((false, warnings, consumers)) => {
+            *deps_left = guard::all(
+                deps_kept,
+                guard::ALL_FEATURES_FAIL_BEFORE,
+                "`cargo check --workspace --all-targets --all-features` fails before the edits",
+            );
+            if !deps_left.is_empty() {
+                crate::render::warn(
+                    "the workspace does not build with `--all-features` before the edits, so \
+                     the guarded dependency edits stay for a person.",
+                );
+            }
+            if plan.visibility.is_empty() {
+                return Ok((None, Vec::new(), Vec::new()));
+            }
+            Ok((Some(false), warnings, consumers))
+        }
+        Err(error) if plan.visibility.is_empty() => {
+            crate::render::warn(&format!(
+                "{}\nThe guarded dependency edits stay for a person. The other edits apply \
+                 without a check.",
+                error.message
+            ));
+            *deps_left = guard::all(deps_kept, guard::BUILD_FAILS_BEFORE, &error.message);
+            Ok((None, Vec::new(), Vec::new()))
+        }
+        Err(error) => Err(error),
+    }
 }
 
 /// The bytes of each file after the edits of one round.
@@ -498,7 +595,7 @@ fn planned_files(
 
 /// Judges the check after the edits of one round. A failed build keeps its
 /// compiler errors in `compiler`, and new warnings stay in `warned`, so
-/// [`leave_out`] can read them. Either one fails the round.
+/// [`leave_out_round`] can read them. Either one fails the round.
 fn judge(
     checked: Result<Vec<check::Diagnostic>, String>,
     known: &[check::Diagnostic],
@@ -532,21 +629,91 @@ const COMPILER_ERROR: &str = "compiler_error";
 /// The `skip_reason` of an edit that a new compiler warning left out.
 const COMPILER_WARNING: &str = "compiler_warning";
 
-/// Leaves out the edits that the compiler errors or the new warnings name,
-/// and returns them with their reason. A message names an edit by the item
-/// name in backticks, or by a span at the line of the edit. A warning names
-/// an item of its own file. A `private_interfaces` or `private_bounds`
-/// warning names the type of another file too. When no message names an
-/// edit, each edit in a file of a message goes, so one bad edit does not
-/// stop the run.
+/// The messages of one failed round.
+#[derive(Clone, Copy)]
+struct Messages<'a> {
+    /// The compiler errors, one for each line.
+    errors: Option<&'a str>,
+    /// The error of the `cargo metadata` call after the edits.
+    load_error: Option<&'a str>,
+    /// The new compiler warnings.
+    warned: &'a [check::Diagnostic],
+}
+
+/// Leaves out the visibility edits and the guarded dependency edits that the
+/// compiler errors or the new warnings name, and returns them with their
+/// reason. A guarded dependency edit is named by the crate of the entry. When
+/// no message names an edit, each edit in a file of a message goes, and each
+/// guarded edit of the package of such a file goes. When neither step leaves
+/// out an edit, each guarded edit goes. One bad edit then does not stop the
+/// run.
+fn leave_out_round(
+    kept: &mut Vec<visibility::Edit>,
+    deps: &mut Vec<deps::Edit>,
+    messages: Messages<'_>,
+    members: &[workspace::Member],
+) -> (Vec<visibility::Edit>, Vec<deps::Edit>) {
+    let Messages {
+        errors,
+        load_error,
+        warned,
+    } = messages;
+    // A load error names no item, so only the guarded edits can go.
+    if let Some(message) = load_error {
+        return (
+            Vec::new(),
+            guard::all(deps, guard::LOAD_ERROR, &first_lines(message)),
+        );
+    }
+    let error_lines: Vec<&str> = errors.map_or_default(|text| text.lines().collect());
+    let mut left = leave_out_named(kept, &error_lines, warned);
+    let mut deps_left = guard::named(deps, &error_lines, members);
+    if left.is_empty() && deps_left.is_empty() {
+        left = leave_out_by_file(kept, &error_lines, warned);
+        deps_left = guard::by_package(deps, &error_lines, warned, members);
+    }
+    if left.is_empty() && deps_left.is_empty() {
+        let lines: Vec<String> = warned.iter().map(check::Diagnostic::line).collect();
+        let message = errors.map_or_else(|| lines.join("\n"), str::to_owned);
+        let reason = if errors.is_some() {
+            COMPILER_ERROR
+        } else {
+            COMPILER_WARNING
+        };
+        deps_left = guard::all(deps, reason, &first_lines(&message));
+    }
+    (left, deps_left)
+}
+
+/// Leaves out the visibility edits that the compiler errors or the new
+/// warnings name, and returns them with their reason. When no message names
+/// an edit, each edit in a file of a message goes.
+#[cfg(test)]
 fn leave_out(
     kept: &mut Vec<visibility::Edit>,
     errors: Option<&str>,
     warned: &[check::Diagnostic],
 ) -> Vec<visibility::Edit> {
-    let mut left = Vec::new();
     let error_lines: Vec<&str> = errors.map_or_default(|text| text.lines().collect());
-    for line in &error_lines {
+    let left = leave_out_named(kept, &error_lines, warned);
+    if !left.is_empty() {
+        return left;
+    }
+    leave_out_by_file(kept, &error_lines, warned)
+}
+
+/// Leaves out the visibility edits that the compiler errors or the new
+/// warnings name. A message names an edit by the item name in backticks, or
+/// by a span at the line of the edit. A warning names an item of its own
+/// file. A `private_interfaces` or `private_bounds` warning names the type of
+/// another file too.
+fn leave_out_named(
+    kept: &mut Vec<visibility::Edit>,
+    error_lines: &[&str],
+    warned: &[check::Diagnostic],
+) -> Vec<visibility::Edit> {
+    let mut left = Vec::new();
+    for line in error_lines {
         let names = visibility::named_items(line);
         let place = error_place(line);
         take(kept, &mut left, COMPILER_ERROR, line, |edit| {
@@ -578,10 +745,18 @@ fn leave_out(
             }
         });
     }
-    if !left.is_empty() {
-        return left;
-    }
-    for line in &error_lines {
+    left
+}
+
+/// Leaves out each visibility edit in a file of a compiler error or a new
+/// warning.
+fn leave_out_by_file(
+    kept: &mut Vec<visibility::Edit>,
+    error_lines: &[&str],
+    warned: &[check::Diagnostic],
+) -> Vec<visibility::Edit> {
+    let mut left = Vec::new();
+    for line in error_lines {
         if let Some((file, _)) = error_place(line) {
             take(kept, &mut left, COMPILER_ERROR, line, |edit| {
                 edit.path == file
@@ -988,7 +1163,20 @@ fn line(fix: &Fix) -> String {
                 || fix.manifest_path.clone(),
                 |line| format!("{}:{line}", fix.manifest_path),
             );
-            format!("{}: `{}` in {table} ({place})", fix.kind, fix.dependency)
+            let reason = fix.diagnostic.as_ref().map_or_else(
+                || {
+                    if fix.guarded {
+                        ", guarded by `cargo check`".to_owned()
+                    } else {
+                        String::new()
+                    }
+                },
+                |diagnostic| format!(", left out: {}", first_lines(diagnostic)),
+            );
+            format!(
+                "{}: `{}` in {table} ({place}){reason}",
+                fix.kind, fix.dependency
+            )
         }
         Fix::Visibility(fix) => {
             let to = if fix.to.is_empty() {
@@ -1049,6 +1237,44 @@ mod tests {
             column: 1,
             spans: Vec::new(),
         }
+    }
+
+    fn dep_edit(key: &str, guarded: bool) -> deps::Edit {
+        deps::Edit {
+            kind: "remove-dependency",
+            rule: crate::deps::report::Rule::UnusedDependency,
+            package: Some("app".to_owned()),
+            manifest_path: "app/Cargo.toml".to_owned(),
+            section: "dependencies".to_owned(),
+            platform: None,
+            dependency: key.to_owned(),
+            line: None,
+            applied: false,
+            guarded,
+            skip_reason: None,
+            diagnostic: None,
+            code_name: guarded.then(|| key.to_owned()),
+        }
+    }
+
+    #[test]
+    fn a_load_error_leaves_out_the_guarded_edits_with_its_message() {
+        let mut kept = vec![edit("a::x", "src/a.rs")];
+        let mut deps = vec![dep_edit("plain", false), dep_edit("guarded", true)];
+        let message = "the workspace does not load after the edits: no entry";
+        let messages = Messages {
+            errors: None,
+            load_error: Some(message),
+            warned: &[],
+        };
+        let (left, deps_left) = leave_out_round(&mut kept, &mut deps, messages, &[]);
+        assert!(left.is_empty());
+        assert_eq!(kept.len(), 1);
+        assert_eq!(deps_left.len(), 1);
+        assert_eq!(deps_left[0].dependency, "guarded");
+        assert_eq!(deps_left[0].skip_reason, Some(guard::LOAD_ERROR));
+        assert_eq!(deps_left[0].diagnostic.as_deref(), Some(message));
+        assert_eq!(deps.len(), 1);
     }
 
     #[test]

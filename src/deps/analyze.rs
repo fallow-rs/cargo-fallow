@@ -22,7 +22,10 @@ const MANUAL_FEATURE_NAMES: &str =
 const MANUAL_PIN: &str = "The entry can pin the version of the crate for other dependencies.";
 /// Why `fix` leaves an entry where a target calls a macro of a crate outside
 /// the workspace.
-const MANUAL_EXTERNAL_MACRO: &str = "A target uses a macro of a crate outside the workspace, and the code of that macro can use the entry.";
+const MANUAL_EXTERNAL_MACRO: &str = "A target uses a macro of a crate outside the workspace, and the code of that macro can use the entry. The macro crate and the entry depend on each other, or the entry is for one platform, so a `cargo check` on this host cannot judge the edit.";
+/// What `fix` does for an entry where a target calls a macro of an unrelated
+/// crate outside the workspace.
+const GUARDED_EXTERNAL_MACRO: &str = "A target uses a macro of a crate outside the workspace, so `cargo fallow fix` runs `cargo check` after the edit and keeps the entry when the build fails.";
 /// Why `fix` leaves a workspace entry.
 const MANUAL_INHERITED: &str = "A member entry that `fix` keeps inherits it.";
 
@@ -122,6 +125,10 @@ pub fn analyze(workspace: &Workspace, metadata: &Metadata, graph: &Graph) -> Ana
     // The workspace keys that a member entry inherits, where `fix` keeps the
     // member entry. Without the workspace entry, that member entry breaks.
     let mut kept_inherited: BTreeSet<String> = BTreeSet::new();
+    // The workspace keys that a member entry with a guarded edit inherits,
+    // with the code name of the entry. When the guard keeps the member entry,
+    // the workspace entry must stay too.
+    let mut guarded_inherited: BTreeMap<String, String> = BTreeMap::new();
     for package in metadata.workspace_packages() {
         let manifest_path = workspace::relative_path(&workspace.root, &package.manifest_path);
         let text = match fs::read_to_string(&package.manifest_path) {
@@ -163,6 +170,7 @@ pub fn analyze(workspace: &Workspace, metadata: &Metadata, graph: &Graph) -> Ana
         );
         member_keys.extend(inherited_keys(&entries, &removed));
         kept_inherited.extend(kept_inherited_keys(&entries, &removed));
+        guarded_inherited.extend(guarded_inherited_keys(&entries, &removed));
         for name in ignores.redundant() {
             analysis.findings.push(redundant_ignore(
                 Some(package.name.to_string()),
@@ -177,10 +185,20 @@ pub fn analyze(workspace: &Workspace, metadata: &Metadata, graph: &Graph) -> Ana
         &mut analysis,
         workspace,
         &member_keys,
-        &kept_inherited,
+        &Inherited {
+            kept: kept_inherited,
+            guarded: guarded_inherited,
+        },
         &mut workspace_ignores,
     );
     analysis
+}
+
+/// The workspace keys that member entries inherit, where `fix` keeps the
+/// member entry or checks its removal with `cargo check`.
+struct Inherited {
+    kept: BTreeSet<String>,
+    guarded: BTreeMap<String, String>,
 }
 
 /// Adds the findings of the workspace dependency table and of the workspace
@@ -189,7 +207,7 @@ fn root_findings(
     analysis: &mut Analysis,
     workspace: &Workspace,
     member_keys: &BTreeSet<String>,
-    kept_inherited: &BTreeSet<String>,
+    inherited: &Inherited,
     workspace_ignores: &mut IgnoreList,
 ) {
     let root_manifest = workspace.root.join("Cargo.toml");
@@ -211,9 +229,13 @@ fn root_findings(
             );
             finding.manifest_path.clone_from(&root_path);
             finding.line = Some(entry.line);
-            finding.manual = kept_inherited
+            finding.manual = inherited
+                .kept
                 .contains(&entry.key)
                 .then_some(MANUAL_INHERITED);
+            if finding.manual.is_none() {
+                finding.guard = inherited.guarded.get(&entry.key).cloned();
+            }
             finding.actions = actions(&finding);
             analysis.findings.push(finding);
         }
@@ -343,6 +365,25 @@ fn kept_inherited_keys<'a>(
         .map(|entry| entry.key.clone())
 }
 
+/// The keys of the inheriting entries whose removal `fix` checks with
+/// `cargo check`, with the code name of each entry.
+fn guarded_inherited_keys<'a>(
+    entries: &'a [Entry],
+    removed: &'a [Finding],
+) -> impl Iterator<Item = (String, String)> + 'a {
+    entries
+        .iter()
+        .filter(|entry| entry.inherits)
+        .filter_map(|entry| {
+            removed
+                .iter()
+                .filter(|finding| finding.manual.is_none())
+                .find(|finding| line_of(std::slice::from_ref(entry), finding).is_some())
+                .and_then(|finding| finding.guard.clone())
+                .map(|name| (entry.key.clone(), name))
+        })
+}
+
 fn inherited_keys(entries: &[Entry], removed: &[Finding]) -> Vec<String> {
     entries
         .iter()
@@ -431,7 +472,8 @@ struct Hazards {
     /// that another package in the resolve gets.
     pins: bool,
     /// True when a target that the section of the entry serves calls a macro
-    /// of a crate outside the workspace.
+    /// of a crate outside the workspace, and that crate and the entry depend
+    /// on each other in the resolve, or the entry is in a platform table.
     external_macro: bool,
 }
 
@@ -448,13 +490,16 @@ fn manual_reason(
         Some(MANUAL_FEATURE_NAMES)
     } else if hazards.pins && is_removal(rule) {
         Some(MANUAL_PIN)
-    } else if hazards.external_macro
-        && matches!(rule, Rule::UnusedDependency | Rule::UnusedDevDependency)
-    {
+    } else if hazards.external_macro && is_macro_rule(rule) {
         Some(MANUAL_EXTERNAL_MACRO)
     } else {
         None
     }
+}
+
+/// True for a rule of an entry that the code of an external macro can use.
+const fn is_macro_rule(rule: Rule) -> bool {
+    matches!(rule, Rule::UnusedDependency | Rule::UnusedDevDependency)
 }
 
 /// True when the version is the first version of a semver-compatible range,
@@ -558,18 +603,25 @@ const SELF_CONTAINED_MACRO_CRATES: [&str; 10] = [
     "tracing",
 ];
 
-/// The contexts that use an attribute of a dependency outside the workspace,
-/// or call its macro in the place of an item, by a path such as
-/// `#[krate::name]` or `krate::name!`. The graph does not see the code that
-/// such a macro writes. The crates in [`SELF_CONTAINED_MACRO_CRATES`] do not
-/// count.
-fn external_macro_contexts(
-    metadata: &Metadata,
+/// A crate outside the workspace whose macro a package uses, with the
+/// contexts of the uses.
+struct MacroCrate<'a> {
+    ids: BTreeSet<&'a PackageId>,
+    contexts: BTreeSet<Context>,
+}
+
+/// The dependencies outside the workspace whose attribute a package uses, or
+/// whose macro it calls in the place of an item, by a path such as
+/// `#[krate::name]` or `krate::name!`, with the contexts of the uses. The
+/// graph does not see the code that such a macro writes. The crates in
+/// [`SELF_CONTAINED_MACRO_CRATES`] do not count.
+fn external_macro_crates<'a>(
+    metadata: &'a Metadata,
     package: &Package,
     used: &PackageUsage,
-) -> BTreeSet<Context> {
+) -> Vec<MacroCrate<'a>> {
     let members: BTreeSet<&PackageId> = metadata.workspace_members.iter().collect();
-    let mut contexts = BTreeSet::new();
+    let mut crates = Vec::new();
     for dependency in &package.dependencies {
         let Some(resolved) = resolved_packages(metadata, package, &dependency.name) else {
             continue;
@@ -582,10 +634,30 @@ fn external_macro_contexts(
             continue;
         }
         if let Some(found) = used.invoked.get(&name) {
-            contexts.extend(found.iter().copied());
+            crates.push(MacroCrate {
+                ids: resolved.iter().map(|found| &found.id).collect(),
+                contexts: found.iter().copied().collect(),
+            });
         }
     }
-    contexts
+    crates
+}
+
+/// True when the resolve has a direct dependency between a package of
+/// `macros` and a package of `entry`, in either direction. The code of a
+/// macro can name a crate that its own crate depends on, for example
+/// `wasm_bindgen` for `wasm-bindgen-futures`. It can also name a crate that
+/// depends on its own crate, for example `#[gpui::bench]` writes
+/// `gpui_platform::` paths.
+fn related(metadata: &Metadata, macros: &BTreeSet<&PackageId>, entry: &[&Package]) -> bool {
+    let entry: BTreeSet<&PackageId> = entry.iter().map(|found| &found.id).collect();
+    metadata.resolve.as_ref().is_some_and(|resolve| {
+        resolve.nodes.iter().any(|node| {
+            let deps = || node.deps.iter().map(|dep| &dep.pkg);
+            (macros.contains(&node.id) && deps().any(|id| entry.contains(id)))
+                || (entry.contains(&node.id) && deps().any(|id| macros.contains(id)))
+        })
+    })
 }
 
 /// True when the section of an entry serves code of `context`: `[dependencies]`
@@ -690,7 +762,7 @@ fn package_findings(
     used: &PackageUsage,
     removed: &RemovedEntries<'_>,
 ) -> Vec<Finding> {
-    let macro_contexts = external_macro_contexts(metadata, package, used);
+    let macro_crates = external_macro_crates(metadata, package, used);
     judge_entries(metadata, package, used)
         .into_iter()
         .map(|judged| {
@@ -705,6 +777,15 @@ fn package_findings(
             found.package_name =
                 (entry.dependency.name != entry.key).then(|| entry.dependency.name.clone());
             found.optional = entry.dependency.optional;
+            let served: Vec<&MacroCrate<'_>> = macro_crates
+                .iter()
+                .filter(|found| {
+                    found
+                        .contexts
+                        .iter()
+                        .any(|context| serves(entry.section, *context))
+                })
+                .collect();
             let hazards = Hazards {
                 pins: pins_shared_version(
                     metadata,
@@ -713,11 +794,18 @@ fn package_findings(
                     &judged.resolved,
                     removed,
                 ),
-                external_macro: macro_contexts
-                    .iter()
-                    .any(|context| serves(entry.section, *context)),
+                // `cargo check` builds for the host platform only, so the
+                // guard cannot judge an entry of a platform table.
+                external_macro: served.iter().any(|found| {
+                    entry.platform.is_some() || related(metadata, &found.ids, &judged.resolved)
+                }),
             };
             found.manual = manual_reason(package, entry, judged.rule, &hazards);
+            // The code of an unrelated macro can still name the entry, so
+            // `fix` checks the build after the edit.
+            found.guard =
+                (!served.is_empty() && found.manual.is_none() && is_macro_rule(judged.rule))
+                    .then(|| code_name(entry.dependency, &judged.resolved));
             found.used_by = judged.used_by;
             found.in_dev = judged.in_dev;
             found
@@ -853,6 +941,7 @@ fn finding(
         used_by: Vec::new(),
         in_dev: false,
         manual: None,
+        guard: None,
         version: None,
         workspace_only_features: Vec::new(),
         member_only_features: Vec::new(),
@@ -950,6 +1039,9 @@ fn actions(finding: &Finding) -> Vec<Action> {
     let manual = finding.manual.filter(|_| fixes(finding.rule));
     let description = match manual {
         Some(reason) => format!("{description} {reason} So `cargo fallow fix` does not change it."),
+        None if finding.guard.is_some() && fixes(finding.rule) => {
+            format!("{description} {GUARDED_EXTERNAL_MACRO}")
+        }
         None => description,
     };
     vec![Action {

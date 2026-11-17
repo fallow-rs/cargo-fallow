@@ -11,6 +11,7 @@
 )]
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
 
@@ -24,8 +25,18 @@ const LIBS: &[&str] = &["alpha", "beta", "gamma", "delta"];
 /// The crates outside the workspace.
 const EXTERNAL: &[&str] = &["mac", "other", "ctor", "rust-i18n"];
 
+/// The dependencies between the crates: `(package, folder of the
+/// dependency)`. The macro crate `mac` depends on `alpha`, as
+/// `wasm-bindgen` output names a crate that `wasm-bindgen` depends on. `beta`
+/// depends on `mac`, as `#[gpui::bench]` output names `gpui_platform`, which
+/// depends on `gpui`. `gamma` and `delta` do not relate to `mac`.
+const RELATED: &[(&str, &str)] = &[("mac", "libs/alpha"), ("beta", "ext/mac")];
+
 /// The text of `fix` for an entry that the code of an external macro can use.
 const EXTERNAL_MACRO: &str = "the code of that macro can use the entry";
+
+/// The text of `fix` for an entry that it removes only after `cargo check`.
+const GUARDED: &str = "runs `cargo check` after the edit";
 
 /// The text of `fix` for an entry that pins a version.
 const PIN: &str = "can pin the version of the crate for other dependencies";
@@ -58,18 +69,27 @@ fn workspace(app_manifest: &str, files: &[(&str, &str)]) -> TempDir {
         .chain(EXTERNAL.iter().map(|name| format!("ext/{name}")));
     for folder in crates {
         let name = folder.rsplit('/').next().expect("a folder has a name");
+        let mut related = String::new();
+        let mut lib = "pub fn f() {}\n#[macro_export]\nmacro_rules! m { () => {} }\n".to_owned();
+        for (_, to) in RELATED.iter().filter(|(package, _)| *package == name) {
+            let key = to.rsplit('/').next().expect("a folder has a name");
+            let _ = writeln!(related, "{key} = {{ path = \"../../{to}\" }}");
+            // The crate uses its dependency, so the dependency is no finding.
+            let _ = writeln!(lib, "pub fn uses_{key}() {{ {key}::f(); }}");
+        }
+        let dependencies = if related.is_empty() {
+            String::new()
+        } else {
+            format!("\n[dependencies]\n{related}")
+        };
         write(
             dir.path(),
             &format!("{folder}/Cargo.toml"),
             &format!(
-                "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n"
+                "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n{dependencies}"
             ),
         );
-        write(
-            dir.path(),
-            &format!("{folder}/src/lib.rs"),
-            "pub fn f() {}\n#[macro_export]\nmacro_rules! m { () => {} }\n",
-        );
+        write(dir.path(), &format!("{folder}/src/lib.rs"), &lib);
     }
     for (path, text) in files {
         write(dir.path(), path, text);
@@ -180,6 +200,54 @@ fn external_bang_macro_by_path_keeps_unused_entries_of_its_section() {
 }
 
 #[test]
+fn external_macro_keeps_only_the_entries_that_relate_to_its_crate() {
+    let manifest = format!(
+        "[dependencies]\n{}{}{}{}",
+        dep("mac", "ext"),
+        dep("alpha", "libs"),
+        dep("beta", "libs"),
+        dep("gamma", "libs"),
+    );
+    let dir = workspace(&manifest, &[("app/src/lib.rs", "mac::m!();\n")]);
+    let actions = actions(&dir);
+    assert_eq!(actions.len(), 3, "{actions:?}");
+    // `mac` depends on `alpha`, and `beta` depends on `mac`.
+    assert_action(&actions, "dependencies alpha", false, EXTERNAL_MACRO);
+    assert_action(&actions, "dependencies beta", false, EXTERNAL_MACRO);
+    // `gamma` does not relate to `mac`, so `fix` removes it behind the guard.
+    assert_action(&actions, "dependencies gamma", true, EXTERNAL_MACRO);
+    let description = actions["dependencies gamma"]["description"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(description.contains(GUARDED), "{description}");
+    assert!(
+        !actions["dependencies alpha"]["description"]
+            .as_str()
+            .unwrap_or_default()
+            .contains(GUARDED)
+    );
+}
+
+#[test]
+fn an_entry_without_an_external_macro_gets_no_guard() {
+    let manifest = format!(
+        "[dependencies]\n{}{}",
+        dep("mac", "ext"),
+        dep("gamma", "libs")
+    );
+    let dir = workspace(
+        &manifest,
+        &[("app/src/lib.rs", "pub fn g() { mac::f(); }\n")],
+    );
+    let actions = actions(&dir);
+    let description = actions["dependencies gamma"]["description"]
+        .as_str()
+        .unwrap_or_default();
+    assert_eq!(actions["dependencies gamma"]["auto_fixable"], true);
+    assert!(!description.contains(GUARDED), "{description}");
+}
+
+#[test]
 fn expression_macros_std_macros_and_workspace_macros_keep_entries_fixable() {
     let manifest = format!(
         "[dependencies]\n{}{}{}",
@@ -284,6 +352,32 @@ fn single_name_attribute_from_a_glob_import_keeps_unused_entries() {
     // `#[wasm_bindgen] pub async fn` writes `wasm_bindgen_futures::` paths.
     let actions = single_name_actions("use mac::prelude::*;\n#[attr]\npub async fn g() {}\n");
     assert_action(&actions, "dependencies alpha", false, EXTERNAL_MACRO);
+}
+
+#[test]
+fn single_name_attribute_keeps_only_the_related_entry() {
+    // `mac` depends on `alpha`, as `wasm-bindgen` output names a crate that
+    // `wasm-bindgen` depends on. `gamma` does not relate to `mac`.
+    let actions = single_name_actions("use mac::prelude::*;\n#[attr]\npub async fn g() {}\n");
+    assert_action(&actions, "dependencies alpha", false, EXTERNAL_MACRO);
+    assert_action(&actions, "dependencies gamma", true, EXTERNAL_MACRO);
+    let description = actions["dependencies gamma"]["description"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(description.contains(GUARDED), "{description}");
+}
+
+#[test]
+fn an_unrelated_entry_of_a_platform_table_stays_for_a_person() {
+    // `cargo check` builds for the host only, so it cannot judge the entry.
+    let manifest = format!(
+        "[dependencies]\n{}\n[target.'cfg(windows)'.dependencies]\n{}",
+        dep("mac", "ext"),
+        dep("gamma", "libs"),
+    );
+    let dir = workspace(&manifest, &[("app/src/lib.rs", "mac::m!();\n")]);
+    let actions = actions(&dir);
+    assert_action(&actions, "dependencies gamma", false, EXTERNAL_MACRO);
 }
 
 #[test]
@@ -537,14 +631,15 @@ fn fix_dry_run_leaves_the_kept_entries_out_of_the_edits() {
             "--quiet",
         ],
     );
-    let fixes: Vec<&str> = report["fixes"]
+    let fixes: Vec<(&str, bool)> = report["fixes"]
         .as_array()
         .expect("fixes is an array")
         .iter()
-        .filter_map(|fix| fix["dependency"].as_str())
+        .filter_map(|fix| Some((fix["dependency"].as_str()?, fix["guarded"] == true)))
         .collect();
-    assert_eq!(fixes, ["beta"], "{report}");
-    assert_eq!(report["skipped"], 2, "{report}");
+    // `gamma` does not relate to `mac`, so its edit has the guard.
+    assert_eq!(fixes, [("beta", false), ("gamma", true)], "{report}");
+    assert_eq!(report["skipped"], 1, "{report}");
     let after = fs::read_to_string(dir.path().join("app/Cargo.toml")).expect("read a file");
     assert_eq!(after, before);
 }

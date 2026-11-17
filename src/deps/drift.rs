@@ -240,6 +240,7 @@ fn finding(member: &str, manifest: &str, difference: Difference) -> Finding {
         used_by: Vec::new(),
         in_dev: false,
         manual: None,
+        guard: None,
         version: Some(version),
         workspace_only_features: workspace_only,
         member_only_features: member_only,

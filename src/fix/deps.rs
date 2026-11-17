@@ -15,7 +15,7 @@ use crate::deps::manifest::normalize_platform;
 use crate::deps::report::{DepsReport, Rule};
 
 /// The section label of the workspace table.
-const WORKSPACE_SECTION: &str = "workspace.dependencies";
+pub const WORKSPACE_SECTION: &str = "workspace.dependencies";
 
 /// The dependency tables of a package, in the written forms that Cargo reads.
 const PACKAGE_TABLES: [&str; 5] = [
@@ -68,6 +68,22 @@ pub struct Edit {
     pub line: Option<u32>,
     /// True when the command wrote the edit.
     pub applied: bool,
+    /// True when the command runs `cargo check` to judge the edit, because a
+    /// target uses a macro of a crate outside the workspace.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub guarded: bool,
+    /// Why the command left out the edit: `compiler_error` when a compiler
+    /// error after the edits names the crate, or `build_fails_before` when
+    /// the workspace does not build before the edits.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skip_reason: Option<&'static str>,
+    /// The compiler message that left out the edit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diagnostic: Option<String>,
+    /// The name of the crate in the code, for a guarded edit. It is not part
+    /// of the report.
+    #[serde(skip)]
+    pub code_name: Option<String>,
 }
 
 /// The kind of the move action.
@@ -93,6 +109,10 @@ pub fn plan(report: &DepsReport) -> Vec<Edit> {
                 dependency: finding.dependency.clone(),
                 line: finding.line,
                 applied: false,
+                guarded: finding.guard.is_some(),
+                skip_reason: None,
+                diagnostic: None,
+                code_name: finding.guard.clone(),
             })
         })
         .collect()
@@ -142,6 +162,23 @@ pub fn apply(text: &str, edits: &[&Edit]) -> Result<String, String> {
         }
     }
     Ok(doc.to_string())
+}
+
+/// True when two edits change the same entry in the same way.
+pub fn same_entry(a: &Edit, b: &Edit) -> bool {
+    (
+        a.kind,
+        &a.manifest_path,
+        &a.section,
+        &a.platform,
+        &a.dependency,
+    ) == (
+        b.kind,
+        &b.manifest_path,
+        &b.section,
+        &b.platform,
+        &b.dependency,
+    )
 }
 
 /// The edits of each manifest, in manifest order.
@@ -276,6 +313,10 @@ mod tests {
             dependency: key.to_owned(),
             line: None,
             applied: false,
+            guarded: false,
+            skip_reason: None,
+            diagnostic: None,
+            code_name: None,
         }
     }
 
@@ -348,6 +389,10 @@ mod more_tests {
             dependency: key.to_owned(),
             line: None,
             applied: false,
+            guarded: false,
+            skip_reason: None,
+            diagnostic: None,
+            code_name: None,
         }
     }
 

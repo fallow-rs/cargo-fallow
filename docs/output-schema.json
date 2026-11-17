@@ -2562,6 +2562,24 @@
         "applied": {
           "type": "boolean",
           "description": "True when the command wrote the edit."
+        },
+        "guarded": {
+          "type": "boolean",
+          "description": "True when the command runs `cargo check` to judge the edit, because a\ntarget uses a macro of a crate outside the workspace."
+        },
+        "skip_reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Why the command left out the edit: `compiler_error` when a compiler\nerror after the edits names the crate, or `build_fails_before` when\nthe workspace does not build before the edits."
+        },
+        "diagnostic": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The compiler message that left out the edit."
         }
       },
       "required": [

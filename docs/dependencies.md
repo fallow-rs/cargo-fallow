@@ -135,7 +135,9 @@ cargo-shear or cargo-machete with no change to its `ignored` lists. The
 A macro of a crate outside the workspace can write paths of other crates. For
 example, `#[gpui::bench]` writes `criterion::` paths into the bench. The
 command cannot read that output. It still reports such an entry when no code
-names it, but `cargo fallow fix` does not remove it in these cases:
+names it. `cargo fallow fix` does not remove the entry when the crate of the
+macro and the entry depend on each other in the resolve, in either
+direction, in these cases:
 
 - The library or a binary uses an attribute macro of an external crate by a
   path, for example `#[krate::name]`, or calls its macro in the place of an
@@ -155,6 +157,19 @@ names it, but `cargo fallow fix` does not remove it in these cases:
   `[dev-dependencies]` entries stay for a person. Code under a `cfg` that
   holds only in a test build, for example `all(test, feature = "x")`, is test
   code here.
+
+The crate of the macro and the entry must depend on each other directly. The
+code of a macro names a crate that its own crate depends on, for example
+`gpui` depends on `criterion`. It can also name a crate that depends on its
+own crate: `#[gpui::bench]` writes `gpui_platform::` paths, and
+`gpui_platform` depends on `gpui`. Likewise, `wasm-bindgen-futures` depends
+on `wasm-bindgen`.
+
+When the macro crate and the entry do not depend on each other, the edit of
+the entry is guarded. `cargo fallow fix` removes the entry, runs
+`cargo check`, and keeps the entry when a compiler error names its crate. The
+action of such a finding has `auto_fixable: true`, and its description tells
+about the check. See [Fix](fix.md).
 
 A macro call in an expression, for example `log::info!(..)`, a derive, an
 attribute of the compiler, for example `#[inline]`, and an attribute on a

@@ -176,6 +176,11 @@ pub struct Finding {
     /// another dependency can need. It is not part of the report.
     #[serde(skip)]
     pub manual: Option<&'static str>,
+    /// The name of the crate in the code, when `fix` must run `cargo check`
+    /// to judge the edit. A macro of an external crate that the entry does
+    /// not relate to is the reason. It is not part of the report.
+    #[serde(skip)]
+    pub guard: Option<String>,
     /// The version of the crate, for a `feature-unification-drift` finding.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
@@ -307,6 +312,7 @@ mod tests {
             used_by: Vec::new(),
             in_dev: false,
             manual: None,
+            guard: None,
             version: None,
             workspace_only_features: Vec::new(),
             member_only_features: Vec::new(),

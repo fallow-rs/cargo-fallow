@@ -1,6 +1,9 @@
 [advisories]
 # Each entry in `ignore` must have a one-line reason.
-ignore = []
+ignore = [
+    # chrono comes only from the `chrono04` feature of schemars, which fallow-report-protocol turns on. No code of these crates uses chrono.
+    { id = "RUSTSEC-2026-0543", reason = "chrono is unmaintained, but only the unused schemars chrono04 feature pulls it in" },
+]
 yanked = "deny"
 
 [licenses]

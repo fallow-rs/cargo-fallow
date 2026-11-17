@@ -548,15 +548,17 @@ fn check_before(
         // feature, which can call the macro, so the guard cannot judge the
         // guarded edits.
         Ok((false, warnings, consumers)) => {
-            crate::render::warn(
-                "the workspace does not build with `--all-features` before the edits, so the \
-                 guarded dependency edits stay for a person.",
-            );
             *deps_left = guard::all(
                 deps_kept,
                 guard::ALL_FEATURES_FAIL_BEFORE,
                 "`cargo check --workspace --all-targets --all-features` fails before the edits",
             );
+            if !deps_left.is_empty() {
+                crate::render::warn(
+                    "the workspace does not build with `--all-features` before the edits, so \
+                     the guarded dependency edits stay for a person.",
+                );
+            }
             if plan.visibility.is_empty() {
                 return Ok((None, Vec::new(), Vec::new()));
             }

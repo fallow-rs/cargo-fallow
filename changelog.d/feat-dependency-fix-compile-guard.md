@@ -15,9 +15,6 @@
 
 ### Fixed
 
-- `cargo fallow fix` writes back the old `Cargo.lock` before each new round
-  of edits and checks. Before, an entry that a round left out could resolve
-  to a newer version of its crate.
 - The `cargo check` of `cargo fallow fix` now runs with `--all-features`
   first, as the docs say. Before, cargo rejected the flag, so the check
   always used the default features.

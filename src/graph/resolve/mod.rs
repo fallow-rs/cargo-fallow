@@ -30,6 +30,12 @@ const OUTSIDE_ROOTS: [&str; 5] = ["std", "core", "alloc", "proc_macro", "test"];
 /// The deepest chain of glob imports that a lookup follows.
 const MAX_GLOB_DEPTH: usize = 16;
 
+/// The most rounds of [`Resolver::settle_globs`]. Each round settles one more
+/// glob path whose first name only another glob import gives. Real chains of
+/// such paths are short. The limit keeps a run bounded when the rounds do not
+/// settle.
+const MAX_SETTLE_ROUNDS: usize = MAX_GLOB_DEPTH;
+
 /// What a name resolves to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 enum Target {
@@ -231,7 +237,7 @@ impl<'g> Resolver<'g> {
     pub fn new(graph: &'g Graph) -> Self {
         let (declared, members, by_name) = item_indexes(graph);
         let (named, globs) = import_indexes(graph);
-        Self {
+        let resolver = Self {
             graph,
             declared,
             members,
@@ -247,6 +253,47 @@ impl<'g> Resolver<'g> {
             origin_memo: RefCell::new(FxHashMap::default()),
             origin_active: RefCell::new(FxHashSet::default()),
             origin_cut: Cell::new(false),
+        };
+        resolver.settle_globs();
+        resolver
+    }
+
+    /// Resolves the path of each glob import before the first lookup.
+    ///
+    /// The path of a glob import can start with a name that only a glob walk
+    /// finds, for example `use wasm_bindgen::prelude::*` next to `use
+    /// super::*`. Each round resolves every glob path once, and a glob walk in
+    /// the round reads the sources of the previous round. A walk therefore
+    /// never resolves a second glob path inside itself, so the cost of a round
+    /// does not grow with the length of a chain of glob imports. The rounds
+    /// stop when no sources change.
+    fn settle_globs(&self) {
+        let globs: Vec<usize> = self.globs.iter().flatten().copied().collect();
+        if globs.is_empty() {
+            return;
+        }
+        for _ in 0..MAX_SETTLE_ROUNDS {
+            let mut next = FxHashMap::default();
+            for &index in &globs {
+                let import = &self.graph.imports[index];
+                let (sources, _, _) = self.resolve_path(
+                    import.krate,
+                    import.module,
+                    &import.path,
+                    import.global,
+                    false,
+                );
+                next.insert(index, sources);
+            }
+            self.memo.borrow_mut().clear();
+            for found in self.lookup_memo.borrow_mut().iter_mut() {
+                found.clear();
+            }
+            let stable = *self.glob_memo.borrow() == next;
+            *self.glob_memo.borrow_mut() = next;
+            if stable {
+                return;
+            }
         }
     }
 
@@ -969,26 +1016,25 @@ impl<'g> Resolver<'g> {
                 self.active.borrow_mut().remove(&index);
             }
         }
+        // Two glob paths can reach one item. Without the dedup, each memo
+        // that a walk reads adds its copies again, so the result of a cycle of
+        // glob imports doubles with each module.
+        found.sort_unstable();
+        found.dedup();
         if self.active.borrow().is_empty() {
             self.lookup_memo.borrow_mut()[module].insert(name.to_owned(), found.clone());
         }
         found
     }
 
+    /// The sources of a glob import. [`Resolver::settle_globs`] resolves
+    /// them. In the first round of it, a glob has no sources yet.
     fn glob_targets(&self, index: usize) -> Vec<Target> {
-        if let Some(found) = self.glob_memo.borrow().get(&index) {
-            return found.clone();
-        }
-        let import = &self.graph.imports[index];
-        let (sources, _, _) = self.resolve_path(
-            import.krate,
-            import.module,
-            &import.path,
-            import.global,
-            false,
-        );
-        self.glob_memo.borrow_mut().insert(index, sources.clone());
-        sources
+        self.glob_memo
+            .borrow()
+            .get(&index)
+            .cloned()
+            .unwrap_or_default()
     }
 
     fn glob_step(&self, source: Target, name: &str, depth: usize) -> Vec<Target> {

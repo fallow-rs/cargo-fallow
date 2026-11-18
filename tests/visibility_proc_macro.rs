@@ -787,3 +787,55 @@ fn helper_expected() -> BTreeSet<String> {
     .map(|row| (*row).to_owned())
     .collect()
 }
+
+/// A helper counts in each form of a normal dependency: a renamed entry, an
+/// optional entry and an entry of a platform table.
+#[test]
+fn a_helper_counts_in_each_form_of_a_normal_dependency() {
+    const HEAD: &str = "[package]\nname = \"pm\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\
+                        publish = false\n\n[lib]\nproc-macro = true\n\n";
+    const DEV: &str = "\n[dev-dependencies]\ndevhelp = { path = \"../devhelp\" }\n\n\
+                       [build-dependencies]\nbuildhelp = { path = \"../buildhelp\" }\n";
+    let forms = [
+        (
+            "renamed",
+            "[dependencies]\nsup = { package = \"support\", path = \"../support\" }\n",
+            "sup",
+        ),
+        (
+            "optional",
+            "[dependencies]\nsupport = { path = \"../support\", optional = true }\n",
+            "support",
+        ),
+        (
+            "platform",
+            "[target.'cfg(unix)'.dependencies]\nsupport = { path = \"../support\" }\n",
+            "support",
+        ),
+    ];
+    for (form, dependency, code_name) in forms {
+        let dir = tempfile::tempdir().expect("create a temporary directory");
+        for (path, text) in HELPER_FILES {
+            write(dir.path(), path, text);
+        }
+        write(
+            dir.path(),
+            "pm/Cargo.toml",
+            &format!("{HEAD}{dependency}{DEV}"),
+        );
+        write(
+            dir.path(),
+            "pm/src/lib.rs",
+            &format!(
+                "use proc_macro::TokenStream;\n\
+                 #[proc_macro_attribute]\n\
+                 pub fn generate(_args: TokenStream, item: TokenStream) -> TokenStream {{\n\
+                 \x20   {code_name}::expand(item.to_string()).parse().expect(\"valid tokens\")\n\
+                 }}\n\
+                 #[cfg(test)]\nmod tests {{\n    #[test]\n    fn emits() {{\n\
+                 \x20       assert!(!devhelp::emit().is_empty());\n    }}\n}}\n"
+            ),
+        );
+        assert_eq!(findings(&dir), helper_expected(), "form: {form}");
+    }
+}

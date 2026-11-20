@@ -269,15 +269,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527"
 
 [[package]]
-name = "chrono"
-version = "0.4.45"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1aa79e62e7697b8e29b513a68abacf485adcd1fe8284a4316c5ae868e6633327"
-dependencies = [
- "num-traits",
-]
-
-[[package]]
 name = "clap"
 version = "4.6.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -502,9 +493,9 @@ dependencies = [
 
 [[package]]
 name = "fallow-report-protocol"
-version = "3.42.0"
+version = "3.44.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "36c198e7d2692652cf89773fd4a7adefb534ecc444f65ead8451a98490014488"
+checksum = "b1097ebd00ec99dc6d540471a62478e3f09a8a61b09477a96079b421a6c46edc"
 dependencies = [
  "schemars",
  "serde",
@@ -2102,7 +2093,6 @@ version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ab508826f74a77ca9d5aba6ff19b522583ee3eaf28a19384ff3d0e5835fadf6e"
 dependencies = [
- "chrono",
  "dyn-clone",
  "ref-cast",
  "schemars_derive",

@@ -13,13 +13,16 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_DIR
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 readonly REPO_ROOT
+# rustup selects the toolchain from rust-toolchain.toml in the current
+# directory, not from --manifest-path.
+cd -- "${REPO_ROOT}"
 
 if [[ "$(cargo hawk --version)" != "${EXPECTED_HAWK_VERSION}" ]]; then
   printf 'error: expected %s\n' "${EXPECTED_HAWK_VERSION}" >&2
   exit 2
 fi
 
-rustc_version="$(cd -- "${REPO_ROOT}" && rustc --version)"
+rustc_version="$(rustc --version)"
 if [[ "${rustc_version}" != "rustc ${HAWK_RUSTC_VERSION} "* ]]; then
   printf 'error: %s needs rustc %s, but the workspace selects %s\n' \
     "${EXPECTED_HAWK_VERSION}" "${HAWK_RUSTC_VERSION}" "${rustc_version}" >&2

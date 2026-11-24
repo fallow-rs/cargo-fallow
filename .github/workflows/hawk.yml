@@ -4,10 +4,12 @@ on:
   schedule:
     # Every Monday at 05:00 UTC
     - cron: '0 5 * * 1'
-  # A change of the toolchain or of the Hawk pin must pass this audit before
-  # the merge. Each Hawk release supports only the one rustc that built it.
+  # Each Hawk release supports only the one rustc that built it. This trigger
+  # shows a toolchain mismatch on the pull request that causes it. The check is
+  # not required, because a path filter leaves it pending on other pull requests.
   pull_request:
     paths:
+      - .github/actions/setup-rust/action.yml
       - .github/workflows/hawk.yml
       - hawk.toml
       - rust-toolchain.toml
@@ -75,7 +77,7 @@ jobs:
           {
             echo '## Hawk workspace visibility audit'
             echo
-            echo 'This scheduled audit is informational. Review the attached log before changing visibility or deleting declarations.'
+            echo 'This audit is informational. Review the attached log before changing visibility or deleting declarations.'
             echo
             echo 'A declaration is safe to delete only after its identity is absent from every relevant release target.'
           } >> "${GITHUB_STEP_SUMMARY}"

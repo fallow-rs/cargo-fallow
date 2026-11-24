@@ -97,7 +97,7 @@ its configuration.
 them, or install each tool by hand at the version in that file. The tools
 are `typos`, `cargo-shear`, `cargo-deny`, `cargo-audit`,
 `cargo-nextest`, the `llvm-tools` component, `cargo-llvm-cov`, `actionlint`, `zizmor`, Node.js 22 and
-Python 3. The Hawk audit needs `cargo hawk` 0.1.17 on the toolchain in `rust-toolchain.toml`.
+Python 3. The Hawk audit needs `cargo hawk` 0.1.18 on the toolchain in `rust-toolchain.toml`.
 
 ### Gates that this repository does not have yet
 

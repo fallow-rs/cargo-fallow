@@ -4,6 +4,14 @@ on:
   schedule:
     # Every Monday at 05:00 UTC
     - cron: '0 5 * * 1'
+  # A change of the toolchain or of the Hawk pin must pass this audit before
+  # the merge. Each Hawk release supports only the one rustc that built it.
+  pull_request:
+    paths:
+      - .github/workflows/hawk.yml
+      - hawk.toml
+      - rust-toolchain.toml
+      - scripts/check-hawk.sh
   workflow_dispatch:
 
 permissions: {}
@@ -16,8 +24,8 @@ env:
   CARGO_INCREMENTAL: '0'
   CARGO_TERM_COLOR: always
   HAWK_ARCHIVE: cargo-hawk-x86_64-unknown-linux-gnu.tar.gz
-  HAWK_SHA256: f5a76a43aa6be1e55e44f5eac13310193ba77729673799250065f1d201018016
-  HAWK_VERSION: 0.1.17
+  HAWK_SHA256: 84e2b65a8571d0aaa84fe1fea154abdbf88effff64e59a890abfb1d554ad78a1
+  HAWK_VERSION: 0.1.18
 
 jobs:
   audit:
